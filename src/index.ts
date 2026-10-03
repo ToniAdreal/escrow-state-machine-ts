@@ -1,8 +1,9 @@
-export { Escrow, allowedEvents, transition } from "./stateMachine.js";
+export { Escrow, allowedEvents, transition, transitionTable } from "./stateMachine.js";
 export type {
   EscrowEvent,
   EscrowHistoryEntry,
   EscrowState,
+  TransitionEdge,
 } from "./stateMachine.js";
 export { calculateDeposit } from "./feeCalculator.js";
 export type { FeeBreakdown, FeeInputs } from "./feeCalculator.js";

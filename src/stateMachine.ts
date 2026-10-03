@@ -67,6 +67,28 @@ export function allowedEvents(state: EscrowState): EscrowEvent[] {
   return Object.keys(TRANSITIONS[state]) as EscrowEvent[];
 }
 
+export interface TransitionEdge {
+  from: EscrowState;
+  event: EscrowEvent;
+  to: EscrowState;
+}
+
+/**
+ * Every (from, event, to) edge of the transition table, in declaration order.
+ * Single source of truth for docs/diagrams that must stay in sync with code
+ * (see README's mermaid state diagram, verified by test/stateDiagram.test.ts).
+ */
+export function transitionTable(): TransitionEdge[] {
+  const edges: TransitionEdge[] = [];
+  for (const from of Object.keys(TRANSITIONS) as EscrowState[]) {
+    const row = TRANSITIONS[from];
+    for (const event of Object.keys(row) as EscrowEvent[]) {
+      edges.push({ from, event, to: row[event]! });
+    }
+  }
+  return edges;
+}
+
 export interface EscrowHistoryEntry {
   seq: number;
   event: EscrowEvent;

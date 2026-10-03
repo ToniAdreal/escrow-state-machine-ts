@@ -49,20 +49,33 @@ console.log(settleRelease({ gross: 1000, proFeeBps: 500 }));
 
 ## State machine
 
+```mermaid
+stateDiagram-v2
+    [*] --> CREATED
+    CREATED --> FUNDED : FUND
+    CREATED --> EXPIRED : EXPIRE
+    FUNDED --> MILESTONE_SUBMITTED : SUBMIT_MILESTONE
+    FUNDED --> DISPUTED : DISPUTE
+    FUNDED --> EXPIRED : EXPIRE
+    MILESTONE_SUBMITTED --> VERIFIED : VERIFY_PASS
+    MILESTONE_SUBMITTED --> DISPUTED : VERIFY_FAIL
+    MILESTONE_SUBMITTED --> DISPUTED : DISPUTE
+    MILESTONE_SUBMITTED --> EXPIRED : EXPIRE
+    VERIFIED --> RELEASED : RELEASE
+    VERIFIED --> DISPUTED : DISPUTE
+    DISPUTED --> RELEASED : ARBITRATE_RELEASE
+    DISPUTED --> REFUNDED : ARBITRATE_REFUND
+    RELEASED --> [*]
+    REFUNDED --> [*]
+    EXPIRED --> [*]
 ```
-CREATED ──FUND──▶ FUNDED ──SUBMIT_MILESTONE──▶ MILESTONE_SUBMITTED
-                                                    │ VERIFY_PASS
-                                                    ▼
-                                                 VERIFIED ──RELEASE──▶ RELEASED
-                                                    │ DISPUTE
-                                                    ▼
-                                                 DISPUTED ──ARBITRATE_RELEASE──▶ RELEASED
-                                                    │ ARBITRATE_REFUND
-                                                    ▼
-                                                 REFUNDED
 
-Any non-terminal state ──EXPIRE──▶ EXPIRED (deadline passed)
-```
+(`EXPIRE` is available from `CREATED`, `FUNDED`, and `MILESTONE_SUBMITTED`
+once the campaign deadline passes — not from `VERIFIED`/`DISPUTED`, where the
+outcome is decided by verification or arbitration; terminal states are
+`RELEASED`, `REFUNDED`, `EXPIRED`. The diagram matches `transitionTable()` in
+`src/stateMachine.ts` exactly — see `test/stateDiagram.test.ts`, which asserts
+parity.)
 
 - `transition(state, event)` is a pure function; invalid transitions throw.
 - `Escrow` wraps it with an append-only history (the case study's "immutable
