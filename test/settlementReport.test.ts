@@ -4,6 +4,7 @@ import {
   Escrow,
   buildSettlementReport,
   calculateDeposit,
+  depositAmountFromHistory,
   renderReport,
 } from "../src/index.js";
 
@@ -212,4 +213,63 @@ test("renderReport prints the human-readable ledger", () => {
   assert.match(text, /531\.50/);
   assert.match(text, /balanced ✓/);
   assert.match(text, /Audit: 4 events/);
+});
+
+test("depositAmountFromHistory reads the FUND amount from the audit trail", () => {
+  const e = new Escrow("esc-fundamt");
+  e.dispatch("FUND", "deposit locked", 10630);
+  assert.equal(depositAmountFromHistory(e.history, e.id), 10630);
+});
+
+test("depositAmountFromHistory throws when the FUND entry has no amount", () => {
+  const e = new Escrow("esc-noamt");
+  e.dispatch("FUND");
+  assert.throws(
+    () => depositAmountFromHistory(e.history, e.id),
+    /settlement requires a FUND amount/,
+  );
+});
+
+test("depositAmountFromHistory throws when there is no FUND event at all", () => {
+  assert.throws(
+    () => depositAmountFromHistory([], "esc-ghost"),
+    /settlement requires a FUND amount/,
+  );
+});
+
+test("buildSettlementReport rejects a deposit that disagrees with the recorded FUND amount", () => {
+  const e = new Escrow("esc-mismatch");
+  e.dispatch("FUND", undefined, 5000);
+  e.dispatch("SUBMIT_MILESTONE");
+  e.dispatch("VERIFY_PASS");
+  e.dispatch("RELEASE");
+  assert.throws(
+    () =>
+      buildSettlementReport({
+        escrowId: e.id,
+        history: e.history,
+        finalState: e.state,
+        deposit: goldenDeposit(), // 10630 !== recorded FUND amount 5000
+        settlement: { proFeeBps: 500 },
+      }),
+    /does not match the FUND amount/,
+  );
+});
+
+test("buildSettlementReport accepts a deposit that matches the recorded FUND amount", () => {
+  const e = new Escrow("esc-match");
+  e.dispatch("FUND", undefined, 10630);
+  e.dispatch("SUBMIT_MILESTONE");
+  e.dispatch("VERIFY_PASS");
+  e.dispatch("RELEASE");
+  const report = buildSettlementReport({
+    escrowId: e.id,
+    history: e.history,
+    finalState: e.state,
+    deposit: goldenDeposit(),
+    settlement: { proFeeBps: 500 },
+  });
+  assert.ok(report.balanced);
+  assert.equal(report.totalInflow, 10630);
+  assert.equal(report.totalOutflow, 10630);
 });

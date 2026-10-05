@@ -10,7 +10,7 @@ export { calculateDeposit } from "./feeCalculator.js";
 export type { FeeBreakdown, FeeInputs } from "./feeCalculator.js";
 export { settleRelease } from "./settlement.js";
 export type { Settlement, SettlementInputs } from "./settlement.js";
-export { buildSettlementReport, renderReport } from "./settlementReport.js";
+export { buildSettlementReport, depositAmountFromHistory, renderReport } from "./settlementReport.js";
 export type {
   PartyLedger,
   PartyRole,
