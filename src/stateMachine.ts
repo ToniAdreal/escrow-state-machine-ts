@@ -96,6 +96,23 @@ export interface EscrowHistoryEntry {
   to: EscrowState;
   at: string; // ISO timestamp
   note?: string;
+  /**
+   * Deposit amount in base currency units. Only present on FUND entries
+   * (dispatch validates it as a finite non-negative number).
+   */
+  amount?: number;
+}
+
+/**
+ * Boundary check for monetary inputs: must be a finite, non-negative number.
+ * Throws a descriptive Error on anything else (negative, NaN, ±Infinity,
+ * non-number), so invalid caller input fails fast instead of silently
+ * poisoning downstream accounting.
+ */
+export function assertNonNegativeMoney(name: string, value: unknown): void {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new Error(`${name} must be a finite non-negative number`);
+  }
 }
 
 /** Stateful escrow with an append-only audit history. */
@@ -124,9 +141,27 @@ export class Escrow {
     );
   }
 
-  dispatch(event: EscrowEvent, note?: string): EscrowState {
+  /**
+   * Move the escrow through a state transition.
+   *
+   * @param event  The event to dispatch.
+   * @param note   Optional human-readable note recorded in the audit history.
+   * @param amount Optional deposit amount, accepted ONLY on FUND. Must be a
+   *               finite non-negative number (NaN, ±Infinity, negatives, and
+   *               non-numbers are rejected with a descriptive error). The
+   *               validated amount is recorded on the FUND history entry.
+   */
+  dispatch(event: EscrowEvent, note?: string, amount?: number): EscrowState {
+    if (amount !== undefined && event !== "FUND") {
+      throw new Error(
+        `amount is only accepted on FUND, not on ${event}`
+      );
+    }
     const from = this._state;
     const to = transition(from, event); // throws on invalid transition
+    if (event === "FUND" && amount !== undefined) {
+      assertNonNegativeMoney("amount", amount);
+    }
     this._state = to;
     this._history.push({
       seq: this._history.length + 1,
@@ -135,6 +170,7 @@ export class Escrow {
       to,
       at: new Date().toISOString(),
       note,
+      ...(event === "FUND" && amount !== undefined ? { amount } : {}),
     });
     return to;
   }

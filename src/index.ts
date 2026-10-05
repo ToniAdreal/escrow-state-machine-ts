@@ -1,4 +1,4 @@
-export { Escrow, allowedEvents, transition, transitionTable } from "./stateMachine.js";
+export { Escrow, allowedEvents, transition, transitionTable, assertNonNegativeMoney } from "./stateMachine.js";
 export type {
   EscrowEvent,
   EscrowHistoryEntry,

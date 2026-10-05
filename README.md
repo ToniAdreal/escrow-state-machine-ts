@@ -36,7 +36,8 @@ console.log(fees.deposit); // 10630
 
 // 2. Milestone escrow lifecycle
 const escrow = new Escrow("CMP-2026-042");
-escrow.dispatch("FUND");
+escrow.dispatch("FUND", "wire received", 10630); // optional amount: FUND-only,
+// validated as a finite non-negative number and recorded on the audit entry
 escrow.dispatch("SUBMIT_MILESTONE", "deliverable URLs + IPFS metadata hash");
 escrow.dispatch("VERIFY_PASS", "KPIs validated by oracle");
 escrow.dispatch("RELEASE");
@@ -80,7 +81,10 @@ parity.)
 - `transition(state, event)` is a pure function; invalid transitions throw.
 - `Escrow` wraps it with an append-only history (the case study's "immutable
   operational audit log"): every dispatch records seq, event, from → to,
-  timestamp, and an optional note.
+  timestamp, and an optional note. `FUND` accepts an optional `amount`
+  argument — it is validated as a finite non-negative number at the dispatch
+  boundary (anything else throws) and recorded on the audit entry; passing an
+  amount with any other event throws.
 - `allowedEvents(state)` lists valid next events for UI gating.
 
 ## Limitations (honest)
