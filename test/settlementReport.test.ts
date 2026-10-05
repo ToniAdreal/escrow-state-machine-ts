@@ -273,3 +273,53 @@ test("buildSettlementReport accepts a deposit that matches the recorded FUND amo
   assert.equal(report.totalInflow, 10630);
   assert.equal(report.totalOutflow, 10630);
 });
+
+test("refunded escrow rejects a history whose last event is not ARBITRATE_REFUND", () => {
+  // Corrupted audit trail: state claims REFUNDED but the trail ends in EXPIRE.
+  const e = new Escrow("esc-mismatch-refund");
+  e.dispatch("FUND");
+  e.dispatch("EXPIRE");
+  assert.throws(
+    () =>
+      buildSettlementReport({
+        escrowId: e.id,
+        history: e.history,
+        finalState: "REFUNDED",
+        deposit: goldenDeposit(),
+      }),
+    /state is REFUNDED but the last audit event is EXPIRE/,
+  );
+});
+
+test("expired escrow rejects a history whose last event is not EXPIRE", () => {
+  // Corrupted audit trail: state claims EXPIRED but the trail ends in ARBITRATE_REFUND.
+  const e = new Escrow("esc-mismatch-expire");
+  e.dispatch("FUND");
+  e.dispatch("DISPUTE");
+  e.dispatch("ARBITRATE_REFUND");
+  assert.throws(
+    () =>
+      buildSettlementReport({
+        escrowId: e.id,
+        history: e.history,
+        finalState: "EXPIRED",
+        deposit: goldenDeposit(),
+      }),
+    /state is EXPIRED but the last audit event is ARBITRATE_REFUND/,
+  );
+});
+
+test("refunded/expired escrow with an empty history throws instead of crashing", () => {
+  for (const finalState of ["REFUNDED", "EXPIRED"] as const) {
+    assert.throws(
+      () =>
+        buildSettlementReport({
+          escrowId: "esc-ghost",
+          history: [],
+          finalState,
+          deposit: goldenDeposit(),
+        }),
+      /empty audit history/,
+    );
+  }
+});

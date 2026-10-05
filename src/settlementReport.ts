@@ -196,6 +196,21 @@ export function buildSettlementReport(
   }
 
   if (finalState === "REFUNDED" || finalState === "EXPIRED") {
+    if (history.length === 0)
+      throw new Error(
+        `cannot build settlement report for ${escrowId}: ${finalState === "REFUNDED" ? "refunded" : "expired"} escrow has an empty audit history`,
+      );
+    // Symmetric to the RELEASED branch: a terminal state's report must be
+    // backed by a matching terminal event. Without this, a REFUNDED escrow
+    // whose last audit entry is EXPIRE (corrupted history) would silently
+    // produce a full-refund report with no visible evidence of the mismatch.
+    const lastEvent: EscrowEvent = history[history.length - 1].event;
+    const expectedLastEvent: EscrowEvent =
+      finalState === "REFUNDED" ? "ARBITRATE_REFUND" : "EXPIRE";
+    if (lastEvent !== expectedLastEvent)
+      throw new Error(
+        `cannot build settlement report for ${escrowId}: state is ${finalState} but the last audit event is ${lastEvent}`,
+      );
     const parties = [
       ledger("sponsor", depositAmount, depositAmount),
       ledger("creator", 0, 0),
