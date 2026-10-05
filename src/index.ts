@@ -11,6 +11,8 @@ export type { FeeBreakdown, FeeInputs } from "./feeCalculator.js";
 export { settleRelease } from "./settlement.js";
 export type { Settlement, SettlementInputs } from "./settlement.js";
 export { buildSettlementReport, depositAmountFromHistory, renderReport } from "./settlementReport.js";
+export { createQuorum } from "./quorum.js";
+export type { Quorum, QuorumConfig } from "./quorum.js";
 export type {
   PartyLedger,
   PartyRole,
