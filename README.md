@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 13 tests, all local
+npm test   # 39 tests, all local
 ```
 
 ## Quickstart
@@ -87,6 +87,44 @@ parity.)
   amount with any other event throws.
 - `allowedEvents(state)` lists valid next events for UI gating.
 
+## FAQ (honest)
+
+- **Is this a smart contract?**
+  No. This is pure TypeScript with zero runtime dependencies, running on
+  Node.js ≥ 20. It reproduces the *off-chain* transition rules from the
+  ALLWEB3 portfolio case study. There is no Solidity, no EVM bytecode, and
+  no on-chain state here.
+
+- **Where does the fee formula come from?**
+  From the case study's "Deterministic Fee Calculator & Escrow Preview":
+  `deposit = creatorPool + baseFee × complexityMultiplier − loyaltyDiscount + oracleFee`.
+  The golden vector (10,000 / 600 / 1.0 / −30 / +60 → 10,630) is asserted by
+  `test/economics.test.ts`. It is the case study's formula, not a general
+  pricing engine.
+
+- **The case study anchors settlement in Chainlink + zk-SNARK + TEE
+  verification. Where is that here?**
+  It isn't — deliberately. "Verification" here is the `VERIFY_PASS` event:
+  dispatching it is a caller trust decision. This repo does *not* verify
+  oracle signatures, zero-knowledge proofs, or TEE attestations. A production
+  build would have to gate `VERIFY_PASS` on those.
+
+- **What about the 5/9 multi-sig DAO arbitration?**
+  Also modeled, not implemented: `DISPUTE` → `ARBITRATE_RELEASE` /
+  `ARBITRATE_REFUND`. There is no multi-sig quorum logic, no signatures, and
+  no DAO governance in this repo.
+
+- **How precise is the money math?**
+  All amounts are rounded to cents (`round2`). Invariant tests assert fund
+  conservation within ±1 cent. This is not big-decimal arithmetic and has
+  not been audited.
+
+- **Can I use this in production?**
+  No. `Escrow` is in-memory (no persistence, no concurrency control, no
+  idempotency keys), `EXPIRE` is dispatched by the caller (there is no
+  deadline scheduler), and there is no identity/RBAC. Reference and demo
+  use only.
+
 ## Limitations (honest)
 
 - **Off-chain reproduction only.** The case study anchors settlement in smart
@@ -100,7 +138,7 @@ parity.)
 
 ## Reproducibility
 
-`npm test` runs 13 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 39 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network, no
 randomness in assertions.
 
