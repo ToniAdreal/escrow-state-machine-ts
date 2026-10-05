@@ -2,6 +2,7 @@ export { Escrow, allowedEvents, transition, transitionTable, assertNonNegativeMo
 export type {
   EscrowEvent,
   EscrowHistoryEntry,
+  EscrowSnapshot,
   EscrowState,
   TransitionEdge,
 } from "./stateMachine.js";

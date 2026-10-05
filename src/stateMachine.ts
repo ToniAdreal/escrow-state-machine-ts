@@ -104,6 +104,159 @@ export interface EscrowHistoryEntry {
 }
 
 /**
+ * Serializable snapshot of an escrow: id + live state + append-only audit
+ * history. Plain JSON (no class instances), safe to store in any document
+ * store and feed back into Escrow.fromJSON().
+ */
+export interface EscrowSnapshot {
+  id: string;
+  state: EscrowState;
+  history: EscrowHistoryEntry[];
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+const ESCROW_STATES = new Set<EscrowState>(
+  Object.keys(TRANSITIONS) as EscrowState[]
+);
+const ESCROW_EVENTS = new Set<EscrowEvent>(
+  Object.values(TRANSITIONS).flatMap((row) => Object.keys(row)) as EscrowEvent[]
+);
+
+function isCanonicalIso(s: unknown): s is string {
+  if (typeof s !== "string") return false;
+  const ms = Date.parse(s);
+  return !Number.isNaN(ms) && new Date(ms).toISOString() === s;
+}
+
+/**
+ * Parse and strictly validate an untrusted value into an EscrowSnapshot.
+ *
+ * Throws with a specific message on the first problem found:
+ *  - not an object / missing or empty id / unknown state
+ *  - history entry shape violations (seq, event, from, to, at)
+ *  - seq must restart at 1 and increment by 1 with no gaps
+ *  - the from/to chain must be continuous, start at CREATED, and land on
+ *    the snapshot's state
+ *  - every (from, event) -> to edge must be a legal transition edge
+ *  - timestamps must be canonical ISO-8601 and non-decreasing
+ *  - `amount`, when present, must be a finite non-negative number and may
+ *    only appear on FUND entries
+ *  - `note`, when present, must be a string
+ *
+ * Anything produced by toJSON() passes; anything else must earn its way.
+ */
+function parseEscrowSnapshot(snapshot: unknown): EscrowSnapshot {
+  if (!isRecord(snapshot)) {
+    throw new Error("invalid snapshot: expected a JSON object");
+  }
+  if (typeof snapshot.id !== "string" || snapshot.id.length === 0) {
+    throw new Error("invalid snapshot: id must be a non-empty string");
+  }
+  if (!ESCROW_STATES.has(snapshot.state as EscrowState)) {
+    throw new Error(`invalid snapshot: unknown state ${String(snapshot.state)}`);
+  }
+  const state = snapshot.state as EscrowState;
+  const id = snapshot.id;
+
+  if (!Array.isArray(snapshot.history)) {
+    throw new Error("invalid snapshot: history must be an array");
+  }
+  const history: EscrowHistoryEntry[] = [];
+  for (let i = 0; i < snapshot.history.length; i++) {
+    const raw = snapshot.history[i];
+    const tag = `invalid snapshot: history[${i}]`;
+    if (!isRecord(raw)) throw new Error(`${tag}: entry must be an object`);
+    if (raw.seq !== i + 1) {
+      throw new Error(`${tag}: seq must be ${i + 1}, got ${String(raw.seq)}`);
+    }
+    if (!ESCROW_EVENTS.has(raw.event as EscrowEvent)) {
+      throw new Error(`${tag}: unknown event ${String(raw.event)}`);
+    }
+    if (!ESCROW_STATES.has(raw.from as EscrowState)) {
+      throw new Error(`${tag}: unknown from-state ${String(raw.from)}`);
+    }
+    if (!ESCROW_STATES.has(raw.to as EscrowState)) {
+      throw new Error(`${tag}: unknown to-state ${String(raw.to)}`);
+    }
+    if (!isCanonicalIso(raw.at)) {
+      throw new Error(
+        `${tag}: at must be canonical ISO-8601, got ${String(raw.at)}`
+      );
+    }
+    const event = raw.event as EscrowEvent;
+    const from = raw.from as EscrowState;
+    const to = raw.to as EscrowState;
+    if (i === 0 && from !== "CREATED") {
+      throw new Error(`${tag}: chain must start at CREATED, got ${from}`);
+    }
+    if (i > 0) {
+      const prev = history[i - 1];
+      if (from !== prev.to) {
+        throw new Error(
+          `${tag}: from ${from} does not continue previous to ${prev.to}`
+        );
+      }
+      if (Date.parse(raw.at) < Date.parse(prev.at)) {
+        throw new Error(`${tag}: timestamps must be non-decreasing`);
+      }
+    }
+    const legal = (TRANSITIONS[from] as Partial<Record<EscrowEvent, EscrowState>>)[
+      event
+    ];
+    if (legal !== to) {
+      throw new Error(`${tag}: ${event} from ${from} cannot lead to ${to}`);
+    }
+    const entry: EscrowHistoryEntry = {
+      seq: i + 1,
+      event,
+      from,
+      to,
+      at: raw.at,
+    };
+    if (raw.note !== undefined) {
+      if (typeof raw.note !== "string") {
+        throw new Error(`${tag}: note must be a string`);
+      }
+      entry.note = raw.note;
+    }
+    if (raw.amount !== undefined) {
+      if (event !== "FUND") {
+        throw new Error(`${tag}: amount only allowed on FUND entries`);
+      }
+      if (
+        typeof raw.amount !== "number" ||
+        !Number.isFinite(raw.amount) ||
+        raw.amount < 0
+      ) {
+        throw new Error(
+          `${tag}: amount must be a finite non-negative number`
+        );
+      }
+      entry.amount = raw.amount;
+    }
+    history.push(entry);
+  }
+
+  if (history.length > 0) {
+    const last = history[history.length - 1];
+    if (last.to !== state) {
+      throw new Error(
+        `invalid snapshot: history ends at ${last.to} but state is ${state}`
+      );
+    }
+  } else if (state !== "CREATED") {
+    throw new Error(
+      `invalid snapshot: empty history but state is ${state} (expected CREATED)`
+    );
+  }
+
+  return { id, state, history };
+}
+
+/**
  * Boundary check for monetary inputs: must be a finite, non-negative number.
  * Throws a descriptive Error on anything else (negative, NaN, ±Infinity,
  * non-number), so invalid caller input fails fast instead of silently
@@ -173,5 +326,32 @@ export class Escrow {
       ...(event === "FUND" && amount !== undefined ? { amount } : {}),
     });
     return to;
+  }
+
+  /**
+   * Export a serializable snapshot (id + live state + history) for
+   * persistence. The returned object is a deep copy: mutating it does not
+   * affect the escrow, and JSON.stringify(escrow) goes through this method.
+   */
+  toJSON(): EscrowSnapshot {
+    return {
+      id: this.id,
+      state: this._state,
+      history: this._history.map((e) => ({ ...e })),
+    };
+  }
+
+  /**
+   * Rebuild an Escrow from an untrusted snapshot. The input is strictly
+   * validated (see parseEscrowSnapshot); malformed snapshots throw with a
+   * descriptive `invalid snapshot: ...` error instead of producing a
+   * corrupt escrow.
+   */
+  static fromJSON(snapshot: unknown): Escrow {
+    const parsed = parseEscrowSnapshot(snapshot);
+    const escrow = new Escrow(parsed.id);
+    escrow._state = parsed.state;
+    escrow._history = parsed.history;
+    return escrow;
   }
 }

@@ -86,6 +86,17 @@ parity.)
   boundary (anything else throws) and recorded on the audit entry; passing an
   amount with any other event throws.
 - `allowedEvents(state)` lists valid next events for UI gating.
+- Persistence-ready snapshots: `escrow.toJSON()` exports a plain-JSON
+  `{ id, state, history }` snapshot (a detached deep copy;
+  `JSON.stringify(escrow)` goes through it), and
+  `Escrow.fromJSON(snapshot)` rebuilds a working escrow — the input is
+  strictly validated as if untrusted (seq restarts at 1 with no gaps,
+  from→to chain continuous from `CREATED`, every edge a legal transition,
+  canonical ISO-8601 non-decreasing timestamps, `amount` finite and
+  non-negative on FUND entries only); malformed snapshots throw a
+  descriptive `invalid snapshot: …` error instead of yielding a corrupt
+  escrow. A snapshot is an *export*, not a datastore — there is still no
+  built-in storage, locking, or idempotency.
 
 ## FAQ (honest)
 
@@ -120,10 +131,11 @@ parity.)
   not been audited.
 
 - **Can I use this in production?**
-  No. `Escrow` is in-memory (no persistence, no concurrency control, no
-  idempotency keys), `EXPIRE` is dispatched by the caller (there is no
-  deadline scheduler), and there is no identity/RBAC. Reference and demo
-  use only.
+  No. `Escrow` is in-memory with no built-in store (snapshots are a JSON
+  export via `toJSON()`/`Escrow.fromJSON()`, not a database), no concurrency
+  control, no idempotency keys, `EXPIRE` is dispatched by the caller (there
+  is no deadline scheduler), and there is no identity/RBAC. Reference and
+  demo use only.
 
 ## Limitations (honest)
 
