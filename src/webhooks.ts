@@ -9,8 +9,10 @@
  * webhooks use.
  *
  * Scope honesty (what this is NOT):
- * - It builds and verifies the payload; it does NOT deliver it. Delivery
- *   (HTTP POST, retries, fan-out) is the caller's job.
+ * - Delivery is available via {@link deliverSettlementWebhook}: HTTP POST of
+ *   the signed payload with the `X-Signature` header, a per-attempt timeout,
+ *   and exponential-backoff retries on 5xx / network errors (4xx is not
+ *   retried). Fan-out to multiple endpoints stays the caller's job.
  * - Secret distribution is the caller's responsibility. Whoever holds the
  *   secret can forge signatures; store it like any other API credential.
  * - `verifySettlementWebhook` should run over the raw request body bytes.
@@ -133,4 +135,179 @@ export function verifySettlementWebhook(
   // timingSafeEqual throws on length mismatch; a forged 64-hex string that
   // decodes short (never, given the regex) or long is simply a failure.
   return expected.length === actual.length && timingSafeEqual(expected, actual);
+}
+
+/* ------------------------------------------------------------------ */
+/* Delivery                                                            */
+/* ------------------------------------------------------------------ */
+
+/** Options for {@link deliverSettlementWebhook}. All fields optional. */
+export interface DeliverWebhookOptions {
+  /**
+   * Retries after the initial attempt. Default 3 (up to 4 total attempts).
+   * Must be a non-negative integer; `0` disables retries.
+   */
+  retries?: number;
+  /**
+   * Base backoff between retries in milliseconds. Retry n (1-based) waits
+   * `backoffMs * 2^(n-1)`. Default 1000. May be 0 in tests.
+   */
+  backoffMs?: number;
+  /** Per-attempt request timeout in milliseconds. Default 10000. */
+  timeoutMs?: number;
+}
+
+/** Result of a successful {@link deliverSettlementWebhook} call. */
+export interface WebhookDeliveryResult {
+  /** HTTP status of the attempt that succeeded (2xx). */
+  status: number;
+  /** Total HTTP attempts made, including the initial one. */
+  attempts: number;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    // A pending backoff must not hold the process open on its own.
+    timer.unref();
+  });
+}
+
+/**
+ * POST the signed webhook to `url` as JSON with the `X-Signature` header.
+ *
+ * The request body is byte-identical to what `buildSettlementWebhook`
+ * signed, so the receiver can verify it over the raw bytes.
+ *
+ * Retry policy:
+ * - 2xx → success, returned as `{ status, attempts }`.
+ * - 5xx / network errors (including timeouts) → retried with exponential
+ *   backoff, up to `retries` additional attempts.
+ * - 3xx / 4xx → the request itself is at fault; throws immediately, no retry.
+ *
+ * When every attempt fails, throws
+ * `webhook delivery to <url> failed after <n> attempts: <last cause>`.
+ * A per-attempt timeout surfaces as `webhook delivery timed out after
+ * <timeoutMs>ms`. Invalid options throw a `cannot deliver settlement
+ * webhook: …` config error before any request is made.
+ */
+export async function deliverSettlementWebhook(
+  url: string,
+  webhook: SettlementWebhook,
+  options: DeliverWebhookOptions = {},
+): Promise<WebhookDeliveryResult> {
+  const retries = options.retries ?? 3;
+  const backoffMs = options.backoffMs ?? 1000;
+  const timeoutMs = options.timeoutMs ?? 10_000;
+
+  if (!Number.isInteger(retries) || retries < 0) {
+    throw new Error(
+      `cannot deliver settlement webhook: retries must be a non-negative integer, got ${String(
+        options.retries,
+      )}`,
+    );
+  }
+  if (!Number.isFinite(backoffMs) || backoffMs < 0) {
+    throw new Error(
+      `cannot deliver settlement webhook: backoffMs must be a non-negative number, got ${String(
+        options.backoffMs,
+      )}`,
+    );
+  }
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new Error(
+      `cannot deliver settlement webhook: timeoutMs must be a positive number, got ${String(
+        options.timeoutMs,
+      )}`,
+    );
+  }
+
+  let target: URL;
+  try {
+    target = new URL(url);
+  } catch {
+    throw new Error(
+      `cannot deliver settlement webhook: invalid url ${JSON.stringify(url)}`,
+    );
+  }
+  if (target.protocol !== "http:" && target.protocol !== "https:") {
+    throw new Error(
+      `cannot deliver settlement webhook: unsupported protocol ${JSON.stringify(
+        target.protocol,
+      )} (http/https only)`,
+    );
+  }
+
+  const body = canonicalJson(webhook.payload);
+
+  let attempts = 0;
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    attempts = attempt + 1;
+    let response: Response;
+    try {
+      response = await postOnce(target, webhook.signature, body, timeoutMs);
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      if (attempt < retries) {
+        await sleep(backoffMs * 2 ** attempt);
+        continue;
+      }
+      break;
+    }
+    if (response.ok) {
+      return { status: response.status, attempts };
+    }
+    if (response.status >= 500 && response.status <= 599) {
+      lastError = new Error(`server responded with status ${response.status}`);
+      if (attempt < retries) {
+        await sleep(backoffMs * 2 ** attempt);
+        continue;
+      }
+      break;
+    }
+    // 3xx/4xx: retrying the identical request changes nothing.
+    throw new Error(
+      `webhook delivery to ${url} failed with status ${response.status} (not retried)`,
+    );
+  }
+  throw new Error(
+    `webhook delivery to ${url} failed after ${attempts} attempt${
+      attempts === 1 ? "" : "s"
+    }: ${lastError?.message ?? "unknown error"}`,
+  );
+}
+
+/** One POST attempt with a per-attempt timeout. Network errors propagate. */
+async function postOnce(
+  target: URL,
+  signature: string,
+  body: string,
+  timeoutMs: number,
+): Promise<Response> {
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  timer.unref();
+  try {
+    return await fetch(target, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "X-Signature": signature,
+      },
+      body,
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if (timedOut) {
+      throw new Error(`webhook delivery timed out after ${timeoutMs}ms`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 }

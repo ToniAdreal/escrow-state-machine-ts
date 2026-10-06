@@ -182,13 +182,36 @@ const ok = verifySettlementWebhook(rawBody, receivedSignature, secret);
 `payload` is `{ event: "escrow.settled", escrowId, outcome, deposit, parties, at }`,
 derived entirely from the audit-backed settlement report. The comparison is
 constant-time (`timingSafeEqual`); malformed signatures fail closed as
-`false`, never throw. This module builds and verifies the payload only — it
-does not deliver HTTP requests (no retries/fan-out). Secret distribution is
-the caller's responsibility: whoever holds it can forge signatures.
+`false`, never throw.
+
+Delivery is handled by `deliverSettlementWebhook(url, webhook, options)` —
+still zero runtime dependencies (Node ≥ 20 global `fetch`):
+
+```ts
+import { deliverSettlementWebhook } from "escrow-state-machine-ts";
+
+const result = await deliverSettlementWebhook(
+  "https://ledger.example.com/hooks/escrow",
+  { payload, signature },
+  { retries: 3, backoffMs: 1000, timeoutMs: 10000 }, // all optional; these are the defaults
+});
+// result: { status: 200, attempts: 1 }
+```
+
+Semantics: the payload is POSTed as JSON with the `X-Signature` header,
+byte-identical to what `buildSettlementWebhook` signed so the receiver can
+verify it over the raw body. 2xx returns `{ status, attempts }`; 5xx and
+network errors (including timeouts) are retried with exponential backoff
+(retry n waits `backoffMs * 2^(n-1)`); 3xx/4xx throw immediately without
+retrying. When every attempt fails, the error reads
+`webhook delivery to <url> failed after <n> attempts: <last cause>`; a
+per-attempt timeout surfaces as `timed out after <timeoutMs>ms`. Secret
+distribution remains the caller's responsibility: whoever holds it can forge
+signatures.
 
 ## Reproducibility
 
-`npm test` runs 95 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 103 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network, no
 randomness in assertions.
 
