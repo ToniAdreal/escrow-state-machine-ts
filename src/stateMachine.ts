@@ -273,11 +273,39 @@ export function assertNonNegativeMoney(name: string, value: unknown): void {
   }
 }
 
+/**
+ * Options accepted by {@link Escrow.dispatch}.
+ */
+export interface DispatchOptions {
+  /**
+   * Optional idempotency key (payments-style retry safety).
+   *
+   * The key must be a non-empty string. When a key has been seen before,
+   * dispatch is a no-op: it returns the *current* state and appends nothing
+   * to the audit history, without validating the transition (a duplicate
+   * delivery must not fail just because the escrow has since moved on).
+   *
+   * Keys are global to the escrow instance, not per-event: the same key
+   * with a different event is still treated as a duplicate.
+   *
+   * Keys are recorded only after a dispatch succeeds — a failed dispatch
+   * (invalid transition, invalid amount) does not consume the key, so the
+   * caller can retry the same key with corrected input.
+   *
+   * The seen-key set is in-memory only and is NOT part of
+   * `toJSON()`/`fromJSON()`: after a restart the same key would execute
+   * again, so callers that need cross-restart idempotency must reconcile
+   * before replaying (e.g. compare against the persisted history).
+   */
+  idempotencyKey?: string;
+}
+
 /** Stateful escrow with an append-only audit history. */
 export class Escrow {
   readonly id: string;
   private _state: EscrowState = "CREATED";
   private _history: EscrowHistoryEntry[] = [];
+  private _seenIdempotencyKeys = new Set<string>();
 
   constructor(id: string) {
     this.id = id;
@@ -310,8 +338,36 @@ export class Escrow {
    *               finite non-negative number (NaN, ±Infinity, negatives, and
    *               non-numbers are rejected with a descriptive error). The
    *               validated amount is recorded on the FUND history entry.
+   * @param opts   Optional {@link DispatchOptions}. When `idempotencyKey`
+   *               was seen before, dispatch is a no-op returning the current
+   *               state; otherwise the key is recorded only after a
+   *               successful dispatch.
    */
-  dispatch(event: EscrowEvent, note?: string, amount?: number): EscrowState {
+  dispatch(
+    event: EscrowEvent,
+    note?: string,
+    amount?: number,
+    opts?: DispatchOptions
+  ): EscrowState {
+    let idempotencyKey: string | undefined;
+    if (opts !== undefined) {
+      if (typeof opts !== "object" || opts === null || Array.isArray(opts)) {
+        throw new Error("invalid dispatch options: opts must be an object");
+      }
+      idempotencyKey = opts.idempotencyKey;
+      if (idempotencyKey !== undefined) {
+        if (typeof idempotencyKey !== "string" || idempotencyKey.length === 0) {
+          throw new Error(
+            `invalid dispatch options: idempotencyKey must be a non-empty string, got ${String(
+              idempotencyKey
+            )}`
+          );
+        }
+        if (this._seenIdempotencyKeys.has(idempotencyKey)) {
+          return this._state; // duplicate delivery: no-op, no history append
+        }
+      }
+    }
     if (amount !== undefined && event !== "FUND") {
       throw new Error(
         `amount is only accepted on FUND, not on ${event}`
@@ -332,6 +388,9 @@ export class Escrow {
       note,
       ...(event === "FUND" && amount !== undefined ? { amount } : {}),
     });
+    if (idempotencyKey !== undefined) {
+      this._seenIdempotencyKeys.add(idempotencyKey);
+    }
     return to;
   }
 

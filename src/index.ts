@@ -1,5 +1,6 @@
 export { Escrow, allowedEvents, transition, transitionTable, assertNonNegativeMoney } from "./stateMachine.js";
 export type {
+  DispatchOptions,
   EscrowEvent,
   EscrowHistoryEntry,
   EscrowSnapshot,

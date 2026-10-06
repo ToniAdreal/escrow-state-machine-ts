@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 95 tests, all local
+npm test   # 113 tests, all local
 ```
 
 ## Quickstart
@@ -91,6 +91,17 @@ parity.)
   total is always the *sum* of every `FUND` entry's amount (see
   `depositAmountFromHistory`).
 - `allowedEvents(state)` lists valid next events for UI gating.
+- Retry safety: `dispatch` accepts a fourth argument `opts` with an optional
+  `idempotencyKey` (non-empty string). A dispatch whose key was already seen
+  is a no-op — it returns the *current* state and appends nothing to the
+  audit history, so a retried `FUND` can never double-count the deposit.
+  Keys are global to the escrow instance (the same key on a different event
+  is still a duplicate), are recorded only after a *successful* dispatch (a
+  failed dispatch leaves the key unused, so the caller can retry with
+  corrected input), and live in memory only — they are NOT part of
+  `toJSON()`/`fromJSON()` snapshots, so a restart clears them and the caller
+  must reconcile before replaying. This is in-process retry protection, not
+  a distributed idempotency store.
 - Persistence-ready snapshots: `escrow.toJSON()` exports a plain-JSON
   `{ id, state, history }` snapshot (a detached deep copy;
   `JSON.stringify(escrow)` goes through it), and
@@ -101,7 +112,8 @@ parity.)
   non-negative on FUND entries only); malformed snapshots throw a
   descriptive `invalid snapshot: …` error instead of yielding a corrupt
   escrow. A snapshot is an *export*, not a datastore — there is still no
-  built-in storage, locking, or idempotency.
+  built-in storage or locking; in-memory idempotency keys are supported via
+  `dispatch` options but are not part of snapshots.
 
 ## FAQ (honest)
 
@@ -144,7 +156,8 @@ parity.)
 - **Can I use this in production?**
   No. `Escrow` is in-memory with no built-in store (snapshots are a JSON
   export via `toJSON()`/`Escrow.fromJSON()`, not a database), no concurrency
-  control, no idempotency keys, `EXPIRE` is dispatched by the caller (there
+  control, idempotency keys only in-memory (not persisted across restarts),
+  `EXPIRE` is dispatched by the caller (there
   is no deadline scheduler), and there is no identity/RBAC. Reference and
   demo use only.
 
@@ -155,7 +168,8 @@ parity.)
   arbitration). None of that is implemented here — this models the *rules*,
   not the chain.
 - **Simplified roles.** Real deployments need identity/RBAC, deadline
-  scheduling, and idempotency keys; the `Escrow` class is in-memory.
+  scheduling, and cross-restart idempotency keys (this repo's are in-memory
+  only); the `Escrow` class is in-memory.
 - **Fee formula is the case study's**, not a general pricing engine: arbitrary
   fee schedules are out of scope.
 
@@ -211,7 +225,7 @@ signatures.
 
 ## Reproducibility
 
-`npm test` runs 103 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 113 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network, no
 randomness in assertions.
 
