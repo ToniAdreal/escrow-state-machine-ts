@@ -35,6 +35,11 @@ const TRANSITIONS: Record<
 > = {
   CREATED: { FUND: "FUNDED", EXPIRE: "EXPIRED" },
   FUNDED: {
+    // Self-loop: top-ups are legal while the escrow is still FUNDED —
+    // additional deposits add to the locked total (see
+    // depositAmountFromHistory, which sums every FUND amount). A FUND
+    // dispatched from any other state is still rejected.
+    FUND: "FUNDED",
     SUBMIT_MILESTONE: "MILESTONE_SUBMITTED",
     DISPUTE: "DISPUTED",
     EXPIRE: "EXPIRED",
@@ -297,7 +302,9 @@ export class Escrow {
   /**
    * Move the escrow through a state transition.
    *
-   * @param event  The event to dispatch.
+   * @param event  The event to dispatch. FUND from CREATED is the initial
+   *               deposit; FUND from FUNDED is a top-up (self-loop) that adds
+   *               to the locked total — see `depositAmountFromHistory`.
    * @param note   Optional human-readable note recorded in the audit history.
    * @param amount Optional deposit amount, accepted ONLY on FUND. Must be a
    *               finite non-negative number (NaN, ±Infinity, negatives, and

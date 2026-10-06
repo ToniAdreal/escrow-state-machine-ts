@@ -7,7 +7,10 @@
  * nothing is invented.
  *
  * Money model (documented so the accounting stays auditable):
- * - FUND locks the full `deposit` from the sponsor into escrow.
+ * - FUND locks money from the sponsor into escrow. The initial FUND comes
+ *   from CREATED; further FUND dispatches are allowed while the escrow is
+ *   FUNDED (top-ups). The locked total is always the SUM of every FUND
+ *   entry's amount — see `depositAmountFromHistory`.
  * - On RELEASE / ARBITRATE_RELEASE the escrow pays out per `settleRelease`
  *   with gross = deposit: creator receives `net`, the platform takes the
  *   pro fee, and any referral credits go to the referrer.
@@ -78,11 +81,35 @@ export interface SettlementReport {
 }
 
 /**
+ * Total amount locked into escrow by the audit history: the sum of the
+ * `amount` on every FUND entry (initial deposit plus any top-ups).
+ *
+ * Returns `undefined` when the total cannot be established: no FUND event at
+ * all, or at least one FUND event recorded without an amount (FUND's amount
+ * is optional, and an unknown slice of the total must never be silently
+ * treated as zero). Callers that require a number should use
+ * `depositAmountFromHistory`, which throws on these inputs.
+ */
+function totalFundedAmount(
+  history: readonly EscrowHistoryEntry[],
+): number | undefined {
+  const funds = history.filter((entry) => entry.event === "FUND");
+  if (funds.length === 0) return undefined;
+  let total = 0;
+  for (const fund of funds) {
+    if (fund.amount === undefined) return undefined;
+    total += fund.amount;
+  }
+  return total;
+}
+
+/**
  * Read the locked deposit amount from the audit history.
  *
- * The FUND event is the audit trail's record of how much money was locked
- * into escrow. Settlement math must never run on an amount the trail does
- * not corroborate: when there is no FUND event, or the FUND event was
+ * Top-ups add to the locked total, so this returns the SUM of the `amount`
+ * recorded on every FUND entry (the initial deposit plus any top-ups), not
+ * just the first one. Settlement math must never run on an amount the trail
+ * does not corroborate: when there is no FUND event, or any FUND event was
  * recorded without an amount (FUND accepts an optional amount), this throws
  * `settlement requires a FUND amount` instead of letting undefined/NaN
  * silently poison the accounting.
@@ -91,18 +118,16 @@ export function depositAmountFromHistory(
   history: readonly EscrowHistoryEntry[],
   escrowId = "escrow",
 ): number {
-  const fund = history.find((entry) => entry.event === "FUND");
-  if (!fund) {
+  const total = totalFundedAmount(history);
+  if (total === undefined) {
+    const hasFund = history.some((entry) => entry.event === "FUND");
     throw new Error(
-      `settlement requires a FUND amount for ${escrowId}: no FUND event in the audit history`,
+      hasFund
+        ? `settlement requires a FUND amount for ${escrowId}: a FUND event was recorded without an amount`
+        : `settlement requires a FUND amount for ${escrowId}: no FUND event in the audit history`,
     );
   }
-  if (fund.amount === undefined) {
-    throw new Error(
-      `settlement requires a FUND amount for ${escrowId}: the FUND event was recorded without an amount`,
-    );
-  }
-  return fund.amount;
+  return total;
 }
 
 function round2(n: number): number {
@@ -133,16 +158,17 @@ export function buildSettlementReport(
   const { escrowId, history, finalState, deposit } = inputs;
   const depositAmount = deposit.deposit;
 
-  // Fail fast on an uncorroborated deposit: when the audit history records a
-  // FUND amount, the caller-supplied deposit must match it exactly —
-  // otherwise the report would silently produce garbage accounting from an
-  // amount the trail cannot confirm. A FUND event recorded without an
-  // amount keeps the previous behavior (the deposit is the caller's
-  // responsibility); use depositAmountFromHistory() to require it.
-  const fundEntry = history.find((entry) => entry.event === "FUND");
-  if (fundEntry?.amount !== undefined && fundEntry.amount !== depositAmount) {
+  // Fail fast on an uncorroborated deposit: when the audit history records
+  // FUND amounts, their total (initial deposit + any top-ups) must match the
+  // caller-supplied deposit exactly — otherwise the report would silently
+  // produce garbage accounting from an amount the trail cannot confirm. A
+  // FUND event recorded without an amount keeps the previous behavior (the
+  // deposit is the caller's responsibility); use depositAmountFromHistory()
+  // to require it.
+  const fundedTotal = totalFundedAmount(history);
+  if (fundedTotal !== undefined && fundedTotal !== depositAmount) {
     throw new Error(
-      `cannot build settlement report for ${escrowId}: deposit ${depositAmount} does not match the FUND amount ${fundEntry.amount} recorded in the audit history`,
+      `cannot build settlement report for ${escrowId}: deposit ${depositAmount} does not match the FUND total ${fundedTotal} recorded in the audit history`,
     );
   }
 

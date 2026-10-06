@@ -83,9 +83,14 @@ test("amount is rejected on any event other than FUND", () => {
   assert.equal(e.history.length, 1);
 });
 
-test("invalid transition still throws even when an amount is valid", () => {
+test("amount check fires before transition check for non-FUND events", () => {
   const e = new Escrow("cmp-input-006");
   e.dispatch("FUND");
-  // double FUND is an invalid transition; amount validation must not mask it
-  assert.throws(() => e.dispatch("FUND", undefined, 500), /invalid transition/);
+  // double FUND is now a legal top-up self-loop (#43); use a non-FUND event
+  // with an amount instead: the FUND-only rule must fire first, not the
+  // invalid-transition rule.
+  assert.throws(
+    () => e.dispatch("RELEASE", undefined, 500),
+    /amount is only accepted on FUND, not on RELEASE/,
+  );
 });

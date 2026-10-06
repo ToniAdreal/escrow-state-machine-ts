@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 80 tests, all local
+npm test   # 89 tests, all local
 ```
 
 ## Quickstart
@@ -55,6 +55,7 @@ stateDiagram-v2
     [*] --> CREATED
     CREATED --> FUNDED : FUND
     CREATED --> EXPIRED : EXPIRE
+    FUNDED --> FUNDED : FUND
     FUNDED --> MILESTONE_SUBMITTED : SUBMIT_MILESTONE
     FUNDED --> DISPUTED : DISPUTE
     FUNDED --> EXPIRED : EXPIRE
@@ -84,7 +85,11 @@ parity.)
   timestamp, and an optional note. `FUND` accepts an optional `amount`
   argument — it is validated as a finite non-negative number at the dispatch
   boundary (anything else throws) and recorded on the audit entry; passing an
-  amount with any other event throws.
+  amount with any other event throws. `FUND` from `CREATED` is the initial
+  deposit; `FUND` from `FUNDED` is a self-loop that adds a top-up to the
+  locked total — real escrows often need extra collateral, and the locked
+  total is always the *sum* of every `FUND` entry's amount (see
+  `depositAmountFromHistory`).
 - `allowedEvents(state)` lists valid next events for UI gating.
 - Persistence-ready snapshots: `escrow.toJSON()` exports a plain-JSON
   `{ id, state, history }` snapshot (a detached deep copy;
@@ -182,7 +187,7 @@ the caller's responsibility: whoever holds it can forge signatures.
 
 ## Reproducibility
 
-`npm test` runs 80 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 89 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network, no
 randomness in assertions.
 

@@ -55,7 +55,9 @@ test("invalid transitions throw", () => {
   const e = new Escrow("cmp-2026-046");
   assert.throws(() => e.dispatch("RELEASE"), /invalid transition/);
   e.dispatch("FUND");
-  assert.throws(() => e.dispatch("FUND"), /invalid transition/);
+  // FUND from FUNDED is a legal top-up self-loop now (see test/topup.test.ts);
+  // an event that belongs to a later phase still throws.
+  assert.throws(() => e.dispatch("VERIFY_PASS"), /invalid transition/);
   assert.throws(() => e.dispatch("ARBITRATE_REFUND"), /invalid transition/);
 });
 

@@ -18,7 +18,7 @@ function mermaidEdges(md: string): string[] {
 
 test("README mermaid diagram lists exactly the code's transition edges", () => {
   const edges = transitionTable();
-  assert.equal(edges.length, 13); // must match TRANSITIONS in src/stateMachine.ts
+  assert.equal(edges.length, 14); // must match TRANSITIONS in src/stateMachine.ts
   const lines = mermaidEdges(README);
 
   // every declared edge appears in the diagram with its event label

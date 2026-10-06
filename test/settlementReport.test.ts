@@ -252,7 +252,7 @@ test("buildSettlementReport rejects a deposit that disagrees with the recorded F
         deposit: goldenDeposit(), // 10630 !== recorded FUND amount 5000
         settlement: { proFeeBps: 500 },
       }),
-    /does not match the FUND amount/,
+    /does not match the FUND total/,
   );
 });
 
