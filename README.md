@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 68 tests, all local
+npm test   # 80 tests, all local
 ```
 
 ## Quickstart
@@ -153,9 +153,36 @@ parity.)
 - **Fee formula is the case study's**, not a general pricing engine: arbitrary
   fee schedules are out of scope.
 
+## Webhooks
+
+Settled escrows can be pushed to accounting/bookkeeping systems as signed
+webhook notifications:
+
+```ts
+import {
+  buildSettlementReport,
+  buildSettlementWebhook,
+  verifySettlementWebhook,
+} from "escrow-state-machine-ts";
+
+const report = buildSettlementReport({ /* escrowId, history, finalState, deposit, settlement */ });
+const { payload, signature } = buildSettlementWebhook(report, { secret: process.env.WEBHOOK_SECRET! });
+// POST payload as JSON with header `X-Signature: signature` (shape: `sha256=<hex>`).
+
+// On the receiving end, verify over the raw body bytes:
+const ok = verifySettlementWebhook(rawBody, receivedSignature, secret);
+```
+
+`payload` is `{ event: "escrow.settled", escrowId, outcome, deposit, parties, at }`,
+derived entirely from the audit-backed settlement report. The comparison is
+constant-time (`timingSafeEqual`); malformed signatures fail closed as
+`false`, never throw. This module builds and verifies the payload only — it
+does not deliver HTTP requests (no retries/fan-out). Secret distribution is
+the caller's responsibility: whoever holds it can forge signatures.
+
 ## Reproducibility
 
-`npm test` runs 68 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 80 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network, no
 randomness in assertions.
 
