@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 65 tests, all local
+npm test   # 68 tests, all local
 ```
 
 ## Quickstart
@@ -155,7 +155,7 @@ parity.)
 
 ## Reproducibility
 
-`npm test` runs 65 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 68 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network, no
 randomness in assertions.
 
