@@ -37,6 +37,13 @@ export interface Quorum {
   readonly signerCount: number;
   /** Record an approval. Idempotent: re-approving the same signer is a no-op. */
   approve(signerId: string): void;
+  /**
+   * Withdraw a previously recorded approval (real multi-sigs let signers
+   * change their vote before the threshold is reached). Throws for unknown
+   * signers, and for signers that have not approved — revoking a vote that
+   * was never cast is a caller error, not a no-op.
+   */
+  revoke(signerId: string): void;
   /** True once threshold distinct approvals have been recorded. */
   hasQuorum(): boolean;
   /** Number of distinct approvals recorded so far. */
@@ -80,6 +87,19 @@ export function createQuorum(config: QuorumConfig): Quorum {
       if (approved.has(signerId)) return; // idempotent — no double counting
       approved.add(signerId);
       approvals.push(signerId);
+    },
+    revoke(signerId: string): void {
+      if (!signers.has(signerId))
+        throw new Error(`unknown quorum signer: ${JSON.stringify(signerId)}`);
+      if (!approved.has(signerId))
+        throw new Error(
+          `cannot revoke: signer ${JSON.stringify(
+            signerId
+          )} has not approved`
+        );
+      approved.delete(signerId);
+      const idx = approvals.indexOf(signerId);
+      approvals.splice(idx, 1);
     },
     hasQuorum(): boolean {
       return approved.size >= threshold;

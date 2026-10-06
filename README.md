@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 89 tests, all local
+npm test   # 95 tests, all local
 ```
 
 ## Quickstart
@@ -129,7 +129,8 @@ parity.)
   Partially modeled: `DISPUTE` → `ARBITRATE_RELEASE` /
   `ARBITRATE_REFUND` are the arbitration outcomes, and `src/quorum.ts`
   models the *counting rule* of an M-of-N quorum (`createQuorum({ threshold,
-  signers })`, idempotent `approve()`, `hasQuorum()` — see the usage example
+  signers })`, idempotent `approve()`, `revoke()` before the threshold is
+  reached, `hasQuorum()` — see the usage example
   in its JSDoc). There is still no signature verification, no key management,
   and no DAO governance in this repo — recording approvals is a caller trust
   decision, exactly like `VERIFY_PASS`. Production would need both wired to
@@ -187,7 +188,7 @@ the caller's responsibility: whoever holds it can forge signatures.
 
 ## Reproducibility
 
-`npm test` runs 89 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 95 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network, no
 randomness in assertions.
 
