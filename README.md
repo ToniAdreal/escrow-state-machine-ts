@@ -175,6 +175,12 @@ parity.)
   only); the `Escrow` class is in-memory.
 - **Fee formula is the case study's**, not a general pricing engine: arbitrary
   fee schedules are out of scope.
+- **Trust boundaries.** What the library enforces (money input validation,
+  fail-closed constant-time webhook verification, strict snapshot validation)
+  versus what stays the caller's responsibility (quorum approvals have no
+  signature verification, webhook secret distribution, cents-rounding money
+  math) is documented in [SECURITY.md](SECURITY.md) — every statement there
+  is verifiable against the source.
 
 ## Webhooks
 

@@ -1,0 +1,96 @@
+# Security policy and trust boundaries
+
+> This is a demo/state-machine library, not a production payment system.
+> Every claim below is verifiable against the source in `src/`.
+
+## Scope
+
+`escrow-state-machine-ts` models the rules of an off-chain milestone escrow:
+state transitions, fee math, settlement reporting, quorum counting, and
+webhook signing. It holds no real money, runs no on-chain code, and verifies
+no cryptography beyond HMAC webhook signatures.
+
+## Trust model
+
+### Caller-trust decisions (NOT enforced by this library)
+
+- **`quorum.approve()` records caller-trust approvals.** `src/quorum.ts`
+  stores signer id strings; there is no signature verification, no key
+  management, and no DAO governance. Calling `approve("dao-3")` is only as
+  trustworthy as the caller who says "dao-3 approved".
+  `src/arbitration.ts` wires the *count* to `dispatchArbitration` (it refuses
+  to dispatch below threshold and records `quorum <approvals>/<threshold>`
+  in the audit note), but it does not make the approvals cryptographic —
+  see the honesty note in its header comment.
+- **`VERIFY_PASS` is a caller trust decision.** Dispatching it verifies no
+  oracle signatures, zero-knowledge proofs, or TEE attestations
+  (README FAQ: "Where is that here?" — it isn't, deliberately).
+- **Webhook secret distribution is the caller's responsibility.**
+  `src/webhooks.ts` documents this in its header comment and the README
+  repeats it: whoever holds the secret can forge `sha256=<hex>` signatures.
+  This library does not generate, rotate, or distribute secrets — store the
+  secret like any other API credential.
+- **Receiver-side trust.** `buildSettlementWebhook` derives every payload
+  field from the audit-backed `SettlementReport` (nothing is invented),
+  but the receiver must verify the signature over the raw body bytes;
+  an unverified receiver is trusting the network, not the escrow.
+
+### Enforced by the library (verifiable in `src/`)
+
+- **Money boundary checks.** `assertNonNegativeMoney` (`src/stateMachine.ts`)
+  rejects non-number, non-finite, and negative amounts with a descriptive
+  error at the `dispatch("FUND", …)` boundary; `calculateDeposit` and
+  `settleRelease` apply the same finite/non-negative checks to their inputs.
+  Illegal money fails fast instead of silently poisoning downstream
+  accounting.
+- **Webhook verification is constant-time and fail-closed.**
+  `verifySettlementWebhook` compares with `timingSafeEqual`; malformed
+  signatures (anything not matching `sha256=<64 hex>`) return `false`
+  rather than throwing, so hostile input cannot turn verification into an
+  unhandled exception. Verify over the raw body bytes — the object overload
+  re-stringifies with a fixed key order for in-process convenience, but raw
+  bytes are the transport-safe path (documented in `src/webhooks.ts`).
+- **Settlement never runs on uncorroborated amounts.**
+  `depositAmountFromHistory` (`src/settlementReport.ts`) throws
+  `settlement requires a FUND amount` when the audit history has no FUND
+  event or any FUND lacks an `amount` — undefined/NaN never silently poisons
+  the settlement math. `buildSettlementReport` additionally cross-checks the
+  caller-supplied deposit against the audit-history total.
+- **Strict snapshot validation.** `Escrow.fromJSON` runs
+  `parseEscrowSnapshot` on untrusted input: non-empty id, seq from 1 with no
+  gaps, continuous from/to chain starting at CREATED, canonical ISO-8601
+  non-decreasing timestamps, `amount` only on FUND entries, string-only
+  notes. Anything else throws `invalid snapshot: …`.
+- **Delivery fail-fast.** `deliverSettlementWebhook` rejects invalid URLs,
+  non-http(s) protocols, and bad retry/timeout options before any request,
+  and never retries 3xx/4xx (the request itself is at fault); only
+  5xx/network errors get exponential-backoff retries.
+
+## Money precision (known limitation)
+
+All amounts use cents rounding (`round2`: `Math.round(n * 100) / 100` in
+`src/settlement.ts` and `src/feeCalculator.ts`). This is **not** big-decimal
+arithmetic and has **not** been audited. Invariant tests assert fund
+conservation within ±1 cent only (`test/invariants.test.ts`). Do not use
+for precision-critical accounting.
+
+## Known in-process integrity gap
+
+`Escrow.history` returns the live internal array (type-level `readonly`
+only); in-process callers can still push or mutate entries. The append-only
+audit log is tamper-evident only if callers respect the boundary — see the
+README "Simplified roles" limitation. (`toJSON()` returns a deep copy, so
+snapshots exported for persistence are detached and safe.)
+
+## Deliberately NOT here (production would need it)
+
+- Real oracle/Chainlink/zk-SNARK/TEE verification behind `VERIFY_PASS`
+- Cryptographic multi-sig (this repo *counts* approvals; it does not verify
+  signatures)
+- Secret management, rotation, or distribution for webhook secrets
+- A deadline scheduler (`EXPIRE` is dispatched by the caller)
+- Identity/RBAC, concurrency control, durable storage, cross-restart
+  idempotency keys (this repo's are in-memory only)
+- Audited money math
+
+Reference and demo use only.
