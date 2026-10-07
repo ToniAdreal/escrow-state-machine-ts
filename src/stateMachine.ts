@@ -308,6 +308,11 @@ export class Escrow {
   private _seenIdempotencyKeys = new Set<string>();
 
   constructor(id: string) {
+    // fromJSON validates the same rule; a live Escrow must never hold an id
+    // its own snapshot validation would reject.
+    if (typeof id !== "string" || id.length === 0) {
+      throw new Error("invalid escrow: id must be a non-empty string");
+    }
     this.id = id;
   }
 
@@ -334,6 +339,9 @@ export class Escrow {
    *               deposit; FUND from FUNDED is a top-up (self-loop) that adds
    *               to the locked total — see `depositAmountFromHistory`.
    * @param note   Optional human-readable note recorded in the audit history.
+   *               A non-string note is rejected with a descriptive error
+   *               before anything is appended (mirrors the fromJSON
+   *               `note must be a string` rule).
    * @param amount Optional deposit amount, accepted ONLY on FUND. Must be a
    *               finite non-negative number (NaN, ±Infinity, negatives, and
    *               non-numbers are rejected with a descriptive error). The
@@ -349,6 +357,15 @@ export class Escrow {
     amount?: number,
     opts?: DispatchOptions
   ): EscrowState {
+    // Input validation fails fast, before idempotency dedup or transition
+    // checks: invalid caller input must never reach the audit history, and
+    // a broken caller must hear about it even when the transition itself
+    // would be illegal (fail-fast beats transition-first here).
+    if (note !== undefined && typeof note !== "string") {
+      throw new Error(
+        `invalid dispatch: note must be a string, got ${typeof note}`
+      );
+    }
     let idempotencyKey: string | undefined;
     if (opts !== undefined) {
       if (typeof opts !== "object" || opts === null || Array.isArray(opts)) {
