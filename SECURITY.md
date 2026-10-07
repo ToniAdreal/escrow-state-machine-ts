@@ -25,6 +25,9 @@ no cryptography beyond HMAC webhook signatures.
 - **`VERIFY_PASS` is a caller trust decision.** Dispatching it verifies no
   oracle signatures, zero-knowledge proofs, or TEE attestations
   (README FAQ: "Where is that here?" — it isn't, deliberately).
+  The opt-in `requireVerifyEvidence` constructor flag only requires a
+  non-empty `evidence` reference on the audit entry; the library records
+  the caller's claim, it does not check it.
 - **Webhook secret distribution is the caller's responsibility.**
   `src/webhooks.ts` documents this in its header comment and the README
   repeats it: whoever holds the secret can forge `sha256=<hex>` signatures.

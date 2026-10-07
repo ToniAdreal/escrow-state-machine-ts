@@ -106,6 +106,15 @@ export interface EscrowHistoryEntry {
    * (dispatch validates it as a finite non-negative number).
    */
   amount?: number;
+  /**
+   * Reference to the oracle/attestation evidence behind a VERIFY_PASS —
+   * e.g. a Chainlink request ID, zk proof commitment, or TEE attestation
+   * quote hash. Only present on VERIFY_PASS entries (dispatch validates
+   * it as a non-empty string and rejects it on any other event). The
+   * library cannot verify that the referenced evidence is real — see
+   * {@link EscrowOptions.requireVerifyEvidence} and SECURITY.md.
+   */
+  evidence?: string;
 }
 
 /**
@@ -156,6 +165,8 @@ function isCanonicalIso(s: unknown): s is string {
  *  - `amount`, when present, must be a finite non-negative number and may
  *    only appear on FUND entries
  *  - `note`, when present, must be a string
+ *  - `evidence`, when present, must be a non-empty string and may only
+ *    appear on VERIFY_PASS entries
  *  - `deadline`, when present, must be canonical ISO-8601 (the advisory
  *    deadline; anything produced by toJSON() passes)
  *
@@ -250,6 +261,15 @@ function parseEscrowSnapshot(snapshot: unknown): EscrowSnapshot {
       }
       entry.amount = raw.amount;
     }
+    if (raw.evidence !== undefined) {
+      if (event !== "VERIFY_PASS") {
+        throw new Error(`${tag}: evidence only allowed on VERIFY_PASS entries`);
+      }
+      if (typeof raw.evidence !== "string" || raw.evidence.length === 0) {
+        throw new Error(`${tag}: evidence must be a non-empty string`);
+      }
+      entry.evidence = raw.evidence;
+    }
     history.push(entry);
   }
 
@@ -318,6 +338,39 @@ export interface DispatchOptions {
    * before replaying (e.g. compare against the persisted history).
    */
   idempotencyKey?: string;
+  /**
+   * Evidence reference for a VERIFY_PASS dispatch — e.g. a Chainlink
+   * request ID, a zk proof commitment, or a TEE attestation quote hash.
+   *
+   * Accepted ONLY on VERIFY_PASS (any other event throws). When present it
+   * must be a non-empty string and is recorded verbatim on the audit
+   * history entry. The library does NOT verify the evidence — it records
+   * the caller's claim so downstream tooling can audit it. When the escrow
+   * was constructed with `requireVerifyEvidence: true`, evidence is
+   * mandatory for VERIFY_PASS and a dispatch without it throws; otherwise
+   * it is purely advisory.
+   */
+  evidence?: string;
+}
+
+/**
+ * Options accepted by the {@link Escrow} constructor.
+ */
+export interface EscrowOptions {
+  /**
+   * When true, `dispatch("VERIFY_PASS")` requires a non-empty `evidence`
+   * reference (passed via {@link DispatchOptions.evidence}) and throws
+   * otherwise, with no history residue. This is the controlled, auditable
+   * version of the caller's trust decision: the library still cannot
+   * verify that the referenced oracle attestation is real (it records the
+   * claim, it does not check it), but an evidence-free VERIFY_PASS is no
+   * longer possible.
+   *
+   * Default: false (unchanged legacy behavior). The flag is per-instance
+   * dispatch configuration and is NOT part of `toJSON()`/`fromJSON()`:
+   * a restored escrow must re-enable it via the constructor option.
+   */
+  requireVerifyEvidence?: boolean;
 }
 
 /** Stateful escrow with an append-only audit history. */
@@ -326,14 +379,29 @@ export class Escrow {
   private _state: EscrowState = "CREATED";
   private _history: EscrowHistoryEntry[] = [];
   private _seenIdempotencyKeys = new Set<string>();
+  private readonly _requireVerifyEvidence: boolean;
 
-  constructor(id: string) {
+  constructor(id: string, opts?: EscrowOptions) {
     // fromJSON validates the same rule; a live Escrow must never hold an id
     // its own snapshot validation would reject.
     if (typeof id !== "string" || id.length === 0) {
       throw new Error("invalid escrow: id must be a non-empty string");
     }
+    if (opts !== undefined) {
+      if (typeof opts !== "object" || opts === null || Array.isArray(opts)) {
+        throw new Error("invalid escrow options: opts must be an object");
+      }
+      if (
+        opts.requireVerifyEvidence !== undefined &&
+        typeof opts.requireVerifyEvidence !== "boolean"
+      ) {
+        throw new Error(
+          `invalid escrow options: requireVerifyEvidence must be a boolean, got ${typeof opts.requireVerifyEvidence}`
+        );
+      }
+    }
     this.id = id;
+    this._requireVerifyEvidence = opts?.requireVerifyEvidence === true;
   }
 
   get state(): EscrowState {
@@ -414,7 +482,11 @@ export class Escrow {
    * @param opts   Optional {@link DispatchOptions}. When `idempotencyKey`
    *               was seen before, dispatch is a no-op returning the current
    *               state; otherwise the key is recorded only after a
-   *               successful dispatch.
+   *               successful dispatch. `opts.evidence` (VERIFY_PASS only)
+   *               records an evidence reference on the audit entry; when the
+   *               escrow was constructed with `requireVerifyEvidence: true`,
+   *               VERIFY_PASS without evidence throws before any state
+   *               change.
    */
   dispatch(
     event: EscrowEvent,
@@ -450,6 +522,33 @@ export class Escrow {
         }
       }
     }
+    // Evidence references are only meaningful on VERIFY_PASS. A non-empty
+    // string is recorded verbatim on the audit entry; the library does not
+    // verify the referenced evidence (see EscrowOptions).
+    const evidence = opts?.evidence;
+    if (event !== "VERIFY_PASS" && evidence !== undefined) {
+      throw new Error(
+        `evidence is only accepted on VERIFY_PASS, not on ${event}`
+      );
+    }
+    if (evidence !== undefined) {
+      if (typeof evidence !== "string" || evidence.length === 0) {
+        throw new Error(
+          `invalid dispatch: evidence must be a non-empty string, got ${String(
+            evidence
+          )}`
+        );
+      }
+    }
+    if (
+      this._requireVerifyEvidence &&
+      event === "VERIFY_PASS" &&
+      (typeof evidence !== "string" || evidence.length === 0)
+    ) {
+      throw new Error(
+        'verify evidence required: dispatch("VERIFY_PASS") requires a non-empty evidence reference when requireVerifyEvidence is enabled'
+      );
+    }
     if (amount !== undefined && event !== "FUND") {
       throw new Error(
         `amount is only accepted on FUND, not on ${event}`
@@ -469,6 +568,9 @@ export class Escrow {
       at: new Date().toISOString(),
       note,
       ...(event === "FUND" && amount !== undefined ? { amount } : {}),
+      ...(event === "VERIFY_PASS" && evidence !== undefined
+        ? { evidence }
+        : {}),
     });
     if (idempotencyKey !== undefined) {
       this._seenIdempotencyKeys.add(idempotencyKey);

@@ -3,6 +3,7 @@ export type {
   DispatchOptions,
   EscrowEvent,
   EscrowHistoryEntry,
+  EscrowOptions,
   EscrowSnapshot,
   EscrowState,
   TransitionEdge,

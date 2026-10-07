@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 174 tests, all local
+npm test   # 184 tests, all local
 ```
 
 ## Quickstart
@@ -148,6 +148,16 @@ parity.)
   oracle signatures, zero-knowledge proofs, or TEE attestations. A production
   build would have to gate `VERIFY_PASS` on those.
 
+  What *is* supported is an auditable opt-in: `new Escrow(id, {
+  requireVerifyEvidence: true })` makes `dispatch("VERIFY_PASS")` require a
+  non-empty `evidence` reference (Chainlink request ID, zk proof commitment,
+  TEE quote hash — passed via `DispatchOptions.evidence`) and records it
+  verbatim on the audit entry, surviving `toJSON()`/`fromJSON()` round-trips.
+  It turns "someone said pass" into "someone said pass, citing X" — the
+  reference is auditable but still *not* verified by the library. The flag
+  is per-instance dispatch configuration and is not part of the snapshot;
+  a restored escrow must re-enable it via the constructor.
+
 - **What about the 5/9 multi-sig DAO arbitration?**
   Partially modeled: `DISPUTE` → `ARBITRATE_RELEASE` /
   `ARBITRATE_REFUND` are the arbitration outcomes, and `src/quorum.ts`
@@ -251,7 +261,7 @@ signatures.
 
 ## Reproducibility
 
-`npm test` runs 174 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 184 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network, no
 randomness in assertions.
 
