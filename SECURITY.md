@@ -74,13 +74,14 @@ arithmetic and has **not** been audited. Invariant tests assert fund
 conservation within ±1 cent only (`test/invariants.test.ts`). Do not use
 for precision-critical accounting.
 
-## Known in-process integrity gap
+## Audit-history integrity (in-process)
 
-`Escrow.history` returns the live internal array (type-level `readonly`
-only); in-process callers can still push or mutate entries. The append-only
-audit log is tamper-evident only if callers respect the boundary — see the
-README "Simplified roles" limitation. (`toJSON()` returns a deep copy, so
-snapshots exported for persistence are detached and safe.)
+`Escrow.history` returns a detached, frozen snapshot on every call: the
+array is `Object.freeze`d and each entry is a frozen copy
+(`src/stateMachine.ts`). In-process callers cannot push, splice, or
+rewrite entry fields to tamper with the audit log; `dispatch()` remains
+the only way to append. (`toJSON()` returns a detached deep copy as
+well, so snapshots exported for persistence are detached and safe.)
 
 ## Deliberately NOT here (production would need it)
 

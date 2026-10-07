@@ -320,8 +320,15 @@ export class Escrow {
     return this._state;
   }
 
+  /**
+   * The append-only audit history. Each call returns a detached, frozen
+   * snapshot: the array is `Object.freeze`d and each entry is a frozen
+   * copy, so external callers can neither push/splice the array nor
+   * rewrite entry fields — even by an accidental caller. dispatch()
+   * remains the only way to append.
+   */
   get history(): readonly EscrowHistoryEntry[] {
-    return this._history;
+    return Object.freeze(this._history.map((e) => Object.freeze({ ...e })));
   }
 
   get isTerminal(): boolean {
