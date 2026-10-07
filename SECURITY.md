@@ -31,8 +31,13 @@ no cryptography beyond HMAC webhook signatures.
 - **Webhook secret distribution is the caller's responsibility.**
   `src/webhooks.ts` documents this in its header comment and the README
   repeats it: whoever holds the secret can forge `sha256=<hex>` signatures.
-  This library does not generate, rotate, or distribute secrets — store the
-  secret like any other API credential.
+  This library does not generate, store, or distribute secrets — store the
+  secret like any other API credential. What the library *does* offer is
+  rotation support on the verify side: `verifySettlementWebhook` accepts a
+  `{ secrets: [...] }` candidate set, so during the caller's own rotation
+  window signatures made with either the old or the new secret verify
+  (any-match wins, all-mismatch fails closed). The rotation schedule itself
+  stays entirely with the caller.
 - **Receiver-side trust.** `buildSettlementWebhook` derives every payload
   field from the audit-backed `SettlementReport` (nothing is invented),
   but the receiver must verify the signature over the raw body bytes;
@@ -53,6 +58,9 @@ no cryptography beyond HMAC webhook signatures.
   unhandled exception. Verify over the raw body bytes — the object overload
   re-stringifies with a fixed key order for in-process convenience, but raw
   bytes are the transport-safe path (documented in `src/webhooks.ts`).
+  Note the one throwing case: an empty `secrets` array (or an empty secret
+  inside it) is a caller configuration error and throws
+  `cannot verify settlement webhook: …` — it never silently passes.
 - **Settlement never runs on uncorroborated amounts.**
   `depositAmountFromHistory` (`src/settlementReport.ts`) throws
   `settlement requires a FUND amount` when the audit history has no FUND
@@ -92,7 +100,9 @@ well, so snapshots exported for persistence are detached and safe.)
 - Real oracle/Chainlink/zk-SNARK/TEE verification behind `VERIFY_PASS`
 - Cryptographic multi-sig (this repo *counts* approvals; it does not verify
   signatures)
-- Secret management, rotation, or distribution for webhook secrets
+- Secret management, storage, or distribution for webhook secrets
+  (rotation-window *verification* accepts multiple candidate secrets, but
+  the library never generates, stores, or schedules the rotation itself)
 - A deadline scheduler (`EXPIRE` is dispatched by the caller)
 - Identity/RBAC, concurrency control, durable storage, cross-restart
   idempotency keys (this repo's are in-memory only)

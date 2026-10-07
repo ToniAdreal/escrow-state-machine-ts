@@ -52,6 +52,20 @@ export interface BuildWebhookOptions {
   now?: Date | string;
 }
 
+/**
+ * Options for secret-rotation-aware webhook verification.
+ *
+ * During a secret rotation window the receiver must accept signatures made
+ * with either the old or the new secret; pass both as `secrets`. The first
+ * candidate whose HMAC matches wins, so the array order is only a
+ * performance preference (put the newest secret first), never a security
+ * one — any match authenticates, and all-mismatch fails closed.
+ */
+export interface VerifyWebhookOptions {
+  /** Candidate HMAC secrets; must be a non-empty array of non-empty secrets. */
+  secrets: (string | Buffer)[];
+}
+
 function assertSecret(secret: string | Buffer): void {
   if (secret.length === 0) {
     throw new Error(
@@ -117,25 +131,62 @@ export function buildSettlementWebhook(
  * Prefer passing the raw body `string`; a parsed object is re-stringified
  * (fine in-process, but raw bytes are the safe transport path).
  * Malformed signatures return `false` rather than throwing, so a hostile
- * input can never turn verification into an unhandled exception. The
- * comparison itself is constant-time (`timingSafeEqual`).
+ * input can never turn verification into an unhandled exception. Each
+ * candidate is compared in constant time (`timingSafeEqual`).
+ *
+ * Rotation: pass `{ secrets: [newSecret, oldSecret] }` instead of a single
+ * secret during the rotation window — any candidate that matches returns
+ * `true`; all-mismatch returns `false` (fail-closed). An empty `secrets`
+ * array (or an empty secret inside it) is a caller configuration error and
+ * throws, never silently passes.
  */
 export function verifySettlementWebhook(
   body: string | SettlementWebhookPayload,
   signature: string,
   secret: string | Buffer,
+): boolean;
+export function verifySettlementWebhook(
+  body: string | SettlementWebhookPayload,
+  signature: string,
+  options: VerifyWebhookOptions,
+): boolean;
+export function verifySettlementWebhook(
+  body: string | SettlementWebhookPayload,
+  signature: string,
+  secretOrOptions: string | Buffer | VerifyWebhookOptions,
 ): boolean {
+  const secrets: (string | Buffer)[] =
+    typeof secretOrOptions === "string" || Buffer.isBuffer(secretOrOptions)
+      ? [secretOrOptions]
+      : secretOrOptions.secrets;
+  if (secrets.length === 0) {
+    throw new Error(
+      "cannot verify settlement webhook: secrets must be a non-empty array",
+    );
+  }
+  secrets.forEach((secret, i) => {
+    if (secret.length === 0) {
+      throw new Error(
+        `cannot verify settlement webhook: secrets[${i}] must not be empty`,
+      );
+    }
+  });
+
   const match = /^sha256=([0-9a-f]{64})$/.exec(signature);
   if (!match) return false;
-  const expected = Buffer.from(
-    createHmac("sha256", secret)
-      .update(typeof body === "string" ? body : canonicalJson(body), "utf8")
-      .digest(),
-  );
+  const bodyString = typeof body === "string" ? body : canonicalJson(body);
   const actual = Buffer.from(match[1], "hex");
-  // timingSafeEqual throws on length mismatch; a forged 64-hex string that
-  // decodes short (never, given the regex) or long is simply a failure.
-  return expected.length === actual.length && timingSafeEqual(expected, actual);
+  for (const secret of secrets) {
+    const expected = Buffer.from(
+      createHmac("sha256", secret).update(bodyString, "utf8").digest(),
+    );
+    // timingSafeEqual throws on length mismatch; a forged 64-hex string that
+    // decodes short (never, given the regex) or long is simply a failure.
+    if (expected.length === actual.length && timingSafeEqual(expected, actual)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /* ------------------------------------------------------------------ */

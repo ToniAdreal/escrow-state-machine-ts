@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 184 tests, all local
+npm test   # 193 tests, all local
 ```
 
 ## Quickstart
@@ -232,6 +232,21 @@ derived entirely from the audit-backed settlement report. The comparison is
 constant-time (`timingSafeEqual`); malformed signatures fail closed as
 `false`, never throw.
 
+Secret rotation: while you roll from an old secret to a new one, pass both
+as candidates — any candidate that matches verifies, all-mismatch still
+fails closed:
+
+```ts
+const ok = verifySettlementWebhook(rawBody, receivedSignature, {
+  secrets: [process.env.WEBHOOK_SECRET_NEW!, process.env.WEBHOOK_SECRET_OLD!],
+});
+```
+
+An empty `secrets` array (or an empty secret inside it) is a caller
+configuration error and throws instead of silently passing. The library does
+not generate, store, or schedule the rotation itself — it only accepts the
+candidate set the caller hands it (see [SECURITY.md](SECURITY.md)).
+
 Delivery is handled by `deliverSettlementWebhook(url, webhook, options)` —
 still zero runtime dependencies (Node ≥ 20 global `fetch`):
 
@@ -261,7 +276,7 @@ signatures.
 
 ## Reproducibility
 
-`npm test` runs 184 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 193 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network, no
 randomness in assertions.
 

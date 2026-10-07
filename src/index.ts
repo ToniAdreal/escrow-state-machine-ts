@@ -19,6 +19,7 @@ export type {
   DeliverWebhookOptions,
   SettlementWebhook,
   SettlementWebhookPayload,
+  VerifyWebhookOptions,
   WebhookDeliveryResult,
 } from "./webhooks.js";
 export { createQuorum } from "./quorum.js";
