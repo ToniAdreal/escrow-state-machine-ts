@@ -354,10 +354,45 @@ export interface DispatchOptions {
 }
 
 /**
+ * Listener called after every successful {@link Escrow.dispatch}:
+ * `(event, from, to, entry)`. The entry is a frozen, detached copy of
+ * the audit entry — a listener cannot rewrite the audit trail.
+ */
+export type EscrowEventListener = (
+  event: EscrowEvent,
+  from: EscrowState,
+  to: EscrowState,
+  entry: EscrowHistoryEntry
+) => void;
+
+/**
+ * Context handed to a `subscribe()` `onError` hook when a listener throws:
+ * the dispatch that was being notified.
+ */
+export interface ListenerErrorContext {
+  event: EscrowEvent;
+  from: EscrowState;
+  to: EscrowState;
+}
+
+/**
+ * Options for `subscribe()`.
+ */
+export interface SubscribeOptions {
+  /**
+   * Called when the listener throws, with the caught error and the
+   * dispatch context. Isolation semantics are unchanged: the error is
+   * still swallowed after `onError` runs, and a throwing `onError`
+   * itself is swallowed too — no error hook can ever break dispatch
+   * or corrupt the audit trail.
+   */
+  onError?: (err: unknown, context: ListenerErrorContext) => void;
+}
+
+/**
  * Options accepted by the {@link Escrow} constructor.
  */
-export interface EscrowOptions {
-  /**
+export interface EscrowOptions {  /**
    * When true, `dispatch("VERIFY_PASS")` requires a non-empty `evidence`
    * reference (passed via {@link DispatchOptions.evidence}) and throws
    * otherwise, with no history residue. This is the controlled, auditable
@@ -575,7 +610,108 @@ export class Escrow {
     if (idempotencyKey !== undefined) {
       this._seenIdempotencyKeys.add(idempotencyKey);
     }
+    this._notifyListeners(event, from, to, this._history[this._history.length - 1]);
     return to;
+  }
+
+  // ------------------------------------------------------------------
+  // Dispatch subscriptions — the notification fan-out seam.
+  //
+  // `dispatch` currently has no external notification point beyond the
+  // audit history. subscribe() fills that seam with in-process hooks:
+  // listeners run AFTER the audit entry is appended, in subscription
+  // order, and can never roll it back.
+  //
+  // Error isolation is a deliberate, documented tradeoff: each listener's
+  // throw is caught and swallowed so a bad fan-out consumer can never
+  // break dispatch, corrupt the audit trail, or starve later listeners.
+  // For failure visibility without wrapping every listener in try/catch,
+  // subscribe(listener, { onError }) routes each caught error to onError
+  // with the dispatch context; a throwing onError is swallowed as well.
+  // The entry handed to listeners is a frozen, detached copy,
+  // so a listener cannot rewrite the audit trail either.
+  //
+  // Honest limits: subscriptions are in-memory only. They are NOT part
+  // of the JSON snapshot (toJSON()/fromJSON() rehydrate with zero
+  // listeners), and there is no durable fan-out (queues, webhooks,
+  // retries) — that stays the caller's infrastructure.
+  // ------------------------------------------------------------------
+
+  private _listeners: Array<{
+    listener: EscrowEventListener;
+    onError?: SubscribeOptions["onError"];
+  }> = [];
+
+  /**
+   * Register a listener called with (event, from, to, entry) after every
+   * successful dispatch. Returns an unsubscribe function (idempotent:
+   * calling it twice is a no-op).
+   *
+   * Listeners are called in subscription order over a snapshot of the
+   * listener list, so a listener that subscribes/unsubscribes during
+   * notification affects only later dispatches. A listener that throws is
+   * isolated: the error is swallowed, the remaining listeners still run,
+   * and dispatch returns normally with the audit entry intact. Pass
+   * `{ onError }` to observe those failures instead of losing them to
+   * the documented silence.
+   */
+  subscribe(
+    listener: EscrowEventListener,
+    opts?: SubscribeOptions
+  ): () => void {
+    if (typeof listener !== "function") {
+      throw new Error(
+        `invalid subscribe: listener must be a function, got ${typeof listener}`
+      );
+    }
+    if (
+      opts !== undefined &&
+      (typeof opts !== "object" || opts === null || Array.isArray(opts))
+    ) {
+      throw new Error(
+        `invalid subscribe: options must be an object, got ${Array.isArray(opts) ? "array" : typeof opts}`
+      );
+    }
+    const onError = opts?.onError;
+    if (onError !== undefined && typeof onError !== "function") {
+      throw new Error(
+        `invalid subscribe: onError must be a function, got ${typeof onError}`
+      );
+    }
+    this._listeners.push({ listener, onError });
+    return () => {
+      const i = this._listeners.findIndex((e) => e.listener === listener);
+      if (i >= 0) this._listeners.splice(i, 1);
+    };
+  }
+
+  /** How many listeners are currently subscribed (debug/observability aid). */
+  get listenerCount(): number {
+    return this._listeners.length;
+  }
+
+  private _notifyListeners(
+    event: EscrowEvent,
+    from: EscrowState,
+    to: EscrowState,
+    entry: EscrowHistoryEntry
+  ): void {
+    if (this._listeners.length === 0) return;
+    const notification = Object.freeze({ ...entry });
+    for (const { listener, onError } of [...this._listeners]) {
+      try {
+        listener(event, from, to, notification);
+      } catch (err) {
+        // Swallowed on purpose: isolation is the contract (see subscribe).
+        if (onError !== undefined) {
+          try {
+            onError(err, { event, from, to });
+          } catch {
+            // A broken error hook is isolated the same way.
+          }
+        }
+      }
+    }
   }
 
   /**

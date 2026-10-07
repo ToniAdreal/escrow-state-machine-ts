@@ -2,10 +2,13 @@ export { Escrow, allowedEvents, transition, transitionTable, assertNonNegativeMo
 export type {
   DispatchOptions,
   EscrowEvent,
+  EscrowEventListener,
   EscrowHistoryEntry,
   EscrowOptions,
   EscrowSnapshot,
   EscrowState,
+  ListenerErrorContext,
+  SubscribeOptions,
   TransitionEdge,
 } from "./stateMachine.js";
 export { calculateDeposit } from "./feeCalculator.js";

@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 193 tests, all local
+npm test   # 208 tests, all local
 ```
 
 ## Quickstart
@@ -113,6 +113,18 @@ parity.)
   overdue non-terminal ones in one line — it never mutates or dispatches.
   The deadline rides along in `toJSON()`/`fromJSON()` snapshots (a
   tampered or non-canonical deadline is rejected by snapshot validation).
+- Dispatch subscriptions (in-process fan-out seam): `escrow.subscribe(listener)`
+  registers a listener called with `(event, from, to, entry)` after every
+  *successful* dispatch, in subscription order; the returned function
+  unsubscribes (idempotent). Listeners run *after* the audit entry is
+  appended and can never roll it back — a throwing listener is isolated
+  (its error is swallowed, remaining listeners still run, dispatch returns
+  normally); pass `{ onError }` to observe those failures. The entry handed
+  to listeners is a frozen, detached copy, so listeners cannot rewrite the
+  audit trail. Failed dispatches and idempotency-key no-ops produce zero
+  notifications. Subscriptions are in-memory only: they are NOT part of
+  `toJSON()`/`fromJSON()` snapshots, and there is no durable fan-out
+  (queues, webhooks, retries) — that stays the caller's infrastructure.
 - Persistence-ready snapshots: `escrow.toJSON()` exports a plain-JSON
   `{ id, state, history }` snapshot (a detached deep copy;
   `JSON.stringify(escrow)` goes through it), and
@@ -279,7 +291,7 @@ signatures.
 
 ## Reproducibility
 
-`npm test` runs 197 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 208 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network, no
 randomness in assertions.
 
