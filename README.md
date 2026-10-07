@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 167 tests, all local
+npm test   # 174 tests, all local
 ```
 
 ## Quickstart
@@ -154,7 +154,8 @@ parity.)
   models the *counting rule* of an M-of-N quorum (`createQuorum({ threshold,
   signers })`, idempotent `approve()`, `revoke()` before the threshold is
   reached, `hasQuorum()` — see the usage example
-  in its JSDoc). `src/arbitration.ts` wires the two together:
+  in its JSDoc). `approvalLog()` records who approved and when
+  (timestamps injectable via `QuorumConfig.now` for deterministic tests). `src/arbitration.ts` wires the two together:
   `dispatchArbitration(escrow, quorum, outcome)` refuses to dispatch until
   `hasQuorum()` is true and auto-records `quorum <approvals>/<threshold>`
   in the audit note. There is still no signature verification, no key
@@ -250,7 +251,7 @@ signatures.
 
 ## Reproducibility
 
-`npm test` runs 167 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 174 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network, no
 randomness in assertions.
 

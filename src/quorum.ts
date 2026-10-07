@@ -30,6 +30,20 @@ export interface QuorumConfig {
   threshold: number;
   /** Unique signer identifiers; order is not significant */
   signers: readonly string[];
+  /**
+   * Clock for approval timestamps, in milliseconds since the Unix epoch.
+   * Defaults to `Date.now`. Inject a fixed sequence in tests for
+   * deterministic audit logs.
+   */
+  now?: () => number;
+}
+
+/** One entry of a quorum's approval audit trail. */
+export interface ApprovalLogEntry {
+  /** Signer that approved. */
+  readonly signerId: string;
+  /** Canonical ISO-8601 timestamp of when the approval was recorded. */
+  readonly at: string;
 }
 
 export interface Quorum {
@@ -50,9 +64,16 @@ export interface Quorum {
   approvalCount(): number;
   /** Signer ids that have approved, in approval order. */
   approvals(): readonly string[];
+  /**
+   * Approval audit trail: who approved and when, in approval order.
+   * Returns a detached copy — mutating it cannot alter the quorum.
+   * Revoking a signer removes its entry; a later re-approval records a
+   * fresh timestamp.
+   */
+  approvalLog(): ReadonlyArray<ApprovalLogEntry>;
 }
 
-function assertValidConfig({ threshold, signers }: QuorumConfig): void {
+function assertValidConfig({ threshold, signers, now }: QuorumConfig): void {
   if (!Array.isArray(signers) || signers.length === 0)
     throw new Error("quorum signers must be a non-empty array");
   const seen = new Set<string>();
@@ -69,13 +90,16 @@ function assertValidConfig({ threshold, signers }: QuorumConfig): void {
     throw new Error(
       `quorum threshold ${threshold} exceeds signer count ${signers.length}`
     );
+  if (now !== undefined && typeof now !== "function")
+    throw new Error("quorum now must be a function returning milliseconds");
 }
 
 export function createQuorum(config: QuorumConfig): Quorum {
   assertValidConfig(config);
   const { threshold } = config;
   const signers = new Set<string>(config.signers);
-  const approvals: string[] = [];
+  const now = config.now ?? Date.now;
+  const log: ApprovalLogEntry[] = [];
   const approved = new Set<string>();
 
   return {
@@ -86,7 +110,7 @@ export function createQuorum(config: QuorumConfig): Quorum {
         throw new Error(`unknown quorum signer: ${JSON.stringify(signerId)}`);
       if (approved.has(signerId)) return; // idempotent — no double counting
       approved.add(signerId);
-      approvals.push(signerId);
+      log.push({ signerId, at: new Date(now()).toISOString() });
     },
     revoke(signerId: string): void {
       if (!signers.has(signerId))
@@ -98,8 +122,8 @@ export function createQuorum(config: QuorumConfig): Quorum {
           )} has not approved`
         );
       approved.delete(signerId);
-      const idx = approvals.indexOf(signerId);
-      approvals.splice(idx, 1);
+      const idx = log.findIndex((e) => e.signerId === signerId);
+      log.splice(idx, 1);
     },
     hasQuorum(): boolean {
       return approved.size >= threshold;
@@ -108,7 +132,10 @@ export function createQuorum(config: QuorumConfig): Quorum {
       return approved.size;
     },
     approvals(): readonly string[] {
-      return [...approvals];
+      return log.map((e) => e.signerId);
+    },
+    approvalLog(): ReadonlyArray<ApprovalLogEntry> {
+      return log.map((e) => ({ signerId: e.signerId, at: e.at }));
     },
   };
 }

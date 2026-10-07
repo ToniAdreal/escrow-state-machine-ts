@@ -21,7 +21,7 @@ export type {
   WebhookDeliveryResult,
 } from "./webhooks.js";
 export { createQuorum } from "./quorum.js";
-export type { Quorum, QuorumConfig } from "./quorum.js";
+export type { Quorum, QuorumConfig, ApprovalLogEntry } from "./quorum.js";
 export { dispatchArbitration } from "./arbitration.js";
 export type { ArbitrationOutcome } from "./arbitration.js";
 export type {
