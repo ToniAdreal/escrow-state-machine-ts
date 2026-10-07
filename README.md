@@ -268,7 +268,10 @@ and network errors (including timeouts) are retried with exponential backoff
 (retry n waits `backoffMs * 2^(n-1)`). A 429 `Retry-After` response header
 (delay seconds or an HTTP-date) takes precedence over the backoff; an
 absent or unparsable value falls back to it. Other 3xx/4xx throw
-immediately without retrying. When every attempt fails, the error reads
+immediately without retrying, and redirects are never followed: a 3xx
+response is returned as-is (the signed payload is never re-posted to a
+third-party redirect target), surfacing as `failed with status 301 (not
+retried)` so the caller fixes the endpoint URL. When every attempt fails, the error reads
 `webhook delivery to <url> failed after <n> attempts: <last cause>`; a
 per-attempt timeout surfaces as `timed out after <timeoutMs>ms`. Secret
 distribution remains the caller's responsibility: whoever holds it can forge
@@ -276,7 +279,7 @@ signatures.
 
 ## Reproducibility
 
-`npm test` runs 193 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 197 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network, no
 randomness in assertions.
 

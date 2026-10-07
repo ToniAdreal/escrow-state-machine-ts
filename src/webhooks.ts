@@ -278,7 +278,10 @@ function sleep(ms: number): Promise<void> {
  *   precedence over the computed backoff; an absent or unparsable value
  *   falls back to `backoffMs * 2^(n-1)`.
  * - Other 3xx/4xx (400, 404, …) → the request itself is at fault; throws
- *   immediately, no retry.
+ *   immediately, no retry. Redirects are never followed (`redirect:
+ *   "manual"`): a 3xx response is returned as-is and lands in this branch,
+ *   so the signed payload is never re-posted to a redirect target URL —
+ *   the caller must fix the endpoint.
  *
  * When every attempt fails, throws
  * `webhook delivery to <url> failed after <n> attempts: <last cause>`.
@@ -400,6 +403,13 @@ async function postOnce(
       },
       body,
       signal: controller.signal,
+      // Never follow redirects. The WHATWG default ("follow") would silently
+      // re-POST the signed payload to the redirect target URL (a third party
+      // for a hijacked or misconfigured endpoint), and the retry loop below
+      // could then report the *target's* 2xx as a successful delivery. With
+      // "manual" the 3xx response itself is returned and falls into the
+      // not-retried branch: the caller sees the redirect and fixes the URL.
+      redirect: "manual",
     });
   } catch (err) {
     if (timedOut) {

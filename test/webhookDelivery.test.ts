@@ -477,3 +477,94 @@ test("parseRetryAfter: seconds, HTTP-date, and garbage", () => {
   assert.equal(parseRetryAfter(null, now), undefined);
   assert.equal(parseRetryAfter(undefined, now), undefined);
 });
+
+/**
+ * A 3xx redirect must never be silently followed: the old WHATWG default
+ * ("follow") would re-POST the signed payload to the redirect target (a
+ * third party for a hijacked or misconfigured endpoint) and the retry loop
+ * could even report the *target's* 2xx as a successful delivery. Each case
+ * below points the redirect at a live sink server that returns 200 if the
+ * payload ever reaches it — the proof that no follow happened is that the
+ * sink sees zero requests and delivery throws with attempts=1.
+ */
+async function withRedirectTarget(
+  redirectStatus: 301 | 302 | 307,
+  run: (
+    url: string,
+    received: ReceivedRequest[],
+    sinkHits: () => number,
+  ) => Promise<void>,
+): Promise<void> {
+  let sinkHits = 0;
+  const sink: Server = createServer((_req, res) => {
+    sinkHits++;
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end("{}");
+  });
+  await new Promise<void>((resolve) => sink.listen(0, "127.0.0.1", resolve));
+  const sinkUrl = `http://127.0.0.1:${(sink.address() as AddressInfo).port}/other`;
+  try {
+    await withServer(
+      (_req, res) => {
+        res.writeHead(redirectStatus, { Location: sinkUrl });
+        res.end();
+      },
+      (url, received) => run(url, received, () => sinkHits),
+    );
+  } finally {
+    sink.closeAllConnections();
+    await new Promise<void>((resolve) => sink.close(() => resolve()));
+  }
+}
+
+test("301 redirect is not followed: throws immediately with one attempt", async () => {
+  const signed = goldenWebhook();
+  await withRedirectTarget(301, async (url, received, sinkHits) => {
+    await assert.rejects(
+      () => deliverSettlementWebhook(url, signed, { retries: 3, backoffMs: 1 }),
+      /failed with status 301 \(not retried\)/,
+    );
+    // Exactly one request reached the webhook endpoint; the redirect target
+    // (which would have answered 200) never saw the signed payload.
+    assert.equal(received.length, 1);
+    assert.equal(sinkHits(), 0);
+  });
+});
+
+test("302 redirect is not followed either", async () => {
+  const signed = goldenWebhook();
+  await withRedirectTarget(302, async (url, received, sinkHits) => {
+    await assert.rejects(
+      () => deliverSettlementWebhook(url, signed, { retries: 3, backoffMs: 1 }),
+      /failed with status 302 \(not retried\)/,
+    );
+    assert.equal(received.length, 1);
+    assert.equal(sinkHits(), 0);
+  });
+});
+
+test("307 redirect is not followed either", async () => {
+  const signed = goldenWebhook();
+  await withRedirectTarget(307, async (url, received, sinkHits) => {
+    await assert.rejects(
+      () => deliverSettlementWebhook(url, signed, { retries: 3, backoffMs: 1 }),
+      /failed with status 307 \(not retried\)/,
+    );
+    assert.equal(received.length, 1);
+    assert.equal(sinkHits(), 0);
+  });
+});
+
+test("a redirect that resolves to 200 is never reported as a success", async () => {
+  const signed = goldenWebhook();
+  await withRedirectTarget(301, async (url, _received, sinkHits) => {
+    // Without `redirect: "manual"` this would resolve to `{ status: 200,
+    // attempts: 1 }` from the sink — a successful-delivery lie about a
+    // third-party URL. It must throw instead.
+    await assert.rejects(
+      () => deliverSettlementWebhook(url, signed),
+      /failed with status 301 \(not retried\)/,
+    );
+    assert.equal(sinkHits(), 0);
+  });
+});
