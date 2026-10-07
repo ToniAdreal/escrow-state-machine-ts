@@ -117,6 +117,12 @@ export interface EscrowSnapshot {
   id: string;
   state: EscrowState;
   history: EscrowHistoryEntry[];
+  /**
+   * Advisory deadline (canonical ISO-8601) carried over the wire only when
+   * the escrow has one set — see Escrow.setDeadline. Absent means no
+   * deadline, matching the live object's undefined.
+   */
+  deadline?: string;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -150,6 +156,8 @@ function isCanonicalIso(s: unknown): s is string {
  *  - `amount`, when present, must be a finite non-negative number and may
  *    only appear on FUND entries
  *  - `note`, when present, must be a string
+ *  - `deadline`, when present, must be canonical ISO-8601 (the advisory
+ *    deadline; anything produced by toJSON() passes)
  *
  * Anything produced by toJSON() passes; anything else must earn its way.
  */
@@ -258,7 +266,19 @@ function parseEscrowSnapshot(snapshot: unknown): EscrowSnapshot {
     );
   }
 
-  return { id, state, history };
+  let deadline: string | undefined;
+  if (snapshot.deadline !== undefined) {
+    if (!isCanonicalIso(snapshot.deadline)) {
+      throw new Error(
+        `invalid snapshot: deadline must be canonical ISO-8601, got ${String(
+          snapshot.deadline
+        )}`
+      );
+    }
+    deadline = snapshot.deadline;
+  }
+
+  return { id, state, history, deadline };
 }
 
 /**
@@ -337,6 +357,44 @@ export class Escrow {
       this._state === "REFUNDED" ||
       this._state === "EXPIRED"
     );
+  }
+
+  // ------------------------------------------------------------------
+  // Deadlines — advisory only.
+  //
+  // An escrow may carry an optional ISO-8601 deadline. The deadline is
+  // informational: it NEVER moves the escrow by itself. There is no
+  // timer, no auto-EXPIRE — a watchdog (or a human) reads isOverdue()
+  // and dispatches EXPIRE explicitly, which keeps expiry auditable in
+  // the append-only history. Mirrors the dataquest SLA-deadline pattern.
+  // ------------------------------------------------------------------
+
+  private _deadline: string | undefined;
+
+  /**
+   * Attach a deadline to the escrow. Overwrites any existing deadline.
+   * Accepts a Date or a parseable string; the stored value is the
+   * normalized canonical ISO-8601 string. Throws on unparseable input —
+   * an escrow that fails the deadline validation of its own snapshots
+   * would be dishonest to carry.
+   */
+  setDeadline(deadline: Date | string): void {
+    const ms =
+      deadline instanceof Date ? deadline.getTime() : Date.parse(deadline);
+    if (Number.isNaN(ms)) {
+      throw new Error(`invalid deadline: ${String(deadline)}`);
+    }
+    this._deadline = new Date(ms).toISOString();
+  }
+
+  /** The attached deadline as canonical ISO-8601, or undefined if none. */
+  getDeadline(): string | undefined {
+    return this._deadline;
+  }
+
+  /** Remove the attached deadline. No-op when none is set. */
+  clearDeadline(): void {
+    this._deadline = undefined;
   }
 
   /**
@@ -422,12 +480,16 @@ export class Escrow {
    * Export a serializable snapshot (id + live state + history) for
    * persistence. The returned object is a deep copy: mutating it does not
    * affect the escrow, and JSON.stringify(escrow) goes through this method.
+   *
+   * A deadline, when set, is exported as `deadline` (canonical ISO-8601);
+   * absent when none is set.
    */
   toJSON(): EscrowSnapshot {
     return {
       id: this.id,
       state: this._state,
       history: this._history.map((e) => ({ ...e })),
+      ...(this._deadline === undefined ? {} : { deadline: this._deadline }),
     };
   }
 
@@ -435,13 +497,49 @@ export class Escrow {
    * Rebuild an Escrow from an untrusted snapshot. The input is strictly
    * validated (see parseEscrowSnapshot); malformed snapshots throw with a
    * descriptive `invalid snapshot: ...` error instead of producing a
-   * corrupt escrow.
+   * corrupt escrow. A tampered or non-canonical `deadline` is rejected the
+   * same way.
    */
   static fromJSON(snapshot: unknown): Escrow {
     const parsed = parseEscrowSnapshot(snapshot);
     const escrow = new Escrow(parsed.id);
     escrow._state = parsed.state;
     escrow._history = parsed.history;
+    escrow._deadline = parsed.deadline;
     return escrow;
   }
+}
+
+/**
+ * Is the escrow currently past its deadline?
+ *
+ * Returns false when no deadline is set, and false for terminal states —
+ * a RELEASED/REFUNDED/EXPIRED escrow is no longer "overdue" even if its
+ * deadline passed. Advisory only: it never transitions the escrow; a
+ * watchdog dispatches EXPIRE explicitly.
+ */
+export function isOverdue(escrow: Escrow, now: Date = new Date()): boolean {
+  const deadline = escrow.getDeadline();
+  if (deadline === undefined) return false;
+  if (escrow.isTerminal) return false;
+  return now.getTime() >= Date.parse(deadline);
+}
+
+/**
+ * Watchdog helper: from a batch of escrows, return the ones a watchdog
+ * should expire right now — non-terminal AND past their deadline.
+ *
+ * This is just `isOverdue()` over a list, but it captures the documented
+ * watchdog pattern so callers do it in one line:
+ *
+ *   for (const escrow of expiredEscrows(allEscrows)) escrow.dispatch("EXPIRE");
+ *
+ * Pure: reads the escrows, never mutates or dispatches. The `now` default
+ * is the real clock, so unit tests pin it to a fixed date.
+ */
+export function expiredEscrows(
+  escrows: readonly Escrow[],
+  now: Date = new Date()
+): Escrow[] {
+  return escrows.filter((escrow) => isOverdue(escrow, now));
 }

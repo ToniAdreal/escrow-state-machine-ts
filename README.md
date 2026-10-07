@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 149 tests, all local
+npm test   # 167 tests, all local
 ```
 
 ## Quickstart
@@ -102,6 +102,17 @@ parity.)
   `toJSON()`/`fromJSON()` snapshots, so a restart clears them and the caller
   must reconcile before replaying. This is in-process retry protection, not
   a distributed idempotency store.
+- Deadlines (advisory): `escrow.setDeadline(date)` attaches a deadline
+  (stored as canonical ISO-8601; unparseable input throws),
+  `getDeadline()`/`clearDeadline()` read and remove it. The deadline is
+  *advisory*: nothing auto-expires — a watchdog (or a human) reads
+  `isOverdue(escrow)` and dispatches `EXPIRE` explicitly, so expiry stays
+  auditable in the append-only history. `isOverdue()` returns false with
+  no deadline and for terminal states (a settled escrow is never
+  "overdue"). `expiredEscrows(escrows)` filters a batch down to the
+  overdue non-terminal ones in one line — it never mutates or dispatches.
+  The deadline rides along in `toJSON()`/`fromJSON()` snapshots (a
+  tampered or non-canonical deadline is rejected by snapshot validation).
 - Persistence-ready snapshots: `escrow.toJSON()` exports a plain-JSON
   `{ id, state, history }` snapshot (a detached deep copy;
   `JSON.stringify(escrow)` goes through it), and
@@ -160,9 +171,10 @@ parity.)
   No. `Escrow` is in-memory with no built-in store (snapshots are a JSON
   export via `toJSON()`/`Escrow.fromJSON()`, not a database), no concurrency
   control, idempotency keys only in-memory (not persisted across restarts),
-  `EXPIRE` is dispatched by the caller (there
-  is no deadline scheduler), and there is no identity/RBAC. Reference and
-  demo use only.
+  `EXPIRE` is dispatched by the caller — there is an advisory deadline
+  field plus `isOverdue()`/`expiredEscrows()` watchdog helpers, but no
+  background timer or auto-expiry — and there is no identity/RBAC.
+  Reference and demo use only.
 
 ## Limitations (honest)
 
@@ -170,9 +182,11 @@ parity.)
   contracts (Chainlink + zk-SNARK + TEE verification, 5/9 Safe multi-sig
   arbitration). None of that is implemented here — this models the *rules*,
   not the chain.
-- **Simplified roles.** Real deployments need identity/RBAC, deadline
-  scheduling, and cross-restart idempotency keys (this repo's are in-memory
-  only); the `Escrow` class is in-memory.
+- **Simplified roles.** Real deployments need identity/RBAC, a real deadline
+  scheduler (this repo has an advisory deadline field with
+  `isOverdue()`/`expiredEscrows()` watchdog helpers, but no background
+  timer or auto-expire), and cross-restart idempotency keys (this repo's
+  are in-memory only); the `Escrow` class is in-memory.
 - **Fee formula is the case study's**, not a general pricing engine: arbitrary
   fee schedules are out of scope.
 - **Trust boundaries.** What the library enforces (money input validation,
@@ -236,7 +250,7 @@ signatures.
 
 ## Reproducibility
 
-`npm test` runs 149 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 167 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network, no
 randomness in assertions.
 
