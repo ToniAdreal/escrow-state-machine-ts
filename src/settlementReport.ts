@@ -160,13 +160,18 @@ export function buildSettlementReport(
 
   // Fail fast on an uncorroborated deposit: when the audit history records
   // FUND amounts, their total (initial deposit + any top-ups) must match the
-  // caller-supplied deposit exactly — otherwise the report would silently
-  // produce garbage accounting from an amount the trail cannot confirm. A
-  // FUND event recorded without an amount keeps the previous behavior (the
-  // deposit is the caller's responsibility); use depositAmountFromHistory()
-  // to require it.
+  // caller-supplied deposit — otherwise the report would silently produce
+  // garbage accounting from an amount the trail cannot confirm. A FUND event
+  // recorded without an amount keeps the previous behavior (the deposit is
+  // the caller's responsibility); use depositAmountFromHistory() to require it.
+  //
+  // The comparison is done at cent precision (round2 on both sides), not on
+  // the raw floats: this library's money model is "all amounts are rounded
+  // to cents", and raw float addition can be off by an ulp — e.g. 0.1 + 0.2
+  // sums to 0.30000000000000004 while calculateDeposit() produces exactly
+  // 0.3. An exact !== comparison would reject a legitimately funded escrow.
   const fundedTotal = totalFundedAmount(history);
-  if (fundedTotal !== undefined && fundedTotal !== depositAmount) {
+  if (fundedTotal !== undefined && round2(fundedTotal) !== round2(depositAmount)) {
     throw new Error(
       `cannot build settlement report for ${escrowId}: deposit ${depositAmount} does not match the FUND total ${fundedTotal} recorded in the audit history`,
     );
