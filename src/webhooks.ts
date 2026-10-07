@@ -11,8 +11,9 @@
  * Scope honesty (what this is NOT):
  * - Delivery is available via {@link deliverSettlementWebhook}: HTTP POST of
  *   the signed payload with the `X-Signature` header, a per-attempt timeout,
- *   and exponential-backoff retries on 5xx / network errors (4xx is not
- *   retried). Fan-out to multiple endpoints stays the caller's job.
+ *   and exponential-backoff retries on 5xx, 429, and network errors (a 429
+ *   `Retry-After` hint is honored; other 4xx are not retried). Fan-out to
+ *   multiple endpoints stays the caller's job.
  * - Secret distribution is the caller's responsibility. Whoever holds the
  *   secret can forge signatures; store it like any other API credential.
  * - `verifySettlementWebhook` should run over the raw request body bytes.
@@ -165,6 +166,45 @@ export interface WebhookDeliveryResult {
   attempts: number;
 }
 
+/**
+ * Parse a `Retry-After` header value into a wait in milliseconds.
+ * Accepts delay-seconds (a non-negative number) or an HTTP-date.
+ * Returns `undefined` when the value is absent or unparsable, in which case
+ * the caller falls back to exponential backoff. A past HTTP-date yields 0
+ * (retry immediately) rather than a negative sleep.
+ */
+export function parseRetryAfter(
+  value: string | null | undefined,
+  nowMs: number = Date.now(),
+): number | undefined {
+  if (value === null || value === undefined) return undefined;
+  const trimmed = value.trim();
+  if (/^\d+(\.\d+)?$/.test(trimmed)) {
+    const seconds = Number(trimmed);
+    if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+    return undefined;
+  }
+  // "-5" is neither a legal delay-seconds value nor a date; Date.parse
+  // would happily read it as a year, so reject signed numbers explicitly.
+  if (/^[+-]/.test(trimmed)) return undefined;
+  const when = Date.parse(trimmed);
+  if (Number.isNaN(when)) return undefined;
+  return Math.max(0, when - nowMs);
+}
+
+/** Wait before the next retry: a 429 `Retry-After` hint wins over backoff. */
+function retryDelayMs(
+  response: Response,
+  attempt: number,
+  backoffMs: number,
+): number {
+  if (response.status === 429) {
+    const hinted = parseRetryAfter(response.headers.get("retry-after"));
+    if (hinted !== undefined) return hinted;
+  }
+  return backoffMs * 2 ** attempt;
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     const timer = setTimeout(resolve, ms);
@@ -181,9 +221,13 @@ function sleep(ms: number): Promise<void> {
  *
  * Retry policy:
  * - 2xx → success, returned as `{ status, attempts }`.
- * - 5xx / network errors (including timeouts) → retried with exponential
- *   backoff, up to `retries` additional attempts.
- * - 3xx / 4xx → the request itself is at fault; throws immediately, no retry.
+ * - 429 and 5xx / network errors (including timeouts) → retried with
+ *   exponential backoff, up to `retries` additional attempts. A 429
+ *   `Retry-After` response header (delay seconds or an HTTP-date) takes
+ *   precedence over the computed backoff; an absent or unparsable value
+ *   falls back to `backoffMs * 2^(n-1)`.
+ * - Other 3xx/4xx (400, 404, …) → the request itself is at fault; throws
+ *   immediately, no retry.
  *
  * When every attempt fails, throws
  * `webhook delivery to <url> failed after <n> attempts: <last cause>`.
@@ -258,15 +302,19 @@ export async function deliverSettlementWebhook(
     if (response.ok) {
       return { status: response.status, attempts };
     }
-    if (response.status >= 500 && response.status <= 599) {
+    if (
+      response.status === 429 ||
+      (response.status >= 500 && response.status <= 599)
+    ) {
       lastError = new Error(`server responded with status ${response.status}`);
       if (attempt < retries) {
-        await sleep(backoffMs * 2 ** attempt);
+        await sleep(retryDelayMs(response, attempt, backoffMs));
         continue;
       }
       break;
     }
-    // 3xx/4xx: retrying the identical request changes nothing.
+    // Other 3xx/4xx (400, 404, …): the request itself is at fault; retrying
+    // the identical request changes nothing.
     throw new Error(
       `webhook delivery to ${url} failed with status ${response.status} (not retried)`,
     );

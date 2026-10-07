@@ -63,8 +63,9 @@ no cryptography beyond HMAC webhook signatures.
   notes. Anything else throws `invalid snapshot: …`.
 - **Delivery fail-fast.** `deliverSettlementWebhook` rejects invalid URLs,
   non-http(s) protocols, and bad retry/timeout options before any request,
-  and never retries 3xx/4xx (the request itself is at fault); only
-  5xx/network errors get exponential-backoff retries.
+  and never retries 3xx/4xx other than 429 (the request itself is at fault);
+  only 429/5xx/network errors get retries, with a 429 `Retry-After` hint
+  honored over the exponential backoff.
 
 ## Money precision (known limitation)
 

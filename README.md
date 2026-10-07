@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 129 tests, all local
+npm test   # 149 tests, all local
 ```
 
 ## Quickstart
@@ -223,10 +223,12 @@ const result = await deliverSettlementWebhook(
 
 Semantics: the payload is POSTed as JSON with the `X-Signature` header,
 byte-identical to what `buildSettlementWebhook` signed so the receiver can
-verify it over the raw body. 2xx returns `{ status, attempts }`; 5xx and
-network errors (including timeouts) are retried with exponential backoff
-(retry n waits `backoffMs * 2^(n-1)`); 3xx/4xx throw immediately without
-retrying. When every attempt fails, the error reads
+verify it over the raw body. 2xx returns `{ status, attempts }`; 429, 5xx,
+and network errors (including timeouts) are retried with exponential backoff
+(retry n waits `backoffMs * 2^(n-1)`). A 429 `Retry-After` response header
+(delay seconds or an HTTP-date) takes precedence over the backoff; an
+absent or unparsable value falls back to it. Other 3xx/4xx throw
+immediately without retrying. When every attempt fails, the error reads
 `webhook delivery to <url> failed after <n> attempts: <last cause>`; a
 per-attempt timeout surfaces as `timed out after <timeoutMs>ms`. Secret
 distribution remains the caller's responsibility: whoever holds it can forge
@@ -234,7 +236,7 @@ signatures.
 
 ## Reproducibility
 
-`npm test` runs 129 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 149 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network, no
 randomness in assertions.
 

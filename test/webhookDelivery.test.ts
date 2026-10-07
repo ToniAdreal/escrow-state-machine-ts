@@ -13,6 +13,7 @@ import {
   buildSettlementWebhook,
   calculateDeposit,
   deliverSettlementWebhook,
+  parseRetryAfter,
   verifySettlementWebhook,
 } from "../src/index.js";
 import type { SettlementWebhook } from "../src/index.js";
@@ -283,4 +284,196 @@ test("backoff between retries is exponential", async () => {
       assert.equal(received.length, 3);
     },
   );
+});
+
+test("429 is retried: 429 then 200 succeeds on attempt 2", async () => {
+  const signed = goldenWebhook();
+  await withServer(
+    (_req, res, received) => {
+      if (received.length < 2) {
+        res.writeHead(429);
+        res.end("slow down");
+      } else {
+        res.writeHead(200);
+        res.end("{}");
+      }
+    },
+    async (url, received) => {
+      const result = await deliverSettlementWebhook(url, signed, {
+        retries: 3,
+        backoffMs: 1,
+        timeoutMs: 5000,
+      });
+      assert.deepEqual(result, { status: 200, attempts: 2 });
+      assert.equal(received.length, 2);
+    },
+  );
+});
+
+test("persistent 429 exhausts retries then throws with the last status", async () => {
+  const signed = goldenWebhook();
+  await withServer(
+    (_req, res) => {
+      res.writeHead(429);
+      res.end("still busy");
+    },
+    async (url, received) => {
+      await assert.rejects(
+        () =>
+          deliverSettlementWebhook(url, signed, {
+            retries: 2,
+            backoffMs: 1,
+            timeoutMs: 5000,
+          }),
+        /failed after 3 attempts: server responded with status 429/,
+      );
+      assert.equal(received.length, 3);
+    },
+  );
+});
+
+test("429 Retry-After seconds are honored over backoff", async () => {
+  const signed = goldenWebhook();
+  await withServer(
+    (_req, res, received) => {
+      if (received.length < 2) {
+        res.writeHead(429, { "Retry-After": "1" });
+        res.end("slow down");
+      } else {
+        res.writeHead(200);
+        res.end("{}");
+      }
+    },
+    async (url, received) => {
+      const started = Date.now();
+      const result = await deliverSettlementWebhook(url, signed, {
+        retries: 3,
+        // Backoff would wait ~1ms; Retry-After says 1s. The server wins.
+        backoffMs: 1,
+        timeoutMs: 5000,
+      });
+      const elapsed = Date.now() - started;
+      assert.deepEqual(result, { status: 200, attempts: 2 });
+      assert.equal(received.length, 2);
+      assert.ok(
+        elapsed >= 900,
+        `expected Retry-After 1s to be honored, elapsed ${elapsed}ms`,
+      );
+    },
+  );
+});
+
+test("429 Retry-After HTTP-date is honored", async () => {
+  const signed = goldenWebhook();
+  await withServer(
+    (_req, res, received) => {
+      if (received.length < 2) {
+        // ~1.5s in the future; HTTP-dates truncate to whole seconds, so the
+        // parsed delta lands somewhere between ~0.5s and ~1.5s.
+        const retryAt = new Date(Date.now() + 1500).toUTCString();
+        res.writeHead(429, { "Retry-After": retryAt });
+        res.end("slow down");
+      } else {
+        res.writeHead(200);
+        res.end("{}");
+      }
+    },
+    async (url, received) => {
+      const started = Date.now();
+      const result = await deliverSettlementWebhook(url, signed, {
+        retries: 3,
+        backoffMs: 1,
+        timeoutMs: 5000,
+      });
+      const elapsed = Date.now() - started;
+      assert.deepEqual(result, { status: 200, attempts: 2 });
+      assert.equal(received.length, 2);
+      assert.ok(
+        elapsed >= 400,
+        `expected Retry-After HTTP-date to be honored, elapsed ${elapsed}ms`,
+      );
+    },
+  );
+});
+
+test("unparsable Retry-After falls back to exponential backoff", async () => {
+  const signed = goldenWebhook();
+  await withServer(
+    (_req, res, received) => {
+      if (received.length < 3) {
+        res.writeHead(429, { "Retry-After": "banana" });
+        res.end("slow down");
+      } else {
+        res.writeHead(200);
+        res.end("{}");
+      }
+    },
+    async (url, received) => {
+      const started = Date.now();
+      const result = await deliverSettlementWebhook(url, signed, {
+        retries: 2,
+        // Backoff sleeps: 50ms + 100ms = 150ms. A parsed "banana" would have
+        // blown the schedule; falling back keeps delivery fast.
+        backoffMs: 50,
+        timeoutMs: 5000,
+      });
+      const elapsed = Date.now() - started;
+      assert.deepEqual(result, { status: 200, attempts: 3 });
+      assert.equal(received.length, 3);
+      assert.ok(
+        elapsed < 10_000,
+        `fallback backoff should stay fast, elapsed ${elapsed}ms`,
+      );
+    },
+  );
+});
+
+test("past Retry-After HTTP-date retries immediately (no backoff wait)", async () => {
+  const signed = goldenWebhook();
+  await withServer(
+    (_req, res, received) => {
+      if (received.length < 2) {
+        const past = new Date(Date.now() - 30_000).toUTCString();
+        res.writeHead(429, { "Retry-After": past });
+        res.end("slow down");
+      } else {
+        res.writeHead(200);
+        res.end("{}");
+      }
+    },
+    async (url, received) => {
+      const started = Date.now();
+      const result = await deliverSettlementWebhook(url, signed, {
+        retries: 3,
+        // A past date must not trigger a 2000ms backoff sleep.
+        backoffMs: 2000,
+        timeoutMs: 5000,
+      });
+      const elapsed = Date.now() - started;
+      assert.deepEqual(result, { status: 200, attempts: 2 });
+      assert.equal(received.length, 2);
+      assert.ok(
+        elapsed < 1500,
+        `past Retry-After should retry immediately, elapsed ${elapsed}ms`,
+      );
+    },
+  );
+});
+
+test("parseRetryAfter: seconds, HTTP-date, and garbage", () => {
+  const now = Date.now();
+  assert.equal(parseRetryAfter("1", now), 1000);
+  assert.equal(parseRetryAfter("0", now), 0);
+  assert.equal(parseRetryAfter("  30 ", now), 30_000);
+  const future = new Date(now + 5000).toUTCString();
+  const delta = parseRetryAfter(future, now);
+  assert.ok(
+    delta !== undefined && delta > 4000 && delta <= 5000,
+    `HTTP-date delta ${delta}ms`,
+  );
+  assert.equal(parseRetryAfter(new Date(now - 1000).toUTCString(), now), 0);
+  assert.equal(parseRetryAfter("banana", now), undefined);
+  assert.equal(parseRetryAfter("-5", now), undefined);
+  assert.equal(parseRetryAfter(null, now), undefined);
+  assert.equal(parseRetryAfter(undefined, now), undefined);
 });
