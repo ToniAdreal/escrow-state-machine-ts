@@ -82,13 +82,17 @@ test("single-secret call shape is unchanged (plain string still works)", () => {
 });
 
 test("rotation works over the raw body string (transport-safe path)", () => {
-  const { signature } = signedWith(NEW_SECRET);
-  const rawBody = JSON.stringify(
-    buildSettlementWebhook(settledReport(), { secret: NEW_SECRET, now: FIXED_NOW })
-      .payload,
-  );
+  // Fixed eventId so the "wire" body matches the signed build byte-for-byte.
+  const { payload, signature } = buildSettlementWebhook(settledReport(), {
+    secret: NEW_SECRET,
+    now: FIXED_NOW,
+    eventId: "evt_rotation_raw",
+  });
+  const rawBody = JSON.stringify(payload);
   assert.ok(
-    verifySettlementWebhook(rawBody, signature, { secrets: [NEW_SECRET, OLD_SECRET] }),
+    verifySettlementWebhook(rawBody, signature, {
+      secrets: [NEW_SECRET, OLD_SECRET],
+    }),
   );
   assert.equal(
     verifySettlementWebhook(rawBody, signature, {

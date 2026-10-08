@@ -43,9 +43,10 @@ function releasedWebhook(id = "esc-10630") {
   return { report, signed: buildSettlementWebhook(report, { secret: SECRET, now: FIXED_NOW }) };
 }
 
-test("payload mirrors the report: event, id, outcome, deposit, parties, at", () => {
+test("payload mirrors the report: event, eventId, id, outcome, deposit, parties, at", () => {
   const { signed } = releasedWebhook();
   assert.equal(signed.payload.event, "escrow.settled");
+  assert.match(signed.payload.eventId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
   assert.equal(signed.payload.escrowId, "esc-10630");
   assert.equal(signed.payload.outcome, "released");
   assert.equal(signed.payload.deposit, 10630);
@@ -69,6 +70,7 @@ test("payload mirrors the report: event, id, outcome, deposit, parties, at", () 
     "deposit",
     "escrowId",
     "event",
+    "eventId",
     "outcome",
     "parties",
   ]);
@@ -128,10 +130,10 @@ test("malformed signatures return false instead of throwing", () => {
 test("Buffer secret works on both sides", () => {
   const { report } = releasedWebhook("esc-buf-secret");
   const secretBuf = Buffer.from(SECRET, "utf8");
-  const signed = buildSettlementWebhook(report, { secret: secretBuf, now: FIXED_NOW });
+  const signed = buildSettlementWebhook(report, { secret: secretBuf, now: FIXED_NOW, eventId: "evt_buf_secret" });
   assert.ok(verifySettlementWebhook(JSON.stringify(signed.payload), signed.signature, secretBuf));
   // Same HMAC input → the Buffer and string forms must agree byte-for-byte.
-  const asString = buildSettlementWebhook(report, { secret: SECRET, now: FIXED_NOW });
+  const asString = buildSettlementWebhook(report, { secret: SECRET, now: FIXED_NOW, eventId: "evt_buf_secret" });
   assert.equal(signed.signature, asString.signature);
 });
 
@@ -155,12 +157,21 @@ test("invalid 'now' timestamp throws a clear error", () => {
   );
 });
 
-test("same inputs produce byte-identical signatures (deterministic for tests)", () => {
+test("same inputs produce byte-identical signatures when eventId is injected (deterministic for tests)", () => {
   const { report } = releasedWebhook("esc-deterministic");
-  const a = buildSettlementWebhook(report, { secret: SECRET, now: FIXED_NOW });
-  const b = buildSettlementWebhook(report, { secret: SECRET, now: FIXED_NOW });
+  const a = buildSettlementWebhook(report, { secret: SECRET, now: FIXED_NOW, eventId: "evt_same" });
+  const b = buildSettlementWebhook(report, { secret: SECRET, now: FIXED_NOW, eventId: "evt_same" });
   assert.equal(a.signature, b.signature);
   assert.deepEqual(a.payload, b.payload);
+});
+
+test("default builds are unique: fresh eventId per notification", () => {
+  const { report } = releasedWebhook("esc-unique");
+  const a = buildSettlementWebhook(report, { secret: SECRET, now: FIXED_NOW });
+  const b = buildSettlementWebhook(report, { secret: SECRET, now: FIXED_NOW });
+  // Fresh eventId each time => signatures differ even for identical reports.
+  assert.notEqual(a.payload.eventId, b.payload.eventId);
+  assert.notEqual(a.signature, b.signature);
 });
 
 test("refunded escrow produces a refunded webhook that verifies", () => {

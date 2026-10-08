@@ -21,12 +21,20 @@
  *   order is preserved, but raw bytes are the transport-safe path.
  */
 
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import type { PartyRole, SettlementReport } from "./settlementReport.js";
 
 /** Compact machine-readable settlement notification. */
 export interface SettlementWebhookPayload {
   event: "escrow.settled";
+  /**
+   * Unique delivery ID for this notification. Receivers MUST deduplicate on
+   * `eventId`: `deliverSettlementWebhook` retries with exponential backoff,
+   * so a successful retry re-POSTs a byte-different `at` but the same
+   * logical event, and retries always reuse the original `eventId`. Two
+   * independent settlements always get different `eventId`s.
+   */
+  eventId: string;
   escrowId: string;
   outcome: "released" | "refunded" | "expired";
   /** Locked deposit total (same `deposit.deposit` the report accounts for). */
@@ -50,6 +58,12 @@ export interface BuildWebhookOptions {
    * value in tests to make signatures deterministic.
    */
   now?: Date | string;
+  /**
+   * Payload `eventId`. Defaults to `crypto.randomUUID()`; inject a fixed
+   * value in tests to make signatures deterministic. Must be a non-empty
+   * string when provided.
+   */
+  eventId?: string;
 }
 
 /**
@@ -91,7 +105,8 @@ function sign(body: string, secret: string | Buffer): string {
  *
  * Every figure in the payload is derived from the report (which itself is
  * derived from the append-only audit history): nothing is invented here.
- * Throws when the secret is empty or `now` is not a valid timestamp.
+ * Throws when the secret is empty, `now` is not a valid timestamp, or an
+ * injected `eventId` is not a non-empty string.
  */
 export function buildSettlementWebhook(
   report: SettlementReport,
@@ -107,8 +122,16 @@ export function buildSettlementWebhook(
   }
   const at = when.toISOString();
 
+  if (options.eventId !== undefined && (typeof options.eventId !== "string" || options.eventId.length === 0)) {
+    throw new Error(
+      `cannot build settlement webhook: 'eventId' must be a non-empty string for ${report.escrowId}`,
+    );
+  }
+  const eventId = options.eventId ?? randomUUID();
+
   const payload: SettlementWebhookPayload = {
     event: "escrow.settled",
+    eventId,
     escrowId: report.escrowId,
     outcome: report.outcome,
     deposit: report.deposit.deposit,
@@ -133,6 +156,9 @@ export function buildSettlementWebhook(
  * Malformed signatures return `false` rather than throwing, so a hostile
  * input can never turn verification into an unhandled exception. Each
  * candidate is compared in constant time (`timingSafeEqual`).
+ *
+ * Note: `eventId` is not validated separately — it is part of the signed
+ * body, so any tampering with it breaks the signature check above.
  *
  * Rotation: pass `{ secrets: [newSecret, oldSecret] }` instead of a single
  * secret during the rotation window — any candidate that matches returns

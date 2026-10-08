@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 240 tests, all local
+npm test   # 248 tests, all local
 ```
 
 ## Quickstart
@@ -258,10 +258,26 @@ const { payload, signature } = buildSettlementWebhook(report, { secret: process.
 const ok = verifySettlementWebhook(rawBody, receivedSignature, secret);
 ```
 
-`payload` is `{ event: "escrow.settled", escrowId, outcome, deposit, parties, at }`,
+`payload` is `{ event: "escrow.settled", eventId, escrowId, outcome, deposit, parties, at }`,
 derived entirely from the audit-backed settlement report. The comparison is
 constant-time (`timingSafeEqual`); malformed signatures fail closed as
 `false`, never throw.
+
+`eventId` is the receiver's idempotency key: every build generates a fresh
+UUID v4 (inject your own via `BuildWebhookOptions.eventId` for deterministic
+tests), and the signature covers it, so tampering with it fails verification.
+Retries of the same notification reuse the original `eventId`; two
+independent settlements never share one. Store seen `eventId`s on the
+receiving end and drop duplicates — that is how you tell "retry re-send"
+apart from "second settlement":
+
+```ts
+const seen = new Set<string>();
+// in the webhook handler, after verifySettlementWebhook(rawBody, sig, secret):
+if (seen.has(payload.eventId)) return { status: 200, note: "duplicate delivery" };
+seen.add(payload.eventId);
+// ... process the settlement exactly once
+```
 
 Secret rotation: while you roll from an old secret to a new one, pass both
 as candidates — any candidate that matches verifies, all-mismatch still
@@ -310,9 +326,10 @@ signatures.
 
 ## Reproducibility
 
-`npm test` runs 240 tests, including the portfolio's exact fee numbers as a
-golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network, no
-randomness in assertions.
+`npm test` runs 248 tests, including the portfolio's exact fee numbers as a
+golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
+only randomness asserted is that two generated `eventId`s differ (UUID v4),
+everything else is deterministic.
 
 ## License
 
