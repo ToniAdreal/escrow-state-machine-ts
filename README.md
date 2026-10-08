@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 272 tests, all local
+npm test   # 282 tests, all local
 ```
 
 ## Quickstart
@@ -120,7 +120,7 @@ parity.)
   carry no money and are never capped. Like idempotency keys, the cap is
   per-instance constructor configuration: it is NOT part of
   `toJSON()`/`fromJSON()` snapshots, so a restored escrow must re-enable it
-  via the constructor option.
+  via `Escrow.fromJSON(snapshot, opts)`.
 - Deadlines (advisory): `escrow.setDeadline(date)` attaches a deadline
   (stored as canonical ISO-8601; unparseable input throws),
   `getDeadline()`/`clearDeadline()` read and remove it. The deadline is
@@ -195,7 +195,7 @@ parity.)
   It turns "someone said pass" into "someone said pass, citing X" — the
   reference is auditable but still *not* verified by the library. The flag
   is per-instance dispatch configuration and is not part of the snapshot;
-  a restored escrow must re-enable it via the constructor.
+  a restored escrow must re-enable it via `Escrow.fromJSON(snapshot, opts)`.
 
 - **What about the 5/9 multi-sig DAO arbitration?**
   Partially modeled: `DISPUTE` → `ARBITRATE_RELEASE` /
@@ -351,7 +351,7 @@ signatures.
 
 ## Reproducibility
 
-`npm test` runs 272 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 282 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

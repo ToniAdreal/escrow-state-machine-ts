@@ -582,7 +582,8 @@ export interface EscrowOptions {
    *
    * Default: false (unchanged legacy behavior). The flag is per-instance
    * dispatch configuration and is NOT part of `toJSON()`/`fromJSON()`:
-   * a restored escrow must re-enable it via the constructor option.
+   * a restored escrow must re-enable it via the constructor option
+   * (including {@link Escrow.fromJSON}'s second parameter).
    */
   requireVerifyEvidence?: boolean;
 
@@ -598,7 +599,8 @@ export interface EscrowOptions {
    * (no cap, unchanged legacy behavior). Like `requireVerifyEvidence`,
    * this is per-instance dispatch configuration and is NOT part of
    * `toJSON()`/`fromJSON()`: a restored escrow must re-enable it via
-   * the constructor option.
+   * the constructor option (including {@link Escrow.fromJSON}'s second
+   * parameter).
    */
   maxDeposit?: number;
 }
@@ -976,10 +978,19 @@ export class Escrow {
    * deterministically chained on rehydration (the hash is a pure function
    * of the entry content, so no audit information changes) — the live
    * escrow's history is always fully chained from here on.
+   *
+   * @param opts - Optional per-instance dispatch configuration, passed
+   *   straight through to the constructor (same validation rules). The
+   *   snapshot never stores `requireVerifyEvidence`/`maxDeposit`, so a
+   *   restored escrow silently loses those guardrails unless the caller
+   *   re-enables them here — passing the same options the original
+   *   escrow was constructed with keeps the restored instance under the
+   *   same risk controls. When omitted, the restored escrow behaves
+   *   exactly like a legacy default-constructed one.
    */
-  static fromJSON(snapshot: unknown): Escrow {
+  static fromJSON(snapshot: unknown, opts?: EscrowOptions): Escrow {
     const parsed = parseEscrowSnapshot(snapshot);
-    const escrow = new Escrow(parsed.id);
+    const escrow = new Escrow(parsed.id, opts);
     escrow._state = parsed.state;
     escrow._history = chainHistoryEntries(parsed.history);
     escrow._deadline = parsed.deadline;
