@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 230 tests, all local
+npm test   # 240 tests, all local
 ```
 
 ## Quickstart
@@ -111,6 +111,16 @@ parity.)
   `toJSON()`/`fromJSON()` snapshots, so a restart clears them and the caller
   must reconcile before replaying. This is in-process retry protection, not
   a distributed idempotency store.
+- Deposit caps: `new Escrow(id, { maxDeposit })` caps the total locked
+  deposit at a finite non-negative number (risk control / contract limits).
+  A `FUND` whose amount would push the locked total — the sum of every
+  `FUND` entry's amount — above the cap throws a `deposit cap exceeded`
+  error *after* transition and amount validation and appends nothing, so a
+  failed FUND leaves no audit residue. `FUND` dispatches without an amount
+  carry no money and are never capped. Like idempotency keys, the cap is
+  per-instance constructor configuration: it is NOT part of
+  `toJSON()`/`fromJSON()` snapshots, so a restored escrow must re-enable it
+  via the constructor option.
 - Deadlines (advisory): `escrow.setDeadline(date)` attaches a deadline
   (stored as canonical ISO-8601; unparseable input throws),
   `getDeadline()`/`clearDeadline()` read and remove it. The deadline is
@@ -300,7 +310,7 @@ signatures.
 
 ## Reproducibility
 
-`npm test` runs 230 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 240 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network, no
 randomness in assertions.
 

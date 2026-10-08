@@ -365,6 +365,22 @@ export function assertNonNegativeMoney(name: string, value: unknown): void {
   }
 }
 
+/**
+ * Sum of all FUND amounts in the audit history. FUND entries without an
+ * amount carry no money and are skipped. Mirrors the
+ * `depositAmountFromHistory` summation semantics in settlementReport.ts
+ * (kept local here to avoid a circular import between the two modules).
+ */
+function totalFundedAmount(history: readonly EscrowHistoryEntry[]): number {
+  let total = 0;
+  for (const entry of history) {
+    if (entry.event === "FUND" && typeof entry.amount === "number") {
+      total += entry.amount;
+    }
+  }
+  return total;
+}
+
 // ------------------------------------------------------------------
 // Audit-history hash chain (tamper evidence for persisted logs).
 //
@@ -554,7 +570,8 @@ export interface SubscribeOptions {
 /**
  * Options accepted by the {@link Escrow} constructor.
  */
-export interface EscrowOptions {  /**
+export interface EscrowOptions {
+  /**
    * When true, `dispatch("VERIFY_PASS")` requires a non-empty `evidence`
    * reference (passed via {@link DispatchOptions.evidence}) and throws
    * otherwise, with no history residue. This is the controlled, auditable
@@ -568,6 +585,22 @@ export interface EscrowOptions {  /**
    * a restored escrow must re-enable it via the constructor option.
    */
   requireVerifyEvidence?: boolean;
+
+  /**
+   * Optional cap on the total locked deposit (sum of all FUND amounts).
+   * A `dispatch("FUND", note, amount)` that would push the locked total
+   * above this cap throws a descriptive error and appends nothing — the
+   * failed dispatch leaves no audit residue. FUND dispatches without an
+   * amount are not counted toward the cap (they carry no money).
+   *
+   * Must be a finite non-negative number when set (validated with
+   * `assertNonNegativeMoney` in the constructor). Default: undefined
+   * (no cap, unchanged legacy behavior). Like `requireVerifyEvidence`,
+   * this is per-instance dispatch configuration and is NOT part of
+   * `toJSON()`/`fromJSON()`: a restored escrow must re-enable it via
+   * the constructor option.
+   */
+  maxDeposit?: number;
 }
 
 /** Stateful escrow with an append-only audit history. */
@@ -577,6 +610,7 @@ export class Escrow {
   private _history: EscrowHistoryEntry[] = [];
   private _seenIdempotencyKeys = new Set<string>();
   private readonly _requireVerifyEvidence: boolean;
+  private readonly _maxDeposit: number | undefined;
 
   constructor(id: string, opts?: EscrowOptions) {
     // fromJSON validates the same rule; a live Escrow must never hold an id
@@ -596,9 +630,13 @@ export class Escrow {
           `invalid escrow options: requireVerifyEvidence must be a boolean, got ${typeof opts.requireVerifyEvidence}`
         );
       }
+      if (opts.maxDeposit !== undefined) {
+        assertNonNegativeMoney("maxDeposit", opts.maxDeposit);
+      }
     }
     this.id = id;
     this._requireVerifyEvidence = opts?.requireVerifyEvidence === true;
+    this._maxDeposit = opts?.maxDeposit;
   }
 
   get state(): EscrowState {
@@ -676,6 +714,9 @@ export class Escrow {
    *               finite non-negative number (NaN, ±Infinity, negatives, and
    *               non-numbers are rejected with a descriptive error). The
    *               validated amount is recorded on the FUND history entry.
+   *               When the escrow was constructed with a `maxDeposit`, a FUND
+   *               whose amount would push the locked total above the cap
+   *               throws a `deposit cap exceeded` error and appends nothing.
    * @param opts   Optional {@link DispatchOptions}. When `idempotencyKey`
    *               was seen before, dispatch is a no-op returning the current
    *               state; otherwise the key is recorded only after a
@@ -755,6 +796,23 @@ export class Escrow {
     const to = transition(from, event); // throws on invalid transition
     if (event === "FUND" && amount !== undefined) {
       assertNonNegativeMoney("amount", amount);
+    }
+    // Deposit cap (payments risk control): the cap is checked after the
+    // transition and amount validation, before anything is appended, so a
+    // capped-out FUND leaves no history residue — mirroring the budget
+    // exhaustion semantics of the dataquest lifecycle. FUND dispatches
+    // without an amount carry no money and are never capped.
+    if (
+      this._maxDeposit !== undefined &&
+      event === "FUND" &&
+      amount !== undefined
+    ) {
+      const funded = totalFundedAmount(this._history);
+      if (funded + amount > this._maxDeposit) {
+        throw new Error(
+          `deposit cap exceeded: locked ${funded} + new funding ${amount} would exceed maxDeposit ${this._maxDeposit}`
+        );
+      }
     }
     this._state = to;
     // Hash-chain the audit trail: the new entry commits to the previous
