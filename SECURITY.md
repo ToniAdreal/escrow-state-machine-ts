@@ -61,6 +61,12 @@ no cryptography beyond HMAC webhook signatures.
   Note the one throwing case: an empty `secrets` array (or an empty secret
   inside it) is a caller configuration error and throws
   `cannot verify settlement webhook: …` — it never silently passes.
+  **Signatures don't expire on their own:** without the opt-in
+  `maxAgeMs`, a legitimately-signed payload from a year ago still verifies.
+  Pass `VerifyWebhookOptions.maxAgeMs` to fail-closed reject payloads older
+  than the window (signature is checked first; an unparseable `at` returns
+  `false`). Future timestamps are not bounded — this is an old-payload
+  replay bound, not a full clock-skew policy.
 - **Settlement never runs on uncorroborated amounts.**
   `depositAmountFromHistory` (`src/settlementReport.ts`) throws
   `settlement requires a FUND amount` when the audit history has no FUND

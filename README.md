@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 248 tests, all local
+npm test   # 262 tests, all local
 ```
 
 ## Quickstart
@@ -294,6 +294,20 @@ configuration error and throws instead of silently passing. The library does
 not generate, store, or schedule the rotation itself — it only accepts the
 candidate set the caller hands it (see [SECURITY.md](SECURITY.md)).
 
+Signatures don't expire by themselves: a legitimately-signed payload from a
+year ago still verifies. For an opt-in replay bound, pass `maxAgeMs` — the
+signature is checked first, and only if it matches is `payload.at` checked
+against the window (an unparseable `at` fails closed as `false`):
+
+```ts
+// Reject replays older than 5 minutes; `now` is injectable in tests.
+const ok = verifySettlementWebhook(rawBody, receivedSignature, {
+  secrets: [process.env.WEBHOOK_SECRET!],
+  maxAgeMs: 5 * 60 * 1000,
+  now: Date.now(), // optional; defaults to the real clock
+});
+```
+
 Delivery is handled by `deliverSettlementWebhook(url, webhook, options)` —
 still zero runtime dependencies (Node ≥ 20 global `fetch`):
 
@@ -326,7 +340,7 @@ signatures.
 
 ## Reproducibility
 
-`npm test` runs 248 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 262 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

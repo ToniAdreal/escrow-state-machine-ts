@@ -78,6 +78,24 @@ export interface BuildWebhookOptions {
 export interface VerifyWebhookOptions {
   /** Candidate HMAC secrets; must be a non-empty array of non-empty secrets. */
   secrets: (string | Buffer)[];
+  /**
+   * Maximum age of the payload in milliseconds, measured from `payload.at`
+   * to `now`. When set, a payload whose signature verifies but whose `at`
+   * timestamp is older than this window returns `false` (fail-closed): this
+   * rejects replays of legitimately-signed old notifications (a signed
+   * payload from a year ago would otherwise verify forever — a signature
+   * has no expiry on its own). Leave unset (the default) for
+   * signature-only verification (the pre-freshness-check behavior).
+   * Must be a finite non-negative number; illegal values throw a caller
+   * configuration error. Note the boundary is inclusive: an age exactly
+   * equal to `maxAgeMs` still passes (`now - at > maxAgeMs` fails).
+   */
+  maxAgeMs?: number;
+  /**
+   * "Now" for the freshness check, as epoch milliseconds. Defaults to
+   * `Date.now()`; inject a fixed value in tests for determinism.
+   */
+  now?: number;
 }
 
 function assertSecret(secret: string | Buffer): void {
@@ -165,6 +183,14 @@ export function buildSettlementWebhook(
  * `true`; all-mismatch returns `false` (fail-closed). An empty `secrets`
  * array (or an empty secret inside it) is a caller configuration error and
  * throws, never silently passes.
+ *
+ * Freshness (opt-in replay bound): pass `{ secrets, maxAgeMs, now? }`.
+ * The signature is checked FIRST; only when it matches does the `at`
+ * timestamp get checked against `now` — a forged signature still fails on
+ * the signature comparison, and never reaches the freshness gate. An
+ * unparseable `at` (or an unparseable string body) fails closed as
+ * `false`, not an exception. Future timestamps are not bounded by this
+ * check (a negative age always passes); it only rejects old payloads.
  */
 export function verifySettlementWebhook(
   body: string | SettlementWebhookPayload,
@@ -198,10 +224,37 @@ export function verifySettlementWebhook(
     }
   });
 
+  const isOptionsForm =
+    typeof secretOrOptions === "object" && !Buffer.isBuffer(secretOrOptions);
+  const maxAgeMs = isOptionsForm
+    ? (secretOrOptions as VerifyWebhookOptions).maxAgeMs
+    : undefined;
+  if (
+    maxAgeMs !== undefined &&
+    (typeof maxAgeMs !== "number" || !Number.isFinite(maxAgeMs) || maxAgeMs < 0)
+  ) {
+    throw new Error(
+      `cannot verify settlement webhook: maxAgeMs must be a finite non-negative number, got ${String(
+        maxAgeMs,
+      )}`,
+    );
+  }
+  const now = isOptionsForm
+    ? ((secretOrOptions as VerifyWebhookOptions).now ?? Date.now())
+    : Date.now();
+  if (typeof now !== "number" || !Number.isFinite(now)) {
+    throw new Error(
+      `cannot verify settlement webhook: now must be a finite epoch-millisecond number, got ${String(
+        now,
+      )}`,
+    );
+  }
+
   const match = /^sha256=([0-9a-f]{64})$/.exec(signature);
   if (!match) return false;
   const bodyString = typeof body === "string" ? body : canonicalJson(body);
   const actual = Buffer.from(match[1], "hex");
+  let signatureMatches = false;
   for (const secret of secrets) {
     const expected = Buffer.from(
       createHmac("sha256", secret).update(bodyString, "utf8").digest(),
@@ -209,10 +262,46 @@ export function verifySettlementWebhook(
     // timingSafeEqual throws on length mismatch; a forged 64-hex string that
     // decodes short (never, given the regex) or long is simply a failure.
     if (expected.length === actual.length && timingSafeEqual(expected, actual)) {
-      return true;
+      signatureMatches = true;
+      break;
     }
   }
-  return false;
+  if (!signatureMatches) return false;
+  // Freshness is orthogonal to secret rotation and runs only after the
+  // signature matched: forgeries fail above, never here.
+  if (maxAgeMs === undefined) return true;
+  return payloadFreshEnough(body, maxAgeMs, now);
+}
+
+/**
+ * Fail-closed freshness gate over `payload.at`.
+ *
+ * String bodies are JSON-parsed to read `at`; unparseable bodies, missing
+ * `at`, or non-parseable timestamps all return `false` (never throw).
+ * The boundary is inclusive: `now - at <= maxAgeMs` passes.
+ */
+function payloadFreshEnough(
+  body: string | SettlementWebhookPayload,
+  maxAgeMs: number,
+  now: number,
+): boolean {
+  let at: unknown;
+  if (typeof body === "string") {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(body);
+    } catch {
+      return false;
+    }
+    // A JSON string's `.at` is String#at (a function); `typeof` below
+    // rejects it before Date.parse ever sees it. Same for null/numbers.
+    at = (parsed as { at?: unknown } | null)?.at;
+  } else {
+    at = body.at;
+  }
+  const atMs = typeof at === "string" ? Date.parse(at) : Number.NaN;
+  if (Number.isNaN(atMs)) return false;
+  return now - atMs <= maxAgeMs;
 }
 
 /* ------------------------------------------------------------------ */
