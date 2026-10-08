@@ -82,7 +82,9 @@ no cryptography beyond HMAC webhook signatures.
   non-http(s) protocols, and bad retry/timeout options before any request,
   and never retries 3xx/4xx other than 429 (the request itself is at fault);
   only 429/5xx/network errors get retries, with a 429 `Retry-After` hint
-  honored over the exponential backoff.
+  honored over the exponential backoff — the hint is clamped to
+  `maxRetryDelayMs` (default 60s), so a runaway value cannot park the
+  delivery promise for longer than the cap.
 
 ## Money precision (known limitation)
 

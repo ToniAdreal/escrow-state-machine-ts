@@ -329,7 +329,7 @@ import { deliverSettlementWebhook } from "escrow-state-machine-ts";
 const result = await deliverSettlementWebhook(
   "https://ledger.example.com/hooks/escrow",
   { payload, signature },
-  { retries: 3, backoffMs: 1000, timeoutMs: 10000 }, // all optional; these are the defaults
+  { retries: 3, backoffMs: 1000, timeoutMs: 10000, maxRetryDelayMs: 60000 }, // all optional; these are the defaults
 });
 // result: { status: 200, attempts: 1 }
 
@@ -348,7 +348,9 @@ verify it over the raw body. 2xx returns `{ status, attempts }`; 429, 5xx,
 and network errors (including timeouts) are retried with exponential backoff
 (retry n waits `backoffMs * 2^(n-1)`). A 429 `Retry-After` response header
 (delay seconds or an HTTP-date) takes precedence over the backoff; an
-absent or unparsable value falls back to it. Other 3xx/4xx throw
+absent or unparsable value falls back to it. The honored hint is clamped to
+`maxRetryDelayMs` (default 60,000ms): a faulty or hostile server returning
+`Retry-After: 31536000` can never stall the delivery promise beyond the cap. Other 3xx/4xx throw
 immediately without retrying, and redirects are never followed: a 3xx
 response is returned as-is (the signed payload is never re-posted to a
 third-party redirect target), surfacing as `failed with status 301 (not
@@ -364,7 +366,7 @@ signatures.
 
 ## Reproducibility
 
-`npm test` runs 301 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 313 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

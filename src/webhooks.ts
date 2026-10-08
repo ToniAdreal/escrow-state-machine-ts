@@ -323,6 +323,18 @@ export interface DeliverWebhookOptions {
   /** Per-attempt request timeout in milliseconds. Default 10000. */
   timeoutMs?: number;
   /**
+   * Cap, in milliseconds, on the `Retry-After` wait honored on a 429.
+   * A faulty or malicious server can answer `Retry-After: 31536000`; without
+   * a cap the delivery promise would sleep for a year before the next
+   * attempt (the sleep timer is unref'd, so it would stall silently). The
+   * hint is clamped with `Math.min` before sleeping; default 60000.
+   * Must be a finite non-negative number (`0` disables any Retry-After
+   * wait, retrying immediately). Only the 429 hint is clamped — the
+   * exponential backoff used when the hint is absent/unparsable is
+   * unaffected.
+   */
+  maxRetryDelayMs?: number;
+  /**
    * Optional external abort signal. Wired into both the in-flight request
    * and the backoff sleep between retries: aborting the signal ends the
    * whole delivery (no further attempts) and the returned promise rejects
@@ -366,15 +378,20 @@ export function parseRetryAfter(
   return Math.max(0, when - nowMs);
 }
 
-/** Wait before the next retry: a 429 `Retry-After` hint wins over backoff. */
+/**
+ * Wait before the next retry: a 429 `Retry-After` hint wins over backoff,
+ * clamped to `maxRetryDelayMs` so a runaway hint can never stall delivery
+ * longer than the caller allows.
+ */
 function retryDelayMs(
   response: Response,
   attempt: number,
   backoffMs: number,
+  maxRetryDelayMs: number,
 ): number {
   if (response.status === 429) {
     const hinted = parseRetryAfter(response.headers.get("retry-after"));
-    if (hinted !== undefined) return hinted;
+    if (hinted !== undefined) return Math.min(hinted, maxRetryDelayMs);
   }
   return backoffMs * 2 ** attempt;
 }
@@ -417,7 +434,9 @@ function sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> {
  *   exponential backoff, up to `retries` additional attempts. A 429
  *   `Retry-After` response header (delay seconds or an HTTP-date) takes
  *   precedence over the computed backoff; an absent or unparsable value
- *   falls back to `backoffMs * 2^(n-1)`.
+ *   falls back to `backoffMs * 2^(n-1)`. The honored hint is clamped to
+ *   `maxRetryDelayMs` (default 60s), so a faulty or hostile server cannot
+ *   stall delivery beyond the cap.
  * - Other 3xx/4xx (400, 404, …) → the request itself is at fault; throws
  *   immediately, no retry. Redirects are never followed (`redirect:
  *   "manual"`): a 3xx response is returned as-is and lands in this branch,
@@ -442,6 +461,7 @@ export async function deliverSettlementWebhook(
   const retries = options.retries ?? 3;
   const backoffMs = options.backoffMs ?? 1000;
   const timeoutMs = options.timeoutMs ?? 10_000;
+  const maxRetryDelayMs = options.maxRetryDelayMs ?? 60_000;
   const signal = options.signal;
 
   if (signal !== undefined && !(signal instanceof AbortSignal)) {
@@ -475,6 +495,14 @@ export async function deliverSettlementWebhook(
     throw new Error(
       `cannot deliver settlement webhook: timeoutMs must be a positive number, got ${String(
         options.timeoutMs,
+      )}`,
+    );
+  }
+
+  if (!Number.isFinite(maxRetryDelayMs) || maxRetryDelayMs < 0) {
+    throw new Error(
+      `cannot deliver settlement webhook: maxRetryDelayMs must be a non-negative number, got ${String(
+        options.maxRetryDelayMs,
       )}`,
     );
   }
@@ -526,7 +554,10 @@ export async function deliverSettlementWebhook(
     ) {
       lastError = new Error(`server responded with status ${response.status}`);
       if (attempt < retries) {
-        await sleepAbortable(retryDelayMs(response, attempt, backoffMs), signal);
+        await sleepAbortable(
+          retryDelayMs(response, attempt, backoffMs, maxRetryDelayMs),
+          signal,
+        );
         continue;
       }
       break;
