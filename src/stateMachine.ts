@@ -381,6 +381,15 @@ function totalFundedAmount(history: readonly EscrowHistoryEntry[]): number {
   return total;
 }
 
+/**
+ * Cent precision used by this library's money model ("all amounts are
+ * rounded to cents" — see settlementReport.ts). Kept local here for the
+ * same circular-import reason as `totalFundedAmount` above.
+ */
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
 // ------------------------------------------------------------------
 // Audit-history hash chain (tamper evidence for persisted logs).
 //
@@ -810,7 +819,13 @@ export class Escrow {
       amount !== undefined
     ) {
       const funded = totalFundedAmount(this._history);
-      if (funded + amount > this._maxDeposit) {
+      // Cent-precision comparison, not raw floats: this library's money
+      // model is "all amounts are rounded to cents", and raw float addition
+      // can be off by an ulp — e.g. locked 0.2 + new FUND 0.1 sums to
+      // 0.30000000000000004 while the cap is exactly 0.3. Comparing raw
+      // floats would reject a legitimate funding sitting exactly on the
+      // cap. Matches the #69 settlement-report comparison semantics.
+      if (round2(funded + amount) > round2(this._maxDeposit)) {
         throw new Error(
           `deposit cap exceeded: locked ${funded} + new funding ${amount} would exceed maxDeposit ${this._maxDeposit}`
         );
