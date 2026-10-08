@@ -1020,3 +1020,54 @@ export function expiredEscrows(
 ): Escrow[] {
   return escrows.filter((escrow) => isOverdue(escrow, now));
 }
+
+/**
+ * Per-escrow outcome of {@link expireOverdueEscrows}.
+ */
+export interface ExpireOverdueResult {
+  /** The escrow this outcome belongs to. */
+  escrow: Escrow;
+  /** True when the EXPIRE dispatch succeeded and the escrow is now EXPIRED. */
+  expired: boolean;
+  /** Set when the EXPIRE dispatch threw; the message of the caught error. */
+  error?: string;
+}
+
+/**
+ * Watchdog executor: attempt an explicit `dispatch("EXPIRE")` for every
+ * escrow that {@link isOverdue} reports as overdue, and report the
+ * per-escrow outcome.
+ *
+ * This exists because a hand-written loop over `expiredEscrows()` has a
+ * real trap: `expiredEscrows()` only checks the deadline and the terminal
+ * flag, but `EXPIRE` is not a legal event from every non-terminal state.
+ * `VERIFIED` (and `DISPUTED`) escrows have no `EXPIRE` edge in the
+ * transition table, so `escrow.dispatch("EXPIRE")` throws
+ * `invalid transition: EXPIRE from VERIFIED` — a naive loop aborts the
+ * whole batch on the first such escrow. This executor catches the error
+ * per escrow (`expired: false, error: <message>`) and keeps going, so one
+ * unexpirable escrow never blocks the rest of the batch.
+ *
+ * Same semantics as the manual pattern: nothing auto-migrates. Expiry
+ * only happens through an explicit, auditable dispatch that lands in the
+ * append-only history. Only overdue (non-terminal, past deadline) escrows
+ * are attempted; the result has one entry per attempted escrow, in batch
+ * order. The `now` default is the real clock, so unit tests pin it.
+ */
+export function expireOverdueEscrows(
+  escrows: readonly Escrow[],
+  now: Date = new Date()
+): ExpireOverdueResult[] {
+  return expiredEscrows(escrows, now).map((escrow) => {
+    try {
+      escrow.dispatch("EXPIRE");
+      return { escrow, expired: true };
+    } catch (err) {
+      return {
+        escrow,
+        expired: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  });
+}

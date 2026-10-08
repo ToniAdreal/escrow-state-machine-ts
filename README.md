@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 262 tests, all local
+npm test   # 272 tests, all local
 ```
 
 ## Quickstart
@@ -130,6 +130,14 @@ parity.)
   no deadline and for terminal states (a settled escrow is never
   "overdue"). `expiredEscrows(escrows)` filters a batch down to the
   overdue non-terminal ones in one line — it never mutates or dispatches.
+  `expireOverdueEscrows(escrows)` goes one step further and performs the
+  explicit `EXPIRE` dispatch per overdue escrow, returning per-escrow
+  `{ escrow, expired, error? }` outcomes. The executor exists because of a
+  real trap: `VERIFIED` (and `DISPUTED`) escrows have no `EXPIRE` edge in
+  the transition table, so a naive hand-written loop aborts the whole
+  batch on the first such escrow — the executor records
+  `{ expired: false, error: "invalid transition: EXPIRE from VERIFIED" }`
+  for it and keeps going. Failed escrows are left untouched.
   The deadline rides along in `toJSON()`/`fromJSON()` snapshots (a
   tampered or non-canonical deadline is rejected by snapshot validation).
 - Dispatch subscriptions (in-process fan-out seam): `escrow.subscribe(listener)`
@@ -214,7 +222,9 @@ parity.)
   export via `toJSON()`/`Escrow.fromJSON()`, not a database), no concurrency
   control, idempotency keys only in-memory (not persisted across restarts),
   `EXPIRE` is dispatched by the caller — there is an advisory deadline
-  field plus `isOverdue()`/`expiredEscrows()` watchdog helpers, but no
+  field plus `isOverdue()`/`expiredEscrows()` watchdog helpers and an
+  `expireOverdueEscrows()` batch executor (which skips escrows with no
+  legal `EXPIRE` edge instead of aborting the batch), but no
   background timer or auto-expiry — and there is no identity/RBAC.
   Reference and demo use only.
 
@@ -226,7 +236,8 @@ parity.)
   not the chain.
 - **Simplified roles.** Real deployments need identity/RBAC, a real deadline
   scheduler (this repo has an advisory deadline field with
-  `isOverdue()`/`expiredEscrows()` watchdog helpers, but no background
+  `isOverdue()`/`expiredEscrows()` watchdog helpers plus an
+  `expireOverdueEscrows()` batch executor, but no background
   timer or auto-expire), and cross-restart idempotency keys (this repo's
   are in-memory only); the `Escrow` class is in-memory.
 - **Fee formula is the case study's**, not a general pricing engine: arbitrary
@@ -340,7 +351,7 @@ signatures.
 
 ## Reproducibility
 
-`npm test` runs 262 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 272 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
