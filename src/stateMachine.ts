@@ -8,6 +8,8 @@
  * throw. An append-only history gives the "immutable operational audit log".
  */
 
+import { createHash } from "node:crypto";
+
 export type EscrowState =
   | "CREATED"
   | "FUNDED"
@@ -115,6 +117,20 @@ export interface EscrowHistoryEntry {
    * {@link EscrowOptions.requireVerifyEvidence} and SECURITY.md.
    */
   evidence?: string;
+  /**
+   * Hash-chain fields (tamper evidence for persisted audit logs).
+   *
+   * `prevHash` links to the previous entry's `hash` (the genesis entry's
+   * `prevHash` is the {@link GENESIS_PREV_HASH} constant); `hash` is the
+   * SHA-256 of the canonical entry serialization concatenated with
+   * `prevHash`. Both are written by {@link Escrow.dispatch} and verified
+   * by {@link verifyHistoryChain}. Snapshots produced before this feature
+   * carry neither field and are still accepted as legacy (see
+   * parseEscrowSnapshot); a snapshot that mixes chained and hashless
+   * entries is rejected.
+   */
+  prevHash?: string;
+  hash?: string;
 }
 
 /**
@@ -167,6 +183,11 @@ function isCanonicalIso(s: unknown): s is string {
  *  - `note`, when present, must be a string
  *  - `evidence`, when present, must be a non-empty string and may only
  *    appear on VERIFY_PASS entries
+ *  - `prevHash`/`hash`, when present, must both be non-empty strings and
+ *    appear on every entry (mixed chained/hashless histories are
+ *    rejected); when every entry carries them, the hash chain is
+ *    re-verified and a broken chain throws (legacy hashless histories
+ *    pass through and are chained on rehydration)
  *  - `deadline`, when present, must be canonical ISO-8601 (the advisory
  *    deadline; anything produced by toJSON() passes)
  *
@@ -270,6 +291,19 @@ function parseEscrowSnapshot(snapshot: unknown): EscrowSnapshot {
       }
       entry.evidence = raw.evidence;
     }
+    // Hash-chain fields are all-or-nothing: one without the other, or a
+    // history that mixes chained and hashless entries, is rejected here.
+    // Chain CONTENT verification happens after the structural checks.
+    if (raw.prevHash !== undefined || raw.hash !== undefined) {
+      if (typeof raw.prevHash !== "string" || raw.prevHash.length === 0) {
+        throw new Error(`${tag}: prevHash must be a non-empty string`);
+      }
+      if (typeof raw.hash !== "string" || raw.hash.length === 0) {
+        throw new Error(`${tag}: hash must be a non-empty string`);
+      }
+      entry.prevHash = raw.prevHash;
+      entry.hash = raw.hash;
+    }
     history.push(entry);
   }
 
@@ -284,6 +318,24 @@ function parseEscrowSnapshot(snapshot: unknown): EscrowSnapshot {
     throw new Error(
       `invalid snapshot: empty history but state is ${state} (expected CREATED)`
     );
+  }
+
+  // Structural checks passed. Now the chain: mixed chained/hashless
+  // histories are rejected, and a fully chained history must re-verify.
+  // Fully hashless histories are legacy and pass through (fromJSON chains
+  // them deterministically on rehydration).
+  const chainedFlags = history.map((e) => e.hash !== undefined);
+  if (chainedFlags.some(Boolean) && chainedFlags.some((c) => !c)) {
+    throw new Error(
+      "invalid snapshot: hash-chain entries must not be mixed with hashless entries"
+    );
+  }
+  if (chainedFlags.length > 0 && chainedFlags.every(Boolean)) {
+    if (!verifyHistoryChain(history)) {
+      throw new Error(
+        "invalid snapshot: history hash chain is broken (an entry was tampered with, deleted, or reordered)"
+      );
+    }
   }
 
   let deadline: string | undefined;
@@ -311,6 +363,116 @@ export function assertNonNegativeMoney(name: string, value: unknown): void {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
     throw new Error(`${name} must be a finite non-negative number`);
   }
+}
+
+// ------------------------------------------------------------------
+// Audit-history hash chain (tamper evidence for persisted logs).
+//
+// The runtime-frozen `history` getter stops in-process tampering, but a
+// persisted JSON snapshot could be rewritten on disk and rehydrated
+// without anyone noticing. Every chained entry commits to the full
+// content of its predecessor: `hash = sha256(canonical(entry sans hash)
+// + prevHash)`, with the genesis entry's `prevHash` set to
+// GENESIS_PREV_HASH. Rewriting any field of any entry (or deleting /
+// reordering entries) breaks the chain, and {@link verifyHistoryChain}
+// reports it.
+//
+// Honest limits: this is an UNKEYED chain. It detects edits by anyone
+// who rewrites entries without recomputing the chain (manual edits,
+// log-shipper corruption, partial restores). It does NOT stop an
+// attacker who rewrites the whole JSON and recomputes the hashes —
+// that needs a keyed MAC or signatures, which is out of scope here.
+// ------------------------------------------------------------------
+
+/** `prevHash` of the first (genesis) audit entry. */
+export const GENESIS_PREV_HASH = "GENESIS";
+
+/**
+ * Canonical serialization of a history entry for hashing: fixed key order
+ * (seq, event, from, to, at, then the optional fields in declaration
+ * order), `undefined` values omitted. `hash` itself is never part of the
+ * hashed content (it is what we are computing). Deterministic: the same
+ * entry always serializes to the same string.
+ */
+function canonicalHistoryEntry(
+  entry: Omit<EscrowHistoryEntry, "hash">
+): string {
+  const obj: Record<string, unknown> = {
+    seq: entry.seq,
+    event: entry.event,
+    from: entry.from,
+    to: entry.to,
+    at: entry.at,
+  };
+  if (entry.note !== undefined) obj.note = entry.note;
+  if (entry.amount !== undefined) obj.amount = entry.amount;
+  if (entry.evidence !== undefined) obj.evidence = entry.evidence;
+  if (entry.prevHash !== undefined) obj.prevHash = entry.prevHash;
+  return JSON.stringify(obj);
+}
+
+function hashHistoryEntry(canonical: string, prevHash: string): string {
+  return createHash("sha256").update(canonical + prevHash, "utf8").digest("hex");
+}
+
+/**
+ * Verify the hash chain of an audit history. Returns `true` when the
+ * chain is intact: every entry's `prevHash` matches the previous entry's
+ * `hash` (genesis links to {@link GENESIS_PREV_HASH}) and every `hash`
+ * recomputes from the entry content.
+ *
+ * Semantics for histories without a chain:
+ *  - empty history -> `true` (vacuous);
+ *  - no entry carries hash fields (legacy snapshots) -> `true`: there is
+ *    no chain to verify, mirroring the snapshot parser's legacy
+ *    pass-through;
+ *  - a mix of chained and hashless entries -> `false` (fail closed).
+ *
+ * Note: this checks integrity only, not structure. A re-sequenced or
+ * structurally invalid history still needs parseEscrowSnapshot
+ * (via {@link Escrow.fromJSON}) for the seq/edge/timestamp rules.
+ */
+export function verifyHistoryChain(
+  history: readonly EscrowHistoryEntry[]
+): boolean {
+  if (history.length === 0) return true;
+  const carried = history.map(
+    (e) => e.hash !== undefined || e.prevHash !== undefined
+  );
+  if (carried.every((c) => !c)) return true; // legacy: nothing to verify
+  if (carried.some((c) => !c)) return false; // mixed: fail closed
+  let expectedPrev = GENESIS_PREV_HASH;
+  for (const entry of history) {
+    if (entry.prevHash !== expectedPrev) return false;
+    const canonical = canonicalHistoryEntry(entry);
+    if (hashHistoryEntry(canonical, entry.prevHash) !== entry.hash) {
+      return false;
+    }
+    expectedPrev = entry.hash!;
+  }
+  return true;
+}
+
+/**
+ * Chain a parsed history: entries that already carry a chain pass
+ * through untouched (the parser verified them); a fully hashless legacy
+ * history gets its chain computed deterministically from the genesis
+ * constant. Mixed input never reaches here — parseEscrowSnapshot rejects
+ * it. The audit content is never altered: the hash is a pure function of
+ * the entry fields.
+ */
+function chainHistoryEntries(
+  history: EscrowHistoryEntry[]
+): EscrowHistoryEntry[] {
+  if (history.length === 0) return history;
+  if (history[0].hash !== undefined) return history; // already chained
+  let prevHash = GENESIS_PREV_HASH;
+  return history.map((entry) => {
+    const chained: EscrowHistoryEntry = { ...entry, prevHash };
+    chained.hash = hashHistoryEntry(canonicalHistoryEntry(chained), prevHash);
+    prevHash = chained.hash;
+    return chained;
+  });
 }
 
 /**
@@ -595,7 +757,15 @@ export class Escrow {
       assertNonNegativeMoney("amount", amount);
     }
     this._state = to;
-    this._history.push({
+    // Hash-chain the audit trail: the new entry commits to the previous
+    // entry's hash (genesis links to GENESIS_PREV_HASH), so any later
+    // rewrite of a persisted entry is detectable via verifyHistoryChain.
+    // The live history is always fully chained (fromJSON chains legacy
+    // hashless histories on rehydration), so the previous hash is always
+    // defined for a non-empty history; the fallback is defensive only.
+    const prevEntry = this._history[this._history.length - 1];
+    const prevHash = prevEntry?.hash ?? GENESIS_PREV_HASH;
+    const chainedEntry: EscrowHistoryEntry = {
       seq: this._history.length + 1,
       event,
       from,
@@ -606,7 +776,13 @@ export class Escrow {
       ...(event === "VERIFY_PASS" && evidence !== undefined
         ? { evidence }
         : {}),
-    });
+      prevHash,
+    };
+    chainedEntry.hash = hashHistoryEntry(
+      canonicalHistoryEntry(chainedEntry),
+      prevHash
+    );
+    this._history.push(chainedEntry);
     if (idempotencyKey !== undefined) {
       this._seenIdempotencyKeys.add(idempotencyKey);
     }
@@ -736,13 +912,18 @@ export class Escrow {
    * validated (see parseEscrowSnapshot); malformed snapshots throw with a
    * descriptive `invalid snapshot: ...` error instead of producing a
    * corrupt escrow. A tampered or non-canonical `deadline` is rejected the
-   * same way.
+   * same way, as is a broken hash chain on a chained snapshot.
+   *
+   * Legacy (hashless) snapshots are still accepted; their histories are
+   * deterministically chained on rehydration (the hash is a pure function
+   * of the entry content, so no audit information changes) — the live
+   * escrow's history is always fully chained from here on.
    */
   static fromJSON(snapshot: unknown): Escrow {
     const parsed = parseEscrowSnapshot(snapshot);
     const escrow = new Escrow(parsed.id);
     escrow._state = parsed.state;
-    escrow._history = parsed.history;
+    escrow._history = chainHistoryEntries(parsed.history);
     escrow._deadline = parsed.deadline;
     return escrow;
   }

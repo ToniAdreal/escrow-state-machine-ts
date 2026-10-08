@@ -86,7 +86,7 @@ arithmetic and has **not** been audited. Invariant tests assert fund
 conservation within ±1 cent only (`test/invariants.test.ts`). Do not use
 for precision-critical accounting.
 
-## Audit-history integrity (in-process)
+## Audit-history integrity (in-process + persisted)
 
 `Escrow.history` returns a detached, frozen snapshot on every call: the
 array is `Object.freeze`d and each entry is a frozen copy
@@ -94,6 +94,23 @@ array is `Object.freeze`d and each entry is a frozen copy
 rewrite entry fields to tamper with the audit log; `dispatch()` remains
 the only way to append. (`toJSON()` returns a detached deep copy as
 well, so snapshots exported for persistence are detached and safe.)
+
+Persisted snapshots get a second layer: every entry is **hash-chained**
+(`prevHash`/`hash`, SHA-256 over the canonical entry serialization, genesis
+`prevHash` is `"GENESIS"`). `Escrow.fromJSON()` re-verifies the chain on
+chained snapshots and rejects a broken one, so an entry rewritten on disk
+(amount/note/evidence changed, an entry deleted or reordered) is detected
+on rehydration instead of silently accepted. `verifyHistoryChain()` is
+exported for standalone checks (watchdogs, log-shipper validation).
+
+Honest limits: the chain is **unkeyed** — it is tamper *evidence*, not a
+MAC. It catches edits by anyone who rewrites entries without recomputing
+the chain (manual edits, log-shipper corruption, partial restores). It
+does **not** stop an attacker who rewrites the whole JSON and recomputes
+the hashes; that threat needs a keyed MAC or signatures over the snapshot,
+which is out of scope. Legacy (hashless) snapshots are still accepted and
+deterministically chained on rehydration; a snapshot that mixes chained and
+hashless entries is rejected.
 
 ## Deliberately NOT here (production would need it)
 

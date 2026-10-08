@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 208 tests, all local
+npm test   # 230 tests, all local
 ```
 
 ## Quickstart
@@ -82,7 +82,16 @@ parity.)
 - `transition(state, event)` is a pure function; invalid transitions throw.
 - `Escrow` wraps it with an append-only history (the case study's "immutable
   operational audit log"): every dispatch records seq, event, from → to,
-  timestamp, and an optional note. `FUND` accepts an optional `amount`
+  timestamp, and an optional note. Each entry is also **hash-chained**:
+  `prevHash` links to the previous entry's `hash` (genesis links to the
+  `"GENESIS"` constant) and `hash` is SHA-256 over the canonical entry
+  serialization, so a rewritten entry in a persisted JSON snapshot is
+  detectable — `verifyHistoryChain(history)` returns `false`, and
+  `Escrow.fromJSON()` rejects a broken chain (legacy hashless snapshots
+  are still accepted and chained on rehydration; mixed chained/hashless
+  snapshots are rejected). The chain is unkeyed tamper *evidence*, not a
+  MAC — see [SECURITY.md](SECURITY.md) for the honest limits.
+  `FUND` accepts an optional `amount`
   argument — it is validated as a finite non-negative number at the dispatch
   boundary (anything else throws) and recorded on the audit entry; passing an
   amount with any other event throws. `FUND` from `CREATED` is the initial
@@ -291,7 +300,7 @@ signatures.
 
 ## Reproducibility
 
-`npm test` runs 208 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 230 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network, no
 randomness in assertions.
 
