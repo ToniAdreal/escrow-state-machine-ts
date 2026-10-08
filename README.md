@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 293 tests, all local
+npm test   # 301 tests, all local
 ```
 
 ## Quickstart
@@ -332,6 +332,14 @@ const result = await deliverSettlementWebhook(
   { retries: 3, backoffMs: 1000, timeoutMs: 10000 }, // all optional; these are the defaults
 });
 // result: { status: 200, attempts: 1 }
+
+// Cancel a delivery stuck in retries or a hung request:
+const controller = new AbortController();
+const pending = deliverSettlementWebhook(url, { payload, signature }, {
+  retries: 5,
+  signal: controller.signal, // aborts the in-flight request and any backoff sleep
+});
+controller.abort(); // pending rejects with `webhook delivery aborted`, never retried
 ```
 
 Semantics: the payload is POSTed as JSON with the `X-Signature` header,
@@ -346,13 +354,17 @@ response is returned as-is (the signed payload is never re-posted to a
 third-party redirect target), surfacing as `failed with status 301 (not
 retried)` so the caller fixes the endpoint URL. When every attempt fails, the error reads
 `webhook delivery to <url> failed after <n> attempts: <last cause>`; a
-per-attempt timeout surfaces as `timed out after <timeoutMs>ms`. Secret
+per-attempt timeout surfaces as `timed out after <timeoutMs>ms`. An optional
+`signal` (`AbortSignal`) aborts both the in-flight request and any pending
+backoff sleep — the promise rejects with `webhook delivery aborted` and the
+request is never retried after an abort (an abort is a caller request to
+stop, not a retryable failure). Secret
 distribution remains the caller's responsibility: whoever holds it can forge
 signatures.
 
 ## Reproducibility
 
-`npm test` runs 293 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 301 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

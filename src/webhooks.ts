@@ -322,6 +322,14 @@ export interface DeliverWebhookOptions {
   backoffMs?: number;
   /** Per-attempt request timeout in milliseconds. Default 10000. */
   timeoutMs?: number;
+  /**
+   * Optional external abort signal. Wired into both the in-flight request
+   * and the backoff sleep between retries: aborting the signal ends the
+   * whole delivery (no further attempts) and the returned promise rejects
+   * with `webhook delivery aborted`. The per-attempt `timeoutMs` still
+   * applies independently. Any non-`AbortSignal` value is a config error.
+   */
+  signal?: AbortSignal;
 }
 
 /** Result of a successful {@link deliverSettlementWebhook} call. */
@@ -371,11 +379,29 @@ function retryDelayMs(
   return backoffMs * 2 ** attempt;
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
+/**
+ * Sleep between retries, interruptible by an external abort signal.
+ * Rejects with `webhook delivery aborted` if the signal is already aborted
+ * or aborts while the sleep is pending (the pending timer is cleared, so no
+ * further attempt fires). Without a signal this is a plain sleep.
+ */
+function sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error("webhook delivery aborted"));
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new Error("webhook delivery aborted"));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
     // A pending backoff must not hold the process open on its own.
     timer.unref();
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 
@@ -401,8 +427,12 @@ function sleep(ms: number): Promise<void> {
  * When every attempt fails, throws
  * `webhook delivery to <url> failed after <n> attempts: <last cause>`.
  * A per-attempt timeout surfaces as `webhook delivery timed out after
- * <timeoutMs>ms`. Invalid options throw a `cannot deliver settlement
- * webhook: …` config error before any request is made.
+ * <timeoutMs>ms`. An external `signal` aborts the in-flight request and any
+ * pending backoff sleep alike — no further attempts are made, and the
+ * promise rejects with `webhook delivery aborted` (an abort is a caller
+ * request to stop, never retried). Invalid options throw a
+ * `cannot deliver settlement webhook: …` config error before any request
+ * is made.
  */
 export async function deliverSettlementWebhook(
   url: string,
@@ -412,6 +442,20 @@ export async function deliverSettlementWebhook(
   const retries = options.retries ?? 3;
   const backoffMs = options.backoffMs ?? 1000;
   const timeoutMs = options.timeoutMs ?? 10_000;
+  const signal = options.signal;
+
+  if (signal !== undefined && !(signal instanceof AbortSignal)) {
+    throw new Error(
+      `cannot deliver settlement webhook: signal must be an AbortSignal, got ${String(
+        signal,
+      )}`,
+    );
+  }
+  if (signal?.aborted) {
+    // Pre-aborted: the caller asked to stop before we started. Zero HTTP
+    // attempts, a clear error, no retry.
+    throw new Error("webhook delivery aborted");
+  }
 
   if (!Number.isInteger(retries) || retries < 0) {
     throw new Error(
@@ -459,11 +503,16 @@ export async function deliverSettlementWebhook(
     attempts = attempt + 1;
     let response: Response;
     try {
-      response = await postOnce(target, webhook.signature, body, timeoutMs);
+      response = await postOnce(target, webhook.signature, body, timeoutMs, signal);
     } catch (err) {
+      if (signal?.aborted) {
+        // The caller asked to stop: propagate the abort immediately,
+        // never treat it as a retryable network failure.
+        throw new Error("webhook delivery aborted");
+      }
       lastError = err instanceof Error ? err : new Error(String(err));
       if (attempt < retries) {
-        await sleep(backoffMs * 2 ** attempt);
+        await sleepAbortable(backoffMs * 2 ** attempt, signal);
         continue;
       }
       break;
@@ -477,7 +526,7 @@ export async function deliverSettlementWebhook(
     ) {
       lastError = new Error(`server responded with status ${response.status}`);
       if (attempt < retries) {
-        await sleep(retryDelayMs(response, attempt, backoffMs));
+        await sleepAbortable(retryDelayMs(response, attempt, backoffMs), signal);
         continue;
       }
       break;
@@ -495,12 +544,18 @@ export async function deliverSettlementWebhook(
   );
 }
 
-/** One POST attempt with a per-attempt timeout. Network errors propagate. */
+/**
+ * One POST attempt with a per-attempt timeout. Network errors propagate.
+ * An external `signal`, when provided, aborts the same request controller
+ * as the timeout: an abort triggered by the caller surfaces as
+ * `webhook delivery aborted`, distinct from the timeout error.
+ */
 async function postOnce(
   target: URL,
   signature: string,
   body: string,
   timeoutMs: number,
+  externalSignal?: AbortSignal,
 ): Promise<Response> {
   const controller = new AbortController();
   let timedOut = false;
@@ -509,6 +564,16 @@ async function postOnce(
     controller.abort();
   }, timeoutMs);
   timer.unref();
+  const onExternalAbort = () => controller.abort();
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      controller.abort();
+    } else {
+      externalSignal.addEventListener("abort", onExternalAbort, {
+        once: true,
+      });
+    }
+  }
   try {
     return await fetch(target, {
       method: "POST",
@@ -530,8 +595,12 @@ async function postOnce(
     if (timedOut) {
       throw new Error(`webhook delivery timed out after ${timeoutMs}ms`);
     }
+    if (externalSignal?.aborted) {
+      throw new Error("webhook delivery aborted");
+    }
     throw err;
   } finally {
     clearTimeout(timer);
+    externalSignal?.removeEventListener("abort", onExternalAbort);
   }
 }
