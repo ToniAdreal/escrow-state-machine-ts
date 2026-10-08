@@ -20,10 +20,11 @@
  *   splitting it would double-count. See README "Limitations (honest)".
  */
 
-import type {
-  EscrowEvent,
-  EscrowHistoryEntry,
-  EscrowState,
+import {
+  type EscrowEvent,
+  type EscrowHistoryEntry,
+  type EscrowState,
+  verifyHistoryChain,
 } from "./stateMachine.js";
 import type { FeeBreakdown } from "./feeCalculator.js";
 import { settleRelease, type Settlement } from "./settlement.js";
@@ -146,17 +147,33 @@ function ledger(
 
 /**
  * Build the settlement report. Throws when the escrow has not reached a
- * terminal state, when a released/refunded escrow has an empty history
- * (the audit trail is the evidence; no trail, no report), or when the
- * caller-supplied deposit disagrees with the FUND amount recorded in the
- * audit history (fail fast instead of accounting for money the trail
- * never saw).
+ * terminal state, when the audit history's hash chain is broken or mixes
+ * chained and hashless entries (tampered, deleted, or reordered entries —
+ * the same standard the snapshot parser enforces), when a released/refunded
+ * escrow has an empty history (the audit trail is the evidence; no trail,
+ * no report), or when the caller-supplied deposit disagrees with the FUND
+ * amount recorded in the audit history (fail fast instead of accounting for
+ * money the trail never saw).
  */
 export function buildSettlementReport(
   inputs: SettlementReportInputs,
 ): SettlementReport {
   const { escrowId, history, finalState, deposit } = inputs;
   const depositAmount = deposit.deposit;
+
+  // The audit history is the sole evidence for every figure below, so it
+  // must be integrity-checked before any money math runs: an attacker who
+  // rewrote an amount, edited a note, deleted an entry, or reordered the
+  // trail could otherwise make a clean-looking report out of a tampered
+  // history. A fully hashless history is legacy and passes through (nothing
+  // to verify), while a mix of chained and hashless entries is rejected —
+  // exactly the semantics of verifyHistoryChain, aligned with the snapshot
+  // parser's rules.
+  if (!verifyHistoryChain(history)) {
+    throw new Error(
+      `cannot build settlement report for ${escrowId}: audit history hash chain is broken or mixes chained and hashless entries (an entry was tampered with, deleted, or reordered)`,
+    );
+  }
 
   // Fail fast on an uncorroborated deposit: when the audit history records
   // FUND amounts, their total (initial deposit + any top-ups) must match the

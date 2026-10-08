@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 282 tests, all local
+npm test   # 293 tests, all local
 ```
 
 ## Quickstart
@@ -87,9 +87,10 @@ parity.)
   `"GENESIS"` constant) and `hash` is SHA-256 over the canonical entry
   serialization, so a rewritten entry in a persisted JSON snapshot is
   detectable — `verifyHistoryChain(history)` returns `false`, and
-  `Escrow.fromJSON()` rejects a broken chain (legacy hashless snapshots
-  are still accepted and chained on rehydration; mixed chained/hashless
-  snapshots are rejected). The chain is unkeyed tamper *evidence*, not a
+  `Escrow.fromJSON()` rejects a broken chain, and `buildSettlementReport()`
+  verifies the chain before producing any accounting (legacy hashless
+  snapshots are still accepted and chained on rehydration; mixed
+  chained/hashless snapshots are rejected). The chain is unkeyed tamper *evidence*, not a
   MAC — see [SECURITY.md](SECURITY.md) for the honest limits.
   `FUND` accepts an optional `amount`
   argument — it is validated as a finite non-negative number at the dispatch
@@ -351,7 +352,7 @@ signatures.
 
 ## Reproducibility
 
-`npm test` runs 282 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 293 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
