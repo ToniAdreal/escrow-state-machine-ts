@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 391 tests, all local
+npm test   # 416 tests, all local
 ```
 
 ## Quickstart
@@ -143,6 +143,26 @@ parity.)
   per-instance constructor configuration: it is NOT part of
   `toJSON()`/`fromJSON()` snapshots, so a restored escrow must re-enable it
   via `Escrow.fromJSON(snapshot, opts)`.
+- Event-level RBAC (opt-in): `new Escrow(id, { rolePolicy })` maps events
+  to the actor names allowed to dispatch them, e.g.
+  `{ RELEASE: ["treasury"], ARBITRATE_RELEASE: ["dao-arbitrator"] }`.
+  `dispatch` then requires `opts.actor` (a non-empty string, recorded on
+  the audit entry and covered by its hash chain) to exactly match the
+  allowlist for gated events — a missing or non-allowlisted actor throws
+  `actor not authorized for …` after the transition-legality check and
+  before anything is appended, and does not consume an idempotency key,
+  so a retry with an authorized actor and the same key succeeds. Events
+  the policy does not list are unrestricted, and an escrow with no policy
+  behaves exactly as before. Invalid policies (unknown event, non-array
+  value, empty array, empty/non-string actor name) throw
+  `invalid option: rolePolicy …` at construction. Unlike the deposit
+  cap, the policy IS part of `toJSON()`/`fromJSON()` snapshots
+  (`rolePolicy`, only when non-empty; a tampered policy in a stored
+  snapshot is rejected), and an explicit
+  `Escrow.fromJSON(snapshot, { rolePolicy })` overrides the snapshot's
+  policy entirely. Honest limit: this is a *caller-supplied allowlist*,
+  not identity authentication — the caller asserts the actor string and
+  nothing verifies who the caller is (see SECURITY.md).
 - Deadlines (advisory): `escrow.setDeadline(date)` attaches a deadline
   (stored as canonical ISO-8601; unparseable input throws),
   `getDeadline()`/`clearDeadline()` read and remove it. The deadline is
@@ -184,8 +204,8 @@ parity.)
   non-negative on FUND entries only); malformed snapshots throw a
   descriptive `invalid snapshot: …` error instead of yielding a corrupt
   escrow. Unknown fields are rejected fail-closed at both levels —
-  top level allows only `v`/`id`/`state`/`history`/`deadline`/`idempotencyKeys` and an
-  entry only `seq`/`event`/`from`/`to`/`at`/`note`/`amount`/`evidence`/
+  top level allows only `v`/`id`/`state`/`history`/`deadline`/`idempotencyKeys`/`rolePolicy` and an
+  entry only `seq`/`event`/`from`/`to`/`at`/`actor`/`note`/`amount`/`evidence`/
   `prevHash`/`hash` — so a typo like `deadlline` or `amout` throws
   `invalid snapshot: unknown field "…"` instead of silently losing a
   deadline or a FUND amount. Snapshots carry a schema version (`v: 1`): a missing `v` is a
@@ -262,7 +282,10 @@ parity.)
   field plus `isOverdue()`/`expiredEscrows()` watchdog helpers and an
   `expireOverdueEscrows()` batch executor (which skips escrows with no
   legal `EXPIRE` edge instead of aborting the batch), but no
-  background timer or auto-expiry — and there is no identity/RBAC.
+  background timer or auto-expiry — and there is no identity
+  authentication: the opt-in `rolePolicy` RBAC is only a
+  caller-supplied actor allowlist (the caller asserts the actor
+  string; nothing verifies who they are).
   Reference and demo use only.
 
 ## Limitations (honest)
@@ -271,7 +294,10 @@ parity.)
   contracts (Chainlink + zk-SNARK + TEE verification, 5/9 Safe multi-sig
   arbitration). None of that is implemented here — this models the *rules*,
   not the chain.
-- **Simplified roles.** Real deployments need identity/RBAC, a real deadline
+- **Simplified roles.** This repo now has opt-in event-level RBAC
+  (`rolePolicy`: a caller-supplied actor allowlist, persisted in
+  snapshots), but real deployments still need identity authentication
+  on top of it (the library cannot verify who an actor really is), a real deadline
   scheduler (this repo has an advisory deadline field with
   `isOverdue()`/`expiredEscrows()` watchdog helpers plus an
   `expireOverdueEscrows()` batch executor, but no background
@@ -412,7 +438,7 @@ signatures.
 
 ## Reproducibility
 
-`npm test` runs 391 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 416 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

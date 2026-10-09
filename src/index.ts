@@ -10,6 +10,7 @@ export type {
   EscrowState,
   ExpireOverdueResult,
   ListenerErrorContext,
+  RolePolicy,
   SubscribeOptions,
   TransitionEdge,
 } from "./stateMachine.js";

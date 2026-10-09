@@ -39,6 +39,17 @@ chain described below.
   window signatures made with either the old or the new secret verify
   (any-match wins, all-mismatch fails closed). The rotation schedule itself
   stays entirely with the caller.
+- **The RBAC actor is a caller assertion, NOT identity.**
+  `EscrowOptions.rolePolicy` maps events to allowed actor names and
+  `dispatch(..., { actor })` checks the supplied string against that
+  allowlist — but the caller *asserts* the actor string and nothing
+  verifies who the caller is. Anyone who can call `dispatch` can
+  claim to be `"treasury"`. The policy guarantees only that
+  dispatches violating the *declared* allowlist do not happen and
+  that the audit trail records the actor string it was given (the
+  actor is covered by the entry's hash chain). Real identity
+  authentication — sessions, signatures, verified credentials —
+  remains entirely the caller's responsibility.
 - **Receiver-side trust.** `buildSettlementWebhook` derives every payload
   field from the audit-backed `SettlementReport` (nothing is invented),
   but the receiver must verify the signature over the raw body bytes;
@@ -74,11 +85,23 @@ chain described below.
   event or any FUND lacks an `amount` — undefined/NaN never silently poisons
   the settlement math. `buildSettlementReport` additionally cross-checks the
   caller-supplied deposit against the audit-history total.
+- **Event-level RBAC allowlist (when a policy is set).**
+  `Escrow` constructed with `rolePolicy` rejects a dispatch of a
+  listed event whose `actor` is missing or not in the allowlist with
+  `actor not authorized for …`, before any transition — no history
+  is appended and no idempotency key is consumed. Events the policy
+  does not list are unrestricted, and an escrow with no policy skips
+  the check entirely. Invalid policies throw at construction
+  (`invalid option: rolePolicy …`). This enforces the *declared*
+  allowlist only; it does not authenticate the actor (see the
+  caller-trust section above).
 - **Strict snapshot validation.** `Escrow.fromJSON` runs
   `parseEscrowSnapshot` on untrusted input: non-empty id, seq from 1 with no
   gaps, continuous from/to chain starting at CREATED, canonical ISO-8601
   non-decreasing timestamps, `amount` only on FUND entries, string-only
-  notes, and `idempotencyKeys` (when present) an array of non-empty
+  notes, `actor` (when present) a non-empty string, `rolePolicy`
+  (when present) a valid allowlist of known events, and
+  `idempotencyKeys` (when present) an array of non-empty
   strings. Anything else throws `invalid snapshot: …`.
 - **Delivery fail-fast.** `deliverSettlementWebhook` rejects invalid URLs,
   non-http(s) protocols, and bad retry/timeout options before any request,
@@ -109,7 +132,7 @@ Persisted snapshots get a second layer: every entry is **hash-chained**
 (`prevHash`/`hash`, SHA-256 over the canonical entry serialization, genesis
 `prevHash` is `"GENESIS"`). `Escrow.fromJSON()` re-verifies the chain on
 chained snapshots and rejects a broken one, so an entry rewritten on disk
-(amount/note/evidence changed, an entry deleted or reordered) is detected
+(amount/note/evidence/actor changed, an entry deleted or reordered) is detected
 on rehydration instead of silently accepted. `verifyHistoryChain()` is
 exported for standalone checks (watchdogs, log-shipper validation).
 
@@ -145,7 +168,9 @@ that mixes chained and hashless entries is rejected.
   (rotation-window *verification* accepts multiple candidate secrets, but
   the library never generates, stores, or schedules the rotation itself)
 - A deadline scheduler (`EXPIRE` is dispatched by the caller)
-- Identity/RBAC, concurrency control, durable storage, a
+- Identity authentication (this repo's `rolePolicy` is only a
+  caller-supplied actor allowlist — see above), concurrency control,
+  durable storage, a
   shared/distributed idempotency store (this repo's consumed keys
   persist only inside each escrow's own `toJSON()` snapshot)
 - Audited money math

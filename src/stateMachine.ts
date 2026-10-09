@@ -102,6 +102,17 @@ export interface EscrowHistoryEntry {
   from: EscrowState;
   to: EscrowState;
   at: string; // ISO timestamp
+  /**
+   * Caller-supplied actor name for this dispatch (see
+   * {@link DispatchOptions.actor}). Only present when the dispatch
+   * carried an actor; `undefined` is the anonymous form. Recorded
+   * verbatim and covered by the hash chain, so a persisted entry whose
+   * actor is rewritten breaks {@link verifyHistoryChain}. Legacy
+   * (pre-RBAC) entries carry no actor and are still accepted — the
+   * canonical hash serialization omits the field when absent, so
+   * their hashes verify exactly as before.
+   */
+  actor?: string;
   note?: string;
   /**
    * Deposit amount in base currency units. Only present on FUND entries
@@ -187,6 +198,25 @@ export interface EscrowSnapshot {
    * silently drop the replay protection and re-execute a key.
    */
   idempotencyKeys?: string[];
+  /**
+   * Event-level RBAC policy (see {@link EscrowOptions.rolePolicy}),
+   * present only when the escrow carries a non-empty policy.
+   * `toJSON()` writes this field ONLY when the policy is non-empty,
+   * so a policy-free escrow's snapshot keeps its exact legacy shape.
+   * `fromJSON()` restores it through the same strict validation as
+   * the constructor (tag `invalid snapshot`), so a tampered policy
+   * in a stored snapshot is rejected, not silently applied; it is
+   * validated as configuration for FUTURE dispatches and never
+   * consulted against the stored history. An explicit
+   * `opts.rolePolicy` passed to `fromJSON()` overrides the snapshot's
+   * policy entirely (see {@link Escrow.fromJSON}).
+   *
+   * The schema version stays 1 for the same reason as
+   * `idempotencyKeys`: the field is optional and additive, so
+   * snapshots WITHOUT it load exactly as before, while a snapshot
+   * carrying it is rejected as an unknown field by older parsers.
+   */
+  rolePolicy?: RolePolicy;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -209,6 +239,7 @@ const SNAPSHOT_FIELDS = new Set([
   "history",
   "deadline",
   "idempotencyKeys",
+  "rolePolicy",
 ]);
 
 /**
@@ -246,12 +277,76 @@ const HISTORY_ENTRY_FIELDS = new Set([
   "from",
   "to",
   "at",
+  "actor",
   "note",
   "amount",
   "evidence",
   "prevHash",
   "hash",
 ]);
+
+/**
+ * Event-level RBAC policy: which actor names may dispatch which events.
+ *
+ * The map is partial — an event absent from the policy is unrestricted
+ * (any caller, with or without an actor). An event present in the policy
+ * requires `dispatch` to carry an `actor` that exactly matches one of the
+ * listed names (exact string equality, case-sensitive); anything else
+ * throws `actor not authorized for …`.
+ *
+ * This is a caller-supplied allowlist, not identity authentication: the
+ * library cannot verify who the caller really is — the caller asserts
+ * the actor string and nothing checks it. It only guarantees the audit
+ * trail records the actor string it was given, and that dispatches
+ * violating the declared policy never happen. The policy is escrow
+ * configuration that survives `toJSON()`/`fromJSON()` round-trips
+ * (unlike `requireVerifyEvidence`/`maxDeposit`/`auditKey`, which are
+ * never stored — see {@link EscrowSnapshot.rolePolicy}).
+ */
+export type RolePolicy = Partial<Record<EscrowEvent, string[]>>;
+
+/**
+ * Validate an event-level RBAC policy into a normalized lookup map.
+ *
+ * `undefined` means "no policy" (the default: every event unrestricted).
+ * Otherwise the value must be a plain record whose keys are known events
+ * and whose values are non-empty arrays of non-empty role/actor strings.
+ * Anything else throws `<tag>: rolePolicy …`. Duplicate role names are
+ * harmless (deduped). Mirrors the dataquest lifecycle's
+ * `assertRolePolicy` wording; callers pass the tag for their boundary
+ * (`invalid option` at construction, `invalid snapshot` on restore).
+ */
+function assertRolePolicy(
+  value: unknown,
+  tag: string
+): Map<EscrowEvent, string[]> {
+  const policy = new Map<EscrowEvent, string[]>();
+  if (value === undefined) return policy;
+  if (!isRecord(value)) {
+    throw new Error(`${tag}: rolePolicy must be an object, got ${typeof value}`);
+  }
+  for (const [event, roles] of Object.entries(value)) {
+    if (!ESCROW_EVENTS.has(event as EscrowEvent)) {
+      throw new Error(`${tag}: rolePolicy has unknown event ${event}`);
+    }
+    if (!Array.isArray(roles) || roles.length === 0) {
+      throw new Error(
+        `${tag}: rolePolicy[${event}] must be a non-empty array of role names`
+      );
+    }
+    const seen: string[] = [];
+    for (const role of roles) {
+      if (typeof role !== "string" || role.length === 0) {
+        throw new Error(
+          `${tag}: rolePolicy[${event}] roles must be non-empty strings, got ${JSON.stringify(role)}`
+        );
+      }
+      if (!seen.includes(role)) seen.push(role);
+    }
+    policy.set(event as EscrowEvent, seen);
+  }
+  return policy;
+}
 
 const ESCROW_STATES = new Set<EscrowState>(
   Object.keys(TRANSITIONS) as EscrowState[]
@@ -301,11 +396,19 @@ function isCanonicalIso(s: unknown): s is string {
  *  - `idempotencyKeys`, when present, must be an array of non-empty
  *    strings (duplicates are deduped on rehydration); absent means no
  *    keys have been consumed (the legacy shape)
+ *  - `rolePolicy`, when present, must be a valid {@link RolePolicy}
+ *    (known events, non-empty arrays of non-empty strings; duplicates
+ *    are deduped on rehydration); absent means no policy (the legacy
+ *    shape). It is validated strictly but never consulted against the
+ *    stored history — it governs future dispatches only
+ *  - `actor`, when present on a history entry, must be a non-empty
+ *    string (the same bar dispatch() applies); absent is the
+ *    anonymous / legacy form
  *  - unknown fields are rejected (fail-closed), never silently dropped:
  *    top level allows only
- *    `v`/`id`/`state`/`history`/`deadline`/`idempotencyKeys`
+ *    `v`/`id`/`state`/`history`/`deadline`/`idempotencyKeys`/`rolePolicy`
  *    (`unknown field "<name>"`), and a history entry allows only
- *    `seq`/`event`/`from`/`to`/`at`/`note`/`amount`/`evidence`/
+ *    `seq`/`event`/`from`/`to`/`at`/`actor`/`note`/`amount`/`evidence`/
  *    `prevHash`/`hash` (`history[i]: unknown field "<name>"`). A typo
  *    like `deadlline` or `amout` therefore fails loudly instead of
  *    quietly losing a deadline or a FUND amount.
@@ -410,6 +513,16 @@ function parseEscrowSnapshot(
       to,
       at: raw.at,
     };
+    if (raw.actor !== undefined) {
+      // Same bar as dispatch(): an empty actor in an untrusted log is
+      // malformed — audit entries must say WHO or omit the field.
+      if (typeof raw.actor !== "string" || raw.actor.length === 0) {
+        throw new Error(
+          `${tag}: actor must be a non-empty string, got ${JSON.stringify(raw.actor)}`
+        );
+      }
+      entry.actor = raw.actor;
+    }
     if (raw.note !== undefined) {
       if (typeof raw.note !== "string") {
         throw new Error(`${tag}: note must be a string`);
@@ -506,6 +619,11 @@ function parseEscrowSnapshot(
     snapshot.idempotencyKeys
   );
 
+  // RBAC policy: configuration for FUTURE dispatches, validated
+  // strictly but never consulted against the stored history (same
+  // treatment as the idempotency keys above).
+  const rolePolicy = assertRolePolicy(snapshot.rolePolicy, "invalid snapshot");
+
   return {
     v: SNAPSHOT_VERSION,
     id,
@@ -515,6 +633,13 @@ function parseEscrowSnapshot(
     ...(idempotencyKeys.size === 0
       ? {}
       : { idempotencyKeys: [...idempotencyKeys] }),
+    ...(rolePolicy.size === 0
+      ? {}
+      : {
+          rolePolicy: Object.fromEntries(
+            [...rolePolicy].map(([event, roles]) => [event, [...roles]])
+          ) as RolePolicy,
+        }),
   };
 }
 
@@ -627,6 +752,7 @@ function canonicalHistoryEntry(
     to: entry.to,
     at: entry.at,
   };
+  if (entry.actor !== undefined) obj.actor = entry.actor;
   if (entry.note !== undefined) obj.note = entry.note;
   if (entry.amount !== undefined) obj.amount = entry.amount;
   if (entry.evidence !== undefined) obj.evidence = entry.evidence;
@@ -720,6 +846,32 @@ function chainHistoryEntries(
  * Options accepted by {@link Escrow.dispatch}.
  */
 export interface DispatchOptions {
+  /**
+   * Caller-supplied actor name for this dispatch — who (by the caller's
+   * assertion) is performing it, e.g. `"dao-arbitrator"`, `"oracle"`,
+   * or `"system"`.
+   *
+   * When present it must be a non-empty string, otherwise dispatch
+   * throws `invalid dispatch options: actor must be a non-empty
+   * string, got …` before anything is appended (an empty actor has
+   * zero audit value — `undefined` is the anonymous form). A valid
+   * actor is recorded verbatim on the audit history entry
+   * ({@link EscrowHistoryEntry.actor}) and covered by its hash chain.
+   *
+   * RBAC: when the escrow was constructed with a
+   * {@link EscrowOptions.rolePolicy} that lists the dispatched event,
+   * `actor` must be present and exactly match one of the allowlisted
+   * names (case-sensitive), otherwise dispatch throws
+   * `actor not authorized for …` — before any transition, with no
+   * history append and no idempotency-key consumption (see
+   * {@link Escrow.dispatch} for the full check ordering). Events not
+   * listed in the policy are unrestricted, and with no policy at all
+   * the actor is purely audit metadata.
+   *
+   * This is NOT identity authentication: the caller asserts the
+   * string; nothing verifies who the caller is. See SECURITY.md.
+   */
+  actor?: string;
   /**
    * Optional idempotency key (payments-style retry safety).
    *
@@ -885,6 +1037,33 @@ export interface EscrowOptions {
    * distribution are the caller's responsibility — see SECURITY.md.
    */
   auditKey?: AuditKey;
+
+  /**
+   * Optional event-level RBAC policy: event → allowed actor names
+   * (see {@link RolePolicy} and {@link DispatchOptions.actor}).
+   * Events not listed are unrestricted; omitting the policy disables
+   * the check entirely (the pre-policy behavior).
+   *
+   * Validated strictly at construction via `assertRolePolicy` with
+   * tag `invalid option`: event names must be legal
+   * {@link EscrowEvent}s and values must be non-empty arrays of
+   * non-empty strings (duplicates are deduped); anything else throws
+   * `invalid option: rolePolicy …` before the escrow exists.
+   *
+   * Default: undefined (no policy, unchanged legacy behavior).
+   * Unlike `requireVerifyEvidence`/`maxDeposit`/`auditKey`, the
+   * policy IS part of `toJSON()`/`fromJSON()` snapshots (as
+   * `rolePolicy`, written only when non-empty — see
+   * {@link EscrowSnapshot.rolePolicy}): a restored escrow keeps
+   * enforcing it unless `Escrow.fromJSON(snapshot, opts)` is given
+   * an explicit `opts.rolePolicy`, which overrides the snapshot's
+   * policy entirely.
+   *
+   * Honest limit: this is a caller-supplied allowlist, NOT identity
+   * authentication — the caller asserts the actor string and nothing
+   * verifies who the caller is. See SECURITY.md.
+   */
+  rolePolicy?: RolePolicy;
 }
 
 /** Stateful escrow with an append-only audit history. */
@@ -896,6 +1075,7 @@ export class Escrow {
   private readonly _requireVerifyEvidence: boolean;
   private readonly _maxDeposit: number | undefined;
   private readonly _auditKey: AuditKey | undefined;
+  private _rolePolicy: Map<EscrowEvent, string[]>;
 
   constructor(id: string, opts?: EscrowOptions) {
     // fromJSON validates the same rule; a live Escrow must never hold an id
@@ -934,6 +1114,10 @@ export class Escrow {
         : Buffer.isBuffer(opts.auditKey)
           ? Buffer.from(opts.auditKey)
           : opts.auditKey;
+    // assertRolePolicy returns a fresh, deduped Map with fresh arrays,
+    // so later caller mutation of the options object cannot change
+    // the policy this escrow enforces. Tag mirrors dataquest.
+    this._rolePolicy = assertRolePolicy(opts?.rolePolicy, "invalid option");
   }
 
   get state(): EscrowState {
@@ -1025,6 +1209,27 @@ export class Escrow {
    *               (Date or canonical ISO-8601 string; see
    *               {@link DispatchOptions.at}) — invalid or backwards
    *               values throw before any state change.
+   *               `opts.actor` names the caller-asserted actor: when
+   *               present it must be a non-empty string (else
+   *               `invalid dispatch options: …`), is recorded on the
+   *               audit entry, and is checked against the escrow's
+   *               `rolePolicy` when that policy lists the event.
+   *
+   *               RBAC / idempotency ordering (mirrors the dataquest
+   *               lifecycle): (1) the actor's own shape is validated
+   *               up front with the other dispatch-option validation,
+   *               before the idempotency dedup — a malformed actor is a
+   *               caller bug and is reported even on a duplicate key;
+   *               (2) the idempotency dedup runs next, so a duplicate
+   *               delivery is a pure no-op that never reaches the RBAC
+   *               check; (3) the RBAC check itself runs AFTER the
+   *               transition-legality check and BEFORE the amount /
+   *               deposit-cap checks and any append — a rejected
+   *               dispatch changes no state, appends no history, and
+   *               does NOT consume its idempotency key, so a retry
+   *               with an authorized actor and the SAME key succeeds
+   *               instead of being treated as a duplicate. The key is
+   *               consumed only alongside a successful append.
    */
   dispatch(
     event: EscrowEvent,
@@ -1042,9 +1247,23 @@ export class Escrow {
       );
     }
     let idempotencyKey: string | undefined;
+    let actor: string | undefined;
     if (opts !== undefined) {
       if (typeof opts !== "object" || opts === null || Array.isArray(opts)) {
         throw new Error("invalid dispatch options: opts must be an object");
+      }
+      // Actor shape validation up front, before the idempotency dedup
+      // (mirrors dataquest): an empty actor has zero audit value — the
+      // field exists to say WHO did the dispatch, and "" says nothing
+      // (assertRolePolicy already rejects empty role names — the
+      // producer side matches that bar). undefined stays anonymous.
+      if (opts.actor !== undefined) {
+        if (typeof opts.actor !== "string" || opts.actor.length === 0) {
+          throw new Error(
+            `invalid dispatch options: actor must be a non-empty string, got ${JSON.stringify(opts.actor)}`
+          );
+        }
+        actor = opts.actor;
       }
       idempotencyKey = opts.idempotencyKey;
       if (idempotencyKey !== undefined) {
@@ -1127,6 +1346,28 @@ export class Escrow {
     }
     const from = this._state;
     const to = transition(from, event); // throws on invalid transition
+    // Event-level RBAC: when the policy lists this event, the actor
+    // must be present and allowlisted. Checked after the transition
+    // legality check (mirrors dataquest), before the amount / cap
+    // checks and before anything is appended or any idempotency key
+    // is consumed — a rejected dispatch leaves no trace, and a retry
+    // with an authorized actor and the same key still executes.
+    // Events the policy does not list are unrestricted, and an
+    // escrow with no policy skips this entirely.
+    const allowedRoles = this._rolePolicy.get(event);
+    if (allowedRoles !== undefined) {
+      const list = allowedRoles.join(", ");
+      if (actor === undefined) {
+        throw new Error(
+          `actor not authorized for ${event}: policy requires an actor in [${list}]`
+        );
+      }
+      if (!allowedRoles.includes(actor)) {
+        throw new Error(
+          `actor not authorized for ${event}: "${actor}" is not in [${list}]`
+        );
+      }
+    }
     if (event === "FUND" && amount !== undefined) {
       assertNonNegativeMoney("amount", amount);
     }
@@ -1168,6 +1409,7 @@ export class Escrow {
       from,
       to,
       at: at ?? new Date().toISOString(),
+      ...(actor !== undefined ? { actor } : {}),
       note,
       ...(event === "FUND" && amount !== undefined ? { amount } : {}),
       ...(event === "VERIFY_PASS" && evidence !== undefined
@@ -1301,6 +1543,10 @@ export class Escrow {
    * exported as `idempotencyKeys` (a detached array copy in
    * first-consumption order); absent when the set is empty, so a keyless
    * escrow's snapshot keeps its exact legacy shape.
+   *
+   * The RBAC policy, when non-empty, is exported as `rolePolicy`
+   * (a detached plain-record copy); absent when there is no policy,
+   * so a policy-free escrow's snapshot keeps its exact legacy shape.
    */
   toJSON(): EscrowSnapshot {
     return {
@@ -1312,6 +1558,16 @@ export class Escrow {
       ...(this._seenIdempotencyKeys.size === 0
         ? {}
         : { idempotencyKeys: [...this._seenIdempotencyKeys] }),
+      ...(this._rolePolicy.size === 0
+        ? {}
+        : {
+            rolePolicy: Object.fromEntries(
+              [...this._rolePolicy].map(([event, roles]) => [
+                event,
+                [...roles],
+              ])
+            ) as RolePolicy,
+          }),
     };
   }
 
@@ -1332,6 +1588,10 @@ export class Escrow {
    * already-consumed key after a restart stays a no-op; a legacy
    * snapshot without the field restores with an empty key set.
    *
+   * The snapshot's RBAC policy (`rolePolicy`, when present) is likewise
+   * restored and keeps being enforced after a restart; a legacy
+   * snapshot without the field restores unrestricted.
+   *
    * @param opts - Optional per-instance dispatch configuration, passed
    *   straight through to the constructor (same validation rules). The
    *   snapshot never stores `requireVerifyEvidence`/`maxDeposit`, so a
@@ -1340,6 +1600,15 @@ export class Escrow {
    *   escrow was constructed with keeps the restored instance under the
    *   same risk controls. When omitted, the restored escrow behaves
    *   exactly like a legacy default-constructed one.
+   *
+   *   `opts.rolePolicy` is the exception to that pattern: the policy
+   *   IS snapshot state (see above), so it follows override semantics
+   *   instead of re-enable semantics. When `opts.rolePolicy` is
+   *   provided (including as an empty object), it replaces the
+   *   snapshot's policy entirely — it is NOT merged with it. When it
+   *   is omitted (`undefined`), the snapshot's policy is restored
+   *   as-is. This mirrors how a caller would deliberately tighten,
+   *   loosen, or clear a policy on restore.
    *
    *   `opts.auditKey` additionally feeds the snapshot's hash-chain
    *   re-verification: a snapshot chained in keyed mode (see
@@ -1361,6 +1630,16 @@ export class Escrow {
     // set IS snapshot state: restore it so a post-restart replay of an
     // already-consumed key stays a no-op (see EscrowSnapshot).
     escrow._seenIdempotencyKeys = new Set(parsed.idempotencyKeys ?? []);
+    // The RBAC policy is snapshot state too (see EscrowSnapshot): when
+    // the caller did not pass an explicit policy, restore the
+    // snapshot's. When they did, the constructor already installed it
+    // and it overrides the snapshot's policy entirely (no merging).
+    if (opts?.rolePolicy === undefined) {
+      escrow._rolePolicy = assertRolePolicy(
+        parsed.rolePolicy,
+        "invalid snapshot"
+      );
+    }
     return escrow;
   }
 }
