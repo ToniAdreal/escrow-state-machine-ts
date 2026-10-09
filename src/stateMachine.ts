@@ -167,6 +167,26 @@ export interface EscrowSnapshot {
    * deadline, matching the live object's undefined.
    */
   deadline?: string;
+  /**
+   * Consumed dispatch idempotency keys (see
+   * {@link DispatchOptions.idempotencyKey}), in first-consumption order.
+   * `toJSON()` writes this field ONLY when at least one key has been
+   * consumed, so a keyless escrow's snapshot keeps its exact legacy
+   * shape. `fromJSON()` restores the set, so a dispatch replayed after
+   * a restart with an already-consumed key stays a no-op — this is what
+   * makes idempotency survive restarts. Duplicate entries are deduped
+   * on parse (first occurrence wins); any non-array value or
+   * non-string/empty entry throws `invalid snapshot: …`.
+   *
+   * The schema version stays 1: the field is optional and additive, so
+   * snapshots WITHOUT it (everything written before this field existed)
+   * load exactly as before. The forward direction is NOT compatible by
+   * construction: a snapshot carrying `idempotencyKeys` is rejected as
+   * an unknown field by older parsers that predate it (see the
+   * whitelist in {@link parseEscrowSnapshot}) — an old binary must not
+   * silently drop the replay protection and re-execute a key.
+   */
+  idempotencyKeys?: string[];
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -182,7 +202,44 @@ function isRecord(v: unknown): v is Record<string, unknown> {
  * parse as a FUND entry carrying no money. `toJSON()` only ever
  * produces fields inside these whitelists, so its output always passes.
  */
-const SNAPSHOT_FIELDS = new Set(["v", "id", "state", "history", "deadline"]);
+const SNAPSHOT_FIELDS = new Set([
+  "v",
+  "id",
+  "state",
+  "history",
+  "deadline",
+  "idempotencyKeys",
+]);
+
+/**
+ * Validate a snapshot's `idempotencyKeys` field into a deduped set.
+ *
+ * `undefined` means "no keys consumed" (the legacy shape). Otherwise the
+ * value must be an array of non-empty strings — the same bar dispatch()
+ * applies to a single key. Duplicates are deduped (first occurrence
+ * wins, preserving insertion order for snapshot round-trips), mirroring
+ * the dataquest lifecycle's `assertIdempotencyKeys`. Anything else
+ * throws `invalid snapshot: idempotencyKeys …`: a tampered key list is
+ * rejected, never silently trusted or dropped.
+ */
+function parseSnapshotIdempotencyKeys(value: unknown): Set<string> {
+  const keys = new Set<string>();
+  if (value === undefined) return keys;
+  if (!Array.isArray(value)) {
+    throw new Error(
+      `invalid snapshot: idempotencyKeys must be an array of non-empty strings, got ${typeof value}`
+    );
+  }
+  for (const key of value) {
+    if (typeof key !== "string" || key.length === 0) {
+      throw new Error(
+        `invalid snapshot: idempotencyKeys entries must be non-empty strings, got ${JSON.stringify(key)}`
+      );
+    }
+    keys.add(key);
+  }
+  return keys;
+}
 const HISTORY_ENTRY_FIELDS = new Set([
   "seq",
   "event",
@@ -241,8 +298,12 @@ function isCanonicalIso(s: unknown): s is string {
  *    check runs before the history/hash-chain checks, so a snapshot
  *    from an unknown future format reports its version problem rather
  *    than a misleading structural or chain error.
+ *  - `idempotencyKeys`, when present, must be an array of non-empty
+ *    strings (duplicates are deduped on rehydration); absent means no
+ *    keys have been consumed (the legacy shape)
  *  - unknown fields are rejected (fail-closed), never silently dropped:
- *    top level allows only `v`/`id`/`state`/`history`/`deadline`
+ *    top level allows only
+ *    `v`/`id`/`state`/`history`/`deadline`/`idempotencyKeys`
  *    (`unknown field "<name>"`), and a history entry allows only
  *    `seq`/`event`/`from`/`to`/`at`/`note`/`amount`/`evidence`/
  *    `prevHash`/`hash` (`history[i]: unknown field "<name>"`). A typo
@@ -438,7 +499,23 @@ function parseEscrowSnapshot(
     deadline = snapshot.deadline;
   }
 
-  return { v: SNAPSHOT_VERSION, id, state, history, deadline };
+  // Consumed idempotency keys: dispatch configuration for FUTURE
+  // dispatches, validated strictly but never consulted against the
+  // stored history (same treatment as the deadline above).
+  const idempotencyKeys = parseSnapshotIdempotencyKeys(
+    snapshot.idempotencyKeys
+  );
+
+  return {
+    v: SNAPSHOT_VERSION,
+    id,
+    state,
+    history,
+    deadline,
+    ...(idempotencyKeys.size === 0
+      ? {}
+      : { idempotencyKeys: [...idempotencyKeys] }),
+  };
 }
 
 /**
@@ -658,10 +735,15 @@ export interface DispatchOptions {
    * (invalid transition, invalid amount) does not consume the key, so the
    * caller can retry the same key with corrected input.
    *
-   * The seen-key set is in-memory only and is NOT part of
-   * `toJSON()`/`fromJSON()`: after a restart the same key would execute
-   * again, so callers that need cross-restart idempotency must reconcile
-   * before replaying (e.g. compare against the persisted history).
+   * The seen-key set IS part of `toJSON()`/`fromJSON()` snapshots (as
+   * `idempotencyKeys`, written only when non-empty — see
+   * {@link EscrowSnapshot.idempotencyKeys}): after a restart, a restored
+   * escrow still treats an already-consumed key as a duplicate, so
+   * cross-restart replays stay exactly-once as long as the caller
+   * persists snapshots through `toJSON()`. This is still per-escrow,
+   * single-process protection — not a distributed idempotency store:
+   * two processes restoring the same snapshot independently can each
+   * execute the same key once.
    */
   idempotencyKey?: string;
   /**
@@ -1214,6 +1296,11 @@ export class Escrow {
    *
    * A deadline, when set, is exported as `deadline` (canonical ISO-8601);
    * absent when none is set.
+   *
+   * Consumed idempotency keys, when at least one has been consumed, are
+   * exported as `idempotencyKeys` (a detached array copy in
+   * first-consumption order); absent when the set is empty, so a keyless
+   * escrow's snapshot keeps its exact legacy shape.
    */
   toJSON(): EscrowSnapshot {
     return {
@@ -1222,6 +1309,9 @@ export class Escrow {
       state: this._state,
       history: this._history.map((e) => ({ ...e })),
       ...(this._deadline === undefined ? {} : { deadline: this._deadline }),
+      ...(this._seenIdempotencyKeys.size === 0
+        ? {}
+        : { idempotencyKeys: [...this._seenIdempotencyKeys] }),
     };
   }
 
@@ -1236,6 +1326,11 @@ export class Escrow {
    * deterministically chained on rehydration (the hash is a pure function
    * of the entry content, so no audit information changes) — the live
    * escrow's history is always fully chained from here on.
+   *
+   * The snapshot's consumed idempotency keys (`idempotencyKeys`, when
+   * present) are restored onto the rebuilt escrow, so replaying an
+   * already-consumed key after a restart stays a no-op; a legacy
+   * snapshot without the field restores with an empty key set.
    *
    * @param opts - Optional per-instance dispatch configuration, passed
    *   straight through to the constructor (same validation rules). The
@@ -1262,6 +1357,10 @@ export class Escrow {
     escrow._state = parsed.state;
     escrow._history = chainHistoryEntries(parsed.history, opts?.auditKey);
     escrow._deadline = parsed.deadline;
+    // Unlike the constructor options above, the consumed idempotency-key
+    // set IS snapshot state: restore it so a post-restart replay of an
+    // already-consumed key stays a no-op (see EscrowSnapshot).
+    escrow._seenIdempotencyKeys = new Set(parsed.idempotencyKeys ?? []);
     return escrow;
   }
 }

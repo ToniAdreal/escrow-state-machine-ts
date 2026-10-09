@@ -78,7 +78,8 @@ chain described below.
   `parseEscrowSnapshot` on untrusted input: non-empty id, seq from 1 with no
   gaps, continuous from/to chain starting at CREATED, canonical ISO-8601
   non-decreasing timestamps, `amount` only on FUND entries, string-only
-  notes. Anything else throws `invalid snapshot: …`.
+  notes, and `idempotencyKeys` (when present) an array of non-empty
+  strings. Anything else throws `invalid snapshot: …`.
 - **Delivery fail-fast.** `deliverSettlementWebhook` rejects invalid URLs,
   non-http(s) protocols, and bad retry/timeout options before any request,
   and never retries 3xx/4xx other than 429 (the request itself is at fault);
@@ -144,8 +145,9 @@ that mixes chained and hashless entries is rejected.
   (rotation-window *verification* accepts multiple candidate secrets, but
   the library never generates, stores, or schedules the rotation itself)
 - A deadline scheduler (`EXPIRE` is dispatched by the caller)
-- Identity/RBAC, concurrency control, durable storage, cross-restart
-  idempotency keys (this repo's are in-memory only)
+- Identity/RBAC, concurrency control, durable storage, a
+  shared/distributed idempotency store (this repo's consumed keys
+  persist only inside each escrow's own `toJSON()` snapshot)
 - Audited money math
 
 Reference and demo use only.

@@ -3,8 +3,9 @@
  *
  * Payments systems retry deliveries; dispatch must not append a duplicate
  * history entry when the same logical operation arrives twice. Keys are
- * global to the escrow instance (not per-event), recorded only after a
- * successful dispatch, and are in-memory only (never part of snapshots).
+ * global to the escrow instance (not per-event) and recorded only after a
+ * successful dispatch. The consumed set is also persisted in snapshots
+ * (see test/idempotencySnapshot.test.ts).
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -125,18 +126,19 @@ describe("dispatch idempotency keys", () => {
     assert.equal(escrow.history.length, 0);
   });
 
-  it("seen keys are not persisted across snapshots (honest restart semantics)", () => {
+  it("seen keys ARE persisted across snapshots (restart-safe replay)", () => {
     const escrow = new Escrow("e9");
     escrow.dispatch("FUND", "initial", 1000, { idempotencyKey: "k-1" });
     const rebuilt = Escrow.fromJSON(escrow.toJSON());
-    // Same key executes again after restart: caller must reconcile.
+    // Same key after a restart is still a duplicate: no-op, no new entry.
+    // (Full persistence coverage: test/idempotencySnapshot.test.ts.)
     assert.equal(
       rebuilt.dispatch("FUND", "replayed after restart", 630, {
         idempotencyKey: "k-1",
       }),
       "FUNDED"
     );
-    assert.equal(rebuilt.history.length, 2);
+    assert.equal(rebuilt.history.length, 1);
     assert.equal(
       JSON.stringify(escrow.toJSON().history[0].amount),
       "1000"

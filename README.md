@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 381 tests, all local
+npm test   # 391 tests, all local
 ```
 
 ## Quickstart
@@ -115,10 +115,14 @@ parity.)
   Keys are global to the escrow instance (the same key on a different event
   is still a duplicate), are recorded only after a *successful* dispatch (a
   failed dispatch leaves the key unused, so the caller can retry with
-  corrected input), and live in memory only — they are NOT part of
-  `toJSON()`/`fromJSON()` snapshots, so a restart clears them and the caller
-  must reconcile before replaying. This is in-process retry protection, not
-  a distributed idempotency store.
+  corrected input), and ARE part of `toJSON()`/`fromJSON()` snapshots: the
+  consumed set rides along as `idempotencyKeys` (written only when
+  non-empty, so a keyless snapshot keeps its legacy shape), and a restored
+  escrow still treats an already-consumed key as a duplicate — replays stay
+  exactly-once across restarts as long as snapshots are persisted through
+  `toJSON()`. This is per-escrow retry protection, not a distributed
+  idempotency store: two processes restoring the same snapshot
+  independently can each execute the same key once.
 - Injectable audit timestamps: `dispatch` opts also accept `at`
   (`Date | string`) to pin the audit entry's timestamp — for deterministic
   dispatch tests and replay (quorum approvals and webhook payloads already
@@ -135,7 +139,7 @@ parity.)
   `FUND` entry's amount — above the cap throws a `deposit cap exceeded`
   error *after* transition and amount validation and appends nothing, so a
   failed FUND leaves no audit residue. `FUND` dispatches without an amount
-  carry no money and are never capped. Like idempotency keys, the cap is
+  carry no money and are never capped. The cap is
   per-instance constructor configuration: it is NOT part of
   `toJSON()`/`fromJSON()` snapshots, so a restored escrow must re-enable it
   via `Escrow.fromJSON(snapshot, opts)`.
@@ -180,7 +184,7 @@ parity.)
   non-negative on FUND entries only); malformed snapshots throw a
   descriptive `invalid snapshot: …` error instead of yielding a corrupt
   escrow. Unknown fields are rejected fail-closed at both levels —
-  top level allows only `v`/`id`/`state`/`history`/`deadline` and an
+  top level allows only `v`/`id`/`state`/`history`/`deadline`/`idempotencyKeys` and an
   entry only `seq`/`event`/`from`/`to`/`at`/`note`/`amount`/`evidence`/
   `prevHash`/`hash` — so a typo like `deadlline` or `amout` throws
   `invalid snapshot: unknown field "…"` instead of silently losing a
@@ -188,9 +192,14 @@ parity.)
   legacy pre-versioning snapshot and is still accepted, while any other
   `v` value throws `unsupported snapshot version` (checked before the
   history/hash-chain validation), so a future format change stays
-  distinguishable from corruption. A snapshot is an *export*, not a datastore — there is still no
-  built-in storage or locking; in-memory idempotency keys are supported via
-  `dispatch` options but are not part of snapshots.
+  distinguishable from corruption. The consumed idempotency-key set is
+  part of the snapshot (`idempotencyKeys`, only when non-empty; entries
+  must be non-empty strings and duplicates are deduped on restore) —
+  `v` stays 1 because the field is optional and additive: snapshots
+  without it load exactly as before, but a snapshot *carrying* it is
+  rejected as an unknown field by older parsers that predate it (an old
+  binary must not silently drop replay protection). A snapshot is an *export*, not a datastore — there is still no
+  built-in storage or locking.
 
 ## FAQ (honest)
 
@@ -247,7 +256,8 @@ parity.)
 - **Can I use this in production?**
   No. `Escrow` is in-memory with no built-in store (snapshots are a JSON
   export via `toJSON()`/`Escrow.fromJSON()`, not a database), no concurrency
-  control, idempotency keys only in-memory (not persisted across restarts),
+  control, idempotency keys that persist only inside each escrow's own
+  snapshot (no shared/distributed store),
   `EXPIRE` is dispatched by the caller — there is an advisory deadline
   field plus `isOverdue()`/`expiredEscrows()` watchdog helpers and an
   `expireOverdueEscrows()` batch executor (which skips escrows with no
@@ -265,8 +275,9 @@ parity.)
   scheduler (this repo has an advisory deadline field with
   `isOverdue()`/`expiredEscrows()` watchdog helpers plus an
   `expireOverdueEscrows()` batch executor, but no background
-  timer or auto-expire), and cross-restart idempotency keys (this repo's
-  are in-memory only); the `Escrow` class is in-memory.
+  timer or auto-expire), and a shared/distributed idempotency store
+  (this repo's consumed keys persist only inside each escrow's own
+  snapshot); the `Escrow` class is in-memory.
 - **Fee formula is the case study's**, not a general pricing engine: arbitrary
   fee schedules are out of scope.
 - **Trust boundaries.** What the library enforces (money input validation,
@@ -401,7 +412,7 @@ signatures.
 
 ## Reproducibility
 
-`npm test` runs 381 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 391 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
