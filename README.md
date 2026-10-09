@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 416 tests, all local
+npm test   # 427 tests, all local
 ```
 
 ## Quickstart
@@ -220,6 +220,20 @@ parity.)
   rejected as an unknown field by older parsers that predate it (an old
   binary must not silently drop replay protection). A snapshot is an *export*, not a datastore — there is still no
   built-in storage or locking.
+- NDJSON audit-log streaming: `historyToNdjson(history | escrow)` /
+  `historyFromNdjson(text)` (`src/ndjson.ts`) export and import *only
+  the audit log* — one canonical JSON entry per line, line order =
+  `seq` order, trailing newline, empty history exports to `""`. Use a
+  snapshot when you need state + configuration restored; use NDJSON
+  when the log itself should stream to disk or a log pipeline.
+  Import is as strict as the snapshot parser (it runs through
+  `parseEscrowHistory`, the same code path): seq from 1 with no gaps,
+  from/to chain continuous, the hash chain re-verified — a tampered,
+  deleted, or reordered line throws, a non-JSON line throws naming
+  its 1-based line number, and empty/whitespace-only input throws
+  (a missing log is not a log of zero events). CRLF input is
+  accepted. Keyed (HMAC) histories need the same `auditKey` on
+  import, and the key never appears in the text.
 
 ## FAQ (honest)
 
@@ -438,7 +452,7 @@ signatures.
 
 ## Reproducibility
 
-`npm test` runs 416 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 427 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

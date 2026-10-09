@@ -644,6 +644,43 @@ function parseEscrowSnapshot(
 }
 
 /**
+ * Validate an untrusted audit history on its own — the same strict
+ * bar {@link parseEscrowSnapshot} applies inside a snapshot envelope
+ * (seq from 1 with no gaps, from/to chain continuous from CREATED,
+ * every edge legal, canonical non-decreasing timestamps, `amount`
+ * only on FUND, `evidence` only on VERIFY_PASS, unknown entry fields
+ * rejected, and a fully chained history's hash chain re-verified —
+ * with `auditKey` when the chain is keyed).
+ *
+ * This exists for history-only transports that carry no snapshot
+ * envelope (see `src/ndjson.ts`): the history is wrapped in a
+ * synthetic envelope whose state is derived from the last entry, so
+ * every structural and chain rule above is enforced by the exact
+ * same code path as `fromJSON`, not a copy of it. The returned
+ * entries are sanitized, detached copies in canonical field order.
+ * A fully hashless (legacy) history passes through hashless here —
+ * unlike `fromJSON`, no chain is added: a transport must not invent
+ * audit data its input did not carry.
+ */
+export function parseEscrowHistory(
+  history: unknown,
+  auditKey?: AuditKey
+): EscrowHistoryEntry[] {
+  if (!Array.isArray(history)) {
+    throw new Error("invalid history: history must be an array");
+  }
+  let state: EscrowState = "CREATED";
+  if (history.length > 0) {
+    const last: unknown = history[history.length - 1];
+    if (isRecord(last) && ESCROW_STATES.has(last.to as EscrowState)) {
+      state = last.to as EscrowState;
+    }
+  }
+  return parseEscrowSnapshot({ id: "history", state, history }, auditKey)
+    .history;
+}
+
+/**
  * Boundary check for monetary inputs: must be a finite, non-negative number.
  * Throws a descriptive Error on anything else (negative, NaN, ±Infinity,
  * non-number), so invalid caller input fails fast instead of silently
