@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 427 tests, all local
+npm test   # 437 tests, all local
 ```
 
 ## Quickstart
@@ -182,6 +182,19 @@ parity.)
   for it and keeps going. Failed escrows are left untouched.
   The deadline rides along in `toJSON()`/`fromJSON()` snapshots (a
   tampered or non-canonical deadline is rejected by snapshot validation).
+  A distinct screening is `staleEscrows(escrows, maxAgeByState, now?)`:
+  where the deadline helpers ask "past an *absolute* deadline", it asks
+  "stuck in the *current state* too long" — dwell is measured from the
+  last history entry's `at`, against a per-state millisecond budget,
+  and an escrow is stale only when dwell is *strictly* past its state's
+  budget (terminal states never qualify, states with no budget are
+  ignored, and an escrow with no history has no measurable dwell). A
+  FUNDED escrow whose milestone nobody submits for 30 days is picked
+  up here even when its deadline is months away. It is a pure filter
+  with deliberately *no* executor companion: expiry is the single
+  obvious action for an overdue escrow, but a stale escrow's right
+  disposition — notify the parties, escalate to arbitration, or expire
+  it — is a state-dependent caller decision.
 - Dispatch subscriptions (in-process fan-out seam): `escrow.subscribe(listener)`
   registers a listener called with `(event, from, to, entry)` after every
   *successful* dispatch, in subscription order; the returned function
@@ -452,7 +465,7 @@ signatures.
 
 ## Reproducibility
 
-`npm test` runs 427 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 437 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

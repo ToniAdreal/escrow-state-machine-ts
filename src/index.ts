@@ -1,4 +1,4 @@
-export { Escrow, allowedEvents, transition, transitionTable, assertNonNegativeMoney, isOverdue, expiredEscrows, expireOverdueEscrows, verifyHistoryChain, parseEscrowHistory, GENESIS_PREV_HASH, SNAPSHOT_VERSION } from "./stateMachine.js";
+export { Escrow, allowedEvents, transition, transitionTable, assertNonNegativeMoney, isOverdue, expiredEscrows, expireOverdueEscrows, staleEscrows, verifyHistoryChain, parseEscrowHistory, GENESIS_PREV_HASH, SNAPSHOT_VERSION } from "./stateMachine.js";
 export { historyToNdjson, historyFromNdjson } from "./ndjson.js";
 export type {
   AuditKey,

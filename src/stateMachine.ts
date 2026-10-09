@@ -1774,3 +1774,94 @@ export function expireOverdueEscrows(
     }
   });
 }
+
+/**
+ * Fail-fast validation for `staleEscrows()` configuration.
+ *
+ * Every key must be a known `EscrowState`, every value a non-negative
+ * finite number of milliseconds (0 is legal: "stale the instant it
+ * entered"). Mirrors the dataquest lifecycle's `assertMaxAgeByState`.
+ */
+function assertMaxAgeByState(
+  value: unknown
+): asserts value is Partial<Record<EscrowState, number>> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(
+      "invalid maxAgeByState: expected an object mapping EscrowState to a non-negative millisecond budget"
+    );
+  }
+  for (const [state, maxAge] of Object.entries(
+    value as Record<string, unknown>
+  )) {
+    if (!ESCROW_STATES.has(state as EscrowState)) {
+      throw new Error(`invalid maxAgeByState: unknown state "${state}"`);
+    }
+    if (typeof maxAge !== "number" || !Number.isFinite(maxAge) || maxAge < 0) {
+      throw new Error(
+        `invalid maxAgeByState: budget for "${state}" must be a non-negative finite number of milliseconds`
+      );
+    }
+  }
+}
+
+/**
+ * Watchdog helper: from a batch of escrows, return the ones that have
+ * been sitting in their CURRENT non-terminal state longer than the
+ * per-state budget — "stale" escrows a watchdog might want to nudge,
+ * page, or route to arbitration.
+ *
+ * The dwell clock starts at the `at` timestamp of the escrow's most
+ * recent history entry (the moment it entered its current state). An
+ * escrow is stale when `now - enteredAt > maxAgeByState[state]`
+ * (strictly past the budget; exactly at the budget is not stale).
+ * Terminal states are never selected — a settled escrow cannot be
+ * "stale"; states absent from the map are ignored (no budget = no
+ * staleness). An escrow with no history yet has no measurable dwell
+ * time and is never selected.
+ *
+ * This is the `expiredEscrows()` companion, with a different axis:
+ * `expiredEscrows()` answers "past an absolute deadline" (the escrow's
+ * `deadline`, whenever it entered its current state), while
+ * `staleEscrows()` answers "stuck in this state too long" (e.g. a
+ * FUNDED escrow whose milestone nobody has submitted for 30 days —
+ * its deadline may be months away, so no deadline helper picks it up).
+ *
+ * Pure: reads the escrows, never mutates or dispatches. Unlike
+ * `expireOverdueEscrows()`, there is deliberately NO executor
+ * companion: expiry is the single obvious action for an overdue
+ * escrow, but a stale escrow has no single default disposition —
+ * notify the parties, escalate to arbitration, or expire it are all
+ * legitimate, state-dependent choices — so what to DO with the
+ * selected escrows stays the caller's decision:
+ *
+ *   for (const escrow of staleEscrows(allEscrows, { FUNDED: 30 * DAY })) {
+ *     notifyParties(escrow.id, "escrow idle in FUNDED for over 30 days");
+ *   }
+ *
+ * The `now` default is the real clock, so unit tests pin it to a fixed
+ * date. Configuration is validated fail-fast before any escrow is
+ * read: an unknown state name or a negative/NaN budget throws.
+ */
+export function staleEscrows(
+  escrows: readonly Escrow[],
+  maxAgeByState: Partial<Record<EscrowState, number>>,
+  now: Date = new Date()
+): Escrow[] {
+  assertMaxAgeByState(maxAgeByState);
+  const nowMs = now.getTime();
+  if (!Number.isFinite(nowMs)) {
+    throw new Error("invalid now: expected a valid Date");
+  }
+  return escrows.filter((escrow) => {
+    if (escrow.isTerminal) return false;
+    const maxAgeMs = maxAgeByState[escrow.state];
+    if (maxAgeMs === undefined) return false;
+    const history = escrow.history;
+    if (history.length === 0) return false;
+    // dispatch()/fromJSON() validate canonical ISO on every entry, so
+    // this parse cannot fail on entries the library produced.
+    const enteredAt = Date.parse(history[history.length - 1].at);
+    if (!Number.isFinite(enteredAt)) return false;
+    return nowMs - enteredAt > maxAgeMs;
+  });
+}
