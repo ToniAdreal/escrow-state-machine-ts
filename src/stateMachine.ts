@@ -171,6 +171,29 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
+/**
+ * Snapshot field whitelists for {@link parseEscrowSnapshot} (fail-closed
+ * strict parsing). A field outside these sets is rejected, never
+ * silently dropped: a typo'd `deadline` (e.g. `deadlline`) would
+ * otherwise parse as "no deadline" and the escrow would never look
+ * overdue to a watchdog, and a typo'd entry `amount` (`amout`) would
+ * parse as a FUND entry carrying no money. `toJSON()` only ever
+ * produces fields inside these whitelists, so its output always passes.
+ */
+const SNAPSHOT_FIELDS = new Set(["v", "id", "state", "history", "deadline"]);
+const HISTORY_ENTRY_FIELDS = new Set([
+  "seq",
+  "event",
+  "from",
+  "to",
+  "at",
+  "note",
+  "amount",
+  "evidence",
+  "prevHash",
+  "hash",
+]);
+
 const ESCROW_STATES = new Set<EscrowState>(
   Object.keys(TRANSITIONS) as EscrowState[]
 );
@@ -213,6 +236,13 @@ function isCanonicalIso(s: unknown): s is string {
  *    check runs before the history/hash-chain checks, so a snapshot
  *    from an unknown future format reports its version problem rather
  *    than a misleading structural or chain error.
+ *  - unknown fields are rejected (fail-closed), never silently dropped:
+ *    top level allows only `v`/`id`/`state`/`history`/`deadline`
+ *    (`unknown field "<name>"`), and a history entry allows only
+ *    `seq`/`event`/`from`/`to`/`at`/`note`/`amount`/`evidence`/
+ *    `prevHash`/`hash` (`history[i]: unknown field "<name>"`). A typo
+ *    like `deadlline` or `amout` therefore fails loudly instead of
+ *    quietly losing a deadline or a FUND amount.
  *
  * Anything produced by toJSON() passes; anything else must earn its way.
  */
@@ -231,6 +261,14 @@ function parseEscrowSnapshot(snapshot: unknown): EscrowSnapshot {
       `invalid snapshot: unsupported snapshot version ${String(snapshot.v)}`
     );
   }
+  // Unknown top-level fields fail closed (see SNAPSHOT_FIELDS): after
+  // the version gate, so an unknown future format still reports its
+  // version first, but before any field is consumed.
+  for (const key of Object.keys(snapshot)) {
+    if (!SNAPSHOT_FIELDS.has(key)) {
+      throw new Error(`invalid snapshot: unknown field "${key}"`);
+    }
+  }
   if (typeof snapshot.id !== "string" || snapshot.id.length === 0) {
     throw new Error("invalid snapshot: id must be a non-empty string");
   }
@@ -248,6 +286,14 @@ function parseEscrowSnapshot(snapshot: unknown): EscrowSnapshot {
     const raw = snapshot.history[i];
     const tag = `invalid snapshot: history[${i}]`;
     if (!isRecord(raw)) throw new Error(`${tag}: entry must be an object`);
+    // Unknown entry fields fail closed the same way (see
+    // HISTORY_ENTRY_FIELDS), checked before any field is consumed so a
+    // typo is reported as itself, not as a missing-field error.
+    for (const key of Object.keys(raw)) {
+      if (!HISTORY_ENTRY_FIELDS.has(key)) {
+        throw new Error(`${tag}: unknown field "${key}"`);
+      }
+    }
     if (raw.seq !== i + 1) {
       throw new Error(`${tag}: seq must be ${i + 1}, got ${String(raw.seq)}`);
     }

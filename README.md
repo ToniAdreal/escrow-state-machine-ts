@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 357 tests, all local
+npm test   # 367 tests, all local
 ```
 
 ## Quickstart
@@ -172,7 +172,12 @@ parity.)
   canonical ISO-8601 non-decreasing timestamps, `amount` finite and
   non-negative on FUND entries only); malformed snapshots throw a
   descriptive `invalid snapshot: …` error instead of yielding a corrupt
-  escrow. Snapshots carry a schema version (`v: 1`): a missing `v` is a
+  escrow. Unknown fields are rejected fail-closed at both levels —
+  top level allows only `v`/`id`/`state`/`history`/`deadline` and an
+  entry only `seq`/`event`/`from`/`to`/`at`/`note`/`amount`/`evidence`/
+  `prevHash`/`hash` — so a typo like `deadlline` or `amout` throws
+  `invalid snapshot: unknown field "…"` instead of silently losing a
+  deadline or a FUND amount. Snapshots carry a schema version (`v: 1`): a missing `v` is a
   legacy pre-versioning snapshot and is still accepted, while any other
   `v` value throws `unsupported snapshot version` (checked before the
   history/hash-chain validation), so a future format change stays
@@ -389,7 +394,7 @@ signatures.
 
 ## Reproducibility
 
-`npm test` runs 357 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 367 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
