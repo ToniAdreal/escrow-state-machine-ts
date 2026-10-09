@@ -64,7 +64,8 @@ test("payload mirrors the report: event, eventId, id, outcome, deposit, parties,
   );
   assert.equal(byParty.creator.net, 10098.5);
   assert.equal(byParty.platform.net, 531.5);
-  // No bookkeeping fields leak into the payload.
+  // No bookkeeping fields leak into the payload (releasePath is the one
+  // report-derived routing field added for released settlements).
   assert.deepEqual(Object.keys(signed.payload).sort(), [
     "at",
     "deposit",
@@ -73,6 +74,7 @@ test("payload mirrors the report: event, eventId, id, outcome, deposit, parties,
     "eventId",
     "outcome",
     "parties",
+    "releasePath",
   ]);
 });
 

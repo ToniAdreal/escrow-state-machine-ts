@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 347 tests, all local
+npm test   # 357 tests, all local
 ```
 
 ## Quickstart
@@ -284,10 +284,19 @@ const { payload, signature } = buildSettlementWebhook(report, { secret: process.
 const ok = verifySettlementWebhook(rawBody, receivedSignature, secret);
 ```
 
-`payload` is `{ event: "escrow.settled", eventId, escrowId, outcome, deposit, parties, at }`,
+`payload` is `{ event: "escrow.settled", eventId, escrowId, outcome, releasePath?, deposit, parties, at }`,
 derived entirely from the audit-backed settlement report. The comparison is
 constant-time (`timingSafeEqual`); malformed signatures fail closed as
 `false`, never throw.
+
+`releasePath` is present only on `released` payloads: it is the report's
+release path copied verbatim (e.g. `"VERIFY_PASS → RELEASE"` for the normal
+path, `"DISPUTE → ARBITRATE_RELEASE"` for an arbitration release), so a
+receiver can route arbitration settlements to manual review without
+re-querying the settlement report. `refunded`/`expired` payloads omit the
+key entirely. It sits between `outcome` and `deposit` in the canonical key
+order and is covered by the signature — tampering with or stripping it
+fails verification.
 
 `eventId` is the receiver's idempotency key: every build generates a fresh
 UUID v4 (inject your own via `BuildWebhookOptions.eventId` for deterministic
@@ -380,7 +389,7 @@ signatures.
 
 ## Reproducibility
 
-`npm test` runs 347 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 357 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

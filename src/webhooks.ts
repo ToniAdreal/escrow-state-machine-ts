@@ -37,6 +37,18 @@ export interface SettlementWebhookPayload {
   eventId: string;
   escrowId: string;
   outcome: "released" | "refunded" | "expired";
+  /**
+   * How a `released` settlement was reached, copied verbatim from
+   * `SettlementReport.releasePath` (e.g. `"VERIFY_PASS → RELEASE"` for the
+   * normal path, `"DISPUTE → ARBITRATE_RELEASE"` for an arbitration
+   * release). Present only when the outcome is `released` and the report
+   * carries a path; `refunded`/`expired` payloads omit the key entirely
+   * (never `releasePath: undefined` on the wire). Receivers can route on
+   * it — e.g. send arbitration settlements to manual review — without
+   * re-querying the settlement report. Covered by the signature like
+   * every other field, so tampering with it fails verification.
+   */
+  releasePath?: string;
   /** Locked deposit total (same `deposit.deposit` the report accounts for). */
   deposit: number;
   parties: Array<{ party: PartyRole; inflow: number; outflow: number; net: number }>;
@@ -152,6 +164,12 @@ export function buildSettlementWebhook(
     eventId,
     escrowId: report.escrowId,
     outcome: report.outcome,
+    // Fixed canonical key order: `releasePath` sits between `outcome` and
+    // `deposit`, and the key is written only for a released report that
+    // carries a path — refunded/expired payloads keep their legacy shape.
+    ...(report.outcome === "released" && report.releasePath
+      ? { releasePath: report.releasePath }
+      : {}),
     deposit: report.deposit.deposit,
     parties: report.parties.map((p) => ({
       party: p.party,
