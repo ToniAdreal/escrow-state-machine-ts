@@ -7,8 +7,9 @@
 
 `escrow-state-machine-ts` models the rules of an off-chain milestone escrow:
 state transitions, fee math, settlement reporting, quorum counting, and
-webhook signing. It holds no real money, runs no on-chain code, and verifies
-no cryptography beyond HMAC webhook signatures.
+webhook signing. It holds no real money, runs no on-chain code, and its only
+cryptography is HMAC: webhook signatures, and the optional keyed audit hash
+chain described below.
 
 ## Trust model
 
@@ -111,14 +112,28 @@ chained snapshots and rejects a broken one, so an entry rewritten on disk
 on rehydration instead of silently accepted. `verifyHistoryChain()` is
 exported for standalone checks (watchdogs, log-shipper validation).
 
-Honest limits: the chain is **unkeyed** — it is tamper *evidence*, not a
-MAC. It catches edits by anyone who rewrites entries without recomputing
-the chain (manual edits, log-shipper corruption, partial restores). It
-does **not** stop an attacker who rewrites the whole JSON and recomputes
-the hashes; that threat needs a keyed MAC or signatures over the snapshot,
-which is out of scope. Legacy (hashless) snapshots are still accepted and
-deterministically chained on rehydration; a snapshot that mixes chained and
-hashless entries is rejected.
+Honest limits: the default chain is **unkeyed** — it is tamper *evidence*,
+not a MAC. It catches edits by anyone who rewrites entries without
+recomputing the chain (manual edits, log-shipper corruption, partial
+restores). It does **not** stop an attacker who rewrites the whole JSON and
+recomputes the hashes.
+
+That gap has an opt-in fix: construct the escrow with an `auditKey`
+(`new Escrow(id, { auditKey })`, a non-empty string or Buffer) and every
+chain link becomes **HMAC-SHA256** over the same canonical input. Rewriting
+the JSON then requires the key as well as the data. Verification is
+fail-closed across modes: a keyed chain does not verify without the key or
+with the wrong one (`verifyHistoryChain(history, key)`,
+`Escrow.fromJSON(snapshot, { auditKey })`), and an unkeyed chain does not
+verify when a key is supplied. In keyed mode the residual risks move to
+the key itself: anyone who obtains the key can rewrite the log and re-MAC
+it, so key generation, storage, and distribution are the caller's
+responsibility — the library never generates, stores, or transmits keys,
+and the key is never written into snapshots (a restored escrow must be
+handed the key again, and a legacy hashless snapshot restored with a key
+is chained in keyed mode on rehydration). Legacy (hashless) snapshots are
+still accepted and deterministically chained on rehydration; a snapshot
+that mixes chained and hashless entries is rejected.
 
 ## Deliberately NOT here (production would need it)
 

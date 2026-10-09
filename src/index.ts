@@ -1,5 +1,6 @@
 export { Escrow, allowedEvents, transition, transitionTable, assertNonNegativeMoney, isOverdue, expiredEscrows, expireOverdueEscrows, verifyHistoryChain, GENESIS_PREV_HASH, SNAPSHOT_VERSION } from "./stateMachine.js";
 export type {
+  AuditKey,
   DispatchOptions,
   EscrowEvent,
   EscrowEventListener,

@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 367 tests, all local
+npm test   # 381 tests, all local
 ```
 
 ## Quickstart
@@ -90,8 +90,15 @@ parity.)
   `Escrow.fromJSON()` rejects a broken chain, and `buildSettlementReport()`
   verifies the chain before producing any accounting (legacy hashless
   snapshots are still accepted and chained on rehydration; mixed
-  chained/hashless snapshots are rejected). The chain is unkeyed tamper *evidence*, not a
-  MAC — see [SECURITY.md](SECURITY.md) for the honest limits.
+  chained/hashless snapshots are rejected). By default the chain is unkeyed tamper *evidence*, not a
+  MAC — see [SECURITY.md](SECURITY.md) for the honest limits. An optional
+  keyed mode upgrades it to a real MAC: construct the escrow with
+  `new Escrow(id, { auditKey })` and every link becomes HMAC-SHA256 under
+  that key, so a full-log rewrite with recomputed hashes is detected
+  without the key. Verification is fail-closed across modes (a keyed
+  chain needs its key via `verifyHistoryChain(history, key)` /
+  `Escrow.fromJSON(snapshot, { auditKey })`; an unkeyed chain rejects a
+  supplied key), and the key is never written into snapshots.
   `FUND` accepts an optional `amount`
   argument — it is validated as a finite non-negative number at the dispatch
   boundary (anything else throws) and recorded on the audit entry; passing an
@@ -394,7 +401,7 @@ signatures.
 
 ## Reproducibility
 
-`npm test` runs 367 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 381 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

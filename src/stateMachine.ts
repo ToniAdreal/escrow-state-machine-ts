@@ -8,7 +8,7 @@
  * throw. An append-only history gives the "immutable operational audit log".
  */
 
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 
 export type EscrowState =
   | "CREATED"
@@ -123,7 +123,9 @@ export interface EscrowHistoryEntry {
    * `prevHash` links to the previous entry's `hash` (the genesis entry's
    * `prevHash` is the {@link GENESIS_PREV_HASH} constant); `hash` is the
    * SHA-256 of the canonical entry serialization concatenated with
-   * `prevHash`. Both are written by {@link Escrow.dispatch} and verified
+   * `prevHash` — or, when the escrow was constructed with an
+   * {@link EscrowOptions.auditKey}, the HMAC-SHA256 of the same input
+   * under that key. Both are written by {@link Escrow.dispatch} and verified
    * by {@link verifyHistoryChain}. Snapshots produced before this feature
    * carry neither field and are still accepted as legacy (see
    * parseEscrowSnapshot); a snapshot that mixes chained and hashless
@@ -227,7 +229,10 @@ function isCanonicalIso(s: unknown): s is string {
  *    appear on every entry (mixed chained/hashless histories are
  *    rejected); when every entry carries them, the hash chain is
  *    re-verified and a broken chain throws (legacy hashless histories
- *    pass through and are chained on rehydration)
+ *    pass through and are chained on rehydration). The re-verification
+ *    uses `auditKey` when one is supplied (via {@link Escrow.fromJSON}'s
+ *    options): a keyed chain checked without its key — or an unkeyed
+ *    chain checked with one — fails as a broken chain, fail-closed
  *  - `deadline`, when present, must be canonical ISO-8601 (the advisory
  *    deadline; anything produced by toJSON() passes)
  *  - `v`, when present, must be exactly {@link SNAPSHOT_VERSION}; a
@@ -246,7 +251,10 @@ function isCanonicalIso(s: unknown): s is string {
  *
  * Anything produced by toJSON() passes; anything else must earn its way.
  */
-function parseEscrowSnapshot(snapshot: unknown): EscrowSnapshot {
+function parseEscrowSnapshot(
+  snapshot: unknown,
+  auditKey?: AuditKey
+): EscrowSnapshot {
   if (!isRecord(snapshot)) {
     throw new Error("invalid snapshot: expected a JSON object");
   }
@@ -411,7 +419,7 @@ function parseEscrowSnapshot(snapshot: unknown): EscrowSnapshot {
     );
   }
   if (chainedFlags.length > 0 && chainedFlags.every(Boolean)) {
-    if (!verifyHistoryChain(history)) {
+    if (!verifyHistoryChain(history, auditKey)) {
       throw new Error(
         "invalid snapshot: history hash chain is broken (an entry was tampered with, deleted, or reordered)"
       );
@@ -482,15 +490,48 @@ function round2(n: number): number {
 // reordering entries) breaks the chain, and {@link verifyHistoryChain}
 // reports it.
 //
-// Honest limits: this is an UNKEYED chain. It detects edits by anyone
-// who rewrites entries without recomputing the chain (manual edits,
-// log-shipper corruption, partial restores). It does NOT stop an
-// attacker who rewrites the whole JSON and recomputes the hashes —
-// that needs a keyed MAC or signatures, which is out of scope here.
+// Honest limits: by default this is an UNKEYED chain. It detects edits
+// by anyone who rewrites entries without recomputing the chain (manual
+// edits, log-shipper corruption, partial restores). It does NOT stop
+// an attacker who rewrites the whole JSON and recomputes the hashes.
+//
+// Optional keyed mode: when the escrow is constructed with
+// `EscrowOptions.auditKey`, each link is HMAC-SHA256 over the same
+// canonical input instead of plain SHA-256. Rewriting the JSON then
+// requires the key as well as the data, which turns the chain from
+// tamper evidence into a MAC — at the price of key management, which
+// stays the caller's problem: the key is per-instance configuration,
+// is never written into snapshots, and must be re-supplied to
+// `verifyHistoryChain` / `Escrow.fromJSON` to check a keyed chain.
+// The two modes are fail-closed against each other: a keyed chain does
+// not verify without (or with the wrong) key, and an unkeyed chain
+// does not verify when a key is supplied.
 // ------------------------------------------------------------------
 
 /** `prevHash` of the first (genesis) audit entry. */
 export const GENESIS_PREV_HASH = "GENESIS";
+
+/** Secret key for the optional keyed (HMAC) audit hash chain. */
+export type AuditKey = string | Buffer;
+
+/**
+ * Validate an audit key: it must be a non-empty string or Buffer
+ * (mirrors the webhook `assertSecret` fail-fast style — an empty key
+ * would silently provide no MAC security at all, so it is a caller
+ * configuration error, never a verification result).
+ */
+function assertAuditKey(key: unknown): asserts key is AuditKey {
+  if (typeof key !== "string" && !Buffer.isBuffer(key)) {
+    throw new Error(
+      `invalid audit key: auditKey must be a non-empty string or Buffer, got ${typeof key}`
+    );
+  }
+  if (key.length === 0) {
+    throw new Error(
+      "invalid audit key: auditKey must not be empty (an empty key provides no MAC security)"
+    );
+  }
+}
 
 /**
  * Canonical serialization of a history entry for hashing: fixed key order
@@ -516,8 +557,15 @@ function canonicalHistoryEntry(
   return JSON.stringify(obj);
 }
 
-function hashHistoryEntry(canonical: string, prevHash: string): string {
-  return createHash("sha256").update(canonical + prevHash, "utf8").digest("hex");
+function hashHistoryEntry(
+  canonical: string,
+  prevHash: string,
+  key?: AuditKey
+): string {
+  const input = canonical + prevHash;
+  return key === undefined
+    ? createHash("sha256").update(input, "utf8").digest("hex")
+    : createHmac("sha256", key).update(input, "utf8").digest("hex");
 }
 
 /**
@@ -533,13 +581,23 @@ function hashHistoryEntry(canonical: string, prevHash: string): string {
  *    pass-through;
  *  - a mix of chained and hashless entries -> `false` (fail closed).
  *
+ * Keyed chains: when the history was produced by an escrow constructed
+ * with {@link EscrowOptions.auditKey}, pass the same key as the second
+ * argument — the links are HMAC-SHA256, so verification without the key
+ * (or with the wrong key) returns `false`, and conversely an unkeyed
+ * chain returns `false` when a key is supplied (fail-closed both ways).
+ * An invalid `key` value itself (empty, or not a string/Buffer) is a
+ * caller configuration error and throws, mirroring the constructor.
+ *
  * Note: this checks integrity only, not structure. A re-sequenced or
  * structurally invalid history still needs parseEscrowSnapshot
  * (via {@link Escrow.fromJSON}) for the seq/edge/timestamp rules.
  */
 export function verifyHistoryChain(
-  history: readonly EscrowHistoryEntry[]
+  history: readonly EscrowHistoryEntry[],
+  key?: AuditKey
 ): boolean {
+  if (key !== undefined) assertAuditKey(key);
   if (history.length === 0) return true;
   const carried = history.map(
     (e) => e.hash !== undefined || e.prevHash !== undefined
@@ -550,7 +608,7 @@ export function verifyHistoryChain(
   for (const entry of history) {
     if (entry.prevHash !== expectedPrev) return false;
     const canonical = canonicalHistoryEntry(entry);
-    if (hashHistoryEntry(canonical, entry.prevHash) !== entry.hash) {
+    if (hashHistoryEntry(canonical, entry.prevHash, key) !== entry.hash) {
       return false;
     }
     expectedPrev = entry.hash!;
@@ -567,14 +625,15 @@ export function verifyHistoryChain(
  * the entry fields.
  */
 function chainHistoryEntries(
-  history: EscrowHistoryEntry[]
+  history: EscrowHistoryEntry[],
+  key?: AuditKey
 ): EscrowHistoryEntry[] {
   if (history.length === 0) return history;
   if (history[0].hash !== undefined) return history; // already chained
   let prevHash = GENESIS_PREV_HASH;
   return history.map((entry) => {
     const chained: EscrowHistoryEntry = { ...entry, prevHash };
-    chained.hash = hashHistoryEntry(canonicalHistoryEntry(chained), prevHash);
+    chained.hash = hashHistoryEntry(canonicalHistoryEntry(chained), prevHash, key);
     prevHash = chained.hash;
     return chained;
   });
@@ -721,6 +780,29 @@ export interface EscrowOptions {
    * parameter).
    */
   maxDeposit?: number;
+
+  /**
+   * Optional secret key that upgrades the audit hash chain from plain
+   * SHA-256 to HMAC-SHA256 (keyed mode). With a key set, every entry's
+   * `hash` is `HMAC-SHA256(canonical(entry) + prevHash, auditKey)`:
+   * rewriting a persisted snapshot then requires the key as well as the
+   * data, so a full-log rewrite with recomputed hashes is detected
+   * without the key. Verification is fail-closed across modes: a keyed
+   * chain does not verify without the key or with the wrong key, and
+   * an unkeyed chain does not verify when a key is supplied.
+   *
+   * Must be a non-empty string or Buffer when set (an empty key is a
+   * constructor error — it would silently provide no MAC security).
+   * Default: undefined (unkeyed chain, unchanged legacy behavior).
+   *
+   * Like the other options, the key is per-instance configuration and
+   * is NEVER part of `toJSON()`/`fromJSON()` snapshots: a restored
+   * escrow must be given the key again via {@link Escrow.fromJSON}'s
+   * second parameter, and a keyed snapshot restored without it is
+   * rejected as a broken hash chain. Key generation, storage, and
+   * distribution are the caller's responsibility — see SECURITY.md.
+   */
+  auditKey?: AuditKey;
 }
 
 /** Stateful escrow with an append-only audit history. */
@@ -731,6 +813,7 @@ export class Escrow {
   private _seenIdempotencyKeys = new Set<string>();
   private readonly _requireVerifyEvidence: boolean;
   private readonly _maxDeposit: number | undefined;
+  private readonly _auditKey: AuditKey | undefined;
 
   constructor(id: string, opts?: EscrowOptions) {
     // fromJSON validates the same rule; a live Escrow must never hold an id
@@ -753,10 +836,22 @@ export class Escrow {
       if (opts.maxDeposit !== undefined) {
         assertNonNegativeMoney("maxDeposit", opts.maxDeposit);
       }
+      if (opts.auditKey !== undefined) {
+        assertAuditKey(opts.auditKey);
+      }
     }
     this.id = id;
     this._requireVerifyEvidence = opts?.requireVerifyEvidence === true;
     this._maxDeposit = opts?.maxDeposit;
+    // Defensive copy for Buffer keys: the caller must not be able to
+    // mutate the key material after construction and silently change
+    // what future dispatches sign with.
+    this._auditKey =
+      opts?.auditKey === undefined
+        ? undefined
+        : Buffer.isBuffer(opts.auditKey)
+          ? Buffer.from(opts.auditKey)
+          : opts.auditKey;
   }
 
   get state(): EscrowState {
@@ -1000,7 +1095,8 @@ export class Escrow {
     };
     chainedEntry.hash = hashHistoryEntry(
       canonicalHistoryEntry(chainedEntry),
-      prevHash
+      prevHash,
+      this._auditKey
     );
     this._history.push(chainedEntry);
     if (idempotencyKey !== undefined) {
@@ -1149,12 +1245,22 @@ export class Escrow {
    *   escrow was constructed with keeps the restored instance under the
    *   same risk controls. When omitted, the restored escrow behaves
    *   exactly like a legacy default-constructed one.
+   *
+   *   `opts.auditKey` additionally feeds the snapshot's hash-chain
+   *   re-verification: a snapshot chained in keyed mode (see
+   *   {@link EscrowOptions.auditKey}) only restores when the same key
+   *   is supplied here — without it, or with the wrong key, the chain
+   *   check fails and the snapshot is rejected as broken (fail-closed;
+   *   the same applies in reverse to an unkeyed snapshot restored with
+   *   a key). A legacy hashless snapshot restored with a key is chained
+   *   in keyed mode on rehydration, so its live history verifies with
+   *   that key from then on.
    */
   static fromJSON(snapshot: unknown, opts?: EscrowOptions): Escrow {
-    const parsed = parseEscrowSnapshot(snapshot);
+    const parsed = parseEscrowSnapshot(snapshot, opts?.auditKey);
     const escrow = new Escrow(parsed.id, opts);
     escrow._state = parsed.state;
-    escrow._history = chainHistoryEntries(parsed.history);
+    escrow._history = chainHistoryEntries(parsed.history, opts?.auditKey);
     escrow._deadline = parsed.deadline;
     return escrow;
   }
