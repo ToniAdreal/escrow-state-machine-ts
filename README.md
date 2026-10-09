@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 321 tests, all local
+npm test   # 335 tests, all local
 ```
 
 ## Quickstart
@@ -112,6 +112,16 @@ parity.)
   `toJSON()`/`fromJSON()` snapshots, so a restart clears them and the caller
   must reconcile before replaying. This is in-process retry protection, not
   a distributed idempotency store.
+- Injectable audit timestamps: `dispatch` opts also accept `at`
+  (`Date | string`) to pin the audit entry's timestamp — for deterministic
+  dispatch tests and replay (quorum approvals and webhook payloads already
+  had injectable clocks; the audit clock did not). A `Date` is normalized
+  via `toISOString()`; a string must already be canonical ISO-8601 (the
+  same rule snapshot validation enforces) and must not be earlier than the
+  previous entry's `at`. Invalid or backwards values throw before anything
+  is appended, and a rejected dispatch consumes no idempotency key. When
+  omitted, the wall clock is used as before. The injected value is covered
+  by the entry's hash chain like every other field.
 - Deposit caps: `new Escrow(id, { maxDeposit })` caps the total locked
   deposit at a finite non-negative number (risk control / contract limits).
   A `FUND` whose amount would push the locked total — the sum of every
@@ -366,7 +376,7 @@ signatures.
 
 ## Reproducibility
 
-`npm test` runs 321 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 335 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

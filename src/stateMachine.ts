@@ -538,6 +538,35 @@ export interface DispatchOptions {
    * it is purely advisory.
    */
   evidence?: string;
+  /**
+   * Audit timestamp for this dispatch — injectable so dispatch-level
+   * tests and replay scenarios can pin the clock (quorum approvals have
+   * `QuorumConfig.now` and webhook payloads have `BuildWebhookOptions.now`;
+   * the audit entry's `at` was previously the one timestamp with no
+   * injection point).
+   *
+   * When omitted, the wall clock is used (`new Date().toISOString()`),
+   * exactly as before. When given:
+   *  - a `Date` is normalized via `toISOString()` (an invalid Date —
+   *    `getTime()` is NaN — throws);
+   *  - a string must ALREADY be canonical ISO-8601 — exactly what
+   *    `new Date(ms).toISOString()` produces, the same `isCanonicalIso`
+   *    rule `parseEscrowSnapshot` enforces — so non-canonical
+   *    strings like `"2026-03-01"` or `"2026-03-01T10:00:00Z"` (no
+   *    fractional seconds) throw instead of being silently normalized;
+   *  - any other type throws.
+   *
+   * The value must also not be earlier than the previous history
+   * entry's `at` (non-decreasing — again the snapshot rule), so a
+   * history built from injected timestamps always round-trips through
+   * `toJSON()`/`fromJSON()`. All validation happens before anything is
+   * appended: a rejected `at` leaves state and history untouched and
+   * does not consume an idempotency key. A valid `at` is recorded
+   * verbatim on the audit entry and is covered by the entry's hash
+   * chain like every other field — tampering with a persisted `at`
+   * breaks {@link verifyHistoryChain}.
+   */
+  at?: Date | string;
 }
 
 /**
@@ -735,7 +764,10 @@ export class Escrow {
    *               records an evidence reference on the audit entry; when the
    *               escrow was constructed with `requireVerifyEvidence: true`,
    *               VERIFY_PASS without evidence throws before any state
-   *               change.
+   *               change. `opts.at` pins the audit entry's timestamp
+   *               (Date or canonical ISO-8601 string; see
+   *               {@link DispatchOptions.at}) — invalid or backwards
+   *               values throw before any state change.
    */
   dispatch(
     event: EscrowEvent,
@@ -769,6 +801,39 @@ export class Escrow {
         if (this._seenIdempotencyKeys.has(idempotencyKey)) {
           return this._state; // duplicate delivery: no-op, no history append
         }
+      }
+    }
+    // Injectable audit timestamp (deterministic tests / replay): resolve
+    // and validate it here — after the idempotency dedup above (a
+    // duplicate delivery stays a pure no-op), before the transition
+    // check — so a bad value fails fast with no history residue and no
+    // idempotency-key consumption. The rules mirror parseEscrowSnapshot:
+    // strings must already be canonical ISO-8601, and the value must not
+    // move the audit clock backwards.
+    let at: string | undefined;
+    if (opts?.at !== undefined) {
+      if (opts.at instanceof Date) {
+        if (Number.isNaN(opts.at.getTime())) {
+          throw new Error(
+            `invalid dispatch options: at must be a canonical ISO-8601 timestamp, got ${String(opts.at)}`
+          );
+        }
+        at = opts.at.toISOString();
+      } else if (typeof opts.at === "string" && isCanonicalIso(opts.at)) {
+        at = opts.at;
+      } else {
+        throw new Error(
+          `invalid dispatch options: at must be a canonical ISO-8601 timestamp, got ${String(opts.at)}`
+        );
+      }
+      const prevEntryForAt = this._history[this._history.length - 1];
+      if (
+        prevEntryForAt !== undefined &&
+        Date.parse(at) < Date.parse(prevEntryForAt.at)
+      ) {
+        throw new Error(
+          `invalid dispatch options: at ${at} is earlier than the previous entry's at ${prevEntryForAt.at}`
+        );
       }
     }
     // Evidence references are only meaningful on VERIFY_PASS. A non-empty
@@ -845,7 +910,7 @@ export class Escrow {
       event,
       from,
       to,
-      at: new Date().toISOString(),
+      at: at ?? new Date().toISOString(),
       note,
       ...(event === "FUND" && amount !== undefined ? { amount } : {}),
       ...(event === "VERIFY_PASS" && evidence !== undefined
