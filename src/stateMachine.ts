@@ -1097,10 +1097,19 @@ export function isOverdue(escrow: Escrow, now: Date = new Date()): boolean {
  * Watchdog helper: from a batch of escrows, return the ones a watchdog
  * should expire right now — non-terminal AND past their deadline.
  *
- * This is just `isOverdue()` over a list, but it captures the documented
- * watchdog pattern so callers do it in one line:
+ * This is just `isOverdue()` over a list. To actually expire the batch,
+ * prefer the executor, which dispatches `EXPIRE` per escrow and reports
+ * per-escrow outcomes:
  *
- *   for (const escrow of expiredEscrows(allEscrows)) escrow.dispatch("EXPIRE");
+ *   const results = expireOverdueEscrows(allEscrows);
+ *
+ * NOTE — do not hand-write a dispatch loop over this filter yourself:
+ * it is a real trap. This filter only checks the deadline and the terminal
+ * flag, but `EXPIRE` is not a legal event from every non-terminal state —
+ * `VERIFIED` (and `DISPUTED`) escrows have no `EXPIRE` edge, so the loop
+ * throws `invalid transition: EXPIRE from VERIFIED` on the first such
+ * escrow and aborts the whole batch. {@link expireOverdueEscrows} isolates
+ * the error per escrow and keeps going.
  *
  * Pure: reads the escrows, never mutates or dispatches. The `now` default
  * is the real clock, so unit tests pin it to a fixed date.
