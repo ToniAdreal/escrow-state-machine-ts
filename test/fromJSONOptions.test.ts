@@ -168,6 +168,7 @@ describe("Escrow.fromJSON(snapshot, opts)", () => {
       "history",
       "id",
       "state",
+      "v",
     ]);
     // And the re-snapshot rehydrates cleanly without opts too.
     const plain = Escrow.fromJSON(resnap);

@@ -138,7 +138,24 @@ export interface EscrowHistoryEntry {
  * history. Plain JSON (no class instances), safe to store in any document
  * store and feed back into Escrow.fromJSON().
  */
+/**
+ * Current snapshot schema version, written by `toJSON()` as the `v`
+ * field. Snapshots produced before versioning existed carry no `v` and
+ * are accepted as legacy; a snapshot carrying any other version is
+ * rejected by the parser (see {@link EscrowSnapshot.v}).
+ */
+export const SNAPSHOT_VERSION = 1;
+
 export interface EscrowSnapshot {
+  /**
+   * Snapshot schema version. `toJSON()` always writes the current
+   * version ({@link SNAPSHOT_VERSION}). Optional in the type so legacy
+   * (pre-versioning) snapshots stay representable: the parser accepts a
+   * missing `v` as legacy, but a present `v` that is not exactly the
+   * current version throws `unsupported snapshot version` — that is how
+   * a future format evolution stays distinguishable from corruption.
+   */
+  v?: number;
   id: string;
   state: EscrowState;
   history: EscrowHistoryEntry[];
@@ -190,12 +207,29 @@ function isCanonicalIso(s: unknown): s is string {
  *    pass through and are chained on rehydration)
  *  - `deadline`, when present, must be canonical ISO-8601 (the advisory
  *    deadline; anything produced by toJSON() passes)
+ *  - `v`, when present, must be exactly {@link SNAPSHOT_VERSION}; a
+ *    missing `v` is a legacy (pre-versioning) snapshot and passes, but
+ *    any other value throws `unsupported snapshot version`. The version
+ *    check runs before the history/hash-chain checks, so a snapshot
+ *    from an unknown future format reports its version problem rather
+ *    than a misleading structural or chain error.
  *
  * Anything produced by toJSON() passes; anything else must earn its way.
  */
 function parseEscrowSnapshot(snapshot: unknown): EscrowSnapshot {
   if (!isRecord(snapshot)) {
     throw new Error("invalid snapshot: expected a JSON object");
+  }
+  // Schema version gate, deliberately first (right after the shape
+  // check): missing `v` = legacy snapshot, accepted for backward
+  // compatibility (the same pass-through treatment as hashless chains);
+  // present-but-not-current = a format this parser does not understand,
+  // rejected before any structural or hash-chain check can misreport
+  // it as corruption.
+  if (snapshot.v !== undefined && snapshot.v !== SNAPSHOT_VERSION) {
+    throw new Error(
+      `invalid snapshot: unsupported snapshot version ${String(snapshot.v)}`
+    );
   }
   if (typeof snapshot.id !== "string" || snapshot.id.length === 0) {
     throw new Error("invalid snapshot: id must be a non-empty string");
@@ -350,7 +384,7 @@ function parseEscrowSnapshot(snapshot: unknown): EscrowSnapshot {
     deadline = snapshot.deadline;
   }
 
-  return { id, state, history, deadline };
+  return { v: SNAPSHOT_VERSION, id, state, history, deadline };
 }
 
 /**
@@ -1031,15 +1065,17 @@ export class Escrow {
   }
 
   /**
-   * Export a serializable snapshot (id + live state + history) for
-   * persistence. The returned object is a deep copy: mutating it does not
-   * affect the escrow, and JSON.stringify(escrow) goes through this method.
+   * Export a serializable snapshot (schema version + id + live state +
+   * history) for persistence. The returned object is a deep copy:
+   * mutating it does not affect the escrow, and JSON.stringify(escrow)
+   * goes through this method.
    *
    * A deadline, when set, is exported as `deadline` (canonical ISO-8601);
    * absent when none is set.
    */
   toJSON(): EscrowSnapshot {
     return {
+      v: SNAPSHOT_VERSION,
       id: this.id,
       state: this._state,
       history: this._history.map((e) => ({ ...e })),

@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 335 tests, all local
+npm test   # 347 tests, all local
 ```
 
 ## Quickstart
@@ -164,7 +164,7 @@ parity.)
   `toJSON()`/`fromJSON()` snapshots, and there is no durable fan-out
   (queues, webhooks, retries) — that stays the caller's infrastructure.
 - Persistence-ready snapshots: `escrow.toJSON()` exports a plain-JSON
-  `{ id, state, history }` snapshot (a detached deep copy;
+  `{ v, id, state, history }` snapshot (a detached deep copy;
   `JSON.stringify(escrow)` goes through it), and
   `Escrow.fromJSON(snapshot)` rebuilds a working escrow — the input is
   strictly validated as if untrusted (seq restarts at 1 with no gaps,
@@ -172,7 +172,11 @@ parity.)
   canonical ISO-8601 non-decreasing timestamps, `amount` finite and
   non-negative on FUND entries only); malformed snapshots throw a
   descriptive `invalid snapshot: …` error instead of yielding a corrupt
-  escrow. A snapshot is an *export*, not a datastore — there is still no
+  escrow. Snapshots carry a schema version (`v: 1`): a missing `v` is a
+  legacy pre-versioning snapshot and is still accepted, while any other
+  `v` value throws `unsupported snapshot version` (checked before the
+  history/hash-chain validation), so a future format change stays
+  distinguishable from corruption. A snapshot is an *export*, not a datastore — there is still no
   built-in storage or locking; in-memory idempotency keys are supported via
   `dispatch` options but are not part of snapshots.
 
@@ -376,7 +380,7 @@ signatures.
 
 ## Reproducibility
 
-`npm test` runs 335 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 347 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

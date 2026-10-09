@@ -1,4 +1,4 @@
-export { Escrow, allowedEvents, transition, transitionTable, assertNonNegativeMoney, isOverdue, expiredEscrows, expireOverdueEscrows, verifyHistoryChain, GENESIS_PREV_HASH } from "./stateMachine.js";
+export { Escrow, allowedEvents, transition, transitionTable, assertNonNegativeMoney, isOverdue, expiredEscrows, expireOverdueEscrows, verifyHistoryChain, GENESIS_PREV_HASH, SNAPSHOT_VERSION } from "./stateMachine.js";
 export type {
   DispatchOptions,
   EscrowEvent,
