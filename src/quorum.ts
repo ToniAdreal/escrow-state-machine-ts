@@ -36,6 +36,20 @@ export interface QuorumConfig {
    * deterministic audit logs.
    */
   now?: () => number;
+  /**
+   * Optional approval expiry window, in milliseconds. When set, the
+   * counting views (`hasQuorum` / `approvalCount` / `approvals`) only
+   * count an approval while its age — measured on the `now` clock — is
+   * at most this window (the boundary is inclusive, matching this repo's
+   * other freshness windows: an approval exactly `maxApprovalAgeMs` old
+   * still counts). Expiry never deletes anything: `approvalLog()` keeps
+   * the full audit trail including expired entries. An expired signer
+   * can `approve()` again, which records a fresh timestamp (appended to
+   * the log) and restores their count. A clock reading earlier than an
+   * approval's timestamp yields a negative age, which counts as fresh.
+   * When unset, approvals never expire (the historical behavior).
+   */
+  maxApprovalAgeMs?: number;
 }
 
 /** One entry of a quorum's approval audit trail. */
@@ -49,31 +63,50 @@ export interface ApprovalLogEntry {
 export interface Quorum {
   readonly threshold: number;
   readonly signerCount: number;
-  /** Record an approval. Idempotent: re-approving the same signer is a no-op. */
+  /**
+   * Record an approval. Idempotent while the signer's current approval
+   * still counts: re-approving is a no-op. If the signer's approval has
+   * expired (see `maxApprovalAgeMs`), approving again appends a fresh
+   * log entry with a new timestamp and the signer counts again.
+   */
   approve(signerId: string): void;
   /**
    * Withdraw a previously recorded approval (real multi-sigs let signers
    * change their vote before the threshold is reached). Throws for unknown
    * signers, and for signers that have not approved — revoking a vote that
-   * was never cast is a caller error, not a no-op.
+   * was never cast is a caller error, not a no-op. Revoking an *expired*
+   * approval is allowed and behaves the same: all of the signer's log
+   * entries are removed, exactly as for a live approval.
    */
   revoke(signerId: string): void;
-  /** True once threshold distinct approvals have been recorded. */
+  /**
+   * True once threshold distinct *counted* approvals exist. With
+   * `maxApprovalAgeMs` set, expired approvals do not count.
+   */
   hasQuorum(): boolean;
-  /** Number of distinct approvals recorded so far. */
+  /** Number of distinct counted approvals (expired ones excluded). */
   approvalCount(): number;
-  /** Signer ids that have approved, in approval order. */
+  /**
+   * Signer ids whose approvals currently count, ordered by each signer's
+   * latest approval. Expired approvals are excluded.
+   */
   approvals(): readonly string[];
   /**
-   * Approval audit trail: who approved and when, in approval order.
+   * Approval audit trail: who approved and when, in record order.
    * Returns a detached copy — mutating it cannot alter the quorum.
-   * Revoking a signer removes its entry; a later re-approval records a
-   * fresh timestamp.
+   * Unlike the counting views, the log never expires: expired approvals
+   * stay in the trail. Revoking a signer removes all of its entries; a
+   * later re-approval records a fresh timestamp.
    */
   approvalLog(): ReadonlyArray<ApprovalLogEntry>;
 }
 
-function assertValidConfig({ threshold, signers, now }: QuorumConfig): void {
+function assertValidConfig({
+  threshold,
+  signers,
+  now,
+  maxApprovalAgeMs,
+}: QuorumConfig): void {
   if (!Array.isArray(signers) || signers.length === 0)
     throw new Error("quorum signers must be a non-empty array");
   const seen = new Set<string>();
@@ -92,6 +125,18 @@ function assertValidConfig({ threshold, signers, now }: QuorumConfig): void {
     );
   if (now !== undefined && typeof now !== "function")
     throw new Error("quorum now must be a function returning milliseconds");
+  if (
+    maxApprovalAgeMs !== undefined &&
+    (typeof maxApprovalAgeMs !== "number" ||
+      !Number.isFinite(maxApprovalAgeMs) ||
+      maxApprovalAgeMs <= 0)
+  )
+    throw new Error("quorum maxApprovalAgeMs must be a positive finite number");
+}
+
+interface TimedApproval {
+  readonly signerId: string;
+  readonly atMs: number;
 }
 
 export function createQuorum(config: QuorumConfig): Quorum {
@@ -99,8 +144,26 @@ export function createQuorum(config: QuorumConfig): Quorum {
   const { threshold } = config;
   const signers = new Set<string>(config.signers);
   const now = config.now ?? Date.now;
-  const log: ApprovalLogEntry[] = [];
-  const approved = new Set<string>();
+  const maxAge = config.maxApprovalAgeMs;
+  // Full audit trail, in record order. Entries are never removed by
+  // expiry — only by revoke(). A signer can appear more than once when
+  // it re-approves after its previous approval expired; counting always
+  // uses the signer's *latest* entry.
+  const log: TimedApproval[] = [];
+
+  const latestBySigner = (): Map<string, TimedApproval> => {
+    const latest = new Map<string, TimedApproval>();
+    for (const e of log) latest.set(e.signerId, e);
+    return latest;
+  };
+  const isCounted = (e: TimedApproval): boolean =>
+    maxAge === undefined || now() - e.atMs <= maxAge;
+  const countedApprovals = (): TimedApproval[] => {
+    const latest = latestBySigner();
+    // Log order of each signer's latest entry (a re-approval after
+    // expiry moves the signer to the position of its fresh entry).
+    return log.filter((e) => latest.get(e.signerId) === e && isCounted(e));
+  };
 
   return {
     threshold,
@@ -108,34 +171,39 @@ export function createQuorum(config: QuorumConfig): Quorum {
     approve(signerId: string): void {
       if (!signers.has(signerId))
         throw new Error(`unknown quorum signer: ${JSON.stringify(signerId)}`);
-      if (approved.has(signerId)) return; // idempotent — no double counting
-      approved.add(signerId);
-      log.push({ signerId, at: new Date(now()).toISOString() });
+      const current = latestBySigner().get(signerId);
+      if (current !== undefined && isCounted(current)) return; // still counts — no-op
+      log.push({ signerId, atMs: now() });
     },
     revoke(signerId: string): void {
       if (!signers.has(signerId))
         throw new Error(`unknown quorum signer: ${JSON.stringify(signerId)}`);
-      if (!approved.has(signerId))
+      // Expired approvals can be revoked too: any recorded entry counts
+      // as "has approved" here, even one that no longer counts toward
+      // the threshold. Revoking removes all of the signer's entries.
+      if (!log.some((e) => e.signerId === signerId))
         throw new Error(
           `cannot revoke: signer ${JSON.stringify(
             signerId
           )} has not approved`
         );
-      approved.delete(signerId);
-      const idx = log.findIndex((e) => e.signerId === signerId);
-      log.splice(idx, 1);
+      for (let i = log.length - 1; i >= 0; i--)
+        if (log[i].signerId === signerId) log.splice(i, 1);
     },
     hasQuorum(): boolean {
-      return approved.size >= threshold;
+      return countedApprovals().length >= threshold;
     },
     approvalCount(): number {
-      return approved.size;
+      return countedApprovals().length;
     },
     approvals(): readonly string[] {
-      return log.map((e) => e.signerId);
+      return countedApprovals().map((e) => e.signerId);
     },
     approvalLog(): ReadonlyArray<ApprovalLogEntry> {
-      return log.map((e) => ({ signerId: e.signerId, at: e.at }));
+      return log.map((e) => ({
+        signerId: e.signerId,
+        at: new Date(e.atMs).toISOString(),
+      }));
     },
   };
 }

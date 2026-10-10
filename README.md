@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 479 tests, all local
+npm test   # 489 tests, all local
 ```
 
 ## Quickstart
@@ -302,7 +302,12 @@ parity.)
   signers })`, idempotent `approve()`, `revoke()` before the threshold is
   reached, `hasQuorum()` — see the usage example
   in its JSDoc). `approvalLog()` records who approved and when
-  (timestamps injectable via `QuorumConfig.now` for deterministic tests). `src/arbitration.ts` wires the two together:
+  (timestamps injectable via `QuorumConfig.now` for deterministic tests).
+  An optional `maxApprovalAgeMs` gives approvals a shelf life: past the
+  window (boundary inclusive) they stop counting toward the threshold —
+  `hasQuorum()` can fall back to false — but they stay in `approvalLog()`,
+  and re-approving records a fresh timestamp; revoking an expired
+  approval is allowed and removes its entries. `src/arbitration.ts` wires the two together:
   `dispatchArbitration(escrow, quorum, outcome)` refuses to dispatch until
   `hasQuorum()` is true and auto-records `quorum <approvals>/<threshold>`
   in the audit note. There is still no signature verification, no key
@@ -562,7 +567,7 @@ example above).
 
 ## Reproducibility
 
-`npm test` runs 479 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 489 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

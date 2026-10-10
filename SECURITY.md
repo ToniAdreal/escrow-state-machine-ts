@@ -18,7 +18,10 @@ chain described below.
 - **`quorum.approve()` records caller-trust approvals.** `src/quorum.ts`
   stores signer id strings; there is no signature verification, no key
   management, and no DAO governance. Calling `approve("dao-3")` is only as
-  trustworthy as the caller who says "dao-3 approved".
+  trustworthy as the caller who says "dao-3 approved". The optional
+  `maxApprovalAgeMs` expiry window only bounds how long a recorded
+  approval *counts* (the audit log keeps expired entries); it does not
+  authenticate the approval itself.
   `src/arbitration.ts` wires the *count* to `dispatchArbitration` (it refuses
   to dispatch below threshold and records `quorum <approvals>/<threshold>`
   in the audit note), but it does not make the approvals cryptographic —
