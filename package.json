@@ -1,5 +1,5 @@
 {
-  "name": "escrow-state-machine-ts",
+  "name": "@toniadreal/escrow-state-machine-ts",
   "version": "0.1.0",
   "description": "Deterministic escrow fund-release state machine + fee calculator (reproduced from the ALLWEB3 portfolio case study)",
   "type": "module",
@@ -8,7 +8,8 @@
   "scripts": {
     "build": "tsc",
     "diagram": "npm run build && node dist/src/diagram.js",
-    "test": "npm run build && node --test dist/test/*.test.js"
+    "test": "npm run build && node --test dist/test/*.test.js",
+    "prepack": "npm run build"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
@@ -17,5 +18,15 @@
   "engines": {
     "node": ">=20"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ToniAdreal/escrow-state-machine-ts.git"
+  },
+  "files": [
+    "dist"
+  ]
 }
