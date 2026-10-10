@@ -101,8 +101,28 @@ export interface VerifyWebhookOptions {
    * Must be a finite non-negative number; illegal values throw a caller
    * configuration error. Note the boundary is inclusive: an age exactly
    * equal to `maxAgeMs` still passes (`now - at > maxAgeMs` fails).
+   * Future timestamps are not bounded by this field (a negative age
+   * always passes); bound them separately with `maxFutureSkewMs`.
    */
   maxAgeMs?: number;
+  /**
+   * Maximum clock skew into the future tolerated for the payload, in
+   * milliseconds, measured from `now` to `payload.at`. When set, a payload
+   * whose signature verifies but whose `at` lies further in the future
+   * than this window returns `false` (fail-closed): a legitimately-signed
+   * payload issued far into the future would otherwise gain a
+   * near-unbounded replay window under a `maxAgeMs`-only check, and a
+   * sender clock set wrong (or fast) would leave the receiver with no
+   * defense. Leave unset (the default) for the legacy behavior, in which
+   * future timestamps pass however far ahead they lie. Must be a finite
+   * non-negative number; illegal values throw a caller configuration
+   * error, with the same style as `maxAgeMs`. The boundary is inclusive:
+   * a future skew exactly equal to `maxFutureSkewMs` still passes
+   * (`at - now > maxFutureSkewMs` fails). Together, `maxAgeMs` and
+   * `maxFutureSkewMs` form a two-sided freshness window; neither replaces
+   * deduplication on `eventId`.
+   */
+  maxFutureSkewMs?: number;
   /**
    * "Now" for the freshness check, as epoch milliseconds. Defaults to
    * `Date.now()`; inject a fixed value in tests for determinism.
@@ -207,8 +227,15 @@ export function buildSettlementWebhook(
  * timestamp get checked against `now` — a forged signature still fails on
  * the signature comparison, and never reaches the freshness gate. An
  * unparseable `at` (or an unparseable string body) fails closed as
- * `false`, not an exception. Future timestamps are not bounded by this
- * check (a negative age always passes); it only rejects old payloads.
+ * `false`, not an exception. Future timestamps are not bounded by
+ * `maxAgeMs` (a negative age always passes); it only rejects old
+ * payloads. Pass `maxFutureSkewMs` alongside (or instead) to bound that
+ * future direction too: after the signature matches, a payload with
+ * `at - now > maxFutureSkewMs` returns `false`, with the same inclusive
+ * boundary, so the two fields together form a two-sided window. When
+ * `maxFutureSkewMs` is unset, far-future timestamps still pass exactly
+ * as before. Freshness is defense-in-depth only: receivers MUST still
+ * deduplicate on `eventId`.
  */
 export function verifySettlementWebhook(
   body: string | SettlementWebhookPayload,
@@ -257,6 +284,21 @@ export function verifySettlementWebhook(
       )}`,
     );
   }
+  const maxFutureSkewMs = isOptionsForm
+    ? (secretOrOptions as VerifyWebhookOptions).maxFutureSkewMs
+    : undefined;
+  if (
+    maxFutureSkewMs !== undefined &&
+    (typeof maxFutureSkewMs !== "number" ||
+      !Number.isFinite(maxFutureSkewMs) ||
+      maxFutureSkewMs < 0)
+  ) {
+    throw new Error(
+      `cannot verify settlement webhook: maxFutureSkewMs must be a finite non-negative number, got ${String(
+        maxFutureSkewMs,
+      )}`,
+    );
+  }
   const now = isOptionsForm
     ? ((secretOrOptions as VerifyWebhookOptions).now ?? Date.now())
     : Date.now();
@@ -287,20 +329,26 @@ export function verifySettlementWebhook(
   if (!signatureMatches) return false;
   // Freshness is orthogonal to secret rotation and runs only after the
   // signature matched: forgeries fail above, never here.
-  if (maxAgeMs === undefined) return true;
-  return payloadFreshEnough(body, maxAgeMs, now);
+  if (maxAgeMs === undefined && maxFutureSkewMs === undefined) return true;
+  return payloadFreshEnough(body, maxAgeMs, maxFutureSkewMs, now);
 }
 
 /**
  * Fail-closed freshness gate over `payload.at`.
  *
  * String bodies are JSON-parsed to read `at`; unparseable bodies, missing
- * `at`, or non-parseable timestamps all return `false` (never throw).
- * The boundary is inclusive: `now - at <= maxAgeMs` passes.
+ * `at`, or non-parseable timestamps all return `false` (never throw)
+ * whenever either window bound is configured.
+ * Each boundary is inclusive: `now - at <= maxAgeMs` passes when
+ * `maxAgeMs` is set, and `at - now <= maxFutureSkewMs` passes when
+ * `maxFutureSkewMs` is set. An unset bound never rejects: with no
+ * `maxFutureSkewMs`, a future `at` (negative age) always passes, and
+ * with no `maxAgeMs`, an old `at` always passes.
  */
 function payloadFreshEnough(
   body: string | SettlementWebhookPayload,
-  maxAgeMs: number,
+  maxAgeMs: number | undefined,
+  maxFutureSkewMs: number | undefined,
   now: number,
 ): boolean {
   let at: unknown;
@@ -319,7 +367,11 @@ function payloadFreshEnough(
   }
   const atMs = typeof at === "string" ? Date.parse(at) : Number.NaN;
   if (Number.isNaN(atMs)) return false;
-  return now - atMs <= maxAgeMs;
+  if (maxAgeMs !== undefined && now - atMs > maxAgeMs) return false;
+  if (maxFutureSkewMs !== undefined && atMs - now > maxFutureSkewMs) {
+    return false;
+  }
+  return true;
 }
 
 /* ------------------------------------------------------------------ */

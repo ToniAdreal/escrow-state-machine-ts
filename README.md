@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 437 tests, all local
+npm test   # 446 tests, all local
 ```
 
 ## Quickstart
@@ -419,6 +419,29 @@ const ok = verifySettlementWebhook(rawBody, receivedSignature, {
 });
 ```
 
+`maxAgeMs` alone leaves the future direction unbounded: a
+legitimately-signed payload issued far into the future (a sender clock
+set wrong or fast) would gain a near-unbounded replay window. Pass
+`maxFutureSkewMs` to bound that direction too:
+
+```ts
+const ok = verifySettlementWebhook(rawBody, receivedSignature, {
+  secrets: [process.env.WEBHOOK_SECRET!],
+  maxAgeMs: 5 * 60 * 1000,
+  maxFutureSkewMs: 60 * 1000,
+  now: Date.now(), // optional; defaults to the real clock
+});
+// => false when the signature is valid but payload.at - now > maxFutureSkewMs
+```
+
+It is enforced only after the signature matches, fails closed as
+`false`, and its boundary is likewise inclusive (a skew of exactly
+`maxFutureSkewMs` passes); an illegal value throws the same style of
+configuration error as `maxAgeMs`. Together the two fields form a
+two-sided freshness window. Left unset, `maxFutureSkewMs` changes
+nothing — far-future timestamps still pass, exactly as before — and
+neither bound replaces deduplication on `eventId`.
+
 Delivery is handled by `deliverSettlementWebhook(url, webhook, options)` —
 still zero runtime dependencies (Node ≥ 20 global `fetch`):
 
@@ -465,7 +488,7 @@ signatures.
 
 ## Reproducibility
 
-`npm test` runs 437 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 446 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

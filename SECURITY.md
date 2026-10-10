@@ -77,8 +77,12 @@ chain described below.
   `maxAgeMs`, a legitimately-signed payload from a year ago still verifies.
   Pass `VerifyWebhookOptions.maxAgeMs` to fail-closed reject payloads older
   than the window (signature is checked first; an unparseable `at` returns
-  `false`). Future timestamps are not bounded — this is an old-payload
-  replay bound, not a full clock-skew policy.
+  `false`). Future timestamps are not bounded by `maxAgeMs` alone — pass
+  the companion opt-in `VerifyWebhookOptions.maxFutureSkewMs` to also
+  fail-closed reject payloads whose `at` lies further in the future than
+  the tolerated clock skew (same inclusive boundary, same
+  signature-first order); together the two form a two-sided freshness
+  window. With neither set, verification is signature-only.
 - **Settlement never runs on uncorroborated amounts.**
   `depositAmountFromHistory` (`src/settlementReport.ts`) throws
   `settlement requires a FUND amount` when the audit history has no FUND
