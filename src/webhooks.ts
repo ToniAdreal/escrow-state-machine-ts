@@ -626,7 +626,7 @@ export interface DeliverWebhookOptions {
    * Cap, in milliseconds, on the `Retry-After` wait honored on a 429.
    * A faulty or malicious server can answer `Retry-After: 31536000`; without
    * a cap the delivery promise would sleep for a year before the next
-   * attempt (the sleep timer is unref'd, so it would stall silently). The
+   * attempt. The
    * hint is clamped with `Math.min` before sleeping; default 60000.
    * Must be a finite non-negative number (`0` disables any Retry-After
    * wait, retrying immediately). Only the 429 hint is clamped — the
@@ -716,8 +716,10 @@ function sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> {
       signal?.removeEventListener("abort", onAbort);
       resolve();
     }, ms);
-    // A pending backoff must not hold the process open on its own.
-    timer.unref();
+    // The timer deliberately stays ref'd: an awaited delivery must keep
+    // the process alive until the backoff settles. With an unref'd timer
+    // the event loop can drain mid-backoff (stubbed fetch, no live
+    // sockets) and the delivery promise then never settles.
     signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
