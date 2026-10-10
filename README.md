@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 489 tests, all local
+npm test   # 495 tests, all local
 ```
 
 ## Quickstart
@@ -75,9 +75,13 @@ stateDiagram-v2
 (`EXPIRE` is available from `CREATED`, `FUNDED`, and `MILESTONE_SUBMITTED`
 once the campaign deadline passes — not from `VERIFIED`/`DISPUTED`, where the
 outcome is decided by verification or arbitration; terminal states are
-`RELEASED`, `REFUNDED`, `EXPIRED`. The diagram matches `transitionTable()` in
-`src/stateMachine.ts` exactly — see `test/stateDiagram.test.ts`, which asserts
-parity.)
+`RELEASED`, `REFUNDED`, `EXPIRED`. The diagram is generated from
+`transitionTable()` in `src/stateMachine.ts` by `stateDiagram()` — do not
+edit it by hand; regenerate it with `npm run diagram` (prints the block to
+stdout; `node dist/src/diagram.js --check` exits 1 if the README copy
+drifts; `--write <file>` writes bare mermaid source for standalone `.mmd`
+use). `test/stateDiagram.test.ts` asserts edge parity and
+`test/diagram.test.ts` guards the generator and CLI.)
 
 - `transition(state, event)` is a pure function; invalid transitions throw.
 - `Escrow` wraps it with an append-only history (the case study's "immutable
@@ -567,7 +571,7 @@ example above).
 
 ## Reproducibility
 
-`npm test` runs 489 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 495 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

@@ -83,7 +83,8 @@ export interface TransitionEdge {
 /**
  * Every (from, event, to) edge of the transition table, in declaration order.
  * Single source of truth for docs/diagrams that must stay in sync with code
- * (see README's mermaid state diagram, verified by test/stateDiagram.test.ts).
+ * (see README's mermaid state diagram, rendered by {@link stateDiagram} and
+ * verified by test/stateDiagram.test.ts / test/diagram.test.ts).
  */
 export function transitionTable(): TransitionEdge[] {
   const edges: TransitionEdge[] = [];
@@ -94,6 +95,30 @@ export function transitionTable(): TransitionEdge[] {
     }
   }
   return edges;
+}
+
+/**
+ * Render the transition table as a Mermaid stateDiagram-v2 block.
+ * The README embeds this output verbatim — regenerate it with
+ * `npm run diagram` instead of editing the README copy by hand
+ * (`node dist/src/diagram.js --check` fails on drift). The start state is
+ * the first declared state and the terminal lines are the states with no
+ * outgoing edges, both in declaration order, so the rendering is fully
+ * determined by TRANSITIONS.
+ */
+export function stateDiagram(): string {
+  const states = Object.keys(TRANSITIONS) as EscrowState[];
+  const lines = ["```mermaid", "stateDiagram-v2", `    [*] --> ${states[0]}`];
+  for (const { from, event, to } of transitionTable()) {
+    lines.push(`    ${from} --> ${to} : ${event}`);
+  }
+  for (const state of states) {
+    if (Object.keys(TRANSITIONS[state]).length === 0) {
+      lines.push(`    ${state} --> [*]`);
+    }
+  }
+  lines.push("```");
+  return lines.join("\n");
 }
 
 export interface EscrowHistoryEntry {
