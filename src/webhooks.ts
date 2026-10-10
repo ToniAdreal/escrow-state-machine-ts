@@ -1146,7 +1146,11 @@ async function postOnce(
     timedOut = true;
     controller.abort();
   }, timeoutMs);
-  timer.unref();
+  // No unref(): the timeout timer can be the only handle that settles
+  // an awaited attempt (e.g. a fetch that only settles via this abort),
+  // and unref'ing it lets the event loop drain first. The timer is
+  // always cleared in the finally below, so it never outlives the
+  // attempt.
   const onExternalAbort = () => controller.abort();
   if (externalSignal) {
     if (externalSignal.aborted) {
