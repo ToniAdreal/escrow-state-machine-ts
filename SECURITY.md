@@ -99,6 +99,14 @@ chain described below.
   (`invalid option: rolePolicy …`). This enforces the *declared*
   allowlist only; it does not authenticate the actor (see the
   caller-trust section above).
+- **Optimistic-concurrency guard (when `expectedSeq` is passed).**
+  `dispatch` rejects a caller whose `expectedSeq` no longer equals the
+  current history length with `dispatch conflict: …`, before any
+  other check and with no side effects (no append, no idempotency
+  key consumed, no listener notified) — two writers racing off the
+  same snapshot cannot both advance the escrow in-process. It is
+  not a distributed lock: separate processes hold separate histories
+  and still need store-level compare-and-swap.
 - **Strict snapshot validation.** `Escrow.fromJSON` runs
   `parseEscrowSnapshot` on untrusted input: non-empty id, seq from 1 with no
   gaps, continuous from/to chain starting at CREATED, canonical ISO-8601
@@ -173,7 +181,10 @@ that mixes chained and hashless entries is rejected.
   the library never generates, stores, or schedules the rotation itself)
 - A deadline scheduler (`EXPIRE` is dispatched by the caller)
 - Identity authentication (this repo's `rolePolicy` is only a
-  caller-supplied actor allowlist — see above), concurrency control,
+  caller-supplied actor allowlist — see above), concurrency control
+  beyond the single-process `expectedSeq` optimistic guard on
+  `dispatch` (two processes restoring the same snapshot can still
+  race; cross-process writers need store-level compare-and-swap),
   durable storage, a
   shared/distributed idempotency store (this repo's consumed keys
   persist only inside each escrow's own `toJSON()` snapshot)

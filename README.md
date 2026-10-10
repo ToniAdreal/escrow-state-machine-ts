@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 446 tests, all local
+npm test   # 456 tests, all local
 ```
 
 ## Quickstart
@@ -163,6 +163,21 @@ parity.)
   policy entirely. Honest limit: this is a *caller-supplied allowlist*,
   not identity authentication — the caller asserts the actor string and
   nothing verifies who the caller is (see SECURITY.md).
+- Optimistic concurrency (opt-in): `dispatch` opts accept `expectedSeq`
+  — the history length (the last entry's `seq`; `0` for an empty
+  history) the caller based its decision on. When set, the guard runs
+  before every other dispatch check (option validation, the
+  idempotency dedupe, transition legality, RBAC, amount/cap): a
+  mismatch throws
+  `dispatch conflict: expected seq <n> but escrow is at seq <m>` and
+  changes nothing — no state move, no history entry, no idempotency
+  key consumed, no listener notified — so two writers racing off the
+  same snapshot cannot both advance the escrow, and the loser can
+  re-read and retry with the fresh seq. A non-integer or negative
+  value throws `invalid dispatch options: …`. Honest limit: this is a
+  single-process optimistic lock only; two processes that each
+  restored the same snapshot can still race, and cross-process writers
+  need compare-and-swap in the durable store itself.
 - Deadlines (advisory): `escrow.setDeadline(date)` attaches a deadline
   (stored as canonical ISO-8601; unparseable input throws),
   `getDeadline()`/`clearDeadline()` read and remove it. The deadline is
@@ -303,7 +318,9 @@ parity.)
 - **Can I use this in production?**
   No. `Escrow` is in-memory with no built-in store (snapshots are a JSON
   export via `toJSON()`/`Escrow.fromJSON()`, not a database), no concurrency
-  control, idempotency keys that persist only inside each escrow's own
+  control beyond the single-process `expectedSeq` optimistic guard on
+  `dispatch` (cross-process writers still need store-level
+  compare-and-swap), idempotency keys that persist only inside each escrow's own
   snapshot (no shared/distributed store),
   `EXPIRE` is dispatched by the caller — there is an advisory deadline
   field plus `isOverdue()`/`expiredEscrows()` watchdog helpers and an
@@ -488,7 +505,7 @@ signatures.
 
 ## Reproducibility
 
-`npm test` runs 446 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 456 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

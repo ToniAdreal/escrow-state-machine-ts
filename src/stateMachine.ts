@@ -977,6 +977,35 @@ export interface DispatchOptions {
    * breaks {@link verifyHistoryChain}.
    */
   at?: Date | string;
+  /**
+   * Optimistic-concurrency guard: the caller asserts the sequence
+   * number it based its decision on — the current history length,
+   * which is also the last entry's `seq` (`0` for an escrow with no
+   * history yet). Two writers that both read the same snapshot and
+   * then race to dispatch RELEASE / REFUND off it are exactly the
+   * scenario this guards: the second writer's stale `expectedSeq`
+   * fails loudly with `dispatch conflict: …` instead of silently
+   * advancing a state it never saw.
+   *
+   * The guard is checked before every other dispatch validation and
+   * before the idempotency dedupe (see {@link Escrow.dispatch} for the
+   * full ordering), so a mismatch changes nothing: no state move, no
+   * history entry, no idempotency key consumed, no listener notified —
+   * re-reading the escrow and retrying with the fresh seq (and the
+   * same idempotency key, if any) works. A non-integer or negative
+   * value is a caller configuration error and throws
+   * `invalid dispatch options: …`. Omitting `expectedSeq` preserves
+   * the exact pre-guard behavior.
+   *
+   * Honest limit: this is a single-process optimistic lock — the
+   * comparison is against the in-memory history. Two processes that
+   * each restored the same snapshot can still race; cross-process
+   * writers need compare-and-swap in the durable store itself (e.g.
+   * a conditional update keyed on a version column). The sibling
+   * dataquest-task-lifecycle repo carries the paired guard with
+   * identical semantics.
+   */
+  expectedSeq?: number;
 }
 
 /**
@@ -1252,8 +1281,25 @@ export class Escrow {
    *               audit entry, and is checked against the escrow's
    *               `rolePolicy` when that policy lists the event.
    *
+   *               Optimistic concurrency: when `opts.expectedSeq` is
+   *               set, it must equal the escrow's current history length
+   *               (the last entry's `seq`; `0` for an empty history), or
+   *               dispatch throws
+   *               `dispatch conflict: expected seq <n> but escrow is at seq <m>`.
+   *               The guard runs before every other check in this method
+   *               — note/option validation, the idempotency dedupe,
+   *               transition legality, RBAC, and the amount / deposit-cap
+   *               checks — and a conflict changes nothing (no key
+   *               consumed, no listener notified), so a caller that
+   *               re-reads the escrow can retry with the fresh seq. A
+   *               non-integer or negative `expectedSeq` throws
+   *               `invalid dispatch options: …` instead. This is a
+   *               single-process optimistic lock only — see
+   *               {@link DispatchOptions.expectedSeq}.
+   *
    *               RBAC / idempotency ordering (mirrors the dataquest
-   *               lifecycle): (1) the actor's own shape is validated
+   *               lifecycle): (0) the `expectedSeq` guard above runs
+   *               first of all; (1) the actor's own shape is validated
    *               up front with the other dispatch-option validation,
    *               before the idempotency dedup — a malformed actor is a
    *               caller bug and is reported even on a duplicate key;
@@ -1274,6 +1320,31 @@ export class Escrow {
     amount?: number,
     opts?: DispatchOptions
   ): EscrowState {
+    // Optimistic-concurrency guard — checked before EVERYTHING else in
+    // dispatch (note/option validation, idempotency dedupe, transition,
+    // RBAC, amount/cap): a caller that pinned the seq it read must learn
+    // that the escrow moved on, loudly, instead of advancing a state it
+    // never saw (or silently no-oping through the dedupe). A conflict
+    // is a pure rejection: no mutation, no key consumed, no listener
+    // notified. The seq of an escrow is its history length (entries
+    // are numbered from 1, so the length IS the last entry's seq;
+    // empty history = 0).
+    if (opts?.expectedSeq !== undefined) {
+      if (
+        typeof opts.expectedSeq !== "number" ||
+        !Number.isInteger(opts.expectedSeq) ||
+        opts.expectedSeq < 0
+      ) {
+        throw new Error(
+          `invalid dispatch options: expectedSeq must be a non-negative integer, got ${String(opts.expectedSeq)}`
+        );
+      }
+      if (opts.expectedSeq !== this._history.length) {
+        throw new Error(
+          `dispatch conflict: expected seq ${opts.expectedSeq} but escrow is at seq ${this._history.length}`
+        );
+      }
+    }
     // Input validation fails fast, before idempotency dedup or transition
     // checks: invalid caller input must never reach the audit history, and
     // a broken caller must hear about it even when the transition itself
