@@ -12,8 +12,8 @@
  * - Delivery is available via {@link deliverSettlementWebhook}: HTTP POST of
  *   the signed payload with the `X-Signature` header, a per-attempt timeout,
  *   and exponential-backoff retries on 5xx, 429, and network errors (a 429
- *   `Retry-After` hint is honored; other 4xx are not retried). Fan-out to
- *   multiple endpoints stays the caller's job.
+ *   `Retry-After` hint is honored; other 4xx are not retried). Multi-endpoint
+ *   fan-out is available via {@link deliverSettlementWebhookToMany}.
  * - Secret distribution is the caller's responsibility. Whoever holds the
  *   secret can forge signatures; store it like any other API credential.
  * - `verifySettlementWebhook` should run over the raw request body bytes.
@@ -151,19 +151,15 @@ function sign(body: string, secret: string | Buffer): string {
 }
 
 /**
- * Build the signed settlement webhook for a settled escrow.
- *
- * Every figure in the payload is derived from the report (which itself is
- * derived from the append-only audit history): nothing is invented here.
- * Throws when the secret is empty, `now` is not a valid timestamp, or an
- * injected `eventId` is not a non-empty string.
+ * Build the (unsigned) payload body for a report. Shared by
+ * {@link buildSettlementWebhook} and the fan-out delivery, which builds
+ * the body exactly once and signs that same body per endpoint.
+ * Validation messages match `buildSettlementWebhook`'s historical ones.
  */
-export function buildSettlementWebhook(
+function buildPayload(
   report: SettlementReport,
-  options: BuildWebhookOptions,
-): SettlementWebhook {
-  assertSecret(options.secret);
-
+  options: { now?: Date | string; eventId?: string },
+): SettlementWebhookPayload {
   const when = options.now === undefined ? new Date() : new Date(options.now);
   if (Number.isNaN(when.getTime())) {
     throw new Error(
@@ -199,6 +195,23 @@ export function buildSettlementWebhook(
     })),
     at,
   };
+  return payload;
+}
+
+/**
+ * Build the signed settlement webhook for a settled escrow.
+ *
+ * Every figure in the payload is derived from the report (which itself is
+ * derived from the append-only audit history): nothing is invented here.
+ * Throws when the secret is empty, `now` is not a valid timestamp, or an
+ * injected `eventId` is not a non-empty string.
+ */
+export function buildSettlementWebhook(
+  report: SettlementReport,
+  options: BuildWebhookOptions,
+): SettlementWebhook {
+  assertSecret(options.secret);
+  const payload = buildPayload(report, options);
   const signature = sign(canonicalJson(payload), options.secret);
   return { payload, signature };
 }
@@ -492,6 +505,82 @@ function sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+/** An error thrown by delivery, annotated with its real attempt count. */
+type DeliveryError = Error & { attempts?: number; status?: number };
+
+/**
+ * Annotate a delivery error with the number of HTTP attempts actually
+ * made (and the last HTTP status, when a response caused the failure).
+ * The public single-endpoint API throws plain errors with unchanged
+ * messages; the annotation exists so the fan-out wrapper can report
+ * truthful per-endpoint `attempts`/`status` without re-implementing —
+ * or parsing — the delivery loop.
+ */
+function withDeliveryOutcome(
+  err: Error,
+  attempts: number,
+  status?: number,
+): DeliveryError {
+  const annotated = err as DeliveryError;
+  annotated.attempts = attempts;
+  if (status !== undefined) annotated.status = status;
+  return annotated;
+}
+
+function assertDeliverSignalType(signal: unknown): void {
+  if (signal !== undefined && !(signal instanceof AbortSignal)) {
+    throw new Error(
+      `cannot deliver settlement webhook: signal must be an AbortSignal, got ${String(
+        signal,
+      )}`,
+    );
+  }
+}
+
+/**
+ * Validate the numeric delivery options (after defaults are applied).
+ * Shared by {@link deliverSettlementWebhook} and the fan-out wrapper,
+ * which validates the call-level options once, up front.
+ */
+function assertDeliverOptionValues(
+  options: DeliverWebhookOptions,
+  resolved: {
+    retries: number;
+    backoffMs: number;
+    timeoutMs: number;
+    maxRetryDelayMs: number;
+  },
+): void {
+  if (!Number.isInteger(resolved.retries) || resolved.retries < 0) {
+    throw new Error(
+      `cannot deliver settlement webhook: retries must be a non-negative integer, got ${String(
+        options.retries,
+      )}`,
+    );
+  }
+  if (!Number.isFinite(resolved.backoffMs) || resolved.backoffMs < 0) {
+    throw new Error(
+      `cannot deliver settlement webhook: backoffMs must be a non-negative number, got ${String(
+        options.backoffMs,
+      )}`,
+    );
+  }
+  if (!Number.isFinite(resolved.timeoutMs) || resolved.timeoutMs <= 0) {
+    throw new Error(
+      `cannot deliver settlement webhook: timeoutMs must be a positive number, got ${String(
+        options.timeoutMs,
+      )}`,
+    );
+  }
+  if (!Number.isFinite(resolved.maxRetryDelayMs) || resolved.maxRetryDelayMs < 0) {
+    throw new Error(
+      `cannot deliver settlement webhook: maxRetryDelayMs must be a non-negative number, got ${String(
+        options.maxRetryDelayMs,
+      )}`,
+    );
+  }
+}
+
 /**
  * POST the signed webhook to `url` as JSON with the `X-Signature` header.
  *
@@ -534,48 +623,18 @@ export async function deliverSettlementWebhook(
   const maxRetryDelayMs = options.maxRetryDelayMs ?? 60_000;
   const signal = options.signal;
 
-  if (signal !== undefined && !(signal instanceof AbortSignal)) {
-    throw new Error(
-      `cannot deliver settlement webhook: signal must be an AbortSignal, got ${String(
-        signal,
-      )}`,
-    );
-  }
+  assertDeliverSignalType(signal);
   if (signal?.aborted) {
     // Pre-aborted: the caller asked to stop before we started. Zero HTTP
     // attempts, a clear error, no retry.
     throw new Error("webhook delivery aborted");
   }
-
-  if (!Number.isInteger(retries) || retries < 0) {
-    throw new Error(
-      `cannot deliver settlement webhook: retries must be a non-negative integer, got ${String(
-        options.retries,
-      )}`,
-    );
-  }
-  if (!Number.isFinite(backoffMs) || backoffMs < 0) {
-    throw new Error(
-      `cannot deliver settlement webhook: backoffMs must be a non-negative number, got ${String(
-        options.backoffMs,
-      )}`,
-    );
-  }
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-    throw new Error(
-      `cannot deliver settlement webhook: timeoutMs must be a positive number, got ${String(
-        options.timeoutMs,
-      )}`,
-    );
-  }
-
-  if (!Number.isFinite(maxRetryDelayMs) || maxRetryDelayMs < 0) {
-    throw new Error(
-      `cannot deliver settlement webhook: maxRetryDelayMs must be a non-negative number, got ${String(
-        options.maxRetryDelayMs,
-      )}`,
-    );
-  }
+  assertDeliverOptionValues(options, {
+    retries,
+    backoffMs,
+    timeoutMs,
+    maxRetryDelayMs,
+  });
 
   let target: URL;
   try {
@@ -597,6 +656,7 @@ export async function deliverSettlementWebhook(
 
   let attempts = 0;
   let lastError: Error | null = null;
+  let lastStatus: number | undefined;
   for (let attempt = 0; attempt <= retries; attempt++) {
     attempts = attempt + 1;
     let response: Response;
@@ -606,9 +666,10 @@ export async function deliverSettlementWebhook(
       if (signal?.aborted) {
         // The caller asked to stop: propagate the abort immediately,
         // never treat it as a retryable network failure.
-        throw new Error("webhook delivery aborted");
+        throw withDeliveryOutcome(new Error("webhook delivery aborted"), attempts);
       }
       lastError = err instanceof Error ? err : new Error(String(err));
+      lastStatus = undefined;
       if (attempt < retries) {
         await sleepAbortable(backoffMs * 2 ** attempt, signal);
         continue;
@@ -623,6 +684,7 @@ export async function deliverSettlementWebhook(
       (response.status >= 500 && response.status <= 599)
     ) {
       lastError = new Error(`server responded with status ${response.status}`);
+      lastStatus = response.status;
       if (attempt < retries) {
         await sleepAbortable(
           retryDelayMs(response, attempt, backoffMs, maxRetryDelayMs),
@@ -634,15 +696,216 @@ export async function deliverSettlementWebhook(
     }
     // Other 3xx/4xx (400, 404, …): the request itself is at fault; retrying
     // the identical request changes nothing.
-    throw new Error(
-      `webhook delivery to ${url} failed with status ${response.status} (not retried)`,
+    throw withDeliveryOutcome(
+      new Error(
+        `webhook delivery to ${url} failed with status ${response.status} (not retried)`,
+      ),
+      attempts,
+      response.status,
     );
   }
-  throw new Error(
-    `webhook delivery to ${url} failed after ${attempts} attempt${
-      attempts === 1 ? "" : "s"
-    }: ${lastError?.message ?? "unknown error"}`,
+  throw withDeliveryOutcome(
+    new Error(
+      `webhook delivery to ${url} failed after ${attempts} attempt${
+        attempts === 1 ? "" : "s"
+      }: ${lastError?.message ?? "unknown error"}`,
+    ),
+    attempts,
+    lastStatus,
   );
+}
+
+/* ------------------------------------------------------------------ */
+/* Multi-endpoint fan-out delivery                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * One fan-out destination for {@link deliverSettlementWebhookToMany}.
+ * Each endpoint has its OWN signing secret: the shared payload body is
+ * signed independently per endpoint, so one endpoint's secret can never
+ * verify another endpoint's delivery. The delivery-option fields
+ * override the call-level options for this endpoint only (retry budgets
+ * are therefore counted per endpoint).
+ */
+export interface SettlementWebhookEndpoint {
+  /** Destination URL (http/https), validated per endpoint. */
+  url: string;
+  /** This endpoint's signing secret (non-empty string or Buffer). */
+  secret: string | Buffer;
+  /** Per-endpoint override of the call-level `retries`. */
+  retries?: number;
+  /** Per-endpoint override of the call-level `backoffMs`. */
+  backoffMs?: number;
+  /** Per-endpoint override of the call-level `timeoutMs`. */
+  timeoutMs?: number;
+  /** Per-endpoint override of the call-level `maxRetryDelayMs`. */
+  maxRetryDelayMs?: number;
+  /** Per-endpoint override of the call-level `signal`. */
+  signal?: AbortSignal;
+}
+
+/** Options for {@link deliverSettlementWebhookToMany}. */
+export interface DeliverSettlementWebhookToManyOptions
+  extends DeliverWebhookOptions {
+  /**
+   * Payload `at` timestamp shared by every endpoint's copy of the
+   * event. Resolved ONCE per call (defaults to the real clock) so all
+   * endpoints receive the same logical event, not one event per
+   * endpoint with drifting timestamps.
+   */
+  now?: Date | string;
+  /**
+   * Payload `eventId` shared by every endpoint (see the eventId
+   * semantics on {@link deliverSettlementWebhookToMany}). Defaults to
+   * one freshly generated UUID per call; inject a fixed value in tests
+   * for determinism. Must be a non-empty string.
+   */
+  eventId?: string;
+}
+
+/** Per-endpoint outcome of {@link deliverSettlementWebhookToMany}. */
+export interface SettlementWebhookEndpointResult {
+  /** The endpoint's URL, exactly as supplied (the endpoint identifier). */
+  url: string;
+  /** True when this endpoint returned a 2xx within its retry budget. */
+  ok: boolean;
+  /**
+   * Total HTTP attempts actually made for this endpoint, including the
+   * initial one. `0` when the endpoint failed before any request (an
+   * empty secret, an invalid URL, an invalid per-endpoint override).
+   */
+  attempts: number;
+  /** HTTP status of the successful — or last failed — response, when one was received. */
+  status?: number;
+  /** Failure summary (the single-endpoint delivery error's message), when `ok` is false. */
+  error?: string;
+}
+
+/**
+ * Aggregate outcome of {@link deliverSettlementWebhookToMany}.
+ * `results[i]` always corresponds to `endpoints[i]` (input order is
+ * preserved even though deliveries run concurrently), and
+ * `delivered + failed` always equals `results.length`.
+ */
+export interface DeliverSettlementWebhookToManyResult {
+  /** Per-endpoint results, in the same order as the input endpoints. */
+  results: SettlementWebhookEndpointResult[];
+  /** How many endpoints reported `ok: true`. */
+  delivered: number;
+  /** How many endpoints reported `ok: false`. */
+  failed: number;
+}
+
+/**
+ * Fan one settled escrow's settlement webhook out to many endpoints at
+ * once — the shape where a single settlement must notify accounting,
+ * notifications, and reconciliation systems simultaneously, each
+ * holding its own secret.
+ *
+ * Semantics (aligned with the dataquest payout fan-out):
+ * - The payload body is built ONCE from the report (one shared
+ *   `eventId`, one shared `at`): this is a single logical settlement
+ *   event fanned out, not N distinct events. Each endpoint's copy is
+ *   signed independently with that endpoint's own secret, and delivered
+ *   via {@link deliverSettlementWebhook} — the same retry / backoff /
+ *   `Retry-After` logic, never a second implementation — with the
+ *   endpoint's option overrides applied over the call-level options.
+ *   Retry budgets are therefore per endpoint: one endpoint burning its
+ *   retries never consumes another's.
+ * - Deliveries run concurrently. One endpoint's failure — retries
+ *   exhausted, network error, even a per-endpoint configuration problem
+ *   such as an invalid URL or an empty secret — is reported as that
+ *   endpoint's `{ ok: false, attempts, error }` result and never blocks
+ *   or fails the other endpoints.
+ * - Call-level configuration errors DO throw before any request is
+ *   made: a missing/empty/non-array `endpoints`, invalid global
+ *   delivery options, or an invalid shared `now`/`eventId` are caller
+ *   bugs, not per-endpoint outcomes.
+ *
+ * Honest limit: there is no durable queue and no cross-process retry.
+ * If the process dies mid-fan-out, some endpoints may have received the
+ * event and others not; the caller reconciles by re-delivering and
+ * letting receivers deduplicate on the shared `eventId`.
+ */
+export async function deliverSettlementWebhookToMany(
+  report: SettlementReport,
+  endpoints: SettlementWebhookEndpoint[],
+  opts: DeliverSettlementWebhookToManyOptions = {},
+): Promise<DeliverSettlementWebhookToManyResult> {
+  if (!Array.isArray(endpoints) || endpoints.length === 0) {
+    throw new Error(
+      "cannot deliver settlement webhook to many endpoints: endpoints must be a non-empty array",
+    );
+  }
+  // Call-level delivery options are caller configuration: validate them
+  // once, up front, with the same rules as a single delivery.
+  // (Per-endpoint overrides are validated per endpoint, inside the
+  // fan-out, so a bad override fails only its own endpoint.)
+  assertDeliverSignalType(opts.signal);
+  assertDeliverOptionValues(opts, {
+    retries: opts.retries ?? 3,
+    backoffMs: opts.backoffMs ?? 1000,
+    timeoutMs: opts.timeoutMs ?? 10_000,
+    maxRetryDelayMs: opts.maxRetryDelayMs ?? 60_000,
+  });
+  // One logical event: build the shared payload body exactly once. A
+  // bad shared `now`/`eventId` throws here, before any request.
+  const payload = buildPayload(report, { now: opts.now, eventId: opts.eventId });
+  const body = canonicalJson(payload);
+
+  const results = await Promise.all(
+    endpoints.map(async (endpoint, index): Promise<SettlementWebhookEndpointResult> => {
+      const url =
+        endpoint !== null &&
+        typeof endpoint === "object" &&
+        typeof endpoint.url === "string"
+          ? endpoint.url
+          : "";
+      try {
+        if (
+          endpoint === null ||
+          typeof endpoint !== "object" ||
+          typeof endpoint.url !== "string"
+        ) {
+          throw new Error(
+            `cannot deliver settlement webhook to many endpoints: endpoints[${index}] must be an object with a string url and a secret`,
+          );
+        }
+        assertSecret(endpoint.secret);
+        const webhook: SettlementWebhook = {
+          payload,
+          signature: sign(body, endpoint.secret),
+        };
+        const result = await deliverSettlementWebhook(endpoint.url, webhook, {
+          retries: endpoint.retries ?? opts.retries,
+          backoffMs: endpoint.backoffMs ?? opts.backoffMs,
+          timeoutMs: endpoint.timeoutMs ?? opts.timeoutMs,
+          maxRetryDelayMs: endpoint.maxRetryDelayMs ?? opts.maxRetryDelayMs,
+          signal: endpoint.signal ?? opts.signal,
+        });
+        return { url, ok: true, attempts: result.attempts, status: result.status };
+      } catch (err) {
+        // Per-endpoint failures (invalid URL, empty secret, invalid
+        // per-endpoint override, exhausted retries, aborts) fail only
+        // this endpoint. Attempts/status ride on the delivery errors
+        // themselves (see withDeliveryOutcome); pre-flight failures
+        // made zero requests.
+        const annotated = err as Partial<DeliveryError>;
+        return {
+          url,
+          ok: false,
+          attempts:
+            typeof annotated.attempts === "number" ? annotated.attempts : 0,
+          ...(typeof annotated.status === "number"
+            ? { status: annotated.status }
+            : {}),
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }),
+  );
+  const delivered = results.filter((r) => r.ok).length;
+  return { results, delivered, failed: results.length - delivered };
 }
 
 /**

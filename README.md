@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 456 tests, all local
+npm test   # 467 tests, all local
 ```
 
 ## Quickstart
@@ -503,9 +503,48 @@ stop, not a retryable failure). Secret
 distribution remains the caller's responsibility: whoever holds it can forge
 signatures.
 
+Multi-endpoint fan-out is included too:
+`deliverSettlementWebhookToMany(report, endpoints)` delivers ONE
+settlement event concurrently to every endpoint — the shape where
+accounting, notifications, and reconciliation systems must all hear
+about the same settlement at once, each holding its own secret:
+
+```ts
+import { deliverSettlementWebhookToMany } from "escrow-state-machine-ts";
+
+const out = await deliverSettlementWebhookToMany(report, [
+  { url: "https://ledger.example.com/hooks/escrow", secret: ledgerSecret },
+  { url: "https://notify.example.com/hooks/escrow", secret: notifySecret },
+]);
+// out: { results: SettlementWebhookEndpointResult[], delivered: number, failed: number }
+// results[i] corresponds to endpoints[i], in input order, and
+// delivered + failed always equals endpoints.length.
+```
+
+The payload body is built once from the report — one shared `eventId`,
+one shared `at` — and signed independently per endpoint with that
+endpoint's own secret (one endpoint's secret cannot verify another's
+delivery). Each endpoint is delivered through
+`deliverSettlementWebhook` itself, so the retry/backoff/`Retry-After`
+semantics above apply unchanged, with retry budgets counted per
+endpoint; an endpoint can also override `retries`/`backoffMs`/
+`timeoutMs`/`maxRetryDelayMs`/`signal` for itself. One endpoint's
+failure — retries exhausted, network error, even an invalid URL or an
+empty secret — marks only that endpoint's result
+`{ ok: false, attempts, status?, error }` and never blocks the others.
+Call-level configuration errors still throw before any request: an
+empty/non-array `endpoints` list, invalid global delivery options, or
+an invalid shared `now`/`eventId`.
+
+Honest limit: there is no durable queue. If the process dies
+mid-fan-out, some endpoints may have received the event and others
+not — the caller reconciles by re-delivering and letting receivers
+deduplicate on the shared `eventId` (see the receiver-side dedupe
+example above).
+
 ## Reproducibility
 
-`npm test` runs 456 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 467 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
