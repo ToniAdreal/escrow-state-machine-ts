@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 503 tests, all local
+npm test   # 507 tests, all local
 ```
 
 ## Quickstart
@@ -46,6 +46,15 @@ console.log(escrow.state); // RELEASED
 // 3. Gross-to-net settlement on release (5% pro fee)
 console.log(settleRelease({ gross: 1000, proFeeBps: 500 }));
 // { gross: 1000, proFee: 50, referralCredits: 0, net: 950 }
+```
+
+Or run the bundled demo — one command drives a deterministic escrow
+through `CREATED → FUNDED → MILESTONE_SUBMITTED → VERIFIED → RELEASED`
+(the golden 10,630 deposit, fixed timestamps) and prints the audit
+history plus the balanced settlement report:
+
+```bash
+npm run demo
 ```
 
 ## State machine
@@ -594,7 +603,7 @@ example above).
 
 ## Reproducibility
 
-`npm test` runs 503 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 507 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
