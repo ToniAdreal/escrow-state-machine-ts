@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 495 tests, all local
+npm test   # 503 tests, all local
 ```
 
 ## Quickstart
@@ -594,10 +594,34 @@ example above).
 
 ## Reproducibility
 
-`npm test` runs 495 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 503 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
+
+## Benchmarks
+
+`npm run bench` measures locally-observed throughput for the four hot
+paths (3000 timed iterations per op after 200 warmup, printing the Node
+version and CPU): hash-chained `dispatch`, `verifyHistoryChain`,
+`buildSettlementReport`, and settlement webhook build/verify. Fixtures
+are deterministic — one escrow driven through the full
+`CREATED → RELEASED` lifecycle (4 hash-chained audit entries, golden
+deposit 10,630), with a fixed webhook secret, payload timestamp, and
+`eventId`. One real run on 2026-10-10:
+
+| path | throughput |
+|------|------------|
+| dispatch (full lifecycle, 4 dispatches) | ~28,100 ops/sec (~35.6 µs/op) |
+| verifyHistoryChain (4 entries) | ~58,600 ops/sec (~17.1 µs/op) |
+| buildSettlementReport (4 entries) | ~53,900 ops/sec (~18.6 µs/op) |
+| buildSettlementWebhook (sign) | ~75,800 ops/sec (~13.2 µs/op) |
+| verifySettlementWebhook | ~68,700 ops/sec (~14.6 µs/op) |
+
+Environment: Node v24.20.0, linux/x64, AMD EPYC 9D25 (virtualized;
+shared host, so numbers vary run to run). Machine-local measurements
+for capacity planning, not guaranteed throughput — run
+`npm run bench` on your own hardware.
 
 ## License
 
