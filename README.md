@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 467 tests, all local
+npm test   # 479 tests, all local
 ```
 
 ## Quickstart
@@ -400,12 +400,30 @@ receiving end and drop duplicates — that is how you tell "retry re-send"
 apart from "second settlement":
 
 ```ts
-const seen = new Set<string>();
+import { SettlementEventDedupe } from "escrow-state-machine-ts";
+
+const dedupe = new SettlementEventDedupe({ ttlMs: 24 * 60 * 60_000 }); // defaults: 1h TTL, 10_000 entries
 // in the webhook handler, after verifySettlementWebhook(rawBody, sig, secret):
-if (seen.has(payload.eventId)) return { status: 200, note: "duplicate delivery" };
-seen.add(payload.eventId);
+if (dedupe.checkAndRecord(payload.eventId)) {
+  return { status: 200, note: "duplicate delivery" };
+}
 // ... process the settlement exactly once
 ```
+
+`checkAndRecord(eventId)` returns `false` on first sighting and `true`
+for a repeat within the TTL ("true = is a replay"); at exactly `ttlMs`
+the record has expired and the id counts as unseen again, and a
+duplicate hit never extends the window. At capacity, expired entries
+are reclaimed before the least recently seen entry is evicted.
+Illegal configuration (`ttlMs` not a positive finite number,
+`maxEntries` not a positive integer) throws at construction, and an
+empty or non-string `eventId` throws instead of silently passing.
+`size` and `stats()` (`{ size, hits, misses, evictions }`) expose
+observability, and `clear()` resets both. Honest limit: the store is
+single-process and in-memory only — two receiver processes cannot see
+each other's records and a restart forgets every id, so a
+multi-process receiver must deduplicate over shared storage (a
+database unique constraint, Redis, …) instead.
 
 Secret rotation: while you roll from an old secret to a new one, pass both
 as candidates — any candidate that matches verifies, all-mismatch still
@@ -544,7 +562,7 @@ example above).
 
 ## Reproducibility
 
-`npm test` runs 467 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 479 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
