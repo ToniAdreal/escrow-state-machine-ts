@@ -26,6 +26,7 @@ export type {
   DeliverSettlementWebhookToManyOptions,
   DeliverWebhookOptions,
   SettlementEventDedupeOptions,
+  SettlementEventDedupeSnapshot,
   SettlementEventDedupeStats,
   SettlementWebhook,
   SettlementWebhookEndpoint,

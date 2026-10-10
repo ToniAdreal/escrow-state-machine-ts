@@ -430,9 +430,32 @@ empty or non-string `eventId` throws instead of silently passing.
 `size` and `stats()` (`{ size, hits, misses, evictions }`) expose
 observability, and `clear()` resets both. Honest limit: the store is
 single-process and in-memory only — two receiver processes cannot see
-each other's records and a restart forgets every id, so a
-multi-process receiver must deduplicate over shared storage (a
-database unique constraint, Redis, …) instead.
+each other's records, so a multi-process receiver must deduplicate
+over shared storage (a database unique constraint, Redis, …) instead.
+
+A single process can still carry its ids across its own restart:
+`exportSnapshot()` returns a detached, JSON-serializable
+`{ v: 1, entries: [eventId, seenAtMs][] }` of the entries still live
+against the store's clock, and `SettlementEventDedupe.restore(snapshot, opts)`
+(alias `fromSnapshot`) rebuilds a store from it:
+
+```ts
+// before shutdown:
+persist(JSON.stringify(dedupe.exportSnapshot()));
+// at startup:
+const dedupe2 = SettlementEventDedupe.restore(JSON.parse(saved), { ttlMs: 24 * 60 * 60_000 });
+```
+
+Restore validates strictly — a wrong version, a non-array `entries`,
+a malformed entry, or an unknown top-level field throws instead of
+silently disabling deduplication. Entries already expired are dropped
+at load, an over-`maxEntries` snapshot evicts the oldest `seenAtMs`
+first, and TTLs keep counting from each id's original first-seen time
+— restoring never grants a fresh window. The `hits`/`misses`/
+`evictions` counters are not part of the snapshot: a restored store
+starts them at zero. The snapshot bridges one process across its own
+restart only; two processes restoring the same snapshot afterwards
+diverge, so it is not a substitute for shared storage.
 
 Secret rotation: while you roll from an old secret to a new one, pass both
 as candidates — any candidate that matches verifies, all-mismatch still
