@@ -85,10 +85,35 @@ function boomHandler(_req: IncomingMessage, res: ServerResponse) {
   res.end("boom");
 }
 
-/** Fire `controller.abort()` after `ms` (the timer is not unref'd: the test
- *  needs the loop alive until delivery settles). */
-function abortAfter(controller: AbortController, ms: number): void {
-  setTimeout(() => controller.abort(), ms);
+/**
+ * Deterministic abort triggers (no wall-clock racing).
+ *
+ * Earlier revisions fired `controller.abort()` from a `setTimeout`
+ * (50ms / 150ms). Under load those timers drift against the request /
+ * backoff schedule — the abort landed in the wrong phase (or the expected
+ * retry had not happened yet) and the test flaked in full-suite runs while
+ * passing standalone. Every trigger below is an event that proves the
+ * delivery is in the phase under test:
+ *
+ * - in-flight cases abort inside the server handler itself: the handler
+ *   only runs once the request has actually arrived, so the fetch is
+ *   in flight by construction;
+ * - backoff / Retry-After cases abort on the server response's `finish`
+ *   event: the failing response has been sent, so the client is either
+ *   entering the interruptible wait or already in it. Both interleavings
+ *   reject with `webhook delivery aborted` after exactly the attempts
+ *   already made (`sleepAbortable` also rejects when the signal is
+ *   already aborted on entry), so the assertions hold deterministically.
+ *
+ * Wall clock survives only as a loose upper-bound assertion inside the
+ * tests (`elapsed < 10_000`): abort must cut a 30s wait short — it is a
+ * fail-fast bound, never a trigger.
+ */
+function abortOnResponseFinished(
+  res: ServerResponse,
+  controller: AbortController,
+): void {
+  res.once("finish", () => controller.abort());
 }
 
 test("pre-aborted signal throws immediately with zero HTTP attempts", async () => {
@@ -112,9 +137,15 @@ test("pre-aborted signal throws immediately with zero HTTP attempts", async () =
 test("abort during backoff ends the retry loop far before the backoff", async () => {
   const signed = goldenWebhook();
   const controller = new AbortController();
-  await withServer(boomHandler, async (url, received) => {
+  await withServer(
+    (req, res) => {
+      // The 500 response going out is the event that starts the backoff;
+      // abort as soon as it has been sent, not after a guessed delay.
+      abortOnResponseFinished(res, controller);
+      boomHandler(req, res);
+    },
+    async (url, received) => {
     const started = Date.now();
-    abortAfter(controller, 50);
     await assert.rejects(
       () =>
         deliverSettlementWebhook(url, signed, {
@@ -141,10 +172,12 @@ test("abort during an in-flight request rejects without retrying", async () => {
   await withServer(
     () => {
       // Never respond: without an abort the 30s timeout would fire.
+      // The handler running at all proves the request is in flight, so
+      // aborting here is deterministic — no timer guesswork.
+      controller.abort();
     },
     async (url, received) => {
       const started = Date.now();
-      abortAfter(controller, 50);
       await assert.rejects(
         () =>
           deliverSettlementWebhook(url, signed, {
@@ -172,11 +205,14 @@ test("abort on a retry attempt stops after the attempts already made", async () 
     (_req, res, received) => {
       if (received < 2) {
         boomHandler(_req, res);
+      } else {
+        // Second request: never respond, and abort from inside the
+        // handler — its arrival is the event, replacing the old 150ms
+        // guess that the retry would have happened by then.
+        controller.abort();
       }
-      // Second request: never respond, so the abort cuts it mid-flight.
     },
     async (url, received) => {
-      abortAfter(controller, 150);
       await assert.rejects(
         () =>
           deliverSettlementWebhook(url, signed, {
@@ -202,6 +238,9 @@ test("abort during a Retry-After wait stops the loop", async () => {
   await withServer(
     (_req, res, received) => {
       if (received < 2) {
+        // Abort once the 429 has been sent: the client is then entering
+        // (or already in) the Retry-After wait this test exercises.
+        abortOnResponseFinished(res, controller);
         res.writeHead(429, { "Retry-After": "30" });
         res.end("slow down");
       } else {
@@ -210,7 +249,6 @@ test("abort during a Retry-After wait stops the loop", async () => {
     },
     async (url, received) => {
       const started = Date.now();
-      abortAfter(controller, 50);
       await assert.rejects(
         () =>
           deliverSettlementWebhook(url, signed, {
