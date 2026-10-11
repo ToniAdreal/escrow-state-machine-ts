@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 507 tests, all local
+npm test   # 516 tests, all local
 ```
 
 ## Quickstart
@@ -218,11 +218,16 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   budget (terminal states never qualify, states with no budget are
   ignored, and an escrow with no history has no measurable dwell). A
   FUNDED escrow whose milestone nobody submits for 30 days is picked
-  up here even when its deadline is months away. It is a pure filter
-  with deliberately *no* executor companion: expiry is the single
-  obvious action for an overdue escrow, but a stale escrow's right
-  disposition — notify the parties, escalate to arbitration, or expire
-  it — is a state-dependent caller decision.
+  up here even when its deadline is months away. It is a pure filter;
+  its executor companion is `actOnStaleEscrows(escrows, action,
+  maxAgeByState, now?)`, which runs a caller-supplied action for each
+  stale escrow and returns per-escrow `{ escrow, acted, error? }`
+  outcomes, isolating failures so one unactionable escrow never
+  aborts the batch. There is deliberately *no default* action: expiry
+  is the single obvious action for an overdue escrow, but a stale
+  escrow's right disposition — notify the parties, escalate to
+  arbitration, or expire it — is a state-dependent caller decision,
+  so the action is a required argument.
 - Dispatch subscriptions (in-process fan-out seam): `escrow.subscribe(listener)`
   registers a listener called with `(event, from, to, entry)` after every
   *successful* dispatch, in subscription order; the returned function
@@ -603,7 +608,7 @@ example above).
 
 ## Reproducibility
 
-`npm test` runs 507 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 516 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

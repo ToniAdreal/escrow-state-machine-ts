@@ -1922,17 +1922,14 @@ function assertMaxAgeByState(
  * FUNDED escrow whose milestone nobody has submitted for 30 days —
  * its deadline may be months away, so no deadline helper picks it up).
  *
- * Pure: reads the escrows, never mutates or dispatches. Unlike
- * `expireOverdueEscrows()`, there is deliberately NO executor
- * companion: expiry is the single obvious action for an overdue
- * escrow, but a stale escrow has no single default disposition —
- * notify the parties, escalate to arbitration, or expire it are all
- * legitimate, state-dependent choices — so what to DO with the
- * selected escrows stays the caller's decision:
+ * Pure: reads the escrows, never mutates or dispatches. To actually
+ * ACT on the selection, prefer {@link actOnStaleEscrows} over a
+ * hand-written loop: a stale escrow has no single default disposition
+ * — notify the parties, escalate to arbitration, or expire it are all
+ * legitimate, state-dependent choices — so the executor takes the
+ * action from the caller and isolates per-escrow failures:
  *
- *   for (const escrow of staleEscrows(allEscrows, { FUNDED: 30 * DAY })) {
- *     notifyParties(escrow.id, "escrow idle in FUNDED for over 30 days");
- *   }
+ *   actOnStaleEscrows(allEscrows, (e) => notifyParties(e.id), { FUNDED: 30 * DAY });
  *
  * The `now` default is the real clock, so unit tests pin it to a fixed
  * date. Configuration is validated fail-fast before any escrow is
@@ -1959,5 +1956,77 @@ export function staleEscrows(
     const enteredAt = Date.parse(history[history.length - 1].at);
     if (!Number.isFinite(enteredAt)) return false;
     return nowMs - enteredAt > maxAgeMs;
+  });
+}
+
+/** Action {@link actOnStaleEscrows} runs for each stale escrow. */
+export type StaleEscrowAction = (escrow: Escrow) => void;
+
+/**
+ * Per-escrow outcome of {@link actOnStaleEscrows}.
+ */
+export interface StaleEscrowActionResult {
+  /** The escrow this outcome belongs to. */
+  escrow: Escrow;
+  /** True when the action ran for this escrow without throwing. */
+  acted: boolean;
+  /** Set when the action threw; the message of the caught error. */
+  error?: string;
+}
+
+/**
+ * Watchdog executor: run a caller-supplied action for every escrow
+ * {@link staleEscrows} selects, and report the per-escrow outcome.
+ *
+ * This exists because a hand-written loop over `staleEscrows()` has
+ * the same trap {@link expireOverdueEscrows} fixed for
+ * `expiredEscrows()`: the natural stale action for many states —
+ * dispatching a transition such as `EXPIRE` — is not a legal event
+ * from every non-terminal state (`VERIFIED` and `DISPUTED` escrows
+ * have no `EXPIRE` edge), so a naive loop aborts the whole batch on
+ * the first unactionable escrow. This executor catches the error per
+ * escrow (`acted: false, error: <message>`) and keeps going, so one
+ * failing escrow never blocks the rest of the batch.
+ *
+ * Unlike dataquest's `actOnStaleTasks`, there is deliberately NO
+ * default action: expiry is the single obvious action for an overdue
+ * escrow, but a stale escrow's right disposition — notify, escalate,
+ * expire — is a state-dependent caller decision, so `action` is
+ * required and must be a function.
+ *
+ * Only stale escrows are attempted; the result has one entry per
+ * attempted escrow, in batch order, so
+ * `results.filter(r => r.acted).length +
+ *  results.filter(r => !r.acted).length === results.length` and the
+ * attempted count equals the `staleEscrows()` selection size.
+ * Non-stale and terminal escrows are untouched and produce no entry.
+ *
+ * Configuration is validated fail-fast before any action runs: a
+ * non-function `action`, an invalid `maxAgeByState`, or an invalid
+ * `now` (the latter two via `staleEscrows()`) throws and no escrow is
+ * touched. The `now` default is the real clock, so unit tests pin it.
+ */
+export function actOnStaleEscrows(
+  escrows: readonly Escrow[],
+  action: StaleEscrowAction,
+  maxAgeByState: Partial<Record<EscrowState, number>>,
+  now: Date = new Date()
+): StaleEscrowActionResult[] {
+  if (typeof action !== "function") {
+    throw new Error("invalid action: expected a function (escrow) => void");
+  }
+  // staleEscrows() validates maxAgeByState and now fail-fast, before
+  // any action runs.
+  return staleEscrows(escrows, maxAgeByState, now).map((escrow) => {
+    try {
+      action(escrow);
+      return { escrow, acted: true };
+    } catch (err) {
+      return {
+        escrow,
+        acted: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
   });
 }
