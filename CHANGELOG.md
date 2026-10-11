@@ -16,7 +16,12 @@ version changes.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Added
+
+- `transitionTableJson()` exports the transition table as canonical JSON
+  (declaration order, pinned `{ from, event, to }` key order), with the
+  committed snapshot `test/__snapshots__/transitionTable.snapshot.json`
+  cross-checked against `transition()` / `allowedEvents()`.
 
 ## [0.1.0]
 

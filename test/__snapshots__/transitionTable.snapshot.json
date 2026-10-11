@@ -1,0 +1,72 @@
+[
+  {
+    "from": "CREATED",
+    "event": "FUND",
+    "to": "FUNDED"
+  },
+  {
+    "from": "CREATED",
+    "event": "EXPIRE",
+    "to": "EXPIRED"
+  },
+  {
+    "from": "FUNDED",
+    "event": "FUND",
+    "to": "FUNDED"
+  },
+  {
+    "from": "FUNDED",
+    "event": "SUBMIT_MILESTONE",
+    "to": "MILESTONE_SUBMITTED"
+  },
+  {
+    "from": "FUNDED",
+    "event": "DISPUTE",
+    "to": "DISPUTED"
+  },
+  {
+    "from": "FUNDED",
+    "event": "EXPIRE",
+    "to": "EXPIRED"
+  },
+  {
+    "from": "MILESTONE_SUBMITTED",
+    "event": "VERIFY_PASS",
+    "to": "VERIFIED"
+  },
+  {
+    "from": "MILESTONE_SUBMITTED",
+    "event": "VERIFY_FAIL",
+    "to": "DISPUTED"
+  },
+  {
+    "from": "MILESTONE_SUBMITTED",
+    "event": "DISPUTE",
+    "to": "DISPUTED"
+  },
+  {
+    "from": "MILESTONE_SUBMITTED",
+    "event": "EXPIRE",
+    "to": "EXPIRED"
+  },
+  {
+    "from": "VERIFIED",
+    "event": "RELEASE",
+    "to": "RELEASED"
+  },
+  {
+    "from": "VERIFIED",
+    "event": "DISPUTE",
+    "to": "DISPUTED"
+  },
+  {
+    "from": "DISPUTED",
+    "event": "ARBITRATE_RELEASE",
+    "to": "RELEASED"
+  },
+  {
+    "from": "DISPUTED",
+    "event": "ARBITRATE_REFUND",
+    "to": "REFUNDED"
+  }
+]
