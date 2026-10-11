@@ -193,4 +193,16 @@ that mixes chained and hashless entries is rejected.
   persist only inside each escrow's own `toJSON()` snapshot)
 - Audited money math
 
+## Reporting a security issue
+
+If you find a security problem in this demo, please open an issue on
+this repository describing it. Do not include secrets, private keys, or
+any credentials in the report.
+
+Even though this is a demo / reproduction library, reports are still
+welcome — especially for the areas this file makes security claims
+about: webhook signature verification, the audit hash chain (keyed and
+unkeyed), and money conservation in settlement and fee math. No
+response-time commitment is made; reports are triaged as time permits.
+
 Reference and demo use only.

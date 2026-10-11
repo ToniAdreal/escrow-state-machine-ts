@@ -22,6 +22,10 @@ version changes.
   (declaration order, pinned `{ from, event, to }` key order), with the
   committed snapshot `test/__snapshots__/transitionTable.snapshot.json`
   cross-checked against `transition()` / `allowedEvents()`.
+- `SECURITY.md` now has a "Reporting a security issue" section matching
+  the other demo repositories: open an issue, never include secrets or
+  credentials, with webhook-signing, audit-hash-chain, and
+  money-conservation reports especially welcome.
 
 ## [0.1.0]
 
