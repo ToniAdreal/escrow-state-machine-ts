@@ -16,13 +16,13 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 524 tests, all local
+npm test   # 528 tests, all local
 ```
 
 ## Quickstart
 
 ```ts
-import { Escrow, calculateDeposit, settleRelease } from "./dist/index.js";
+import { Escrow, calculateDeposit, settleRelease } from "./dist/src/index.js";
 
 // 1. Deterministic fee preview (numbers from the case study)
 const fees = calculateDeposit({
@@ -608,7 +608,7 @@ example above).
 
 ## Reproducibility
 
-`npm test` runs 524 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 528 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

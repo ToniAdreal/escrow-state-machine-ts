@@ -3,8 +3,8 @@
   "version": "0.1.0",
   "description": "Deterministic escrow fund-release state machine + fee calculator (reproduced from the ALLWEB3 portfolio case study)",
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
   "scripts": {
     "bench": "npm run build && node dist/bench/bench.js",
     "demo": "npm run build && node dist/src/demo.js",
