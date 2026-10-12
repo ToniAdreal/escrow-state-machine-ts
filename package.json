@@ -2,6 +2,16 @@
   "name": "@toniadreal/escrow-state-machine-ts",
   "version": "0.1.0",
   "description": "Deterministic escrow fund-release state machine + fee calculator (reproduced from the ALLWEB3 portfolio case study)",
+  "keywords": [
+    "escrow",
+    "state-machine",
+    "settlement",
+    "webhooks",
+    "payments",
+    "web3",
+    "typescript",
+    "zero-dependency"
+  ],
   "type": "module",
   "main": "dist/src/index.js",
   "types": "dist/src/index.d.ts",
