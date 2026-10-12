@@ -1783,6 +1783,83 @@ export class Escrow {
     }
     return escrow;
   }
+
+  /**
+   * Rebuild an Escrow from a pure audit history log — event sourcing:
+   * the history is the only source of truth and the live state is
+   * derived from its last entry (an empty history rebuilds a fresh
+   * `CREATED` escrow), never read from a state field the caller
+   * supplies. This is the restore path for history-only transports
+   * (see `src/ndjson.ts`): a holder of a bare NDJSON log can rebuild
+   * a working, dispatchable escrow without wrapping the entries in
+   * a snapshot envelope by hand.
+   *
+   * The escrow id is not recoverable from the log (history entries
+   * carry no id), so it is passed explicitly rather than invented;
+   * an empty or non-string id throws
+   * `invalid history: id must be a non-empty string`.
+   *
+   * Validation is exactly {@link parseEscrowHistory}'s — the same
+   * code path `fromJSON` enforces inside its envelope: seq from 1
+   * with no gaps, the from/to chain continuous from `CREATED`, every
+   * edge a legal transition, canonical non-decreasing timestamps,
+   * `amount` only on FUND, `evidence` only on VERIFY_PASS, unknown
+   * entry fields rejected, and a fully chained history's hash chain
+   * re-verified. Malformed histories throw the parser's descriptive
+   * error instead of yielding a corrupt escrow. A fully hashless
+   * (legacy) history is chained deterministically on rehydration —
+   * exactly as in `fromJSON` — so the live history is always fully
+   * chained and a continued dispatch appends with no seq gap and a
+   * correct `prevHash` link.
+   *
+   * @param opts - Optional per-instance dispatch configuration,
+   *   passed straight through to the constructor, with the same
+   *   re-attach semantics as {@link Escrow.fromJSON}'s options:
+   *   `requireVerifyEvidence`/`maxDeposit` are never stored anywhere
+   *   in the log, so a rebuilt escrow silently loses those
+   *   guardrails unless the caller re-enables them here.
+   *   `opts.auditKey` additionally feeds the history's hash-chain
+   *   re-verification: a log chained in keyed mode only rebuilds
+   *   when the same key is supplied here — without it, or with the
+   *   wrong key, the chain check fails and the history is rejected
+   *   as broken (fail-closed; the same applies in reverse to an
+   *   unkeyed log rebuilt with a key). A legacy hashless log rebuilt
+   *   with a key is chained in keyed mode on rehydration.
+   *
+   *   `rolePolicy` differs from `fromJSON` in one honest respect:
+   *   a snapshot CARRIES its policy, so there `opts.rolePolicy`
+   *   overrides stored state; a bare history carries no policy at
+   *   all, so here the option is the only source — when provided it
+   *   is installed by the constructor, when omitted the rebuilt
+   *   escrow is unrestricted.
+   *
+   *   What a bare history cannot restore at all: the advisory
+   *   deadline, the consumed idempotency-key set, and subscriptions
+   *   live only in the snapshot envelope / in memory, never in the
+   *   log. A `fromHistory` rebuild therefore starts with no
+   *   deadline, an EMPTY idempotency-key set (a dispatch key
+   *   consumed before the log was taken would re-execute), and zero
+   *   listeners. Use `fromJSON` when those must survive a restart.
+   */
+  static fromHistory(
+    id: string,
+    history: unknown,
+    opts?: EscrowOptions
+  ): Escrow {
+    if (typeof id !== "string" || id.length === 0) {
+      throw new Error("invalid history: id must be a non-empty string");
+    }
+    // Constructing first validates opts (auditKey/rolePolicy/maxDeposit)
+    // before any history is consumed, mirroring dataquest's fromHistory.
+    const escrow = new Escrow(id, opts);
+    const entries = parseEscrowHistory(history, opts?.auditKey);
+    escrow._state =
+      entries.length === 0 ? "CREATED" : entries[entries.length - 1].to;
+    // See fromJSON(): a legacy hashless log is chained deterministically
+    // on rehydration, so the live history is always fully chained.
+    escrow._history = chainHistoryEntries(entries, opts?.auditKey);
+    return escrow;
+  }
 }
 
 /**

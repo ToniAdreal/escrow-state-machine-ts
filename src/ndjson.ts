@@ -52,10 +52,10 @@ import {
  *
  * The log carries no escrow id and no configuration (deadline,
  * idempotency keys, RBAC policy) — those live in the snapshot
- * envelope. To rebuild a working escrow from imported entries, wrap
- * them: `Escrow.fromJSON({ id, state: lastEntry.to, history })`;
- * the entries can also feed pure history consumers such as
- * `buildSettlementReport` directly.
+ * envelope. To rebuild a working escrow from imported entries, hand
+ * them to `Escrow.fromHistory(id, entries)`, which derives the state
+ * from the log itself; the entries can also feed pure history
+ * consumers such as `buildSettlementReport` directly.
  */
 
 /**

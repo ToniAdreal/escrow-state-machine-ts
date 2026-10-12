@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 584 tests, all local
+npm test   # 600 tests, all local
 ```
 
 ## Quickstart
@@ -270,6 +270,27 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   rejected as an unknown field by older parsers that predate it (an old
   binary must not silently drop replay protection). A snapshot is an *export*, not a datastore — there is still no
   built-in storage or locking.
+- History-only restore (event sourcing): `Escrow.fromHistory(id, history)`
+  rebuilds a working escrow from a *bare* audit history — the history is
+  the only source of truth and the state is derived from its last entry
+  (an empty history rebuilds a fresh `CREATED` escrow), so a holder of a
+  bare log (e.g. the receiving end of the NDJSON transport below) no
+  longer has to hand-wrap entries in a snapshot envelope with a state
+  field it derived itself. Validation is the exact `parseEscrowHistory`
+  code path (seq/chain/edge/timestamp rules, hash chain re-verified with
+  `auditKey` when keyed); legacy hashless histories are chained on
+  rehydration exactly as in `fromJSON`, and a rebuilt escrow keeps
+  dispatching with no seq gap. Options re-attach as in
+  `fromJSON(snapshot, opts)` (`requireVerifyEvidence`/`maxDeposit`/
+  `auditKey`/`rolePolicy`) — with one honest difference: a snapshot
+  *carries* its `rolePolicy`, so there the option overrides stored
+  state, while a bare history carries no policy, so here the option is
+  the only source. What a bare history cannot restore at all: the
+  deadline, the consumed idempotency-key set, and subscriptions live
+  only in the envelope / in memory, so a `fromHistory` rebuild starts
+  with no deadline, an *empty* key set (a key consumed before the log
+  was taken would re-execute), and zero listeners — use `fromJSON`
+  when those must survive a restart.
 - NDJSON audit-log streaming: `historyToNdjson(history | escrow)` /
   `historyFromNdjson(text)` (`src/ndjson.ts`) export and import *only
   the audit log* — one canonical JSON entry per line, line order =
@@ -283,7 +304,9 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   its 1-based line number, and empty/whitespace-only input throws
   (a missing log is not a log of zero events). CRLF input is
   accepted. Keyed (HMAC) histories need the same `auditKey` on
-  import, and the key never appears in the text.
+  import, and the key never appears in the text. Imported entries feed
+  `Escrow.fromHistory(id, entries)` directly when a working escrow —
+  not just the log — is what the receiving end needs.
 
 ## FAQ (honest)
 
@@ -626,7 +649,7 @@ entry, never the whole batch, and building reports mutates nothing.
 
 ## Reproducibility
 
-`npm test` runs 584 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 600 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
