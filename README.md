@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 538 tests, all local
+npm test   # 545 tests, all local
 ```
 
 ## Quickstart
@@ -610,9 +610,15 @@ not — the caller reconciles by re-delivering and letting receivers
 deduplicate on the shared `eventId` (see the receiver-side dedupe
 example above).
 
+For a whole batch of escrows, `buildSettlementReports(inputsList)` takes
+the same per-escrow inputs as `buildSettlementReport` and returns one
+`{ escrowId, report }` or `{ escrowId, error }` result per input, in input
+order — a non-terminal escrow or a corrupted history fails only its own
+entry, never the whole batch, and building reports mutates nothing.
+
 ## Reproducibility
 
-`npm test` runs 538 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 545 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

@@ -18,6 +18,11 @@ version changes.
 
 ### Added
 
+- `buildSettlementReports(inputsList)` batch settlement reporting: the
+  same per-escrow inputs as `buildSettlementReport`, returning one
+  `{ escrowId, report }` or `{ escrowId, error }` result per input in
+  input order, so one non-terminal or corrupted escrow never aborts the
+  whole batch. Pure — no escrow state or history is mutated.
 - `transitionTableJson()` exports the transition table as canonical JSON
   (declaration order, pinned `{ from, event, to }` key order), with the
   committed snapshot `test/__snapshots__/transitionTable.snapshot.json`

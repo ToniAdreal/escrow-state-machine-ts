@@ -280,6 +280,48 @@ export function buildSettlementReport(
   );
 }
 
+/**
+ * Per-escrow outcome of {@link buildSettlementReports}: exactly one of
+ * `report` / `error` is set.
+ */
+export type SettlementReportResult =
+  | { escrowId: string; report: SettlementReport; error?: undefined }
+  | { escrowId: string; report?: undefined; error: string };
+
+/**
+ * Batch settlement reporting: build one report per escrow from a list of
+ * {@link SettlementReportInputs} — the exact same input shape (and
+ * semantics) as the single-escrow {@link buildSettlementReport}, one entry
+ * per escrow, in batch order.
+ *
+ * This exists because a hand-written loop over `buildSettlementReport`
+ * has the same trap `expireOverdueEscrows` fixed for the watchdog path:
+ * the single-escrow function throws on the first non-terminal escrow or
+ * corrupted history, aborting the whole batch and leaving the caller to
+ * re-implement per-item isolation. Here each entry is attempted
+ * independently: a failure is recorded as `{ escrowId, error }` (the
+ * caught error's message) and never blocks later entries.
+ *
+ * Pure: building a report never mutates any escrow state or history, and
+ * this batch wrapper adds no mutation of its own — the input list and its
+ * entries are only read. The result has one entry per input, in input
+ * order, each carrying the input's `escrowId`.
+ */
+export function buildSettlementReports(
+  inputsList: readonly SettlementReportInputs[],
+): SettlementReportResult[] {
+  return inputsList.map((inputs) => {
+    try {
+      return { escrowId: inputs.escrowId, report: buildSettlementReport(inputs) };
+    } catch (err) {
+      return {
+        escrowId: inputs.escrowId,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  });
+}
+
 function money(n: number): string {
   return (
     "$" +
