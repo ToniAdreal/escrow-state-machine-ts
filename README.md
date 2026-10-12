@@ -625,22 +625,27 @@ everything else is deterministic.
 
 ## Benchmarks
 
-`npm run bench` measures locally-observed throughput for the four hot
+`npm run bench` measures locally-observed throughput for the hot
 paths (3000 timed iterations per op after 200 warmup, printing the Node
 version and CPU): hash-chained `dispatch`, `verifyHistoryChain`,
-`buildSettlementReport`, and settlement webhook build/verify. Fixtures
-are deterministic — one escrow driven through the full
+`buildSettlementReport`, settlement webhook build/verify, and NDJSON
+audit-log export/import (`historyToNdjson` / `historyFromNdjson`).
+Fixtures are deterministic — one escrow driven through the full
 `CREATED → RELEASED` lifecycle (4 hash-chained audit entries, golden
 deposit 10,630), with a fixed webhook secret, payload timestamp, and
-`eventId`. One real run on 2026-10-10:
+`eventId`; the NDJSON paths use a second fixed history of 8 chained
+entries (the golden deposit funded in five staged FUND dispatches,
+then milestone, verification, and release). One real run on 2026-10-12:
 
 | path | throughput |
 |------|------------|
-| dispatch (full lifecycle, 4 dispatches) | ~28,100 ops/sec (~35.6 µs/op) |
-| verifyHistoryChain (4 entries) | ~58,600 ops/sec (~17.1 µs/op) |
-| buildSettlementReport (4 entries) | ~53,900 ops/sec (~18.6 µs/op) |
-| buildSettlementWebhook (sign) | ~75,800 ops/sec (~13.2 µs/op) |
-| verifySettlementWebhook | ~68,700 ops/sec (~14.6 µs/op) |
+| dispatch (full lifecycle, 4 dispatches) | ~15,800 ops/sec (~63.5 µs/op) |
+| verifyHistoryChain (4 entries) | ~52,100 ops/sec (~19.2 µs/op) |
+| buildSettlementReport (4 entries) | ~33,900 ops/sec (~29.5 µs/op) |
+| buildSettlementWebhook (sign) | ~37,200 ops/sec (~26.9 µs/op) |
+| verifySettlementWebhook | ~89,300 ops/sec (~11.2 µs/op) |
+| historyToNdjson (8 entries) | ~5,500 ops/sec (~181.3 µs/op) |
+| historyFromNdjson (8 entries, chain re-verify) | ~3,900 ops/sec (~256.2 µs/op) |
 
 Environment: Node v24.20.0, linux/x64, AMD EPYC 9D25 (virtualized;
 shared host, so numbers vary run to run). Machine-local measurements

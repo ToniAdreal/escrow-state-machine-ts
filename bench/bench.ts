@@ -1,7 +1,7 @@
 /**
  * Local micro-benchmark for the escrow-state-machine-ts state machine.
  *
- * Measures real, locally-observed throughput for the four hot paths a
+ * Measures real, locally-observed throughput for the hot paths a
  * batch escrow reconciliation / watchdog deployment actually hammers:
  *
  *   1. dispatch — one full CREATED -> RELEASED lifecycle (4 dispatches,
@@ -12,7 +12,16 @@
  *      from the audit history (which itself re-verifies the chain);
  *   4. settlement webhook build / verify — `buildSettlementWebhook`
  *      (HMAC-SHA256 signing) and `verifySettlementWebhook` over the
- *      signed body.
+ *      signed body;
+ *   5. NDJSON export / import — `historyToNdjson` (validated export)
+ *      and `historyFromNdjson` (per-line JSON parsing interleaved with
+ *      a full `parseEscrowHistory` hash-chain re-verification) over a
+ *      fixed 8-entry chained history: the same lifecycle funded in
+ *      five staged FUND dispatches (initial deposit + four top-ups
+ *      summing to the golden 10,630), then milestone, verification,
+ *      and release. This is the line-oriented audit-log transport a
+ *      batch reconciliation / forwarding pipeline streams, shaped
+ *      comparably to the dataquest lifecycle's 8-entry NDJSON bench.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -30,6 +39,8 @@ import {
   buildSettlementWebhook,
   calculateDeposit,
   Escrow,
+  historyFromNdjson,
+  historyToNdjson,
   verifyHistoryChain,
   verifySettlementWebhook,
   type EscrowEvent,
@@ -57,6 +68,35 @@ const LIFECYCLE: Array<{ event: EscrowEvent; amount?: number }> = [
 function runLifecycle(): Escrow {
   const escrow = new Escrow("BENCH-001");
   LIFECYCLE.forEach(({ event, amount }, i) => {
+    escrow.dispatch(event, undefined, amount, {
+      at: new Date(BASE_MS + i * 1000).toISOString(),
+    });
+  });
+  return escrow;
+}
+
+/**
+ * The NDJSON fixture lifecycle: the golden deposit funded in five
+ * staged FUND dispatches (10,000 + 300 + 150 + 100 + 80 = 10,630),
+ * then milestone submission, verification, and release — 8 chained
+ * audit entries ending RELEASED, comparable in size to the dataquest
+ * lifecycle's 8-entry NDJSON bench fixture.
+ */
+const NDJSON_LIFECYCLE: Array<{ event: EscrowEvent; amount?: number }> = [
+  { event: "FUND", amount: 10000 },
+  { event: "FUND", amount: 300 },
+  { event: "FUND", amount: 150 },
+  { event: "FUND", amount: 100 },
+  { event: "FUND", amount: 80 },
+  { event: "SUBMIT_MILESTONE" },
+  { event: "VERIFY_PASS" },
+  { event: "RELEASE" },
+];
+
+/** One full deterministic 8-entry staged-funding lifecycle. */
+function runNdjsonLifecycle(): Escrow {
+  const escrow = new Escrow("BENCH-NDJSON-001");
+  NDJSON_LIFECYCLE.forEach(({ event, amount }, i) => {
     escrow.dispatch(event, undefined, amount, {
       at: new Date(BASE_MS + i * 1000).toISOString(),
     });
@@ -124,6 +164,29 @@ const webhookBody = JSON.stringify(webhook.payload);
 if (!verifySettlementWebhook(webhookBody, webhook.signature, WEBHOOK_SECRET)) {
   throw new Error("benchmark fixture failed: webhook does not verify");
 }
+const ndjsonEscrow = runNdjsonLifecycle();
+if (ndjsonEscrow.state !== "RELEASED" || ndjsonEscrow.history.length !== 8) {
+  throw new Error("benchmark fixture failed: NDJSON lifecycle shape");
+}
+// Detached plain copies, exactly what a persisted audit log looks like.
+const ndjsonHistoryFixture: EscrowHistoryEntry[] = ndjsonEscrow.history.map(
+  (e) => ({ ...e }),
+);
+if (!verifyHistoryChain(ndjsonHistoryFixture)) {
+  throw new Error("benchmark fixture failed: NDJSON history chain");
+}
+const ndjsonFixture = historyToNdjson(ndjsonHistoryFixture);
+const ndjsonRoundTrip = historyFromNdjson(ndjsonFixture);
+// parseEscrowHistory returns entries in canonical key order, so compare
+// the round-trip through the canonical serializer (historyToNdjson)
+// rather than raw object stringification.
+if (
+  ndjsonRoundTrip.length !== 8 ||
+  ndjsonRoundTrip[7].to !== "RELEASED" ||
+  historyToNdjson(ndjsonRoundTrip) !== ndjsonFixture
+) {
+  throw new Error("benchmark fixture failed: NDJSON round-trip mismatch");
+}
 
 // ---------------------------------------------------------------------
 // Scenarios (each with a self-check so a broken path cannot report a
@@ -182,11 +245,32 @@ function benchVerifySettlementWebhook(): number {
   }, ITERATIONS);
 }
 
+function benchHistoryToNdjson(): number {
+  return measure(() => {
+    if (historyToNdjson(ndjsonHistoryFixture) !== ndjsonFixture) {
+      throw new Error("benchmark self-check failed: historyToNdjson");
+    }
+  }, ITERATIONS);
+}
+
+function benchHistoryFromNdjson(): number {
+  return measure(() => {
+    const entries = historyFromNdjson(ndjsonFixture);
+    if (
+      entries.length !== 8 ||
+      entries[7].to !== "RELEASED" ||
+      historyToNdjson(entries) !== ndjsonFixture
+    ) {
+      throw new Error("benchmark self-check failed: historyFromNdjson");
+    }
+  }, ITERATIONS);
+}
+
 console.log("escrow-state-machine-ts benchmark");
 console.log(`Node: ${process.version} on ${process.platform}/${process.arch}`);
 console.log(`CPU: ${cpus()[0]?.model ?? "unknown"}`);
 console.log(
-  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId",
+  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release)",
 );
 console.log(`Iterations per op: ${ITERATIONS} (after ${WARMUP} warmup)`);
 console.log("");
@@ -197,12 +281,14 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "buildSettlementReport (4 entries)", ops: benchBuildSettlementReport() },
   { path: "buildSettlementWebhook (sign)", ops: benchBuildSettlementWebhook() },
   { path: "verifySettlementWebhook", ops: benchVerifySettlementWebhook() },
+  { path: "historyToNdjson (8 entries)", ops: benchHistoryToNdjson() },
+  { path: "historyFromNdjson (8 entries, chain re-verify)", ops: benchHistoryFromNdjson() },
 ];
 
-console.log("path                                      throughput");
-console.log("-------------------------------------------------------------");
+console.log("path                                              throughput");
+console.log("---------------------------------------------------------------------");
 for (const r of results) {
-  console.log(`${r.path.padEnd(42)} ${fmt(r.ops)}`);
+  console.log(`${r.path.padEnd(50)} ${fmt(r.ops)}`);
 }
 console.log("");
 console.log("Numbers are machine-local measurements, not guarantees.");
