@@ -13,7 +13,15 @@
  *   4. settlement webhook build / verify — `buildSettlementWebhook`
  *      (HMAC-SHA256 signing) and `verifySettlementWebhook` over the
  *      signed body;
- *   5. NDJSON export / import — `historyToNdjson` (validated export)
+ *   5. `buildSettlementReports(...)` — the batch settlement-reporting
+ *      path a reconciliation job actually runs: one call over a fixed
+ *      batch of 4 inputs (released / refunded / released, each a
+ *      4-entry history comparable to the single-report fixture, plus
+ *      one deliberately mismatched input whose report must land as a
+ *      per-item `{ escrowId, error }` without aborting the batch).
+ *      This measures the per-item try/catch and order-preserving
+ *      mapping overhead the single-report path never exercises;
+ *   6. NDJSON export / import — `historyToNdjson` (validated export)
  *      and `historyFromNdjson` (per-line JSON parsing interleaved with
  *      a full `parseEscrowHistory` hash-chain re-verification) over a
  *      fixed 8-entry chained history: the same lifecycle funded in
@@ -36,6 +44,7 @@
 import { cpus } from "node:os";
 import {
   buildSettlementReport,
+  buildSettlementReports,
   buildSettlementWebhook,
   calculateDeposit,
   Escrow,
@@ -45,6 +54,7 @@ import {
   verifySettlementWebhook,
   type EscrowEvent,
   type EscrowHistoryEntry,
+  type SettlementReportInputs,
 } from "../src/index.js";
 
 const ITERATIONS = 3000;
@@ -73,6 +83,47 @@ function runLifecycle(): Escrow {
     });
   });
   return escrow;
+}
+
+const REFUNDED_LIFECYCLE: Array<{ event: EscrowEvent; amount?: number }> = [
+  { event: "FUND", amount: DEPOSIT_AMOUNT },
+  { event: "SUBMIT_MILESTONE" },
+  { event: "VERIFY_FAIL" },
+  { event: "ARBITRATE_REFUND" },
+];
+
+/** One full deterministic CREATED -> REFUNDED lifecycle (4 entries). */
+function runRefundedLifecycle(id: string): Escrow {
+  const escrow = new Escrow(id);
+  REFUNDED_LIFECYCLE.forEach(({ event, amount }, i) => {
+    escrow.dispatch(event, undefined, amount, {
+      at: new Date(BASE_MS + i * 1000).toISOString(),
+    });
+  });
+  return escrow;
+}
+
+/** One full deterministic CREATED -> RELEASED lifecycle under a given id. */
+function runReleasedLifecycle(id: string): Escrow {
+  const escrow = new Escrow(id);
+  LIFECYCLE.forEach(({ event, amount }, i) => {
+    escrow.dispatch(event, undefined, amount, {
+      at: new Date(BASE_MS + i * 1000).toISOString(),
+    });
+  });
+  return escrow;
+}
+
+function settlementInputsFor(
+  escrow: Escrow,
+): SettlementReportInputs {
+  return {
+    escrowId: escrow.id,
+    history: escrow.history.map((e) => ({ ...e })),
+    finalState: escrow.state,
+    deposit,
+    settlement: { proFeeBps: 500 },
+  };
 }
 
 /**
@@ -155,6 +206,61 @@ const report = buildSettlementReport({
 if (!report.balanced || report.outcome !== "released") {
   throw new Error("benchmark fixture failed: settlement report not balanced");
 }
+// Batch fixture: 4 inputs, each a 4-entry history comparable to the
+// single-report fixture — released / refunded / released, plus one
+// deliberately mismatched input (a RELEASED history claimed as
+// REFUNDED) that must land as a per-item error without aborting the
+// batch. Expected outcomes are hand-derived from those lifecycles.
+const batchEscrows = [
+  runReleasedLifecycle("BENCH-BATCH-001"),
+  runRefundedLifecycle("BENCH-BATCH-002"),
+  runReleasedLifecycle("BENCH-BATCH-003"),
+  runReleasedLifecycle("BENCH-BATCH-004"),
+];
+const batchInputs: SettlementReportInputs[] = [
+  settlementInputsFor(batchEscrows[0]),
+  settlementInputsFor(batchEscrows[1]),
+  settlementInputsFor(batchEscrows[2]),
+  { ...settlementInputsFor(batchEscrows[3]), finalState: "REFUNDED" },
+];
+const BATCH_EXPECTED_OUTCOMES: Array<string | undefined> = [
+  "released",
+  "refunded",
+  "released",
+  undefined,
+];
+function checkBatchResults(
+  results: ReturnType<typeof buildSettlementReports>,
+): void {
+  if (results.length !== batchInputs.length) {
+    throw new Error("benchmark batch check failed: result count mismatch");
+  }
+  for (let i = 0; i < results.length; i++) {
+    if (results[i].escrowId !== batchInputs[i].escrowId) {
+      throw new Error("benchmark batch check failed: order not preserved");
+    }
+    const expected = BATCH_EXPECTED_OUTCOMES[i];
+    if (expected === undefined) {
+      const err = results[i].error;
+      if (
+        results[i].report !== undefined ||
+        typeof err !== "string" ||
+        !err.includes(
+          "state is REFUNDED but the last audit event is RELEASE",
+        )
+      ) {
+        throw new Error("benchmark batch check failed: bad item shape");
+      }
+    } else if (
+      results[i].error !== undefined ||
+      results[i].report?.outcome !== expected ||
+      !results[i].report?.balanced
+    ) {
+      throw new Error("benchmark batch check failed: outcome mismatch");
+    }
+  }
+}
+checkBatchResults(buildSettlementReports(batchInputs));
 const webhook = buildSettlementWebhook(report, {
   secret: WEBHOOK_SECRET,
   now: WEBHOOK_NOW,
@@ -224,6 +330,12 @@ function benchBuildSettlementReport(): number {
   }, ITERATIONS);
 }
 
+function benchBuildSettlementReports(): number {
+  return measure(() => {
+    checkBatchResults(buildSettlementReports(batchInputs));
+  }, ITERATIONS);
+}
+
 function benchBuildSettlementWebhook(): number {
   return measure(() => {
     const built = buildSettlementWebhook(report, {
@@ -270,7 +382,7 @@ console.log("escrow-state-machine-ts benchmark");
 console.log(`Node: ${process.version} on ${process.platform}/${process.arch}`);
 console.log(`CPU: ${cpus()[0]?.model ?? "unknown"}`);
 console.log(
-  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release)",
+  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release)",
 );
 console.log(`Iterations per op: ${ITERATIONS} (after ${WARMUP} warmup)`);
 console.log("");
@@ -279,6 +391,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "dispatch (full lifecycle, 4 dispatches)", ops: benchDispatchLifecycle() },
   { path: "verifyHistoryChain (4 entries)", ops: benchVerifyHistoryChain() },
   { path: "buildSettlementReport (4 entries)", ops: benchBuildSettlementReport() },
+  { path: "buildSettlementReports (batch 4 x 4 entries)", ops: benchBuildSettlementReports() },
   { path: "buildSettlementWebhook (sign)", ops: benchBuildSettlementWebhook() },
   { path: "verifySettlementWebhook", ops: benchVerifySettlementWebhook() },
   { path: "historyToNdjson (8 entries)", ops: benchHistoryToNdjson() },
