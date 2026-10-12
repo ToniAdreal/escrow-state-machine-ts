@@ -60,6 +60,42 @@ export interface ApprovalLogEntry {
   readonly at: string;
 }
 
+/**
+ * Serializable snapshot of a quorum, produced by {@link Quorum.snapshot}
+ * and consumed by {@link restoreQuorum}. Plain JSON data: persist it
+ * with `JSON.stringify` before a restart and `JSON.parse` it back at
+ * startup so collected approvals survive the process.
+ *
+ * The snapshot carries the full approval audit trail (every log entry,
+ * including expired and superseded ones — exactly what
+ * `approvalLog()` returns), plus the configuration the entries were
+ * collected under (`threshold`, `signers`, and `maxApprovalAgeMs` when
+ * set), so a restore can refuse a snapshot that does not match the
+ * configuration it is being restored into instead of silently changing
+ * the counting rule mid-arbitration.
+ *
+ * Honest scope: a snapshot is an export format, not a built-in store,
+ * and approvals in it are still unsigned caller assertions — restoring
+ * one adds no signature verification (see the module header).
+ */
+export interface QuorumSnapshot {
+  /** Snapshot schema version; only `1` exists. */
+  v: 1;
+  /** Threshold the approvals were collected under. */
+  threshold: number;
+  /** Signer ids the approvals were collected under, in config order. */
+  signers: string[];
+  /**
+   * Expiry window the approvals were collected under. Present only
+   * when the source quorum was configured with `maxApprovalAgeMs`
+   * (mirroring this repo's optional snapshot fields: a quorum without
+   * a window keeps the exact legacy-free shape without the key).
+   */
+  maxApprovalAgeMs?: number;
+  /** Full approval audit trail, in record order. */
+  approvals: ApprovalLogEntry[];
+}
+
 export interface Quorum {
   readonly threshold: number;
   readonly signerCount: number;
@@ -99,6 +135,16 @@ export interface Quorum {
    * later re-approval records a fresh timestamp.
    */
   approvalLog(): ReadonlyArray<ApprovalLogEntry>;
+  /**
+   * Export the quorum's full state as a detached, JSON-serializable
+   * {@link QuorumSnapshot}: the configuration the approvals were
+   * collected under plus the complete approval audit trail (expired
+   * and superseded entries included, with their original timestamps —
+   * exporting never refreshes an approval's age). Mutating the
+   * returned object cannot alter the quorum. Restore it after a
+   * restart with {@link restoreQuorum}.
+   */
+  snapshot(): QuorumSnapshot;
 }
 
 function assertValidConfig({
@@ -139,17 +185,21 @@ interface TimedApproval {
   readonly atMs: number;
 }
 
-export function createQuorum(config: QuorumConfig): Quorum {
+function buildQuorum(
+  config: QuorumConfig,
+  initialLog: readonly TimedApproval[]
+): Quorum {
   assertValidConfig(config);
   const { threshold } = config;
-  const signers = new Set<string>(config.signers);
+  const signerList = [...config.signers];
+  const signers = new Set<string>(signerList);
   const now = config.now ?? Date.now;
   const maxAge = config.maxApprovalAgeMs;
   // Full audit trail, in record order. Entries are never removed by
   // expiry — only by revoke(). A signer can appear more than once when
   // it re-approves after its previous approval expired; counting always
   // uses the signer's *latest* entry.
-  const log: TimedApproval[] = [];
+  const log: TimedApproval[] = [...initialLog];
 
   const latestBySigner = (): Map<string, TimedApproval> => {
     const latest = new Map<string, TimedApproval>();
@@ -205,5 +255,149 @@ export function createQuorum(config: QuorumConfig): Quorum {
         at: new Date(e.atMs).toISOString(),
       }));
     },
+    snapshot(): QuorumSnapshot {
+      return {
+        v: 1,
+        threshold,
+        signers: [...signerList],
+        ...(maxAge !== undefined ? { maxApprovalAgeMs: maxAge } : {}),
+        approvals: log.map((e) => ({
+          signerId: e.signerId,
+          at: new Date(e.atMs).toISOString(),
+        })),
+      };
+    },
   };
+}
+
+export function createQuorum(config: QuorumConfig): Quorum {
+  return buildQuorum(config, []);
+}
+
+function isCanonicalIso(s: unknown): s is string {
+  if (typeof s !== "string") return false;
+  const ms = Date.parse(s);
+  return !Number.isNaN(ms) && new Date(ms).toISOString() === s;
+}
+
+const QUORUM_SNAPSHOT_FIELDS = new Set([
+  "v",
+  "threshold",
+  "signers",
+  "maxApprovalAgeMs",
+  "approvals",
+]);
+
+/**
+ * Rebuild a quorum from a {@link QuorumSnapshot} produced by
+ * `snapshot()` (typically after a `JSON.parse` of the persisted form),
+ * restoring it under `config` — pass the same configuration the
+ * snapshot was taken from; the restored quorum keeps counting on
+ * `config.now` / `config.maxApprovalAgeMs`.
+ *
+ * The snapshot is untrusted data and is validated strictly; every
+ * problem throws `invalid quorum snapshot: …`:
+ *  - not a plain object, an unknown top-level field, or `v` other
+ *    than `1`
+ *  - `threshold`, the `signers` set, or `maxApprovalAgeMs` differing
+ *    from `config` (restoring under a different counting rule would
+ *    silently re-interpret approvals collected under another one)
+ *  - an approval entry that is not exactly `{ signerId, at }`, names
+ *    an unknown signer, carries a non-canonical-ISO timestamp, is an
+ *    exact duplicate of an earlier entry (same signer, same
+ *    timestamp), or is out of record order (timestamps must be
+ *    non-decreasing, the same bar this repo's snapshot parsers set)
+ *
+ * A signer may legitimately appear several times with *different*
+ * timestamps (re-approval after expiry appends a fresh entry), so
+ * only exact duplicates are rejected. Expiry keeps counting from each
+ * entry's original timestamp: restoring never refreshes an approval's
+ * age, so an approval that had expired when the snapshot was taken is
+ * still expired after the restore.
+ */
+export function restoreQuorum(
+  config: QuorumConfig,
+  snapshot: unknown
+): Quorum {
+  assertValidConfig(config);
+  const fail = (detail: string): never => {
+    throw new Error(`invalid quorum snapshot: ${detail}`);
+  };
+  if (
+    typeof snapshot !== "object" ||
+    snapshot === null ||
+    Array.isArray(snapshot)
+  )
+    fail("expected a JSON object");
+  const record = snapshot as Record<string, unknown>;
+  for (const key of Object.keys(record)) {
+    if (!QUORUM_SNAPSHOT_FIELDS.has(key))
+      fail(`unknown field ${JSON.stringify(key)}`);
+  }
+  if (record.v !== 1)
+    fail(
+      `unsupported snapshot version ${String(record.v)} (expected 1)`
+    );
+  if (record.threshold !== config.threshold)
+    fail(
+      `threshold ${String(record.threshold)} does not match config threshold ${config.threshold}`
+    );
+  if (!Array.isArray(record.signers))
+    fail("signers must be an array of signer ids");
+  const snapshotSigners = record.signers as unknown[];
+  const snapshotSignerSet = new Set<string>();
+  for (const s of snapshotSigners) {
+    if (typeof s !== "string" || s.length === 0)
+      fail("signers entries must be non-empty strings");
+    const signer = s as string;
+    if (snapshotSignerSet.has(signer))
+      fail(`signer id duplicated: ${JSON.stringify(signer)}`);
+    snapshotSignerSet.add(signer);
+  }
+  const configSignerSet = new Set<string>(config.signers);
+  if (
+    snapshotSignerSet.size !== configSignerSet.size ||
+    [...snapshotSignerSet].some((s) => !configSignerSet.has(s))
+  )
+    fail("signers do not match config signers");
+  if (record.maxApprovalAgeMs !== config.maxApprovalAgeMs)
+    fail(
+      `maxApprovalAgeMs ${String(record.maxApprovalAgeMs)} does not match config maxApprovalAgeMs ${String(config.maxApprovalAgeMs)}`
+    );
+  if (!Array.isArray(record.approvals)) fail("approvals must be an array");
+  const rawApprovals = record.approvals as unknown[];
+  const entries: TimedApproval[] = [];
+  const seenPairs = new Set<string>();
+  let prevMs = -Infinity;
+  for (let i = 0; i < rawApprovals.length; i++) {
+    const raw = rawApprovals[i];
+    const tag = `approvals[${i}]`;
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+      fail(`${tag} must be an object { signerId, at }`);
+    const entry = raw as Record<string, unknown>;
+    for (const key of Object.keys(entry)) {
+      if (key !== "signerId" && key !== "at")
+        fail(`${tag}: unknown field ${JSON.stringify(key)}`);
+    }
+    if (typeof entry.signerId !== "string" || entry.signerId.length === 0)
+      fail(`${tag}: signerId must be a non-empty string`);
+    const signerId = entry.signerId as string;
+    if (!configSignerSet.has(signerId))
+      fail(`${tag}: unknown signer ${JSON.stringify(signerId)}`);
+    if (!isCanonicalIso(entry.at))
+      fail(
+        `${tag}: at must be canonical ISO-8601, got ${String(entry.at)}`
+      );
+    const at = entry.at as string;
+    const atMs = Date.parse(at);
+    const pairKey = `${signerId}\u0000${at}`;
+    if (seenPairs.has(pairKey))
+      fail(`${tag}: duplicate approval entry for signer ${JSON.stringify(signerId)} at ${at}`);
+    seenPairs.add(pairKey);
+    if (atMs < prevMs)
+      fail(`${tag}: approvals must be in non-decreasing timestamp order`);
+    prevMs = atMs;
+    entries.push({ signerId, atMs });
+  }
+  return buildQuorum(config, entries);
 }

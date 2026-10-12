@@ -18,6 +18,13 @@ version changes.
 
 ### Added
 
+- Quorum snapshot export/restore: `quorum.snapshot()` exports the full
+  approval audit trail plus the configuration it was collected under
+  as plain JSON, and `restoreQuorum(config, snapshot)` rebuilds the
+  quorum after a restart under strict validation (unknown signer,
+  exact duplicate entry, bad timestamp, or any threshold/signer/expiry
+  mismatch with the supplied config is rejected). Expiry keeps aging
+  from the original timestamps — restoring never refreshes an approval.
 - `buildSettlementReports(inputsList)` batch settlement reporting: the
   same per-escrow inputs as `buildSettlementReport`, returning one
   `{ escrowId, report }` or `{ escrowId, error }` result per input in
