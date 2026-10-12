@@ -629,8 +629,10 @@ everything else is deterministic.
 paths (3000 timed iterations per op after 200 warmup, printing the Node
 version and CPU): hash-chained `dispatch`, `verifyHistoryChain`,
 `buildSettlementReport`, `buildSettlementReports` (batch),
-settlement webhook build/verify, and NDJSON
-audit-log export/import (`historyToNdjson` / `historyFromNdjson`).
+settlement webhook build/verify, NDJSON
+audit-log export/import (`historyToNdjson` / `historyFromNdjson`),
+and quorum approval to threshold (`createQuorum` approving one
+signer at a time with a `hasQuorum()` check after each vote).
 Fixtures are deterministic — one escrow driven through the full
 `CREATED → RELEASED` lifecycle (4 hash-chained audit entries, golden
 deposit 10,630), with a fixed webhook secret, payload timestamp, and
@@ -639,18 +641,21 @@ deposit 10,630), with a fixed webhook secret, payload timestamp, and
 deliberately mismatched input that must land as a per-item error);
 the NDJSON paths use a second fixed history of 8 chained
 entries (the golden deposit funded in five staged FUND dispatches,
-then milestone, verification, and release). One real run on 2026-10-12:
+then milestone, verification, and release); the quorum path uses a
+fixed 9-signer set with threshold 5 on a fixed injected clock.
+One real run on 2026-10-12:
 
 | path | throughput |
 |------|------------|
-| dispatch (full lifecycle, 4 dispatches) | ~23,100 ops/sec (~43.4 µs/op) |
-| verifyHistoryChain (4 entries) | ~51,100 ops/sec (~19.6 µs/op) |
-| buildSettlementReport (4 entries) | ~51,500 ops/sec (~19.4 µs/op) |
-| buildSettlementReports (batch 4 x 4 entries) | ~12,400 ops/sec (~80.6 µs/op) |
-| buildSettlementWebhook (sign) | ~33,000 ops/sec (~30.3 µs/op) |
-| verifySettlementWebhook | ~51,300 ops/sec (~19.5 µs/op) |
-| historyToNdjson (8 entries) | ~7,600 ops/sec (~130.9 µs/op) |
-| historyFromNdjson (8 entries, chain re-verify) | ~3,900 ops/sec (~253.6 µs/op) |
+| dispatch (full lifecycle, 4 dispatches) | ~15,800 ops/sec (~63.3 µs/op) |
+| verifyHistoryChain (4 entries) | ~76,800 ops/sec (~13.0 µs/op) |
+| buildSettlementReport (4 entries) | ~34,800 ops/sec (~28.7 µs/op) |
+| buildSettlementReports (batch 4 x 4 entries) | ~11,000 ops/sec (~90.8 µs/op) |
+| buildSettlementWebhook (sign) | ~50,200 ops/sec (~19.9 µs/op) |
+| verifySettlementWebhook | ~101,800 ops/sec (~9.8 µs/op) |
+| historyToNdjson (8 entries) | ~13,500 ops/sec (~74.0 µs/op) |
+| historyFromNdjson (8 entries, chain re-verify) | ~2,800 ops/sec (~360.0 µs/op) |
+| quorum approve to threshold (5 of 9) | ~42,400 ops/sec (~23.6 µs/op) |
 
 Environment: Node v24.20.0, linux/x64, AMD EPYC 9D25 (virtualized;
 shared host, so numbers vary run to run). Machine-local measurements

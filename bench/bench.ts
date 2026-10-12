@@ -29,7 +29,13 @@
  *      summing to the golden 10,630), then milestone, verification,
  *      and release. This is the line-oriented audit-log transport a
  *      batch reconciliation / forwarding pipeline streams, shaped
- *      comparably to the dataquest lifecycle's 8-entry NDJSON bench.
+ *      comparably to the dataquest lifecycle's 8-entry NDJSON bench;
+ *   7. quorum approval — `createQuorum` with a fixed 9-signer set and
+ *      threshold 5 (the 5/9 multi-sig arbitration shape), approving
+ *      one signer at a time until the threshold is reached and calling
+ *      `hasQuorum()` after each vote. This is the pre-check
+ *      `dispatchArbitration` runs before any arbitration dispatch, so
+ *      its per-vote accumulation cost is on the arbitration hot path.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -47,6 +53,7 @@ import {
   buildSettlementReports,
   buildSettlementWebhook,
   calculateDeposit,
+  createQuorum,
   Escrow,
   historyFromNdjson,
   historyToNdjson,
@@ -54,6 +61,7 @@ import {
   verifySettlementWebhook,
   type EscrowEvent,
   type EscrowHistoryEntry,
+  type Quorum,
   type SettlementReportInputs,
 } from "../src/index.js";
 
@@ -153,6 +161,37 @@ function runNdjsonLifecycle(): Escrow {
     });
   });
   return escrow;
+}
+
+const QUORUM_SIGNERS: readonly string[] = [
+  "dao-1",
+  "dao-2",
+  "dao-3",
+  "dao-4",
+  "dao-5",
+  "dao-6",
+  "dao-7",
+  "dao-8",
+  "dao-9",
+];
+const QUORUM_THRESHOLD = 5;
+
+/**
+ * One deterministic 5/9 quorum accumulation: a fresh quorum on a fixed
+ * injected clock, approving signers in order until the threshold is
+ * reached, checking `hasQuorum()` after each vote.
+ */
+function runQuorumToThreshold(): Quorum {
+  const quorum = createQuorum({
+    threshold: QUORUM_THRESHOLD,
+    signers: QUORUM_SIGNERS,
+    now: () => BASE_MS,
+  });
+  for (let i = 0; i < QUORUM_THRESHOLD; i++) {
+    quorum.approve(QUORUM_SIGNERS[i]);
+    quorum.hasQuorum();
+  }
+  return quorum;
 }
 
 function measure(fn: () => void, iterations: number): number {
@@ -281,6 +320,38 @@ const ndjsonHistoryFixture: EscrowHistoryEntry[] = ndjsonEscrow.history.map(
 if (!verifyHistoryChain(ndjsonHistoryFixture)) {
   throw new Error("benchmark fixture failed: NDJSON history chain");
 }
+// Quorum fixture self-check, outside the timed loop: the threshold
+// boundary must be exact (4/9 does not reach quorum, 5/9 does), the
+// counted approvals must match the votes cast, and a duplicate
+// approval must be idempotent (no double count).
+{
+  const quorum = createQuorum({
+    threshold: QUORUM_THRESHOLD,
+    signers: QUORUM_SIGNERS,
+    now: () => BASE_MS,
+  });
+  for (let i = 0; i < QUORUM_THRESHOLD - 1; i++) {
+    quorum.approve(QUORUM_SIGNERS[i]);
+  }
+  if (quorum.hasQuorum() || quorum.approvalCount() !== QUORUM_THRESHOLD - 1) {
+    throw new Error("benchmark fixture failed: quorum below threshold");
+  }
+  quorum.approve(QUORUM_SIGNERS[QUORUM_THRESHOLD - 1]);
+  if (!quorum.hasQuorum() || quorum.approvalCount() !== QUORUM_THRESHOLD) {
+    throw new Error("benchmark fixture failed: quorum at threshold");
+  }
+  quorum.approve(QUORUM_SIGNERS[0]);
+  if (
+    quorum.approvalCount() !== QUORUM_THRESHOLD ||
+    quorum.approvals().length !== QUORUM_THRESHOLD
+  ) {
+    throw new Error("benchmark fixture failed: duplicate approve double-counted");
+  }
+  const measured = runQuorumToThreshold();
+  if (!measured.hasQuorum() || measured.approvalCount() !== QUORUM_THRESHOLD) {
+    throw new Error("benchmark fixture failed: quorum accumulation shape");
+  }
+}
 const ndjsonFixture = historyToNdjson(ndjsonHistoryFixture);
 const ndjsonRoundTrip = historyFromNdjson(ndjsonFixture);
 // parseEscrowHistory returns entries in canonical key order, so compare
@@ -365,6 +436,15 @@ function benchHistoryToNdjson(): number {
   }, ITERATIONS);
 }
 
+function benchQuorumApproveToThreshold(): number {
+  return measure(() => {
+    const quorum = runQuorumToThreshold();
+    if (!quorum.hasQuorum() || quorum.approvalCount() !== QUORUM_THRESHOLD) {
+      throw new Error("benchmark self-check failed: quorum approve to threshold");
+    }
+  }, ITERATIONS);
+}
+
 function benchHistoryFromNdjson(): number {
   return measure(() => {
     const entries = historyFromNdjson(ndjsonFixture);
@@ -382,7 +462,7 @@ console.log("escrow-state-machine-ts benchmark");
 console.log(`Node: ${process.version} on ${process.platform}/${process.arch}`);
 console.log(`CPU: ${cpus()[0]?.model ?? "unknown"}`);
 console.log(
-  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release)",
+  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release); quorum of 9 signers with threshold 5 on a fixed injected clock, approved one vote at a time to the threshold",
 );
 console.log(`Iterations per op: ${ITERATIONS} (after ${WARMUP} warmup)`);
 console.log("");
@@ -396,6 +476,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "verifySettlementWebhook", ops: benchVerifySettlementWebhook() },
   { path: "historyToNdjson (8 entries)", ops: benchHistoryToNdjson() },
   { path: "historyFromNdjson (8 entries, chain re-verify)", ops: benchHistoryFromNdjson() },
+  { path: "quorum approve to threshold (5 of 9)", ops: benchQuorumApproveToThreshold() },
 ];
 
 console.log("path                                              throughput");
