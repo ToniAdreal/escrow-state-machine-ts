@@ -47,7 +47,18 @@
  *      duplicate hits cycling over 1,000 `eventId`s pre-recorded under
  *      an injected fixed clock, so no entry can expire or be evicted
  *      during the timed loop: the measured path is the pure
- *      steady-state duplicate hit, LRU recency refresh included.
+ *      steady-state duplicate hit, LRU recency refresh included;
+ *  10. event-sourced replay — `Escrow.fromHistory(id, history)`
+ *      rebuilding a live escrow from the same detached 4-entry chained
+ *      history fixture the dispatch path produces (full
+ *      `parseEscrowHistory` validation + hash-chain re-verification +
+ *      state derivation on every call). This is the rebuild a
+ *      reconciliation holder of a bare audit log pays per escrow.
+ *      The fixture ends RELEASED (terminal, no legal next event), so
+ *      the continuation self-check outside the timed loop rebuilds
+ *      from the fixture's 3-entry VERIFIED prefix and dispatches the
+ *      fixture's own RELEASE step: the rebuilt history must then
+ *      equal the full fixture entry for entry, seq 1-4 with no gap.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -507,6 +518,54 @@ function benchDispatchLifecycle(): number {
   }, ITERATIONS);
 }
 
+// Replay self-checks (outside the timed loop): a rebuild from the
+// full fixture must reproduce the original escrow's state and history
+// exactly, and a rebuild from the fixture's 3-entry VERIFIED prefix
+// must accept the fixture's own RELEASE step with no seq gap,
+// landing byte-identical to the full fixture.
+{
+  const rebuilt = Escrow.fromHistory(releasedEscrow.id, historyFixture);
+  if (
+    rebuilt.state !== releasedEscrow.state ||
+    rebuilt.history.length !== historyFixture.length ||
+    historyToNdjson(rebuilt.history) !== historyToNdjson(historyFixture)
+  ) {
+    throw new Error("benchmark fixture failed: fromHistory rebuild mismatch");
+  }
+  const continued = Escrow.fromHistory(
+    releasedEscrow.id,
+    historyFixture.slice(0, 3),
+  );
+  if (continued.state !== "VERIFIED" || continued.history.length !== 3) {
+    throw new Error("benchmark fixture failed: fromHistory prefix shape");
+  }
+  continued.dispatch("RELEASE", undefined, undefined, {
+    at: new Date(BASE_MS + 3 * 1000).toISOString(),
+  });
+  const continuedState: string = continued.state;
+  const continuedLength: number = continued.history.length;
+  if (
+    continuedState !== "RELEASED" ||
+    continuedLength !== 4 ||
+    continued.history[3].seq !== 4 ||
+    historyToNdjson(continued.history) !== historyToNdjson(historyFixture)
+  ) {
+    throw new Error("benchmark fixture failed: fromHistory continuation gap");
+  }
+}
+
+function benchFromHistory(): number {
+  return measure(() => {
+    const rebuilt = Escrow.fromHistory(releasedEscrow.id, historyFixture);
+    if (
+      rebuilt.state !== "RELEASED" ||
+      rebuilt.history.length !== historyFixture.length
+    ) {
+      throw new Error("benchmark self-check failed: Escrow.fromHistory");
+    }
+  }, ITERATIONS);
+}
+
 function benchVerifyHistoryChain(): number {
   return measure(() => {
     if (!verifyHistoryChain(historyFixture)) {
@@ -620,7 +679,7 @@ console.log("escrow-state-machine-ts benchmark");
 console.log(`Node: ${process.version} on ${process.platform}/${process.arch}`);
 console.log(`CPU: ${cpus()[0]?.model ?? "unknown"}`);
 console.log(
-  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release); quorum of 9 signers with threshold 5 on a fixed injected clock, approved one vote at a time to the threshold; settlement webhook fan-out to 4 endpoints through a fake global fetch (immediate 200, no network); settlement event dedupe duplicate hits cycling over 1,000 pre-recorded eventIds under a fixed injected clock",
+  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release); quorum of 9 signers with threshold 5 on a fixed injected clock, approved one vote at a time to the threshold; settlement webhook fan-out to 4 endpoints through a fake global fetch (immediate 200, no network); settlement event dedupe duplicate hits cycling over 1,000 pre-recorded eventIds under a fixed injected clock; Escrow.fromHistory replay over the same detached 4-entry history",
 );
 console.log(`Iterations per op: ${ITERATIONS} (after ${WARMUP} warmup)`);
 console.log("");
@@ -628,6 +687,7 @@ console.log("");
 const results: Array<{ path: string; ops: number }> = [
   { path: "dispatch (full lifecycle, 4 dispatches)", ops: benchDispatchLifecycle() },
   { path: "verifyHistoryChain (4 entries)", ops: benchVerifyHistoryChain() },
+  { path: "Escrow.fromHistory (4 entries)", ops: benchFromHistory() },
   { path: "buildSettlementReport (4 entries)", ops: benchBuildSettlementReport() },
   { path: "buildSettlementReports (batch 4 x 4 entries)", ops: benchBuildSettlementReports() },
   { path: "buildSettlementWebhook (sign)", ops: benchBuildSettlementWebhook() },

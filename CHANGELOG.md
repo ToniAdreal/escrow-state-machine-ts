@@ -18,6 +18,16 @@ version changes.
 
 ### Added
 
+- Benchmark coverage for the event-sourced replay path:
+  `Escrow.fromHistory` rebuilding a live escrow from the bench's
+  detached 4-entry chained history fixture (full validation and
+  hash-chain re-verification per call), self-checked outside the
+  timed loop — the rebuild reproduces the original escrow's state
+  and history exactly, and a rebuild from the fixture's 3-entry
+  VERIFIED prefix accepts the fixture's own RELEASE step with no
+  seq gap, landing entry-for-entry identical to the full fixture.
+  The README Benchmarks table was refreshed from one real run and
+  gained the row.
 - Benchmark coverage for two payments hot paths: settlement webhook
   fan-out delivery (`deliverSettlementWebhookToMany` to 4 endpoints
   through a fake global `fetch`, zero network, with per-endpoint
