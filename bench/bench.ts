@@ -36,6 +36,18 @@
  *      `hasQuorum()` after each vote. This is the pre-check
  *      `dispatchArbitration` runs before any arbitration dispatch, so
  *      its per-vote accumulation cost is on the arbitration hot path.
+ *   8. settlement webhook fan-out delivery —
+ *      `deliverSettlementWebhookToMany()` to 4 fixed endpoints, each
+ *      with its own signing secret, through a fake `fetch` installed
+ *      on `globalThis` (this library's delivery layer calls the
+ *      global `fetch`; the fake records each call and answers 200
+ *      immediately). Zero network: the numbers measure the library's
+ *      fan-out overhead only — not network throughput;
+ *   9. settlement event dedupe — `SettlementEventDedupe.checkAndRecord()`
+ *      duplicate hits cycling over 1,000 `eventId`s pre-recorded under
+ *      an injected fixed clock, so no entry can expire or be evicted
+ *      during the timed loop: the measured path is the pure
+ *      steady-state duplicate hit, LRU recency refresh included.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -54,15 +66,18 @@ import {
   buildSettlementWebhook,
   calculateDeposit,
   createQuorum,
+  deliverSettlementWebhookToMany,
   Escrow,
   historyFromNdjson,
   historyToNdjson,
+  SettlementEventDedupe,
   verifyHistoryChain,
   verifySettlementWebhook,
   type EscrowEvent,
   type EscrowHistoryEntry,
   type Quorum,
   type SettlementReportInputs,
+  type SettlementWebhookEndpoint,
 } from "../src/index.js";
 
 const ITERATIONS = 3000;
@@ -198,6 +213,17 @@ function measure(fn: () => void, iterations: number): number {
   for (let i = 0; i < WARMUP; i++) fn(); // warmup: JIT, module caches
   const start = process.hrtime.bigint();
   for (let i = 0; i < iterations; i++) fn();
+  const elapsedSec = Number(process.hrtime.bigint() - start) / 1e9;
+  return iterations / elapsedSec;
+}
+
+async function measureAsync(
+  fn: () => Promise<void>,
+  iterations: number,
+): Promise<number> {
+  for (let i = 0; i < WARMUP; i++) await fn(); // warmup: JIT, module caches
+  const start = process.hrtime.bigint();
+  for (let i = 0; i < iterations; i++) await fn();
   const elapsedSec = Number(process.hrtime.bigint() - start) / 1e9;
   return iterations / elapsedSec;
 }
@@ -352,6 +378,109 @@ if (!verifyHistoryChain(ndjsonHistoryFixture)) {
     throw new Error("benchmark fixture failed: quorum accumulation shape");
   }
 }
+// Fan-out delivery fixture: the same settled report fanned out to 4
+// fixed endpoints, each with its own signing secret, under the shared
+// fixed `WEBHOOK_NOW` / `WEBHOOK_EVENT_ID` above. This library's
+// delivery layer calls the global `fetch` (there is no fetchImpl
+// option), so the fake is installed on `globalThis`: it records the
+// calls of the current fan-out, then answers 200 immediately — no
+// network, no randomness, and no retry sleep is ever reached on a 200.
+const FANOUT_ENDPOINTS: SettlementWebhookEndpoint[] = [
+  { url: "https://billing.example.com/hooks/settlement", secret: "bench-fanout-secret-billing" },
+  { url: "https://risk.example.com/hooks/settlement", secret: "bench-fanout-secret-risk" },
+  { url: "https://notifications.example.com/hooks/settlement", secret: "bench-fanout-secret-notifications" },
+  { url: "https://ledger.example.com/hooks/settlement", secret: "bench-fanout-secret-ledger" },
+];
+let fanoutCalls: Array<{ url: string; body: string; signature: string }> = [];
+const fanoutFetch: typeof fetch = async (input, init) => {
+  fanoutCalls.push({
+    url: String(input),
+    body: String(init?.body ?? ""),
+    signature: String(new Headers(init?.headers).get("x-signature") ?? ""),
+  });
+  return new Response("{}", {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+};
+
+async function runFanout() {
+  fanoutCalls = [];
+  globalThis.fetch = fanoutFetch;
+  const out = await deliverSettlementWebhookToMany(report, FANOUT_ENDPOINTS, {
+    now: WEBHOOK_NOW,
+    eventId: WEBHOOK_EVENT_ID,
+  });
+  if (
+    out.results.length !== FANOUT_ENDPOINTS.length ||
+    out.delivered !== FANOUT_ENDPOINTS.length ||
+    out.failed !== 0 ||
+    out.results.some((r, i) => !r.ok || r.attempts !== 1 || r.status !== 200 || r.url !== FANOUT_ENDPOINTS[i].url) ||
+    fanoutCalls.length !== FANOUT_ENDPOINTS.length ||
+    fanoutCalls.some((c) => c.body !== fanoutCalls[0].body) ||
+    JSON.parse(fanoutCalls[0].body).eventId !== WEBHOOK_EVENT_ID
+  ) {
+    throw new Error("benchmark self-check failed: deliverSettlementWebhookToMany");
+  }
+  return out;
+}
+
+// One-time fixture validation (outside the timed loop): every endpoint
+// received a copy signed with its OWN secret.
+await runFanout();
+for (const [i, endpoint] of FANOUT_ENDPOINTS.entries()) {
+  const call = fanoutCalls.find((c) => c.url === endpoint.url);
+  if (!call || !verifySettlementWebhook(call.body, call.signature, endpoint.secret)) {
+    throw new Error(
+      `benchmark fixture failed: fan-out endpoint ${i} signature does not verify`,
+    );
+  }
+}
+
+// Dedupe fixture: 1,000 fixed `eventId`s pre-recorded in a
+// `SettlementEventDedupe` under an injected FIXED clock — the clock
+// never advances, so in the timed loop no entry can expire (default
+// TTL is 1 hour) and none is evicted (1,001 live entries, far under
+// the default 10,000 cap): the measured path is the pure steady-state
+// duplicate hit, LRU recency refresh included. No network, no
+// randomness, no wall clock.
+const DEDUPE_PREFILL = 1000;
+const DEDUPE_NOW_MS = BASE_MS + 120_000;
+const dedupeIds: string[] = Array.from(
+  { length: DEDUPE_PREFILL },
+  (_, i) => `bench-dedupe-${String(i).padStart(4, "0")}`,
+);
+const dedupe = new SettlementEventDedupe({ now: () => DEDUPE_NOW_MS });
+for (const id of dedupeIds) {
+  if (dedupe.checkAndRecord(id)) {
+    throw new Error("benchmark fixture failed: dedupe prefill saw a duplicate");
+  }
+}
+// Semantics self-checks (outside the timed loop): an already-recorded
+// id is a duplicate; an unseen id is admitted on first sight and
+// judged a duplicate on the second; and the stats counters agree
+// exactly with the calls made so far (1,000 prefill misses, then
+// hit + miss + hit, no evictions).
+if (!dedupe.checkAndRecord(dedupeIds[0])) {
+  throw new Error("benchmark fixture failed: dedupe missed a recorded id");
+}
+if (dedupe.checkAndRecord("bench-dedupe-unseen")) {
+  throw new Error("benchmark fixture failed: dedupe flagged a first sighting");
+}
+if (!dedupe.checkAndRecord("bench-dedupe-unseen")) {
+  throw new Error("benchmark fixture failed: dedupe missed a second sighting");
+}
+const dedupeStatsFixture = dedupe.stats();
+if (
+  dedupeStatsFixture.size !== DEDUPE_PREFILL + 1 ||
+  dedupeStatsFixture.hits !== 2 ||
+  dedupeStatsFixture.misses !== DEDUPE_PREFILL + 1 ||
+  dedupeStatsFixture.evictions !== 0
+) {
+  throw new Error("benchmark fixture failed: dedupe stats do not match calls");
+}
+let dedupeCursor = 0;
+
 const ndjsonFixture = historyToNdjson(ndjsonHistoryFixture);
 const ndjsonRoundTrip = historyFromNdjson(ndjsonFixture);
 // parseEscrowHistory returns entries in canonical key order, so compare
@@ -445,6 +574,35 @@ function benchQuorumApproveToThreshold(): number {
   }, ITERATIONS);
 }
 
+async function benchDeliverSettlementWebhookToMany(): Promise<number> {
+  return measureAsync(async () => {
+    await runFanout();
+  }, ITERATIONS);
+}
+
+function benchSettlementEventDedupe(): number {
+  const hitsBefore = dedupe.stats().hits;
+  const ops = measure(() => {
+    const id = dedupeIds[dedupeCursor];
+    dedupeCursor = (dedupeCursor + 1) % dedupeIds.length;
+    if (!dedupe.checkAndRecord(id)) {
+      throw new Error("benchmark self-check failed: SettlementEventDedupe hit");
+    }
+  }, ITERATIONS);
+  // Stats consistency across the timed loop: every warmup + timed
+  // call was a duplicate hit on a pre-recorded id, nothing else.
+  const after = dedupe.stats();
+  if (
+    after.hits !== hitsBefore + WARMUP + ITERATIONS ||
+    after.misses !== DEDUPE_PREFILL + 1 ||
+    after.evictions !== 0 ||
+    after.size !== DEDUPE_PREFILL + 1
+  ) {
+    throw new Error("benchmark self-check failed: SettlementEventDedupe stats");
+  }
+  return ops;
+}
+
 function benchHistoryFromNdjson(): number {
   return measure(() => {
     const entries = historyFromNdjson(ndjsonFixture);
@@ -462,7 +620,7 @@ console.log("escrow-state-machine-ts benchmark");
 console.log(`Node: ${process.version} on ${process.platform}/${process.arch}`);
 console.log(`CPU: ${cpus()[0]?.model ?? "unknown"}`);
 console.log(
-  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release); quorum of 9 signers with threshold 5 on a fixed injected clock, approved one vote at a time to the threshold",
+  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release); quorum of 9 signers with threshold 5 on a fixed injected clock, approved one vote at a time to the threshold; settlement webhook fan-out to 4 endpoints through a fake global fetch (immediate 200, no network); settlement event dedupe duplicate hits cycling over 1,000 pre-recorded eventIds under a fixed injected clock",
 );
 console.log(`Iterations per op: ${ITERATIONS} (after ${WARMUP} warmup)`);
 console.log("");
@@ -477,6 +635,8 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "historyToNdjson (8 entries)", ops: benchHistoryToNdjson() },
   { path: "historyFromNdjson (8 entries, chain re-verify)", ops: benchHistoryFromNdjson() },
   { path: "quorum approve to threshold (5 of 9)", ops: benchQuorumApproveToThreshold() },
+  { path: "deliverSettlementWebhookToMany (4 endpoints)", ops: await benchDeliverSettlementWebhookToMany() },
+  { path: "SettlementEventDedupe checkAndRecord (hit, 1k)", ops: benchSettlementEventDedupe() },
 ];
 
 console.log("path                                              throughput");

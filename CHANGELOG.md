@@ -18,6 +18,15 @@ version changes.
 
 ### Added
 
+- Benchmark coverage for two payments hot paths: settlement webhook
+  fan-out delivery (`deliverSettlementWebhookToMany` to 4 endpoints
+  through a fake global `fetch`, zero network, with per-endpoint
+  signature verification as a self-check) and receiver-side event
+  dedupe (`SettlementEventDedupe.checkAndRecord` duplicate hits over
+  1,000 pre-recorded `eventId`s under a fixed injected clock, with
+  stats counters cross-checked against the calls made). The README
+  Benchmarks table was refreshed from one real run and gained both
+  rows.
 - Quorum snapshot export/restore: `quorum.snapshot()` exports the full
   approval audit trail plus the configuration it was collected under
   as plain JSON, and `restoreQuorum(config, snapshot)` rebuilds the
