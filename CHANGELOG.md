@@ -58,6 +58,17 @@ version changes.
   credentials, with webhook-signing, audit-hash-chain, and
   money-conservation reports especially welcome.
 
+### Fixed
+
+- De-flaked the history parser fuzz timing guard: the per-call 50ms
+  wall-clock assertion in `historyParserFuzz` shared the load-sensitive
+  construction that failed for real in the sibling repos (a 101.6ms
+  scheduler pause on sub-millisecond work in dataquest). The guard now
+  asserts the corpus median against the same 50ms budget, plus a
+  1000ms catastrophic worst-case bound, so a systematic per-call
+  slowdown still fails while a single pause does not. Tests only; no
+  behavior change.
+
 ## [0.1.0]
 
 The only version declared in `package.json`. Entries cover the commit

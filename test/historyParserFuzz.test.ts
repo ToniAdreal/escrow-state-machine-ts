@@ -34,8 +34,24 @@ import {
  * starts with the parser's documented `invalid …` prefix. A TypeError /
  * ReferenceError / SyntaxError escaping, or a silently accepted chain
  * break (seq gap, from/to discontinuity, broken hash chain), fails the
- * run. A 50ms per-call budget (the rfc9421 paradigm's bound) guards
- * against pathological slowdowns.
+ * run.
+ *
+ * Timing guard (backlog #246, de-flaked): the original per-call 50ms
+ * wall-clock assertion shared the load-sensitive construction that
+ * failed for real in the sibling repos (#241 dataquest measured a
+ * 101.6ms scheduler pause on sub-millisecond work; #242 rfc9421 the
+ * same). Investigation here found no conclusively reproduced hard
+ * failure — unloaded worst cases already reach ~25ms from jitter
+ * alone, and under parallel load worst-case prints rose into the
+ * ~100ms range — so this is the same pre-emptive alignment, not a
+ * claimed local repro. The guard now uses the corpus MEDIAN against
+ * the same 50ms budget (a median is immune to a handful of paused
+ * samples, but a systematic per-call slowdown of that magnitude moves
+ * every sample and still trips it), plus a separate catastrophic
+ * worst-case bound of 20x the budget so one pathological input cannot
+ * hide behind the median either. It is not a simple budget widening:
+ * an injected fixed 60ms per-call delay raises the median above 50ms
+ * and fails (mutation-verified).
  *
  * One deliberate difference from the dataquest module: an empty NDJSON
  * document is REJECTED here (`invalid ndjson: input is empty`) — an
@@ -59,6 +75,32 @@ const MAX_MS = 50;
 const PARSE_HISTORY_CASES = 600; // per golden variant (chained + hashless)
 const NDJSON_CASES = 400;
 const SNAPSHOT_CASES = 300;
+/** Catastrophic single-case bound: 20x the median budget (see header). */
+const CATASTROPHIC_MS = MAX_MS * 20;
+
+/**
+ * Load-insensitive timing guard (backlog #246): assert the median
+ * per-call time stays under MAX_MS and no single case exceeds
+ * CATASTROPHIC_MS. Returns the stats for the run log.
+ */
+function assertTimingGuard(
+  label: string,
+  dts: readonly number[],
+): { median: number; worst: number } {
+  assert.ok(dts.length > 0, `${label}: no timing samples collected`);
+  const sorted = [...dts].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  const worst = sorted[sorted.length - 1];
+  assert.ok(
+    median < MAX_MS,
+    `${label} median took ${median.toFixed(1)}ms (budget ${MAX_MS}ms)`,
+  );
+  assert.ok(
+    worst < CATASTROPHIC_MS,
+    `${label} worst case took ${worst.toFixed(1)}ms (catastrophic budget ${CATASTROPHIC_MS}ms)`,
+  );
+  return { median, worst };
+}
 
 /** Deterministic golden escrow: full CREATED→RELEASED chain, pinned times. */
 function goldenEscrow(): Escrow {
@@ -410,7 +452,7 @@ test("fuzz: parseEscrowHistory never throws a non-Error and never accepts a brok
   const { chained } = buildCorpora();
   let accepted = 0;
   let rejected = 0;
-  let worst = 0;
+  const dts: number[] = [];
   for (const mutated of chained) {
     const t0 = performance.now();
     try {
@@ -421,13 +463,12 @@ test("fuzz: parseEscrowHistory never throws a non-Error and never accepts a brok
       rejected++;
       assertPlainInvalid(err, ["invalid history:", "invalid snapshot:"]);
     }
-    const dt = performance.now() - t0;
-    if (dt > worst) worst = dt;
-    assert.ok(dt < MAX_MS, `parseEscrowHistory took ${dt.toFixed(1)}ms`);
+    dts.push(performance.now() - t0);
   }
+  const { median, worst } = assertTimingGuard("parseEscrowHistory", dts);
   assert.ok(accepted > 0 && rejected > 0, `accepted=${accepted} rejected=${rejected}`);
   console.log(
-    `fuzz parseEscrowHistory(chained): ${chained.length} cases, ${accepted} accepted, ${rejected} rejected, worst ${worst.toFixed(1)}ms`,
+    `fuzz parseEscrowHistory(chained): ${chained.length} cases, ${accepted} accepted, ${rejected} rejected, median ${median.toFixed(2)}ms, worst ${worst.toFixed(1)}ms`,
   );
 });
 
@@ -467,7 +508,7 @@ test("fuzz: historyFromNdjson never throws a non-Error and never accepts a broke
   const { ndjson } = buildCorpora();
   let accepted = 0;
   let rejected = 0;
-  let worst = 0;
+  const dts: number[] = [];
   for (const mutated of ndjson) {
     const t0 = performance.now();
     try {
@@ -480,13 +521,12 @@ test("fuzz: historyFromNdjson never throws a non-Error and never accepts a broke
       rejected++;
       assertPlainInvalid(err, ["invalid ndjson:"]);
     }
-    const dt = performance.now() - t0;
-    if (dt > worst) worst = dt;
-    assert.ok(dt < MAX_MS, `historyFromNdjson took ${dt.toFixed(1)}ms`);
+    dts.push(performance.now() - t0);
   }
+  const { median, worst } = assertTimingGuard("historyFromNdjson", dts);
   assert.ok(accepted > 0 && rejected > 0, `accepted=${accepted} rejected=${rejected}`);
   console.log(
-    `fuzz historyFromNdjson: ${ndjson.length} cases, ${accepted} accepted, ${rejected} rejected, worst ${worst.toFixed(1)}ms`,
+    `fuzz historyFromNdjson: ${ndjson.length} cases, ${accepted} accepted, ${rejected} rejected, median ${median.toFixed(2)}ms, worst ${worst.toFixed(1)}ms`,
   );
 });
 
@@ -520,7 +560,7 @@ test("fuzz: Escrow.fromJSON never throws a non-Error and accepted snapshots roun
   const { snapshots } = buildCorpora();
   let accepted = 0;
   let rejected = 0;
-  let worst = 0;
+  const dts: number[] = [];
   for (const mutated of snapshots) {
     const t0 = performance.now();
     try {
@@ -535,12 +575,11 @@ test("fuzz: Escrow.fromJSON never throws a non-Error and accepted snapshots roun
       rejected++;
       assertPlainInvalid(err, ["invalid snapshot:", "invalid history:"]);
     }
-    const dt = performance.now() - t0;
-    if (dt > worst) worst = dt;
-    assert.ok(dt < MAX_MS, `Escrow.fromJSON took ${dt.toFixed(1)}ms`);
+    dts.push(performance.now() - t0);
   }
+  const { median, worst } = assertTimingGuard("Escrow.fromJSON", dts);
   assert.ok(accepted > 0 && rejected > 0, `accepted=${accepted} rejected=${rejected}`);
   console.log(
-    `fuzz Escrow.fromJSON: ${snapshots.length} cases, ${accepted} accepted, ${rejected} rejected, worst ${worst.toFixed(1)}ms`,
+    `fuzz Escrow.fromJSON: ${snapshots.length} cases, ${accepted} accepted, ${rejected} rejected, median ${median.toFixed(2)}ms, worst ${worst.toFixed(1)}ms`,
   );
 });
