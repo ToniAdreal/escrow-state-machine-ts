@@ -18,6 +18,15 @@ version changes.
 
 ### Added
 
+- Benchmark coverage for the settlement batch summary path:
+  `summarizeSettlementReports` aggregating the bench's fixed batch
+  of 4 pre-built results (released / refunded / released reports
+  plus one per-item error) into outcome counts, deposit / inflow /
+  outflow totals, and per-party nets, self-checked on every timed
+  iteration against hand-derived expectations (3 reports + 1 error,
+  total deposit 31,890, sponsor net −21,260, creator net 20,197,
+  platform net 1,063). The README Benchmarks table was refreshed
+  from one real run and gained the row.
 - The CLI demo now walks a second escrow through the dispute branch:
   `VERIFY_FAIL` into `DISPUTED`, a 2-of-3 arbitrator quorum (demo scale
   of the FAQ's 5/9 DAO multi-sig, same M-of-N rule) collected vote by

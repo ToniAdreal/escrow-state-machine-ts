@@ -59,6 +59,14 @@
  *      from the fixture's 3-entry VERIFIED prefix and dispatches the
  *      fixture's own RELEASE step: the rebuilt history must then
  *      equal the full fixture entry for entry, seq 1-4 with no gap.
+ *  11. settlement batch summary — `summarizeSettlementReports(results)`
+ *      aggregating the batch path's fixed 4-item result list (built
+ *      once, outside the timed loop) into outcome counts, deposit /
+ *      inflow / outflow totals, and per-party nets: the day-end
+ *      reconciliation roll-up a settlement holder runs over a whole
+ *      batch after the per-item reports are built. The summarizer is
+ *      pure (it only reads the results), so the same pre-built result
+ *      list is re-summarized on every iteration.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -82,6 +90,7 @@ import {
   historyFromNdjson,
   historyToNdjson,
   SettlementEventDedupe,
+  summarizeSettlementReports,
   verifyHistoryChain,
   verifySettlementWebhook,
   type EscrowEvent,
@@ -337,6 +346,60 @@ function checkBatchResults(
   }
 }
 checkBatchResults(buildSettlementReports(batchInputs));
+// Summary fixture: the batch results above, built ONCE outside the
+// timed loop (the summarizer only reads them, so every timed iteration
+// re-summarizes this same list). Expected summary, hand-derived from
+// the batch composition — NOT produced by the implementation:
+//   items: released / refunded / released / error (mismatched input)
+//   each successful report locks the golden deposit 10,630 and is
+//   internally balanced at 10,630 in = 10,630 out; a released report
+//   at proFeeBps 500 pays proFee = 10,630 * 5% = 531.50 to the
+//   platform and creator net = 10,630 - 531.50 = 10,098.50; a
+//   refunded report returns the full 10,630 to the sponsor.
+//   total = 4, reports = 3, errors = 1 (the error counts, but
+//   contributes nothing to any money figure)
+//   outcomes = { released: 2, refunded: 1, expired: 0 }
+//   totalDeposit = totalInflow = totalOutflow = 3 * 10,630 = 31,890
+//   sponsor:  inflow 10,630 (refund only), outflow 3 * 10,630 =
+//             31,890, net = 10,630 - 31,890 = -21,260
+//   creator:  inflow 2 * 10,098.50 = 20,197, outflow 0, net 20,197
+//   platform: inflow 2 * 531.50 = 1,063, outflow 0, net 1,063
+//   referrer: inflow 0, outflow 0, net 0
+//   balanced = true (every successful report is balanced)
+const batchResults = buildSettlementReports(batchInputs);
+function checkBatchSummary(
+  summary: ReturnType<typeof summarizeSettlementReports>,
+): void {
+  const parties: Array<[string, number, number, number]> = [
+    ["sponsor", 10630, 31890, -21260],
+    ["creator", 20197, 0, 20197],
+    ["platform", 1063, 0, 1063],
+    ["referrer", 0, 0, 0],
+  ];
+  if (
+    summary.total !== 4 ||
+    summary.reports !== 3 ||
+    summary.errors !== 1 ||
+    summary.outcomes.released !== 2 ||
+    summary.outcomes.refunded !== 1 ||
+    summary.outcomes.expired !== 0 ||
+    summary.totalDeposit !== 31890 ||
+    summary.totalInflow !== 31890 ||
+    summary.totalOutflow !== 31890 ||
+    summary.balanced !== true ||
+    summary.parties.length !== parties.length ||
+    summary.parties.some(
+      (p, i) =>
+        p.party !== parties[i][0] ||
+        p.inflow !== parties[i][1] ||
+        p.outflow !== parties[i][2] ||
+        p.net !== parties[i][3],
+    )
+  ) {
+    throw new Error("benchmark summary check failed: summarize mismatch");
+  }
+}
+checkBatchSummary(summarizeSettlementReports(batchResults));
 const webhook = buildSettlementWebhook(report, {
   secret: WEBHOOK_SECRET,
   now: WEBHOOK_NOW,
@@ -595,6 +658,12 @@ function benchBuildSettlementReports(): number {
   }, ITERATIONS);
 }
 
+function benchSummarizeSettlementReports(): number {
+  return measure(() => {
+    checkBatchSummary(summarizeSettlementReports(batchResults));
+  }, ITERATIONS);
+}
+
 function benchBuildSettlementWebhook(): number {
   return measure(() => {
     const built = buildSettlementWebhook(report, {
@@ -679,7 +748,7 @@ console.log("escrow-state-machine-ts benchmark");
 console.log(`Node: ${process.version} on ${process.platform}/${process.arch}`);
 console.log(`CPU: ${cpus()[0]?.model ?? "unknown"}`);
 console.log(
-  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release); quorum of 9 signers with threshold 5 on a fixed injected clock, approved one vote at a time to the threshold; settlement webhook fan-out to 4 endpoints through a fake global fetch (immediate 200, no network); settlement event dedupe duplicate hits cycling over 1,000 pre-recorded eventIds under a fixed injected clock; Escrow.fromHistory replay over the same detached 4-entry history",
+  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); settlement batch summary over that batch's 4 pre-built results (3 reports + 1 error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release); quorum of 9 signers with threshold 5 on a fixed injected clock, approved one vote at a time to the threshold; settlement webhook fan-out to 4 endpoints through a fake global fetch (immediate 200, no network); settlement event dedupe duplicate hits cycling over 1,000 pre-recorded eventIds under a fixed injected clock; Escrow.fromHistory replay over the same detached 4-entry history",
 );
 console.log(`Iterations per op: ${ITERATIONS} (after ${WARMUP} warmup)`);
 console.log("");
@@ -690,6 +759,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "Escrow.fromHistory (4 entries)", ops: benchFromHistory() },
   { path: "buildSettlementReport (4 entries)", ops: benchBuildSettlementReport() },
   { path: "buildSettlementReports (batch 4 x 4 entries)", ops: benchBuildSettlementReports() },
+  { path: "summarizeSettlementReports (batch 4 results)", ops: benchSummarizeSettlementReports() },
   { path: "buildSettlementWebhook (sign)", ops: benchBuildSettlementWebhook() },
   { path: "verifySettlementWebhook", ops: benchVerifySettlementWebhook() },
   { path: "historyToNdjson (8 entries)", ops: benchHistoryToNdjson() },
