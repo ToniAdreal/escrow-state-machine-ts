@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 610 tests, all local
+npm test   # 618 tests, all local
 ```
 
 ## Quickstart
@@ -471,6 +471,8 @@ if (dedupe.checkAndRecord(payload.eventId)) {
 // ... process the settlement exactly once
 ```
 
+For a whole batch, `buildSettlementWebhooks(buildSettlementReports(inputs), { secret })` pipes the batch report results straight into signed webhooks — one `{ escrowId, webhook }` per settled escrow, an `{ escrowId, error }` per failed entry (forwarded untouched, never blocking later entries), a shared secret and `now`, and a distinct `eventId` per settlement via `eventIdFactory` (default `crypto.randomUUID()`), so receivers deduplicating on `eventId` never drop a settlement as an apparent duplicate.
+
 `checkAndRecord(eventId)` returns `false` on first sighting and `true`
 for a repeat within the TTL ("true = is a replay"); at exactly `ttlMs`
 the record has expired and the id counts as unseen again, and a
@@ -658,7 +660,7 @@ and an empty batch yields an all-zero summary.
 
 ## Reproducibility
 
-`npm test` runs 610 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 618 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

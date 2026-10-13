@@ -22,8 +22,10 @@ export type { FeeBreakdown, FeeInputs } from "./feeCalculator.js";
 export { settleRelease } from "./settlement.js";
 export type { Settlement, SettlementInputs } from "./settlement.js";
 export { buildSettlementReport, buildSettlementReports, depositAmountFromHistory, renderReport, summarizeSettlementReports } from "./settlementReport.js";
-export { buildSettlementWebhook, deliverSettlementWebhook, deliverSettlementWebhookToMany, parseRetryAfter, verifySettlementWebhook, SettlementEventDedupe } from "./webhooks.js";
+export { buildSettlementWebhook, buildSettlementWebhooks, deliverSettlementWebhook, deliverSettlementWebhookToMany, parseRetryAfter, verifySettlementWebhook, SettlementEventDedupe } from "./webhooks.js";
 export type {
+  BuildSettlementWebhooksOptions,
+  BuildSettlementWebhooksResult,
   BuildWebhookOptions,
   DeliverSettlementWebhookToManyOptions,
   DeliverWebhookOptions,

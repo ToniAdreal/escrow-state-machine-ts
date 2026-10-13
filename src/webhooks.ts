@@ -22,7 +22,11 @@
  */
 
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
-import type { PartyRole, SettlementReport } from "./settlementReport.js";
+import type {
+  PartyRole,
+  SettlementReport,
+  SettlementReportResult,
+} from "./settlementReport.js";
 
 /** Compact machine-readable settlement notification. */
 export interface SettlementWebhookPayload {
@@ -214,6 +218,155 @@ export function buildSettlementWebhook(
   const payload = buildPayload(report, options);
   const signature = sign(canonicalJson(payload), options.secret);
   return { payload, signature };
+}
+
+/** Options for {@link buildSettlementWebhooks}. */
+export interface BuildSettlementWebhooksOptions {
+  /** HMAC secret shared by every webhook in the batch; must not be empty. */
+  secret: string | Buffer;
+  /**
+   * Payload `at` timestamp shared by every webhook in the batch.
+   * Resolved once per call (defaults to the real clock at call time,
+   * passed through to each single build) so a batch is a coherent
+   * snapshot point, not N builds with drifting timestamps. An invalid
+   * value is a call-level configuration error and throws for the whole
+   * batch, exactly as an empty secret does.
+   */
+  now?: Date | string;
+  /**
+   * Generation strategy for per-report `eventId`s: called once per
+   * report, in input order, and its return value becomes that report's
+   * `eventId`. Defaults to `crypto.randomUUID()` per report. This is
+   * deliberately a factory, not a fixed string like the single build's
+   * `eventId`: every settlement in the batch is a DISTINCT event, so a
+   * batch must never reuse one `eventId` across reports, or receivers
+   * deduplicating on `eventId` would drop all but the first settlement
+   * as apparent duplicates. A factory that returns a non-string or
+   * empty value fails only that report (the single-build validation
+   * runs per report); a non-function value is a call-level
+   * configuration error and throws.
+   */
+  eventIdFactory?: () => string;
+}
+
+/**
+ * Per-escrow outcome of {@link buildSettlementWebhooks}: exactly one of
+ * `webhook` / `error` is set (the {@link SettlementReportResult} shape).
+ */
+export type BuildSettlementWebhooksResult =
+  | { escrowId: string; webhook: SettlementWebhook; error?: undefined }
+  | { escrowId: string; webhook?: undefined; error: string };
+
+/**
+ * Batch settlement webhook building: build one signed webhook per
+ * report from the {@link SettlementReportResult} list that
+ * `buildSettlementReports` returns — pipe its output straight in, no
+ * hand-written loop and no pre-filtering of the success entries:
+ *
+ * ```ts
+ * const results = buildSettlementReports(inputsList);
+ * const webhooks = buildSettlementWebhooks(results, { secret });
+ * ```
+ *
+ * This exists because a hand-written loop over
+ * {@link buildSettlementWebhook} has the same trap the other batch
+ * wrappers fixed: the single-report function throws on the first bad
+ * report, aborting the whole batch and leaving the caller to
+ * re-implement per-item isolation. Here each entry is attempted
+ * independently: an entry that already carries an `error` from
+ * `buildSettlementReports` (no report was produced) is forwarded as
+ * `{ escrowId, error }` with its original message, a structurally
+ * broken report fails as `{ escrowId, error }` with the caught error's
+ * message, and neither blocks later entries. The result has one entry
+ * per input, in input order, each carrying that entry's `escrowId`.
+ *
+ * Call-level configuration errors DO throw before any report is
+ * attempted — those are caller bugs, not per-report outcomes: a
+ * non-array input, a missing/empty secret, an invalid shared `now`, or
+ * a non-function `eventIdFactory`.
+ *
+ * `eventId` semantics: one DISTINCT `eventId` per report (see
+ * {@link BuildSettlementWebhooksOptions.eventIdFactory}); the shared
+ * elements are the generation strategy, the secret, and the `now`
+ * timestamp, never the value. Each built webhook verifies under the
+ * batch secret exactly as a single build does.
+ *
+ * Pure: building never mutates any report, and this wrapper adds no
+ * mutation of its own — the input list and its entries are only read.
+ *
+ * Honest limit: this builds signed payloads only. It is a signing
+ * primitive, not delivery — nothing is POSTed, queued, or retried
+ * here; use {@link deliverSettlementWebhook} per built webhook for
+ * that.
+ */
+export function buildSettlementWebhooks(
+  results: readonly SettlementReportResult[],
+  options: BuildSettlementWebhooksOptions,
+): BuildSettlementWebhooksResult[] {
+  if (!Array.isArray(results)) {
+    throw new Error(
+      "cannot build settlement webhooks: results must be an array",
+    );
+  }
+  // Call-level configuration, validated once up front: an empty or
+  // missing secret would fail every report identically, so it throws
+  // for the whole batch instead of being recorded per report.
+  if (
+    !options ||
+    (typeof options.secret !== "string" && !Buffer.isBuffer(options.secret))
+  ) {
+    throw new Error(
+      "cannot build settlement webhooks: signing secret must be a string or Buffer",
+    );
+  }
+  assertSecret(options.secret);
+  if (
+    options.eventIdFactory !== undefined &&
+    typeof options.eventIdFactory !== "function"
+  ) {
+    throw new Error(
+      "cannot build settlement webhooks: 'eventIdFactory' must be a function",
+    );
+  }
+  if (
+    options.now !== undefined &&
+    Number.isNaN(new Date(options.now).getTime())
+  ) {
+    throw new Error(
+      "cannot build settlement webhooks: invalid 'now' timestamp",
+    );
+  }
+  const eventIdFactory = options.eventIdFactory ?? randomUUID;
+  return results.map((entry) => {
+    const escrowId =
+      entry !== null &&
+      typeof entry === "object" &&
+      typeof entry.escrowId === "string"
+        ? entry.escrowId
+        : "unknown";
+    // An entry buildSettlementReports already failed carries no report:
+    // forward its error untouched instead of inventing a new one.
+    if (!entry || typeof entry !== "object" || !entry.report) {
+      const message =
+        entry && typeof entry.error === "string" && entry.error.length > 0
+          ? entry.error
+          : "cannot build settlement webhook: missing settlement report";
+      return { escrowId, error: message };
+    }
+    try {
+      const webhook = buildSettlementWebhook(entry.report, {
+        secret: options.secret,
+        now: options.now,
+        eventId: eventIdFactory(),
+      });
+      return { escrowId, webhook };
+    } catch (err) {
+      return {
+        escrowId,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  });
 }
 
 /**
