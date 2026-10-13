@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 600 tests, all local
+npm test   # 608 tests, all local
 ```
 
 ## Quickstart
@@ -646,10 +646,16 @@ the same per-escrow inputs as `buildSettlementReport` and returns one
 `{ escrowId, report }` or `{ escrowId, error }` result per input, in input
 order — a non-terminal escrow or a corrupted history fails only its own
 entry, never the whole batch, and building reports mutates nothing.
+`summarizeSettlementReports(results)` aggregates such a batch into one
+reconciliation summary — per-outcome counts, error count, total locked
+deposit, total inflow/outflow, and per-party net totals — summing the
+already cent-rounded figures from each report (aggregates are `round2`
+as well); error entries are counted but never enter the money totals,
+and an empty batch yields an all-zero summary.
 
 ## Reproducibility
 
-`npm test` runs 600 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 608 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

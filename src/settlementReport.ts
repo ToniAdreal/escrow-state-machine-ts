@@ -322,6 +322,102 @@ export function buildSettlementReports(
   });
 }
 
+export interface SettlementReportsSummary {
+  /** Total batch entries inspected (reports + errors). */
+  total: number;
+  /** Entries that produced a report. */
+  reports: number;
+  /** Entries that failed with an error; counted, never summed. */
+  errors: number;
+  /** Successful reports per outcome. */
+  outcomes: Record<SettlementOutcome, number>;
+  /** Sum of `deposit.deposit` over successful reports only. */
+  totalDeposit: number;
+  /** Sum of per-report totalInflow over successful reports only. */
+  totalInflow: number;
+  /** Sum of per-report totalOutflow over successful reports only. */
+  totalOutflow: number;
+  /** Per-party inflow/outflow/net summed over successful reports, in canonical role order. */
+  parties: PartyLedger[];
+  /** True when every successful report is balanced (vacuously true for an empty/all-error batch). */
+  balanced: boolean;
+}
+
+/**
+ * Aggregate a batch of {@link SettlementReportResult} (the return value of
+ * {@link buildSettlementReports}) into one reconciliation summary: outcome
+ * counts, error count, total locked deposit, total inflow/outflow, and
+ * per-party net totals.
+ *
+ * Error entries are counted in `errors` and contribute nothing to any
+ * money figure — a failed escrow must never silently enter the totals as
+ * zero-value business. Money is summed from the figures already rounded
+ * to cents inside each report, and every aggregate is rounded with the
+ * same `round2` rule, so the summary cannot drift from the reports it
+ * summarizes by re-deriving amounts from raw inputs. An empty input
+ * returns an all-zero summary (with `balanced: true`, vacuously).
+ *
+ * Pure: the results array and the reports inside it are only read.
+ */
+export function summarizeSettlementReports(
+  results: readonly SettlementReportResult[],
+): SettlementReportsSummary {
+  const outcomes: Record<SettlementOutcome, number> = {
+    released: 0,
+    refunded: 0,
+    expired: 0,
+  };
+  const partySums = new Map<PartyRole, { inflow: number; outflow: number }>(
+    (["sponsor", "creator", "platform", "referrer"] as PartyRole[]).map(
+      (role) => [role, { inflow: 0, outflow: 0 }],
+    ),
+  );
+  let reports = 0;
+  let errors = 0;
+  let totalDeposit = 0;
+  let totalInflow = 0;
+  let totalOutflow = 0;
+  let balanced = true;
+
+  for (const result of results) {
+    if (!result.report) {
+      errors += 1;
+      continue;
+    }
+    const report = result.report;
+    reports += 1;
+    outcomes[report.outcome] += 1;
+    totalDeposit += report.deposit.deposit;
+    totalInflow += report.totalInflow;
+    totalOutflow += report.totalOutflow;
+    if (!report.balanced) balanced = false;
+    for (const party of report.parties) {
+      const sum = partySums.get(party.party);
+      if (sum) {
+        sum.inflow += party.inflow;
+        sum.outflow += party.outflow;
+      }
+    }
+  }
+
+  return {
+    total: results.length,
+    reports,
+    errors,
+    outcomes,
+    totalDeposit: round2(totalDeposit),
+    totalInflow: round2(totalInflow),
+    totalOutflow: round2(totalOutflow),
+    parties: (["sponsor", "creator", "platform", "referrer"] as PartyRole[]).map(
+      (role) => {
+        const sum = partySums.get(role)!;
+        return ledger(role, sum.inflow, sum.outflow);
+      },
+    ),
+    balanced,
+  };
+}
+
 function money(n: number): string {
   return (
     "$" +
