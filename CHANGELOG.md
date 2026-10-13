@@ -18,7 +18,21 @@ version changes.
 
 ### Added
 
-- The CLI demo now closes with the settlement webhook step: after the
+- The CLI demo now walks a second escrow through the dispute branch:
+  `VERIFY_FAIL` into `DISPUTED`, a 2-of-3 arbitrator quorum (demo scale
+  of the FAQ's 5/9 DAO multi-sig, same M-of-N rule) collected vote by
+  vote on a fixed injected clock — a below-threshold
+  `dispatchArbitration` attempt is refused (`arbitration requires
+  quorum: 1/2 approvals`) with the escrow's state and history
+  untouched, then the reached quorum dispatches `ARBITRATE_REFUND` to
+  `REFUNDED` and the branch closes with the refund settlement report
+  (full deposit back to the sponsor, balanced). `runDemo()` returns
+  the dispute escrow, its report, the quorum, and the refusal message;
+  the demo tests pin the branch chain, quorum log, and refund figures.
+  To keep that branch deterministic, `dispatchArbitration` gained an
+  optional final `ArbitrationDispatchOptions` argument forwarding an
+  injectable audit timestamp / actor to the arbitration entry.
+- The CLI demo includes a settlement webhook step: after the
   settlement report it builds the signed `escrow.settled` webhook
   from the report via `buildSettlementWebhook` (fixed `eventId`/`at`
   and a demo-only secret printed in `src/demo.ts`, not a real

@@ -82,6 +82,24 @@ describe("dispatchArbitration", () => {
     assert.equal(last.note, "DAO vote passed [quorum 5/5]");
   });
 
+  it("forwards opts.at / opts.actor to the arbitration audit entry", () => {
+    // Fixed-`at` escrow (not the wall-clock helper): the forwarded
+    // timestamp must not move the audit clock backwards.
+    const escrow = new Escrow("esc-opts");
+    escrow.dispatch("FUND", undefined, 10630, { at: "2026-03-01T09:00:00.000Z" });
+    escrow.dispatch("DISPUTE", undefined, undefined, { at: "2026-03-02T09:00:00.000Z" });
+    const quorum = quorumWith(5);
+
+    dispatchArbitration(escrow, quorum, "refund", undefined, {
+      actor: "dao-1",
+      at: "2026-03-07T13:30:00.000Z",
+    });
+    const last = escrow.history[escrow.history.length - 1];
+    assert.equal(last.event, "ARBITRATE_REFUND");
+    assert.equal(last.actor, "dao-1");
+    assert.equal(last.at, "2026-03-07T13:30:00.000Z");
+  });
+
   it("still enforces transitions from non-DISPUTED states", () => {
     // Quorum is reached, but the escrow is FUNDED (never disputed).
     const escrow = new Escrow("esc-2");

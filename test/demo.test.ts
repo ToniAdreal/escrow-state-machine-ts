@@ -5,7 +5,12 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import {
   runDemo,
+  DEMO_ARBITRATION_AT,
+  DEMO_DISPUTE_ESCROW_ID,
   DEMO_ESCROW_ID,
+  DEMO_QUORUM_APPROVAL_ATS,
+  DEMO_QUORUM_SIGNERS,
+  DEMO_QUORUM_THRESHOLD,
   DEMO_WEBHOOK_AT,
   DEMO_WEBHOOK_EVENT_ID,
   DEMO_WEBHOOK_SECRET,
@@ -128,6 +133,91 @@ test("demo lines print the webhook build + verify section", () => {
   assert.ok(text.includes("  verifySettlementWebhook: ok"));
 });
 
+test("demo dispute branch reaches DISPUTED, is refused below quorum, then refunds at quorum", () => {
+  const { disputeEscrow, disputeQuorum, arbitrationRejection } = runDemo();
+
+  assert.equal(disputeEscrow.id, DEMO_DISPUTE_ESCROW_ID);
+  assert.equal(disputeEscrow.state, "REFUNDED");
+  assert.equal(disputeEscrow.isTerminal, true);
+  // FUND -> SUBMIT_MILESTONE -> VERIFY_FAIL -> ARBITRATE_REFUND: exactly
+  // 4 entries — the refused below-threshold attempt left no trace.
+  assert.equal(disputeEscrow.history.length, 4);
+  assert.deepEqual(
+    disputeEscrow.history.map((h) => [h.event, h.from, h.to]),
+    [
+      ["FUND", "CREATED", "FUNDED"],
+      ["SUBMIT_MILESTONE", "FUNDED", "MILESTONE_SUBMITTED"],
+      ["VERIFY_FAIL", "MILESTONE_SUBMITTED", "DISPUTED"],
+      ["ARBITRATE_REFUND", "DISPUTED", "REFUNDED"],
+    ],
+  );
+  assert.equal(
+    arbitrationRejection,
+    `arbitration requires quorum: 1/${DEMO_QUORUM_THRESHOLD} approvals`,
+  );
+  // The arbitration entry carries the forwarded fixed actor + timestamp
+  // and the auto-recorded quorum tally.
+  const last = disputeEscrow.history[disputeEscrow.history.length - 1];
+  assert.equal(last.actor, DEMO_QUORUM_SIGNERS[1]);
+  assert.equal(last.at, DEMO_ARBITRATION_AT);
+  assert.equal(
+    last.note,
+    `Dispute upheld — refund the sponsor [quorum ${DEMO_QUORUM_THRESHOLD}/${DEMO_QUORUM_THRESHOLD}]`,
+  );
+  // Quorum: 2-of-3 reached, approval log on the fixed injected clock.
+  assert.equal(disputeQuorum.threshold, DEMO_QUORUM_THRESHOLD);
+  assert.equal(disputeQuorum.signerCount, DEMO_QUORUM_SIGNERS.length);
+  assert.equal(disputeQuorum.approvalCount(), 2);
+  assert.equal(disputeQuorum.hasQuorum(), true);
+  assert.deepEqual(disputeQuorum.approvalLog(), [
+    { signerId: DEMO_QUORUM_SIGNERS[0], at: DEMO_QUORUM_APPROVAL_ATS[0] },
+    { signerId: DEMO_QUORUM_SIGNERS[1], at: DEMO_QUORUM_APPROVAL_ATS[1] },
+  ]);
+});
+
+test("demo dispute refund report returns the full deposit to the sponsor", () => {
+  const { disputeReport } = runDemo();
+
+  assert.equal(disputeReport.escrowId, DEMO_DISPUTE_ESCROW_ID);
+  assert.equal(disputeReport.outcome, "refunded");
+  assert.ok(disputeReport.balanced);
+  assert.equal(disputeReport.totalInflow, 10630);
+  assert.equal(disputeReport.totalOutflow, 10630);
+  const byParty = Object.fromEntries(
+    disputeReport.parties.map((p) => [p.party, p.net]),
+  );
+  assert.deepEqual(byParty, { sponsor: 0, creator: 0, platform: 0, referrer: 0 });
+});
+
+test("demo lines print the dispute / quorum / refund branch", () => {
+  const { lines } = runDemo();
+  const text = lines.join("\n");
+
+  assert.match(text, /Dispute branch \(DISPUTE -> quorum arbitration -> refund\):/);
+  assert.ok(text.includes(`Escrow ${DEMO_DISPUTE_ESCROW_ID}: CREATED`));
+  assert.ok(text.includes("same M-of-N rule"));
+  assert.match(text, /VERIFY_FAIL +MILESTONE_SUBMITTED +-> DISPUTED/);
+  assert.ok(
+    text.includes(
+      `  approve ${DEMO_QUORUM_SIGNERS[0]}        quorum 1/${DEMO_QUORUM_THRESHOLD} — hasQuorum: false`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      '  dispatchArbitration("refund") rejected: arbitration requires quorum: 1/2 approvals — escrow unchanged at DISPUTED (history 3 -> 3 entries)',
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  approve ${DEMO_QUORUM_SIGNERS[1]}        quorum 2/${DEMO_QUORUM_THRESHOLD} — hasQuorum: true`,
+    ),
+  );
+  assert.match(text, /ARBITRATE_REFUND +DISPUTED +-> REFUNDED/);
+  assert.match(text, /Final state: REFUNDED \(terminal: true\)/);
+  assert.match(text, /Settlement report \(dispute refund\):/);
+  assert.ok(text.includes(`Outcome: refunded`));
+});
+
 test("demo is deterministic: two runs produce identical lines", () => {
   assert.deepEqual(runDemo().lines, runDemo().lines);
 });
@@ -150,9 +240,19 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
     );
   }
   assert.match(out, /Final state: RELEASED \(terminal: true\)/);
-  // Audit trail has exactly 4 numbered history entries
+  // Audit trails: 4 numbered history entries for the main escrow plus
+  // 4 for the dispute escrow (FUND/SUBMIT/VERIFY_FAIL/ARBITRATE_REFUND)
   const seqRows = out.match(/^\s+\d+  /gm) ?? [];
-  assert.equal(seqRows.length, 4);
+  assert.equal(seqRows.length, 8);
+  // Dispute branch tail: below-quorum refusal, then REFUNDED refund
+  assert.match(out, /Dispute branch \(DISPUTE -> quorum arbitration -> refund\):/);
+  assert.match(out, /Escrow DEMO-ESC-002: CREATED/);
+  assert.match(
+    out,
+    /dispatchArbitration\("refund"\) rejected: arbitration requires quorum: 1\/2 approvals/,
+  );
+  assert.match(out, /Final state: REFUNDED \(terminal: true\)/);
+  assert.match(out, /Settlement report \(dispute refund\):/);
   // Settlement report tail: balanced totals on the golden deposit
   assert.match(out, /Totals: inflow \$10,630\.00 = outflow \$10,630\.00 — balanced ✓/);
   // Settlement webhook tail: signed notification built + verified

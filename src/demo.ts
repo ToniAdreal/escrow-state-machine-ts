@@ -3,7 +3,12 @@
  * CREATED -> FUNDED -> MILESTONE_SUBMITTED -> VERIFIED -> RELEASED,
  * print the append-only audit history plus the final settlement report,
  * then build the signed settlement webhook for the released escrow and
- * verify it the way a receiver would.
+ * verify it the way a receiver would. A second escrow then walks the
+ * dispute branch: VERIFY_FAIL lands it in DISPUTED, a 2-of-3 arbitrator
+ * quorum is collected vote by vote — with one below-threshold
+ * arbitration attempt refused without touching the escrow — and the
+ * reached quorum refunds the sponsor in full (REFUNDED), closing with
+ * that escrow's refund settlement report.
  *
  * Usage: `npm run demo` (builds with tsc, then runs node on the compiled
  * output). Zero runtime dependencies: this file only imports the library
@@ -21,9 +26,12 @@ import {
   buildSettlementReport,
   buildSettlementWebhook,
   calculateDeposit,
+  createQuorum,
+  dispatchArbitration,
   renderReport,
   verifySettlementWebhook,
   type EscrowEvent,
+  type Quorum,
   type SettlementReport,
   type SettlementWebhook,
 } from "./index.js";
@@ -42,6 +50,25 @@ export const DEMO_WEBHOOK_SECRET =
 /** Fixed webhook eventId / `at` so the demo signature is deterministic. */
 export const DEMO_WEBHOOK_EVENT_ID = "evt_demo_settlement_001";
 export const DEMO_WEBHOOK_AT = "2026-03-06T08:17:00.000Z";
+
+/** Fixed fixture for the dispute branch: a second escrow, same deposit. */
+export const DEMO_DISPUTE_ESCROW_ID = "DEMO-ESC-002";
+/**
+ * Demo-scale quorum: 2-of-3 arbitrators. This is the same M-of-N
+ * counting rule the README FAQ describes for the case study's 5/9 DAO
+ * multi-sig, at a size a demo printout can show vote by vote — a
+ * scale difference, not a rule difference.
+ */
+export const DEMO_QUORUM_SIGNERS = ["arb-1", "arb-2", "arb-3"] as const;
+export const DEMO_QUORUM_THRESHOLD = 2;
+/** Fixed approval timestamps (the quorum clock is injected, see below). */
+export const DEMO_QUORUM_APPROVAL_ATS = [
+  "2026-03-07T12:00:00.000Z",
+  "2026-03-07T13:00:00.000Z",
+] as const;
+/** Fixed `at` for the below-threshold attempt and the refund dispatch. */
+export const DEMO_ARBITRATION_ATTEMPT_AT = "2026-03-07T12:30:00.000Z";
+export const DEMO_ARBITRATION_AT = "2026-03-07T13:30:00.000Z";
 
 const steps: Array<{
   event: EscrowEvent;
@@ -79,11 +106,57 @@ const steps: Array<{
   },
 ];
 
+/**
+ * Dispute-branch steps for the second escrow: the same golden deposit,
+ * then a milestone whose verification fails — VERIFY_FAIL is the legal
+ * edge from MILESTONE_SUBMITTED into DISPUTED. The arbitration itself
+ * is not a plain step: it is gated on the quorum (see runDemo).
+ */
+const disputeSteps: Array<{
+  event: EscrowEvent;
+  actor: string;
+  note: string;
+  at: string;
+  amount?: number;
+}> = [
+  {
+    event: "FUND",
+    actor: "sponsor",
+    note: "Deposit locked (wire received)",
+    at: "2026-03-02T09:00:00.000Z",
+    amount: 10630,
+  },
+  {
+    event: "SUBMIT_MILESTONE",
+    actor: "creator",
+    note: "Deliverable URLs + IPFS metadata hash",
+    at: "2026-03-06T10:00:00.000Z",
+  },
+  {
+    event: "VERIFY_FAIL",
+    actor: "oracle",
+    note: "KPIs missed — verification failed, dispute opened",
+    at: "2026-03-07T11:00:00.000Z",
+  },
+];
+
 export interface DemoResult {
   escrow: Escrow;
   report: SettlementReport;
   webhook: SettlementWebhook;
   webhookVerified: boolean;
+  /** Second escrow, driven through the dispute branch to REFUNDED. */
+  disputeEscrow: Escrow;
+  /** Refund settlement report of the dispute escrow. */
+  disputeReport: SettlementReport;
+  /** The 2-of-3 arbitrator quorum, at threshold after two approvals. */
+  disputeQuorum: Quorum;
+  /**
+   * Error message of the below-threshold `dispatchArbitration` attempt
+   * (`arbitration requires quorum: 1/2 approvals`) — the attempt is
+   * part of the demo, and its refusal left the escrow untouched.
+   */
+  arbitrationRejection: string;
   lines: string[];
 }
 
@@ -165,7 +238,107 @@ export function runDemo(): DemoResult {
     `  verifySettlementWebhook: ${webhookVerified ? "ok" : "FAILED"}`,
   );
 
-  return { escrow, report, webhook, webhookVerified, lines };
+  // --- Dispute branch: DISPUTED -> quorum arbitration -> REFUNDED ---
+  // A second escrow, funded with the same golden deposit, whose
+  // milestone fails verification. The quorum clock is injected with
+  // the fixed approval timestamps above, so approvalLog() — and the
+  // whole printout — stays deterministic.
+  const disputeEscrow = new Escrow(DEMO_DISPUTE_ESCROW_ID);
+  let approvalTick = 0;
+  const disputeQuorum = createQuorum({
+    threshold: DEMO_QUORUM_THRESHOLD,
+    signers: [...DEMO_QUORUM_SIGNERS],
+    now: () =>
+      Date.parse(
+        DEMO_QUORUM_APPROVAL_ATS[
+          Math.min(approvalTick++, DEMO_QUORUM_APPROVAL_ATS.length - 1)
+        ],
+      ),
+  });
+  lines.push(
+    "",
+    "Dispute branch (DISPUTE -> quorum arbitration -> refund):",
+    `Escrow ${disputeEscrow.id}: ${disputeEscrow.state}`,
+    `  quorum: ${DEMO_QUORUM_THRESHOLD}-of-${DEMO_QUORUM_SIGNERS.length} arbitrators (${DEMO_QUORUM_SIGNERS.join(", ")}) — demo scale of the README FAQ's 5/9 DAO multi-sig, same M-of-N rule`,
+  );
+  for (const { event, actor, note, at, amount } of disputeSteps) {
+    const from = disputeEscrow.state;
+    const to = disputeEscrow.dispatch(event, note, amount, { actor, at });
+    lines.push(`  ${event.padEnd(18)} ${from.padEnd(19)} -> ${to}  (${actor})`);
+  }
+
+  // First vote: 1/2, below threshold. The arbitration attempt must be
+  // refused with the explicit quorum error and leave no trace: same
+  // state, same history length before and after.
+  disputeQuorum.approve(DEMO_QUORUM_SIGNERS[0]);
+  lines.push(
+    `  approve ${DEMO_QUORUM_SIGNERS[0]}        quorum ${disputeQuorum.approvalCount()}/${disputeQuorum.threshold} — hasQuorum: ${disputeQuorum.hasQuorum()}`,
+  );
+  const historyBeforeAttempt = disputeEscrow.history.length;
+  let arbitrationRejection = "";
+  try {
+    dispatchArbitration(disputeEscrow, disputeQuorum, "refund", "Refund the sponsor", {
+      actor: DEMO_QUORUM_SIGNERS[0],
+      at: DEMO_ARBITRATION_ATTEMPT_AT,
+    });
+  } catch (err) {
+    arbitrationRejection = err instanceof Error ? err.message : String(err);
+  }
+  lines.push(
+    `  dispatchArbitration("refund") rejected: ${arbitrationRejection} — escrow unchanged at ${disputeEscrow.state} (history ${historyBeforeAttempt} -> ${disputeEscrow.history.length} entries)`,
+  );
+
+  // Second vote reaches the threshold; the same call now dispatches
+  // ARBITRATE_REFUND (actor + fixed `at` forwarded to the audit entry)
+  // and the full deposit returns to the sponsor.
+  disputeQuorum.approve(DEMO_QUORUM_SIGNERS[1]);
+  lines.push(
+    `  approve ${DEMO_QUORUM_SIGNERS[1]}        quorum ${disputeQuorum.approvalCount()}/${disputeQuorum.threshold} — hasQuorum: ${disputeQuorum.hasQuorum()}`,
+  );
+  const disputeFrom = disputeEscrow.state;
+  const disputeTo = dispatchArbitration(
+    disputeEscrow,
+    disputeQuorum,
+    "refund",
+    "Dispute upheld — refund the sponsor",
+    { actor: DEMO_QUORUM_SIGNERS[1], at: DEMO_ARBITRATION_AT },
+  );
+  lines.push(
+    `  ${"ARBITRATE_REFUND".padEnd(18)} ${disputeFrom.padEnd(19)} -> ${disputeTo}  (${DEMO_QUORUM_SIGNERS[1]})`,
+  );
+
+  const disputeReport = buildSettlementReport({
+    escrowId: disputeEscrow.id,
+    history: disputeEscrow.history,
+    finalState: disputeEscrow.state,
+    deposit: fees,
+  });
+  lines.push(
+    "",
+    `Final state: ${disputeEscrow.state} (terminal: ${disputeEscrow.isTerminal})`,
+    "History (append-only audit trail):",
+    "  seq  event              from                 -> to                   actor        at",
+  );
+  for (const h of disputeEscrow.history) {
+    const amount = h.amount !== undefined ? `  amount ${h.amount}` : "";
+    lines.push(
+      `  ${String(h.seq).padStart(3)}  ${h.event.padEnd(18)} ${h.from.padEnd(20)} -> ${h.to.padEnd(20)} ${String(h.actor ?? "-").padEnd(12)} ${h.at}${amount}`,
+    );
+  }
+  lines.push("", "Settlement report (dispute refund):");
+  lines.push(renderReport(disputeReport));
+
+  return {
+    escrow,
+    report,
+    webhook,
+    webhookVerified,
+    disputeEscrow,
+    disputeReport,
+    disputeQuorum,
+    arbitrationRejection,
+    lines,
+  };
 }
 
 function main(): void {

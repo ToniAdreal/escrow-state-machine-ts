@@ -13,11 +13,28 @@
  * make the approvals cryptographic.
  */
 
-import { Escrow, type EscrowEvent, type EscrowState } from "./stateMachine.js";
+import {
+  Escrow,
+  type DispatchOptions,
+  type EscrowEvent,
+  type EscrowState,
+} from "./stateMachine.js";
 import type { Quorum } from "./quorum.js";
 
 /** The two arbitration outcomes the DISPUTED state can reach. */
 export type ArbitrationOutcome = "release" | "refund";
+
+/**
+ * Audit metadata forwarded to the arbitration dispatch: the same
+ * injectable timestamp (`at`) and caller-asserted actor (`actor`) the
+ * plain `Escrow.dispatch` accepts (see {@link DispatchOptions}). The
+ * arbitration entry was previously the one audit entry with no
+ * injection point — its timestamp always came from the wall clock —
+ * so deterministic logs/replays (and the CLI demo) could not pin it.
+ * Validation is the dispatch's own: an invalid `at`/`actor` throws
+ * before anything is appended.
+ */
+export type ArbitrationDispatchOptions = Pick<DispatchOptions, "at" | "actor">;
 
 const OUTCOME_EVENTS: Record<ArbitrationOutcome, EscrowEvent> = {
   release: "ARBITRATE_RELEASE",
@@ -36,6 +53,9 @@ const OUTCOME_EVENTS: Record<ArbitrationOutcome, EscrowEvent> = {
  * - On success, dispatches `ARBITRATE_RELEASE` / `ARBITRATE_REFUND` and
  *   automatically records `quorum <approvals>/<threshold>` in the audit
  *   note (appended after the caller's own note when one is given).
+ * - `opts` optionally forwards an injectable audit timestamp and/or
+ *   actor to that dispatch (see {@link ArbitrationDispatchOptions});
+ *   omitting it keeps the exact historical behavior.
  *
  * The escrow's own transition rules still apply: calling from a state
  * other than DISPUTED fails with the usual `invalid transition` error —
@@ -45,7 +65,8 @@ export function dispatchArbitration(
   escrow: Escrow,
   quorum: Quorum,
   outcome: ArbitrationOutcome,
-  note?: string
+  note?: string,
+  opts?: ArbitrationDispatchOptions
 ): EscrowState {
   const event = OUTCOME_EVENTS[outcome];
   if (event === undefined) {
@@ -65,5 +86,5 @@ export function dispatchArbitration(
   }
   const quorumNote = `quorum ${quorum.approvalCount()}/${quorum.threshold}`;
   const fullNote = note === undefined ? quorumNote : `${note} [${quorumNote}]`;
-  return escrow.dispatch(event, fullNote);
+  return escrow.dispatch(event, fullNote, undefined, opts);
 }

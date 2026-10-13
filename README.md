@@ -54,7 +54,12 @@ through `CREATED → FUNDED → MILESTONE_SUBMITTED → VERIFIED → RELEASED`
 history plus the balanced settlement report, then builds the signed
 settlement webhook for the released escrow (fixed `eventId`/`at`,
 demo-only secret printed in `src/demo.ts` — not a real credential)
-and verifies it the way a receiver would:
+and verifies it the way a receiver would. A second escrow then walks
+the dispute branch: `VERIFY_FAIL` into `DISPUTED`, a 2-of-3 arbitrator
+quorum collected vote by vote (a below-threshold `dispatchArbitration`
+attempt is refused with the escrow untouched), and the reached quorum
+refunding the sponsor in full to `REFUNDED` with its refund settlement
+report:
 
 ```bash
 npm run demo
@@ -358,7 +363,9 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   approval is allowed and removes its entries. `src/arbitration.ts` wires the two together:
   `dispatchArbitration(escrow, quorum, outcome)` refuses to dispatch until
   `hasQuorum()` is true and auto-records `quorum <approvals>/<threshold>`
-  in the audit note. A quorum's collected approvals can survive a
+  in the audit note; an optional final argument forwards an injectable
+  audit timestamp / actor to the arbitration entry (the same `at` /
+  `actor` the plain dispatch accepts). A quorum's collected approvals can survive a
   process restart: `quorum.snapshot()` exports the full approval log
   plus the configuration it was collected under as plain JSON, and
   `restoreQuorum(config, snapshot)` restores it under strict

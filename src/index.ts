@@ -43,7 +43,7 @@ export type {
 export { createQuorum, restoreQuorum } from "./quorum.js";
 export type { Quorum, QuorumConfig, QuorumSnapshot, ApprovalLogEntry } from "./quorum.js";
 export { dispatchArbitration } from "./arbitration.js";
-export type { ArbitrationOutcome } from "./arbitration.js";
+export type { ArbitrationDispatchOptions, ArbitrationOutcome } from "./arbitration.js";
 export type {
   PartyLedger,
   PartyRole,
