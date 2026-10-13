@@ -1,7 +1,9 @@
 /**
  * Demo: drive one escrow through the full happy path
- * CREATED -> FUNDED -> MILESTONE_SUBMITTED -> VERIFIED -> RELEASED and
- * print the append-only audit history plus the final settlement report.
+ * CREATED -> FUNDED -> MILESTONE_SUBMITTED -> VERIFIED -> RELEASED,
+ * print the append-only audit history plus the final settlement report,
+ * then build the signed settlement webhook for the released escrow and
+ * verify it the way a receiver would.
  *
  * Usage: `npm run demo` (builds with tsc, then runs node on the compiled
  * output). Zero runtime dependencies: this file only imports the library
@@ -17,15 +19,29 @@ import { fileURLToPath } from "node:url";
 import {
   Escrow,
   buildSettlementReport,
+  buildSettlementWebhook,
   calculateDeposit,
   renderReport,
+  verifySettlementWebhook,
   type EscrowEvent,
   type SettlementReport,
+  type SettlementWebhook,
 } from "./index.js";
 
 /** Fixed demo fixture: the portfolio golden fee vector (deposit 10,630). */
 export const DEMO_ESCROW_ID = "DEMO-ESC-001";
 export const DEMO_PRO_FEE_BPS = 500;
+
+/**
+ * Signing secret for the demo webhook only — a placeholder printed in
+ * the source, NOT a real credential. A real deployment loads its
+ * secret from its own credential store and never commits it.
+ */
+export const DEMO_WEBHOOK_SECRET =
+  "whsec_demo_settlement_notifications_not_a_real_secret";
+/** Fixed webhook eventId / `at` so the demo signature is deterministic. */
+export const DEMO_WEBHOOK_EVENT_ID = "evt_demo_settlement_001";
+export const DEMO_WEBHOOK_AT = "2026-03-06T08:17:00.000Z";
 
 const steps: Array<{
   event: EscrowEvent;
@@ -66,6 +82,8 @@ const steps: Array<{
 export interface DemoResult {
   escrow: Escrow;
   report: SettlementReport;
+  webhook: SettlementWebhook;
+  webhookVerified: boolean;
   lines: string[];
 }
 
@@ -116,7 +134,38 @@ export function runDemo(): DemoResult {
   lines.push("", "Settlement report:");
   lines.push(renderReport(report));
 
-  return { escrow, report, lines };
+  // RELEASE is where settlement webhooks fire: build the signed
+  // `escrow.settled` notification from the settlement report (fixed
+  // now/eventId, demo-only secret above — see its comment), print what
+  // a receiver would get, then verify it with the same secret over the
+  // raw body bytes, the transport-safe receiver path.
+  const webhook = buildSettlementWebhook(report, {
+    secret: DEMO_WEBHOOK_SECRET,
+    now: DEMO_WEBHOOK_AT,
+    eventId: DEMO_WEBHOOK_EVENT_ID,
+  });
+  const webhookVerified = verifySettlementWebhook(
+    JSON.stringify(webhook.payload),
+    webhook.signature,
+    DEMO_WEBHOOK_SECRET,
+  );
+  lines.push("", "Settlement webhook (signed escrow.settled notification):");
+  lines.push(`  event:        ${webhook.payload.event}`);
+  lines.push(`  eventId:      ${webhook.payload.eventId}`);
+  lines.push(`  escrowId:     ${webhook.payload.escrowId}`);
+  lines.push(`  outcome:      ${webhook.payload.outcome}`);
+  lines.push(`  releasePath:  ${webhook.payload.releasePath ?? "-"}`);
+  lines.push(`  deposit:      ${webhook.payload.deposit}`);
+  lines.push(
+    `  parties:      ${webhook.payload.parties.map((p) => `${p.party} net ${p.net}`).join(", ")}`,
+  );
+  lines.push(`  at:           ${webhook.payload.at}`);
+  lines.push(`  signature:    ${webhook.signature}`);
+  lines.push(
+    `  verifySettlementWebhook: ${webhookVerified ? "ok" : "FAILED"}`,
+  );
+
+  return { escrow, report, webhook, webhookVerified, lines };
 }
 
 function main(): void {

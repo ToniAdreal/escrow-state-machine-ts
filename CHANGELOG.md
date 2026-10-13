@@ -18,6 +18,16 @@ version changes.
 
 ### Added
 
+- The CLI demo now closes with the settlement webhook step: after the
+  settlement report it builds the signed `escrow.settled` webhook
+  from the report via `buildSettlementWebhook` (fixed `eventId`/`at`
+  and a demo-only secret printed in `src/demo.ts`, not a real
+  credential), prints the payload fields and `sha256=` signature,
+  and self-verifies with `verifySettlementWebhook` over the raw body
+  bytes. `runDemo()` returns the webhook and its verification result;
+  the demo tests pin the payload field set/values against the
+  webhooks fixture shape and assert a tampered deposit fails
+  verification.
 - Benchmark coverage for the event-sourced replay path:
   `Escrow.fromHistory` rebuilding a live escrow from the bench's
   detached 4-entry chained history fixture (full validation and

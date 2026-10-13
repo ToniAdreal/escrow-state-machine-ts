@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 608 tests, all local
+npm test   # 610 tests, all local
 ```
 
 ## Quickstart
@@ -51,7 +51,10 @@ console.log(settleRelease({ gross: 1000, proFeeBps: 500 }));
 Or run the bundled demo — one command drives a deterministic escrow
 through `CREATED → FUNDED → MILESTONE_SUBMITTED → VERIFIED → RELEASED`
 (the golden 10,630 deposit, fixed timestamps) and prints the audit
-history plus the balanced settlement report:
+history plus the balanced settlement report, then builds the signed
+settlement webhook for the released escrow (fixed `eventId`/`at`,
+demo-only secret printed in `src/demo.ts` — not a real credential)
+and verifies it the way a receiver would:
 
 ```bash
 npm run demo
@@ -655,7 +658,7 @@ and an empty batch yields an all-zero summary.
 
 ## Reproducibility
 
-`npm test` runs 608 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 610 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
