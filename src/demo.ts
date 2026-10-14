@@ -12,8 +12,13 @@
  * day-end batch pipeline over all three escrows: `buildSettlementReports`
  * builds one report per escrow with per-item error isolation (the
  * third escrow is still FUNDED, so it lands as `{escrowId, error}`
- * without blocking the batch), and `summarizeSettlementReports`
- * aggregates the batch into one reconciliation summary.
+ * without blocking the batch), `summarizeSettlementReports`
+ * aggregates the batch into one reconciliation summary, and
+ * `buildSettlementWebhooks` then signs one webhook per successful
+ * report from that same batch result — each with its own
+ * factory-generated `eventId`, the failed entry forwarded as
+ * `{escrowId, error}` — with a receiver-side re-verification of a
+ * built webhook printed per successful item.
  *
  * Usage: `npm run demo` (builds with tsc, then runs node on the compiled
  * output). Zero runtime dependencies: this file only imports the library
@@ -31,12 +36,14 @@ import {
   buildSettlementReport,
   buildSettlementReports,
   buildSettlementWebhook,
+  buildSettlementWebhooks,
   calculateDeposit,
   createQuorum,
   dispatchArbitration,
   renderReport,
   summarizeSettlementReports,
   verifySettlementWebhook,
+  type BuildSettlementWebhooksResult,
   type EscrowEvent,
   type Quorum,
   type SettlementReport,
@@ -87,6 +94,22 @@ export const DEMO_ARBITRATION_AT = "2026-03-07T13:30:00.000Z";
  */
 export const DEMO_PENDING_ESCROW_ID = "DEMO-ESC-003";
 export const DEMO_PENDING_FUND_AT = "2026-03-03T09:00:00.000Z";
+
+/**
+ * Batch-webhook fixtures for the closing section: one shared `at`
+ * for the whole batch (the day-end snapshot point, after every demo
+ * dispatch) and the deterministic `eventId` factory sequence. The
+ * factory is called once per attempted report, in batch order, so
+ * the released report takes the first id and the refunded report
+ * the second; the forwarded error entry consumes no id. Ids are
+ * never reused across reports — a receiver deduplicating on
+ * `eventId` would otherwise drop all but the first settlement.
+ */
+export const DEMO_BATCH_WEBHOOK_AT = "2026-03-08T09:00:00.000Z";
+export const DEMO_BATCH_WEBHOOK_EVENT_IDS = [
+  "evt_demo_batch_001",
+  "evt_demo_batch_002",
+] as const;
 
 const steps: Array<{
   event: EscrowEvent;
@@ -181,6 +204,14 @@ export interface DemoResult {
   batchResults: SettlementReportResult[];
   /** Reconciliation summary over {@link DemoResult.batchResults}. */
   batchSummary: SettlementReportsSummary;
+  /** Per-item batch webhooks built from {@link DemoResult.batchResults}. */
+  batchWebhooks: BuildSettlementWebhooksResult[];
+  /**
+   * True when every successfully built batch webhook re-verifies
+   * under the demo secret over its raw body bytes (and at least one
+   * webhook was built) — the receiver-side check the demo prints.
+   */
+  batchWebhooksVerified: boolean;
   lines: string[];
 }
 
@@ -410,6 +441,57 @@ export function runDemo(): DemoResult {
     `  summary parties: ${batchSummary.parties.map((p) => `${p.party} net ${p.net}`).join(", ")}`,
   );
 
+  // --- Batch webhooks: batch reports -> per-item signed webhooks ---
+  // The second half of the day-end pipeline: the batch results go
+  // straight into buildSettlementWebhooks, no hand-written loop and
+  // no pre-filtering. One shared secret and one shared fixed `now`;
+  // the eventIds come from a deterministic factory (see the fixture
+  // comment above) — a factory, never one fixed id, because every
+  // settlement in the batch is a distinct event. The FUNDED entry's
+  // report error is forwarded untouched as {escrowId, error} and
+  // does not block the refunded webhook after it. Each built webhook
+  // is re-verified the way a receiver would, over the raw body
+  // bytes, and that verdict is printed on its line.
+  let batchEventSeq = 0;
+  const batchWebhooks = buildSettlementWebhooks(batchResults, {
+    secret: DEMO_WEBHOOK_SECRET,
+    now: DEMO_BATCH_WEBHOOK_AT,
+    // Sequential factory: evt_demo_batch_001, evt_demo_batch_002, …
+    // (DEMO_BATCH_WEBHOOK_EVENT_IDS) — a fresh id per report, by
+    // construction never reused.
+    eventIdFactory: () =>
+      `evt_demo_batch_${String(++batchEventSeq).padStart(3, "0")}`,
+  });
+  const batchVerifications = batchWebhooks.map((entry) =>
+    entry.webhook
+      ? verifySettlementWebhook(
+          JSON.stringify(entry.webhook.payload),
+          entry.webhook.signature,
+          DEMO_WEBHOOK_SECRET,
+        )
+      : undefined,
+  );
+  const builtCount = batchWebhooks.filter((entry) => entry.webhook).length;
+  const batchWebhooksVerified =
+    builtCount > 0 &&
+    batchVerifications.every((verified) => verified !== false);
+  lines.push(
+    "",
+    "Batch settlement webhooks (batch reports -> per-item signed webhooks):",
+  );
+  for (const [i, entry] of batchWebhooks.entries()) {
+    if (entry.webhook) {
+      lines.push(
+        `  ${entry.escrowId}: webhook — eventId ${entry.webhook.payload.eventId}, outcome ${entry.webhook.payload.outcome}, at ${entry.webhook.payload.at}, verifySettlementWebhook: ${batchVerifications[i] ? "ok" : "FAILED"}`,
+      );
+    } else {
+      lines.push(`  ${entry.escrowId}: error — ${entry.error}`);
+    }
+  }
+  lines.push(
+    `  batch webhooks: ${builtCount} webhooks, ${batchWebhooks.length - builtCount} error — eventIds distinct (${DEMO_BATCH_WEBHOOK_EVENT_IDS.join(", ")}), factory-generated per report, never reused`,
+  );
+
   return {
     escrow,
     report,
@@ -422,6 +504,8 @@ export function runDemo(): DemoResult {
     pendingEscrow,
     batchResults,
     batchSummary,
+    batchWebhooks,
+    batchWebhooksVerified,
     lines,
   };
 }

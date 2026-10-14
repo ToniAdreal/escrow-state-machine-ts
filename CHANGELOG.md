@@ -18,6 +18,22 @@ version changes.
 
 ### Added
 
+- CLI demo coverage for the batch settlement webhook pipeline:
+  the demo's closing batch section now feeds its
+  `buildSettlementReports` results straight into
+  `buildSettlementWebhooks` (shared demo secret, one shared fixed
+  batch timestamp `2026-03-08T09:00:00.000Z`), printing one signed
+  webhook per successful report — the released and refunded
+  webhooks carry the deterministic factory `eventId`s
+  `evt_demo_batch_001` / `evt_demo_batch_002` (one fresh id per
+  report, never reused, so a receiver deduplicating on `eventId`
+  keeps both) and a receiver-side `verifySettlementWebhook: ok`
+  verdict per built webhook — while the still-`FUNDED` entry is
+  forwarded as `{escrowId, error}` in the middle of the batch
+  without blocking the refunded webhook after it (and consumes no
+  factory id). `DemoResult` exposes the batch webhooks and the
+  all-verified flag; the demo tests pin the per-item shapes, the
+  forwarded error, the distinct ids, and the printed section.
 - Benchmark coverage for the settlement event dedupe
   snapshot-restore path: `SettlementEventDedupe.restore`
   rebuilding a receiver-side dedupe from a persisted (JSON

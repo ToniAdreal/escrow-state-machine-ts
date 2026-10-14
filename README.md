@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 625 tests, all local
+npm test   # 627 tests, all local
 ```
 
 ## Quickstart
@@ -66,7 +66,14 @@ still-`FUNDED` escrow lands as `{escrowId, error}` in the middle of
 the batch without blocking the refunded report after it — and
 `summarizeSettlementReports` prints the batch's reconciliation
 summary (2 reports, 1 error, totals of 21,260 on the two golden
-deposits):
+deposits). The batch results then go straight into
+`buildSettlementWebhooks`, which signs one webhook per successful
+report under the shared demo secret at one fixed batch timestamp —
+one factory-generated `eventId` per report (`evt_demo_batch_001`,
+`evt_demo_batch_002`, never reused, so a receiver deduplicating on
+`eventId` keeps both), the failed entry forwarded as
+`{escrowId, error}` — and the demo prints a receiver-side
+`verifySettlementWebhook` verdict on each built webhook's line:
 
 ```bash
 npm run demo
@@ -674,7 +681,7 @@ and an empty batch yields an all-zero summary.
 
 ## Reproducibility
 
-`npm test` runs 625 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 627 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

@@ -6,6 +6,8 @@ import path from "node:path";
 import {
   runDemo,
   DEMO_ARBITRATION_AT,
+  DEMO_BATCH_WEBHOOK_AT,
+  DEMO_BATCH_WEBHOOK_EVENT_IDS,
   DEMO_DISPUTE_ESCROW_ID,
   DEMO_ESCROW_ID,
   DEMO_PENDING_ESCROW_ID,
@@ -313,6 +315,103 @@ test("demo lines print the batch reports + summary section", () => {
   );
 });
 
+test("demo batch webhooks sign each successful report with a distinct factory eventId and isolate the error entry", () => {
+  const { batchResults, batchWebhooks, batchWebhooksVerified } = runDemo();
+
+  // Same order as the batch reports: released -> error -> refunded.
+  // The batch results go straight into buildSettlementWebhooks.
+  assert.equal(batchWebhooks.length, 3);
+  assert.deepEqual(
+    batchWebhooks.map((entry) => entry.escrowId),
+    batchResults.map((result) => result.escrowId),
+  );
+  // Successful items: factory eventIds in sequence, shared fixed `at`,
+  // outcomes mirroring their reports.
+  assert.equal(batchWebhooks[0].error, undefined);
+  assert.equal(
+    batchWebhooks[0].webhook?.payload.eventId,
+    DEMO_BATCH_WEBHOOK_EVENT_IDS[0],
+  );
+  assert.equal(batchWebhooks[0].webhook?.payload.outcome, "released");
+  assert.equal(batchWebhooks[0].webhook?.payload.at, DEMO_BATCH_WEBHOOK_AT);
+  assert.equal(batchWebhooks[2].error, undefined);
+  assert.equal(
+    batchWebhooks[2].webhook?.payload.eventId,
+    DEMO_BATCH_WEBHOOK_EVENT_IDS[1],
+  );
+  assert.equal(batchWebhooks[2].webhook?.payload.outcome, "refunded");
+  assert.equal(batchWebhooks[2].webhook?.payload.at, DEMO_BATCH_WEBHOOK_AT);
+  // Distinct ids: a receiver deduplicating on eventId keeps both.
+  assert.notEqual(
+    batchWebhooks[0].webhook?.payload.eventId,
+    batchWebhooks[2].webhook?.payload.eventId,
+  );
+  // The failed item is forwarded untouched — same message the batch
+  // report stage produced — and consumed no factory eventId (the
+  // refunded webhook after it holds the second id, asserted above).
+  assert.equal(batchWebhooks[1].webhook, undefined);
+  assert.equal(batchWebhooks[1].error, batchResults[1].error);
+  // The demo's own re-verification passes, and an independent
+  // re-verification of each built webhook agrees (raw body + object).
+  assert.equal(batchWebhooksVerified, true);
+  for (const entry of batchWebhooks) {
+    if (!entry.webhook) continue;
+    assert.match(entry.webhook.signature, /^sha256=[0-9a-f]{64}$/);
+    assert.ok(
+      verifySettlementWebhook(
+        JSON.stringify(entry.webhook.payload),
+        entry.webhook.signature,
+        DEMO_WEBHOOK_SECRET,
+      ),
+    );
+    assert.ok(
+      verifySettlementWebhook(
+        entry.webhook.payload,
+        entry.webhook.signature,
+        DEMO_WEBHOOK_SECRET,
+      ),
+    );
+    assert.equal(
+      verifySettlementWebhook(
+        entry.webhook.payload,
+        entry.webhook.signature,
+        "wrong-secret",
+      ),
+      false,
+    );
+  }
+});
+
+test("demo lines print the batch webhooks section with per-item isolation and re-verification", () => {
+  const { lines } = runDemo();
+  const text = lines.join("\n");
+
+  assert.match(
+    text,
+    /Batch settlement webhooks \(batch reports -> per-item signed webhooks\):/,
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_ESCROW_ID}: webhook — eventId ${DEMO_BATCH_WEBHOOK_EVENT_IDS[0]}, outcome released, at ${DEMO_BATCH_WEBHOOK_AT}, verifySettlementWebhook: ok`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_PENDING_ESCROW_ID}: error — cannot build settlement report for ${DEMO_PENDING_ESCROW_ID}: escrow is in FUNDED, no settlement has happened yet`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_DISPUTE_ESCROW_ID}: webhook — eventId ${DEMO_BATCH_WEBHOOK_EVENT_IDS[1]}, outcome refunded, at ${DEMO_BATCH_WEBHOOK_AT}, verifySettlementWebhook: ok`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  batch webhooks: 2 webhooks, 1 error — eventIds distinct (${DEMO_BATCH_WEBHOOK_EVENT_IDS.join(", ")}), factory-generated per report, never reused`,
+    ),
+  );
+});
+
 test("demo is deterministic: two runs produce identical lines", () => {
   assert.deepEqual(runDemo().lines, runDemo().lines);
 });
@@ -368,4 +467,26 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
     out,
     /summary totals: deposit 21260, inflow 21260, outflow 21260 — balanced ✓/,
   );
+  // Batch webhook tail: per-item signed webhooks over the batch
+  // reports — distinct factory eventIds, the error forwarded in the
+  // middle, and a receiver-side re-verification per built webhook.
+  assert.match(
+    out,
+    /Batch settlement webhooks \(batch reports -> per-item signed webhooks\):/,
+  );
+  assert.ok(
+    out.includes(
+      `DEMO-ESC-001: webhook — eventId ${DEMO_BATCH_WEBHOOK_EVENT_IDS[0]}, outcome released, at ${DEMO_BATCH_WEBHOOK_AT}, verifySettlementWebhook: ok`,
+    ),
+  );
+  assert.match(
+    out,
+    /DEMO-ESC-003: error — cannot build settlement report for DEMO-ESC-003: escrow is in FUNDED/,
+  );
+  assert.ok(
+    out.includes(
+      `DEMO-ESC-002: webhook — eventId ${DEMO_BATCH_WEBHOOK_EVENT_IDS[1]}, outcome refunded, at ${DEMO_BATCH_WEBHOOK_AT}, verifySettlementWebhook: ok`,
+    ),
+  );
+  assert.match(out, /batch webhooks: 2 webhooks, 1 error — eventIds distinct/);
 });
