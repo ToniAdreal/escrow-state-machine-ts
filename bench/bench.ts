@@ -113,6 +113,28 @@
  *      timed iteration checks each result's proFee / net against
  *      the hand-written expectations (never re-derived through the
  *      implementation under test).
+ *  16. watchdog execution — `expireOverdueEscrows(escrows, fixedNow)`
+ *      and `actOnStaleEscrows(escrows, action, budgets, fixedNow)`
+ *      with the production action `(e) => e.dispatch("EXPIRE")`, over
+ *      the SAME mixed batch of 100 escrows as the screening paths —
+ *      but rebuilt fresh on every iteration, because the executors
+ *      mutate the escrows they act on (each successful EXPIRE
+ *      dispatch appends a hash-chained audit entry). The rebuild
+ *      cost is therefore inside the timed region, unlike screening.
+ *      Hand-counted from the fixture composition and the transition
+ *      table (never derived by calling the executors):
+ *      expireOverdueEscrows attempts the 40 expired ids and ALL 40
+ *      succeed (FUNDED and MILESTONE_SUBMITTED both carry an EXPIRE
+ *      edge), ending EXPIRED with one extra audit entry each;
+ *      actOnStaleEscrows attempts the 70 stale ids and ALL 70
+ *      EXPIRE actions succeed for the same reason. Every timed
+ *      iteration checks result ids in batch order, the success
+ *      flags, the absence of errors, the post-states, and the
+ *      appended EXPIRE audit entries against those expectations.
+ *      (The executors dispatch EXPIRE without an injectable audit
+ *      timestamp, so the bench checks states / flags / history
+ *      shape — never the appended entry's timestamp, and the
+ *      selections themselves use only the injected fixed `now`.)
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -126,6 +148,7 @@
  */
 import { cpus } from "node:os";
 import {
+  actOnStaleEscrows,
   buildSettlementReport,
   buildSettlementReports,
   buildSettlementWebhook,
@@ -135,6 +158,7 @@ import {
   deliverSettlementWebhookToMany,
   Escrow,
   expiredEscrows,
+  expireOverdueEscrows,
   historyFromNdjson,
   historyToNdjson,
   restoreQuorum,
@@ -803,7 +827,8 @@ function watchdogIds(group: string, count: number): string[] {
     (_, i) => `BENCH-WD-${group}-${String(i + 1).padStart(2, "0")}`,
   );
 }
-const watchdogBatch: Escrow[] = [
+function buildWatchdogBatch(): Escrow[] {
+  return [
   ...watchdogIds("A", 30).map((id) =>
     watchdogFunded(id, BASE_MS, BASE_MS + 30 * DAY_MS),
   ),
@@ -833,7 +858,9 @@ const watchdogBatch: Escrow[] = [
     return escrow;
   }),
   ...watchdogIds("G", 10).map((id) => watchdogFunded(id, BASE_MS)),
-];
+  ];
+}
+const watchdogBatch: Escrow[] = buildWatchdogBatch();
 if (watchdogBatch.length !== 100) {
   throw new Error("benchmark fixture failed: watchdog batch size");
 }
@@ -868,6 +895,91 @@ checkWatchdogIds(
   staleEscrows(watchdogBatch, WATCHDOG_BUDGETS, WATCHDOG_NOW),
   WATCHDOG_STALE_IDS,
   "staleEscrows",
+);
+
+// Watchdog-executor expectations, hand-counted from the fixture
+// composition above and the transition table — never derived by
+// calling the executors:
+//   expireOverdueEscrows attempts the 40 expired ids (A x30 FUNDED +
+//   D x10 MILESTONE_SUBMITTED), in batch order. EXPIRE has an edge
+//   from both states, so expired = true for all 40, no entry carries
+//   an error, every attempted escrow ends EXPIRED, and its history
+//   grows by exactly the EXPIRE entry (A: 1 -> 2 entries, D: 2 -> 3).
+//   actOnStaleEscrows with the action (e) => e.dispatch("EXPIRE")
+//   attempts the 70 stale ids (A x30 + B x20 + D x10 + G x10), in
+//   batch order. The stale states are FUNDED (A/B/G) and
+//   MILESTONE_SUBMITTED (D) — both carry an EXPIRE edge, so acted =
+//   true for all 70, no entry carries an error, every attempted
+//   escrow ends EXPIRED, and its history grows by the EXPIRE entry
+//   (A/B/G: 1 -> 2 entries, D: 2 -> 3).
+// Non-attempted escrows are not checked here (they are untouched by
+// construction: the checks below run on fresh batches and the
+// result lists name exactly the attempted ids).
+function checkExpireOverdueResults(
+  results: ReturnType<typeof expireOverdueEscrows>,
+  label: string,
+): void {
+  const expectedHistoryLengths = [
+    ...Array<number>(30).fill(2),
+    ...Array<number>(10).fill(3),
+  ];
+  if (
+    results.length !== WATCHDOG_EXPIRED_IDS.length ||
+    results.some(
+      (r, i) =>
+        r.escrow.id !== WATCHDOG_EXPIRED_IDS[i] ||
+        r.expired !== true ||
+        r.error !== undefined ||
+        r.escrow.state !== "EXPIRED" ||
+        r.escrow.history.length !== expectedHistoryLengths[i] ||
+        r.escrow.history[r.escrow.history.length - 1].event !== "EXPIRE" ||
+        r.escrow.history[r.escrow.history.length - 1].to !== "EXPIRED",
+    )
+  ) {
+    throw new Error(`benchmark watchdog check failed: ${label}`);
+  }
+}
+function checkActOnStaleResults(
+  results: ReturnType<typeof actOnStaleEscrows>,
+  label: string,
+): void {
+  const expectedHistoryLengths = [
+    ...Array<number>(30).fill(2),
+    ...Array<number>(20).fill(2),
+    ...Array<number>(10).fill(3),
+    ...Array<number>(10).fill(2),
+  ];
+  if (
+    results.length !== WATCHDOG_STALE_IDS.length ||
+    results.some(
+      (r, i) =>
+        r.escrow.id !== WATCHDOG_STALE_IDS[i] ||
+        r.acted !== true ||
+        r.error !== undefined ||
+        r.escrow.state !== "EXPIRED" ||
+        r.escrow.history.length !== expectedHistoryLengths[i] ||
+        r.escrow.history[r.escrow.history.length - 1].event !== "EXPIRE" ||
+        r.escrow.history[r.escrow.history.length - 1].to !== "EXPIRED",
+    )
+  ) {
+    throw new Error(`benchmark watchdog check failed: ${label}`);
+  }
+}
+// One-time executor validation (outside the timed loops), each on a
+// throwaway fresh batch so the module-scope screening batch above
+// stays unmutated for its own paths.
+checkExpireOverdueResults(
+  expireOverdueEscrows(buildWatchdogBatch(), WATCHDOG_NOW),
+  "expireOverdueEscrows fixture",
+);
+checkActOnStaleResults(
+  actOnStaleEscrows(
+    buildWatchdogBatch(),
+    (e) => e.dispatch("EXPIRE"),
+    WATCHDOG_BUDGETS,
+    WATCHDOG_NOW,
+  ),
+  "actOnStaleEscrows fixture",
 );
 
 const ndjsonFixture = historyToNdjson(ndjsonHistoryFixture);
@@ -1162,11 +1274,41 @@ function benchStaleEscrows(): number {
   }, ITERATIONS);
 }
 
+function benchExpireOverdueEscrows(): number {
+  return measure(() => {
+    // Fresh fixture per iteration: the executor dispatches EXPIRE on
+    // the escrows it expires, so no batch can be reused across calls.
+    // The rebuild cost is inside the timed region (see the header).
+    const batch = buildWatchdogBatch();
+    checkExpireOverdueResults(
+      expireOverdueEscrows(batch, WATCHDOG_NOW),
+      "expireOverdueEscrows",
+    );
+  }, ITERATIONS);
+}
+
+function benchActOnStaleEscrows(): number {
+  return measure(() => {
+    // Fresh fixture per iteration, same reason as above: the action
+    // dispatches EXPIRE on every stale escrow it can act on.
+    const batch = buildWatchdogBatch();
+    checkActOnStaleResults(
+      actOnStaleEscrows(
+        batch,
+        (e) => e.dispatch("EXPIRE"),
+        WATCHDOG_BUDGETS,
+        WATCHDOG_NOW,
+      ),
+      "actOnStaleEscrows",
+    );
+  }, ITERATIONS);
+}
+
 console.log("escrow-state-machine-ts benchmark");
 console.log(`Node: ${process.version} on ${process.platform}/${process.arch}`);
 console.log(`CPU: ${cpus()[0]?.model ?? "unknown"}`);
 console.log(
-  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); settlement batch summary over that batch's 4 pre-built results (3 reports + 1 error); settlement batch webhooks over that same batch (3 signed webhooks with distinct deterministic eventIds bench-batch-event-1..3 plus the 1 forwarded per-item error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release); quorum of 9 signers with threshold 5 on a fixed injected clock, approved one vote at a time to the threshold; settlement webhook fan-out to 4 endpoints through a fake global fetch (immediate 200, no network); settlement event dedupe duplicate hits cycling over 1,000 pre-recorded eventIds under a fixed injected clock; Escrow.fromHistory replay over the same detached 4-entry history; watchdog screening over a fixed mixed batch of 100 escrows (40 hand-counted expired, 70 hand-counted stale under FUNDED 7d / MILESTONE_SUBMITTED 30d budgets) at a fixed screening instant; quorum snapshot restore from a persisted (JSON round-tripped) snapshot of the 9-signer / threshold-5 quorum carrying 7 recorded approvals; settleRelease netting over 4 fixed representative inputs (golden 10630 at 500 bps, 1000 at 500 bps with 100 credits, large gross 1000000 at 250 bps with 1250.25 credits, rounding edge 10 at 125 bps) checked against hand-computed proFee/net on every iteration",
+  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); settlement batch summary over that batch's 4 pre-built results (3 reports + 1 error); settlement batch webhooks over that same batch (3 signed webhooks with distinct deterministic eventIds bench-batch-event-1..3 plus the 1 forwarded per-item error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release); quorum of 9 signers with threshold 5 on a fixed injected clock, approved one vote at a time to the threshold; settlement webhook fan-out to 4 endpoints through a fake global fetch (immediate 200, no network); settlement event dedupe duplicate hits cycling over 1,000 pre-recorded eventIds under a fixed injected clock; Escrow.fromHistory replay over the same detached 4-entry history; watchdog screening over a fixed mixed batch of 100 escrows (40 hand-counted expired, 70 hand-counted stale under FUNDED 7d / MILESTONE_SUBMITTED 30d budgets) at a fixed screening instant; watchdog execution (expireOverdueEscrows / actOnStaleEscrows with an EXPIRE-dispatch action) over fresh rebuilds of that same 100-escrow batch on every iteration because the executors mutate their inputs (40 of 40 expire attempts and 70 of 70 stale actions succeed — both selected states carry an EXPIRE edge); quorum snapshot restore from a persisted (JSON round-tripped) snapshot of the 9-signer / threshold-5 quorum carrying 7 recorded approvals; settleRelease netting over 4 fixed representative inputs (golden 10630 at 500 bps, 1000 at 500 bps with 100 credits, large gross 1000000 at 250 bps with 1250.25 credits, rounding edge 10 at 125 bps) checked against hand-computed proFee/net on every iteration",
 );
 console.log(`Iterations per op: ${ITERATIONS} (after ${WARMUP} warmup)`);
 console.log("");
@@ -1190,6 +1332,8 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "SettlementEventDedupe checkAndRecord (hit, 1k)", ops: benchSettlementEventDedupe() },
   { path: "expiredEscrows (batch 100 escrows)", ops: benchExpiredEscrows() },
   { path: "staleEscrows (batch 100 escrows)", ops: benchStaleEscrows() },
+  { path: "expireOverdueEscrows (batch 100 escrows)", ops: benchExpireOverdueEscrows() },
+  { path: "actOnStaleEscrows (batch 100 escrows)", ops: benchActOnStaleEscrows() },
 ];
 
 console.log("path                                              throughput");

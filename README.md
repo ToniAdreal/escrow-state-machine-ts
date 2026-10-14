@@ -715,7 +715,17 @@ mixed batch of 100 escrows at a fixed screening instant — 40
 hand-counted past-deadline non-terminal escrows, 70 hand-counted stale
 under FUNDED 7d / MILESTONE_SUBMITTED 30d budgets — with every
 screening result checked against the hand-counted expected id list on
-every iteration).
+every iteration), and
+watchdog execution (`expireOverdueEscrows` /
+`actOnStaleEscrows` with an `EXPIRE`-dispatch action over fresh
+rebuilds of that same 100-escrow batch on every iteration, because
+the executors mutate their inputs — 40 of 40 expire attempts and
+70 of 70 stale actions succeed, since both selected states carry
+an `EXPIRE` edge — with result ids, success flags, post-states,
+and the appended `EXPIRE` audit entries checked against the
+hand-counted expectations on every iteration; the fresh-fixture
+rebuild cost is inside these two rows' timed region, unlike the
+pure screening rows above).
 Fixtures are deterministic — one escrow driven through the full
 `CREATED → RELEASED` lifecycle (4 hash-chained audit entries, golden
 deposit 10,630), with a fixed webhook secret, payload timestamp, and
@@ -732,35 +742,43 @@ clock) and restoring the JSON round-tripped snapshot; the
 watchdog paths screen one fixed batch of 100 escrows (30 past-deadline
 FUNDED, 20 in-budget-deadline FUNDED, 10 fresh FUNDED, 10
 past-deadline MILESTONE_SUBMITTED, 10 fresh MILESTONE_SUBMITTED, 10
-terminal RELEASED with a past deadline, and 10 deadline-less FUNDED).
+terminal RELEASED with a past deadline, and 10 deadline-less FUNDED);
+the watchdog execution paths rebuild that same batch fresh on every
+iteration (the executors dispatch `EXPIRE` and append audit entries,
+so no batch can be reused).
 One real run on 2026-10-14:
 
 | path | throughput |
 |------|------------|
-| dispatch (full lifecycle, 4 dispatches) | ~21,100 ops/sec (~47.3 µs/op) |
-| verifyHistoryChain (4 entries) | ~25,200 ops/sec (~39.7 µs/op) |
-| Escrow.fromHistory (4 entries) | ~13,100 ops/sec (~76.5 µs/op) |
-| settleRelease (4 fixed inputs) | ~608,100 ops/sec (~1.6 µs/op) |
-| buildSettlementReport (4 entries) | ~24,700 ops/sec (~40.5 µs/op) |
-| buildSettlementReports (batch 4 x 4 entries) | ~7,200 ops/sec (~138.7 µs/op) |
-| summarizeSettlementReports (batch 4 results) | ~159,000 ops/sec (~6.3 µs/op) |
-| buildSettlementWebhooks (batch 4 results) | ~5,600 ops/sec (~179.9 µs/op) |
-| buildSettlementWebhook (sign) | ~36,700 ops/sec (~27.3 µs/op) |
-| verifySettlementWebhook | ~141,300 ops/sec (~7.1 µs/op) |
-| historyToNdjson (8 entries) | ~12,300 ops/sec (~81.4 µs/op) |
-| historyFromNdjson (8 entries, chain re-verify) | ~7,600 ops/sec (~131.1 µs/op) |
-| quorum approve to threshold (5 of 9) | ~49,200 ops/sec (~20.3 µs/op) |
-| restoreQuorum (snapshot, 7 approvals of 9) | ~24,200 ops/sec (~41.3 µs/op) |
-| deliverSettlementWebhookToMany (4 endpoints, fake fetch) | ~4,900 ops/sec (~203.1 µs/op) |
-| SettlementEventDedupe checkAndRecord (hit, 1,000 recorded ids) | ~3,833,900 ops/sec (~0.3 µs/op) |
-| expiredEscrows (batch 100 escrows) | ~19,300 ops/sec (~51.7 µs/op) |
-| staleEscrows (batch 100 escrows) | ~13,900 ops/sec (~72.1 µs/op) |
+| dispatch (full lifecycle, 4 dispatches) | ~1,900 ops/sec (~539.3 µs/op) |
+| verifyHistoryChain (4 entries) | ~3,500 ops/sec (~286.7 µs/op) |
+| Escrow.fromHistory (4 entries) | ~3,900 ops/sec (~255.5 µs/op) |
+| settleRelease (4 fixed inputs) | ~40,100 ops/sec (~24.9 µs/op) |
+| buildSettlementReport (4 entries) | ~3,800 ops/sec (~263.9 µs/op) |
+| buildSettlementReports (batch 4 x 4 entries) | ~803 ops/sec (~1,245.5 µs/op) |
+| summarizeSettlementReports (batch 4 results) | ~27,100 ops/sec (~36.9 µs/op) |
+| buildSettlementWebhooks (batch 4 results) | ~1,500 ops/sec (~668.2 µs/op) |
+| buildSettlementWebhook (sign) | ~2,500 ops/sec (~401.6 µs/op) |
+| verifySettlementWebhook | ~4,400 ops/sec (~226.3 µs/op) |
+| historyToNdjson (8 entries) | ~1,400 ops/sec (~707.8 µs/op) |
+| historyFromNdjson (8 entries, chain re-verify) | ~783 ops/sec (~1,277.5 µs/op) |
+| quorum approve to threshold (5 of 9) | ~16,000 ops/sec (~62.6 µs/op) |
+| restoreQuorum (snapshot, 7 approvals of 9) | ~3,300 ops/sec (~300.4 µs/op) |
+| deliverSettlementWebhookToMany (4 endpoints, fake fetch) | ~482 ops/sec (~2,074.2 µs/op) |
+| SettlementEventDedupe checkAndRecord (hit, 1,000 recorded ids) | ~504,600 ops/sec (~2.0 µs/op) |
+| expiredEscrows (batch 100 escrows) | ~6,600 ops/sec (~151.2 µs/op) |
+| staleEscrows (batch 100 escrows) | ~2,600 ops/sec (~381.3 µs/op) |
+| expireOverdueEscrows (batch 100 escrows, fresh fixture) | ~49 ops/sec (~20,554.7 µs/op) |
+| actOnStaleEscrows (batch 100 escrows, fresh fixture) | ~59 ops/sec (~17,014.4 µs/op) |
 
-Environment: Node v24.20.0, linux/x64, AMD EPYC 9D25 (virtualized;
-shared host, so numbers vary run to run). This run was taken while
-the shared host was under parallel load (load average ≈4–5), and
-repeated runs in the same session swung individual rows widely in
-both directions — treat the table as this run's measurements, most
+Environment: Node v24.20.0, linux/x64, Intel(R) Xeon(R) Platinum
+8321HC CPU @ 1.40GHz (virtualized; shared host, so numbers vary run
+to run). This run was taken while the shared host was under very
+heavy parallel load (load average ≈12–16 on a 2-core host), and
+other runs in the same session measured the two new watchdog
+execution rows anywhere from ~49 to ~369 ops/sec — repeated runs
+swing individual rows widely in both directions (some by an order
+of magnitude), so treat the table as this run's measurements, most
 useful for same-run relative comparison, not as a regression
 signal.
 Machine-local measurements for capacity planning, not guaranteed

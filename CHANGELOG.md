@@ -18,6 +18,22 @@ version changes.
 
 ### Added
 
+- Benchmark coverage for the watchdog execution paths:
+  `expireOverdueEscrows` and `actOnStaleEscrows` (with the
+  production action `(e) => e.dispatch("EXPIRE")`) over the
+  bench's fixed mixed batch of 100 escrows — the execution layer
+  behind the existing screening rows, rebuilt fresh on every
+  iteration because the executors mutate their inputs (the
+  rebuild cost is inside the timed region). Every timed
+  iteration self-checks result ids in batch order, success
+  flags, post-states, and the appended EXPIRE audit entries
+  against hand-counted expectations (40 of 40 expire attempts
+  and 70 of 70 stale actions succeed — FUNDED and
+  MILESTONE_SUBMITTED both carry an EXPIRE edge), never derived
+  by calling the executors. The README Benchmarks table was
+  refreshed from one real run (taken under heavy shared-host
+  load, as the README environment note records) and gained
+  the two rows.
 - Benchmark coverage for the release settlement netting path:
   `settleRelease` over 4 fixed representative inputs (the golden
   10,630 at 500 bps, 1,000 at 500 bps with 100 referral credits, a
