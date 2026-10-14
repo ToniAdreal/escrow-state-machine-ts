@@ -135,6 +135,20 @@
  *      timestamp, so the bench checks states / flags / history
  *      shape — never the appended entry's timestamp, and the
  *      selections themselves use only the injected fixed `now`.)
+ *  17. settlement event dedupe snapshot restore —
+ *      `SettlementEventDedupe.restore(snapshot)` rebuilding a
+ *      receiver-side dedupe from a persisted snapshot (the JSON
+ *      round-tripped form of `exportSnapshot()`), over a fixed
+ *      1,000-entry snapshot (see the restore fixture below for its
+ *      composition and the hand-written expectations). This is the
+ *      restart path a settlement receiver runs at startup before
+ *      the first duplicate check: strict snapshot validation plus
+ *      the rebuild, on every call. The restored dedupe is checked
+ *      against hand-written expectations (1,000 live entries,
+ *      observability counters restarting at zero, spot-checked
+ *      first / middle / last ids all duplicates) on every
+ *      iteration, and exhaustively (all 1,000 ids) once outside
+ *      the timed loop.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -769,6 +783,106 @@ if (
 }
 let dedupeCursor = 0;
 
+// Dedupe-restore fixture: a 1,000-entry snapshot of a dedupe that
+// recorded the fixed ids `bench-restore-0000` ..
+// `bench-restore-0999`, in that order, under an injected FIXED clock
+// (`DEDUPE_RESTORE_NOW_MS`, a fixed instant after BASE_MS — the
+// clock never advances). The snapshot goes through a JSON
+// stringify/parse round-trip, exactly the persisted form a receiver
+// reloads at startup. Restore runs under the default TTL (1 hour)
+// and the default capacity (10,000): every entry was first seen at
+// the restore instant itself (age 0), so no entry is expired at
+// load and none is evicted for capacity. Hand-written expectations
+// — written out here from the composition above, never derived by
+// calling `restore` itself:
+//   - the snapshot is `{ v: 1, entries }` with exactly 1,000 pairs,
+//     in prefill order, each `seenAtMs` exactly
+//     DEDUPE_RESTORE_NOW_MS;
+//   - a restored dedupe reports size 1,000 with all observability
+//     counters at zero (counters are not part of a snapshot);
+//   - `checkAndRecord` on every snapshot id is a duplicate (true):
+//     1,000 hits in total, the size stays 1,000, and an unseen id is
+//     still a first sighting (false) followed by a duplicate (true).
+// The exhaustive 1,000-id check runs ONCE, outside the timed loop,
+// below; the timed path re-checks the counters and spot-checks the
+// first / middle / last ids on every iteration (see
+// `benchSettlementEventDedupeRestore`).
+const DEDUPE_RESTORE_PREFILL = 1000;
+const DEDUPE_RESTORE_NOW_MS = BASE_MS + 180_000;
+const dedupeRestoreIds: string[] = Array.from(
+  { length: DEDUPE_RESTORE_PREFILL },
+  (_, i) => `bench-restore-${String(i).padStart(4, "0")}`,
+);
+const dedupeRestoreSource = new SettlementEventDedupe({
+  now: () => DEDUPE_RESTORE_NOW_MS,
+});
+for (const id of dedupeRestoreIds) {
+  if (dedupeRestoreSource.checkAndRecord(id)) {
+    throw new Error(
+      "benchmark fixture failed: dedupe restore prefill saw a duplicate",
+    );
+  }
+}
+const dedupeRestoreSnapshot = JSON.parse(
+  JSON.stringify(dedupeRestoreSource.exportSnapshot()),
+) as { v: unknown; entries: Array<[string, number]> };
+if (
+  dedupeRestoreSnapshot.v !== 1 ||
+  !Array.isArray(dedupeRestoreSnapshot.entries) ||
+  dedupeRestoreSnapshot.entries.length !== DEDUPE_RESTORE_PREFILL ||
+  dedupeRestoreSnapshot.entries.some(
+    (pair, i) =>
+      pair[0] !== dedupeRestoreIds[i] || pair[1] !== DEDUPE_RESTORE_NOW_MS,
+  )
+) {
+  throw new Error("benchmark fixture failed: dedupe restore snapshot shape");
+}
+// Exhaustive validation (outside the timed loop): every snapshot id
+// restores as a duplicate, the counts agree exactly with the calls
+// made, and an unseen id keeps first-sighting semantics.
+const dedupeRestoreProbe = SettlementEventDedupe.restore(dedupeRestoreSnapshot, {
+  now: () => DEDUPE_RESTORE_NOW_MS,
+});
+const dedupeRestoreProbeFresh = dedupeRestoreProbe.stats();
+if (
+  dedupeRestoreProbeFresh.size !== DEDUPE_RESTORE_PREFILL ||
+  dedupeRestoreProbeFresh.hits !== 0 ||
+  dedupeRestoreProbeFresh.misses !== 0 ||
+  dedupeRestoreProbeFresh.evictions !== 0
+) {
+  throw new Error(
+    "benchmark fixture failed: restored dedupe counters do not start at zero",
+  );
+}
+for (const id of dedupeRestoreIds) {
+  if (!dedupeRestoreProbe.checkAndRecord(id)) {
+    throw new Error(
+      "benchmark fixture failed: restored dedupe missed a snapshot id",
+    );
+  }
+}
+const dedupeRestoreProbeHits = dedupeRestoreProbe.stats();
+if (
+  dedupeRestoreProbeHits.size !== DEDUPE_RESTORE_PREFILL ||
+  dedupeRestoreProbeHits.hits !== DEDUPE_RESTORE_PREFILL ||
+  dedupeRestoreProbeHits.misses !== 0 ||
+  dedupeRestoreProbeHits.evictions !== 0
+) {
+  throw new Error(
+    "benchmark fixture failed: restored dedupe hit count differs from the hand-written expectation",
+  );
+}
+if (dedupeRestoreProbe.checkAndRecord("bench-restore-unseen")) {
+  throw new Error(
+    "benchmark fixture failed: restored dedupe flagged a first sighting",
+  );
+}
+if (!dedupeRestoreProbe.checkAndRecord("bench-restore-unseen")) {
+  throw new Error(
+    "benchmark fixture failed: restored dedupe missed a second sighting",
+  );
+}
+
 // Watchdog screening fixture: one fixed mixed batch of 100 escrows,
 // screened at the fixed WATCHDOG_NOW = BASE + 90 days. Composition,
 // hand-counted group by group (ids are BENCH-WD-<group>-<nn>):
@@ -1176,6 +1290,39 @@ function benchSettlementEventDedupe(): number {
   return ops;
 }
 
+function benchSettlementEventDedupeRestore(): number {
+  return measure(() => {
+    const restored = SettlementEventDedupe.restore(dedupeRestoreSnapshot, {
+      now: () => DEDUPE_RESTORE_NOW_MS,
+    });
+    // Per-iteration self-check against the hand-written
+    // expectations above: the restore kept all 1,000 entries, the
+    // observability counters restarted at zero, and the first /
+    // middle / last snapshot ids are all duplicates (3 hits). The
+    // exhaustive all-ids check runs once, outside the timed loop,
+    // in the fixture validation.
+    const fresh = restored.stats();
+    if (
+      fresh.size !== DEDUPE_RESTORE_PREFILL ||
+      fresh.hits !== 0 ||
+      fresh.misses !== 0 ||
+      fresh.evictions !== 0 ||
+      !restored.checkAndRecord(dedupeRestoreIds[0]) ||
+      !restored.checkAndRecord(
+        dedupeRestoreIds[DEDUPE_RESTORE_PREFILL / 2],
+      ) ||
+      !restored.checkAndRecord(
+        dedupeRestoreIds[DEDUPE_RESTORE_PREFILL - 1],
+      ) ||
+      restored.stats().hits !== 3
+    ) {
+      throw new Error(
+        "benchmark self-check failed: SettlementEventDedupe restore",
+      );
+    }
+  }, ITERATIONS);
+}
+
 function benchHistoryFromNdjson(): number {
   return measure(() => {
     const entries = historyFromNdjson(ndjsonFixture);
@@ -1308,7 +1455,7 @@ console.log("escrow-state-machine-ts benchmark");
 console.log(`Node: ${process.version} on ${process.platform}/${process.arch}`);
 console.log(`CPU: ${cpus()[0]?.model ?? "unknown"}`);
 console.log(
-  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); settlement batch summary over that batch's 4 pre-built results (3 reports + 1 error); settlement batch webhooks over that same batch (3 signed webhooks with distinct deterministic eventIds bench-batch-event-1..3 plus the 1 forwarded per-item error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release); quorum of 9 signers with threshold 5 on a fixed injected clock, approved one vote at a time to the threshold; settlement webhook fan-out to 4 endpoints through a fake global fetch (immediate 200, no network); settlement event dedupe duplicate hits cycling over 1,000 pre-recorded eventIds under a fixed injected clock; Escrow.fromHistory replay over the same detached 4-entry history; watchdog screening over a fixed mixed batch of 100 escrows (40 hand-counted expired, 70 hand-counted stale under FUNDED 7d / MILESTONE_SUBMITTED 30d budgets) at a fixed screening instant; watchdog execution (expireOverdueEscrows / actOnStaleEscrows with an EXPIRE-dispatch action) over fresh rebuilds of that same 100-escrow batch on every iteration because the executors mutate their inputs (40 of 40 expire attempts and 70 of 70 stale actions succeed — both selected states carry an EXPIRE edge); quorum snapshot restore from a persisted (JSON round-tripped) snapshot of the 9-signer / threshold-5 quorum carrying 7 recorded approvals; settleRelease netting over 4 fixed representative inputs (golden 10630 at 500 bps, 1000 at 500 bps with 100 credits, large gross 1000000 at 250 bps with 1250.25 credits, rounding edge 10 at 125 bps) checked against hand-computed proFee/net on every iteration",
+  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); settlement batch summary over that batch's 4 pre-built results (3 reports + 1 error); settlement batch webhooks over that same batch (3 signed webhooks with distinct deterministic eventIds bench-batch-event-1..3 plus the 1 forwarded per-item error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release); quorum of 9 signers with threshold 5 on a fixed injected clock, approved one vote at a time to the threshold; settlement webhook fan-out to 4 endpoints through a fake global fetch (immediate 200, no network); settlement event dedupe duplicate hits cycling over 1,000 pre-recorded eventIds under a fixed injected clock; settlement event dedupe restore from a 1,000-entry JSON-round-tripped snapshot under a fixed injected clock (all entries live at load, default TTL and capacity, observability counters restarting at zero); Escrow.fromHistory replay over the same detached 4-entry history; watchdog screening over a fixed mixed batch of 100 escrows (40 hand-counted expired, 70 hand-counted stale under FUNDED 7d / MILESTONE_SUBMITTED 30d budgets) at a fixed screening instant; watchdog execution (expireOverdueEscrows / actOnStaleEscrows with an EXPIRE-dispatch action) over fresh rebuilds of that same 100-escrow batch on every iteration because the executors mutate their inputs (40 of 40 expire attempts and 70 of 70 stale actions succeed — both selected states carry an EXPIRE edge); quorum snapshot restore from a persisted (JSON round-tripped) snapshot of the 9-signer / threshold-5 quorum carrying 7 recorded approvals; settleRelease netting over 4 fixed representative inputs (golden 10630 at 500 bps, 1000 at 500 bps with 100 credits, large gross 1000000 at 250 bps with 1250.25 credits, rounding edge 10 at 125 bps) checked against hand-computed proFee/net on every iteration",
 );
 console.log(`Iterations per op: ${ITERATIONS} (after ${WARMUP} warmup)`);
 console.log("");
@@ -1330,6 +1477,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "restoreQuorum (snapshot, 7 approvals of 9)", ops: benchRestoreQuorum() },
   { path: "deliverSettlementWebhookToMany (4 endpoints)", ops: await benchDeliverSettlementWebhookToMany() },
   { path: "SettlementEventDedupe checkAndRecord (hit, 1k)", ops: benchSettlementEventDedupe() },
+  { path: "SettlementEventDedupe.restore (1,000-entry snapshot)", ops: benchSettlementEventDedupeRestore() },
   { path: "expiredEscrows (batch 100 escrows)", ops: benchExpiredEscrows() },
   { path: "staleEscrows (batch 100 escrows)", ops: benchStaleEscrows() },
   { path: "expireOverdueEscrows (batch 100 escrows)", ops: benchExpireOverdueEscrows() },

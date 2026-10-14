@@ -18,6 +18,22 @@ version changes.
 
 ### Added
 
+- Benchmark coverage for the settlement event dedupe
+  snapshot-restore path: `SettlementEventDedupe.restore`
+  rebuilding a receiver-side dedupe from a persisted (JSON
+  round-tripped) snapshot of 1,000 fixed ids
+  (`bench-restore-0000`..`bench-restore-0999`, all first seen at
+  the restore instant on a fixed clock), restored under the
+  default TTL and capacity, built once outside the timed loop.
+  Hand-written expectations: 1,000 live entries with the
+  observability counters restarting at zero. The exhaustive
+  check runs once outside the timed loop (all 1,000 ids judged
+  duplicates, an unseen id keeping first-sighting semantics);
+  every timed iteration re-checks the counters and spot-checks
+  the first / middle / last ids. The README Benchmarks table
+  was refreshed from one real run (taken under parallel
+  shared-host load, as the README environment note records) and
+  gained the row.
 - CLI demo coverage for the batch settlement pipeline: the demo
   now closes by running `buildSettlementReports` over its three
   fixed escrows in released -> still-`FUNDED` -> refunded order,
