@@ -149,6 +149,17 @@
  *      first / middle / last ids all duplicates) on every
  *      iteration, and exhaustively (all 1,000 ids) once outside
  *      the timed loop.
+ *  18. retry-after parsing — `parseRetryAfter(value, nowMs)` over
+ *      a fixed 11-value corpus (delay-seconds, a fractional
+ *      delay-seconds, a whitespace-padded value, zero, a future
+ *      HTTP-date, a past HTTP-date, signed numbers, a garbage
+ *      string, and null / undefined), always against the same
+ *      injected fixed `nowMs`. This is the parse every 429
+ *      settlement-webhook response pays before the retry delay is
+ *      chosen, previously visible only inside the end-to-end
+ *      delivery numbers. Every timed iteration re-checks each
+ *      parsed result against the hand-pinned expectations in the
+ *      corpus comment below.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -175,6 +186,7 @@ import {
   expireOverdueEscrows,
   historyFromNdjson,
   historyToNdjson,
+  parseRetryAfter,
   restoreQuorum,
   settleRelease,
   SettlementEventDedupe,
@@ -1110,6 +1122,63 @@ if (
 }
 
 // ---------------------------------------------------------------------
+// parseRetryAfter fixture: a fixed 11-value corpus parsed against one
+// injected fixed instant RETRY_AFTER_NOW_MS = BASE_MS + 300,000 ms
+// (2026-01-01T00:05:00.000Z, second-aligned so the HTTP-date strings
+// below — which carry one-second precision — land exactly).
+// Hand-pinned expectations, written from the documented semantics
+// (delay-seconds -> seconds * 1000; an HTTP-date -> max(0, date -
+// now); signed numbers, garbage, and absent values -> undefined, the
+// caller's cue to fall back to exponential backoff), never derived
+// by calling parseRetryAfter itself:
+//   "2"                                  -> 2000
+//   "1.5"                                -> 1500
+//   " 30 " (whitespace is trimmed)      -> 30000
+//   "0"                                  -> 0
+//   HTTP-date at now + 5 s               -> 5000
+//   HTTP-date at now - 1 s (past)        -> 0
+//   "-5" (signed)                        -> undefined
+//   "+5" (signed)                        -> undefined
+//   "banana"                             -> undefined
+//   null                                 -> undefined
+//   undefined                            -> undefined
+// ---------------------------------------------------------------------
+const RETRY_AFTER_NOW_MS = BASE_MS + 300_000;
+const RETRY_AFTER_CASES: ReadonlyArray<{
+  value: string | null | undefined;
+  expected: number | undefined;
+}> = [
+  { value: "2", expected: 2000 },
+  { value: "1.5", expected: 1500 },
+  { value: " 30 ", expected: 30_000 },
+  { value: "0", expected: 0 },
+  {
+    value: new Date(RETRY_AFTER_NOW_MS + 5000).toUTCString(),
+    expected: 5000,
+  },
+  {
+    value: new Date(RETRY_AFTER_NOW_MS - 1000).toUTCString(),
+    expected: 0,
+  },
+  { value: "-5", expected: undefined },
+  { value: "+5", expected: undefined },
+  { value: "banana", expected: undefined },
+  { value: null, expected: undefined },
+  { value: undefined, expected: undefined },
+];
+
+function checkRetryAfterCorpus(): void {
+  for (const c of RETRY_AFTER_CASES) {
+    if (parseRetryAfter(c.value, RETRY_AFTER_NOW_MS) !== c.expected) {
+      throw new Error("benchmark self-check failed: parseRetryAfter");
+    }
+  }
+}
+// Pre-check outside the timed loop: the whole corpus parses to its
+// hand-pinned expectations before any number is reported.
+checkRetryAfterCorpus();
+
+// ---------------------------------------------------------------------
 // Scenarios (each with a self-check so a broken path cannot report a
 // plausible-looking number).
 // ---------------------------------------------------------------------
@@ -1235,6 +1304,12 @@ function benchVerifySettlementWebhook(): number {
     if (!verifySettlementWebhook(webhookBody, webhook.signature, WEBHOOK_SECRET)) {
       throw new Error("benchmark self-check failed: verifySettlementWebhook");
     }
+  }, ITERATIONS);
+}
+
+function benchParseRetryAfter(): number {
+  return measure(() => {
+    checkRetryAfterCorpus();
   }, ITERATIONS);
 }
 
@@ -1455,7 +1530,7 @@ console.log("escrow-state-machine-ts benchmark");
 console.log(`Node: ${process.version} on ${process.platform}/${process.arch}`);
 console.log(`CPU: ${cpus()[0]?.model ?? "unknown"}`);
 console.log(
-  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); settlement batch summary over that batch's 4 pre-built results (3 reports + 1 error); settlement batch webhooks over that same batch (3 signed webhooks with distinct deterministic eventIds bench-batch-event-1..3 plus the 1 forwarded per-item error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release); quorum of 9 signers with threshold 5 on a fixed injected clock, approved one vote at a time to the threshold; settlement webhook fan-out to 4 endpoints through a fake global fetch (immediate 200, no network); settlement event dedupe duplicate hits cycling over 1,000 pre-recorded eventIds under a fixed injected clock; settlement event dedupe restore from a 1,000-entry JSON-round-tripped snapshot under a fixed injected clock (all entries live at load, default TTL and capacity, observability counters restarting at zero); Escrow.fromHistory replay over the same detached 4-entry history; watchdog screening over a fixed mixed batch of 100 escrows (40 hand-counted expired, 70 hand-counted stale under FUNDED 7d / MILESTONE_SUBMITTED 30d budgets) at a fixed screening instant; watchdog execution (expireOverdueEscrows / actOnStaleEscrows with an EXPIRE-dispatch action) over fresh rebuilds of that same 100-escrow batch on every iteration because the executors mutate their inputs (40 of 40 expire attempts and 70 of 70 stale actions succeed — both selected states carry an EXPIRE edge); quorum snapshot restore from a persisted (JSON round-tripped) snapshot of the 9-signer / threshold-5 quorum carrying 7 recorded approvals; settleRelease netting over 4 fixed representative inputs (golden 10630 at 500 bps, 1000 at 500 bps with 100 credits, large gross 1000000 at 250 bps with 1250.25 credits, rounding edge 10 at 125 bps) checked against hand-computed proFee/net on every iteration",
+  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); settlement batch summary over that batch's 4 pre-built results (3 reports + 1 error); settlement batch webhooks over that same batch (3 signed webhooks with distinct deterministic eventIds bench-batch-event-1..3 plus the 1 forwarded per-item error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release); quorum of 9 signers with threshold 5 on a fixed injected clock, approved one vote at a time to the threshold; settlement webhook fan-out to 4 endpoints through a fake global fetch (immediate 200, no network); settlement event dedupe duplicate hits cycling over 1,000 pre-recorded eventIds under a fixed injected clock; settlement event dedupe restore from a 1,000-entry JSON-round-tripped snapshot under a fixed injected clock (all entries live at load, default TTL and capacity, observability counters restarting at zero); Escrow.fromHistory replay over the same detached 4-entry history; watchdog screening over a fixed mixed batch of 100 escrows (40 hand-counted expired, 70 hand-counted stale under FUNDED 7d / MILESTONE_SUBMITTED 30d budgets) at a fixed screening instant; watchdog execution (expireOverdueEscrows / actOnStaleEscrows with an EXPIRE-dispatch action) over fresh rebuilds of that same 100-escrow batch on every iteration because the executors mutate their inputs (40 of 40 expire attempts and 70 of 70 stale actions succeed — both selected states carry an EXPIRE edge); quorum snapshot restore from a persisted (JSON round-tripped) snapshot of the 9-signer / threshold-5 quorum carrying 7 recorded approvals; settleRelease netting over 4 fixed representative inputs (golden 10630 at 500 bps, 1000 at 500 bps with 100 credits, large gross 1000000 at 250 bps with 1250.25 credits, rounding edge 10 at 125 bps) checked against hand-computed proFee/net on every iteration; parseRetryAfter over a fixed 11-value corpus (delay-seconds, fractional and whitespace-padded values, zero, future and past HTTP-dates, signed numbers, a garbage string, null and undefined) against one injected fixed now, every result checked against hand-pinned expectations on every iteration",
 );
 console.log(`Iterations per op: ${ITERATIONS} (after ${WARMUP} warmup)`);
 console.log("");
@@ -1471,6 +1546,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "buildSettlementWebhooks (batch 4 results)", ops: benchBuildSettlementWebhooks() },
   { path: "buildSettlementWebhook (sign)", ops: benchBuildSettlementWebhook() },
   { path: "verifySettlementWebhook", ops: benchVerifySettlementWebhook() },
+  { path: "parseRetryAfter (11-value corpus)", ops: benchParseRetryAfter() },
   { path: "historyToNdjson (8 entries)", ops: benchHistoryToNdjson() },
   { path: "historyFromNdjson (8 entries, chain re-verify)", ops: benchHistoryFromNdjson() },
   { path: "quorum approve to threshold (5 of 9)", ops: benchQuorumApproveToThreshold() },

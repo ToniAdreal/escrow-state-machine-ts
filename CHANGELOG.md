@@ -18,6 +18,18 @@ version changes.
 
 ### Added
 
+- Benchmark coverage for the `Retry-After` parsing path:
+  `parseRetryAfter(value, nowMs)` over a fixed 11-value corpus
+  (delay-seconds, a fractional value, a whitespace-padded value,
+  zero, a future HTTP-date, a past HTTP-date, signed numbers, a
+  garbage string, and null / undefined) against one injected fixed
+  instant, built once outside the timed loop. Hand-pinned
+  expectations: delay-seconds parse to seconds × 1000, a past
+  HTTP-date clamps to 0, and signed / garbage / absent values parse
+  to `undefined` (the caller's exponential-backoff fallback). Every
+  timed iteration re-checks each parsed result against those
+  expectations. The README Benchmarks table was refreshed from one
+  real run and gained the `parseRetryAfter (11-value corpus)` row.
 - CLI demo coverage for receiver-side webhook deduplication: after
   the signed settlement webhook is built and verified, the demo runs
   its `eventId` through `SettlementEventDedupe` on a fixed clock
