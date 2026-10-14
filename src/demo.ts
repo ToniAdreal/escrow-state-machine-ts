@@ -8,7 +8,12 @@
  * quorum is collected vote by vote — with one below-threshold
  * arbitration attempt refused without touching the escrow — and the
  * reached quorum refunds the sponsor in full (REFUNDED), closing with
- * that escrow's refund settlement report.
+ * that escrow's refund settlement report. The demo closes with the
+ * day-end batch pipeline over all three escrows: `buildSettlementReports`
+ * builds one report per escrow with per-item error isolation (the
+ * third escrow is still FUNDED, so it lands as `{escrowId, error}`
+ * without blocking the batch), and `summarizeSettlementReports`
+ * aggregates the batch into one reconciliation summary.
  *
  * Usage: `npm run demo` (builds with tsc, then runs node on the compiled
  * output). Zero runtime dependencies: this file only imports the library
@@ -24,15 +29,19 @@ import { fileURLToPath } from "node:url";
 import {
   Escrow,
   buildSettlementReport,
+  buildSettlementReports,
   buildSettlementWebhook,
   calculateDeposit,
   createQuorum,
   dispatchArbitration,
   renderReport,
+  summarizeSettlementReports,
   verifySettlementWebhook,
   type EscrowEvent,
   type Quorum,
   type SettlementReport,
+  type SettlementReportResult,
+  type SettlementReportsSummary,
   type SettlementWebhook,
 } from "./index.js";
 
@@ -69,6 +78,15 @@ export const DEMO_QUORUM_APPROVAL_ATS = [
 /** Fixed `at` for the below-threshold attempt and the refund dispatch. */
 export const DEMO_ARBITRATION_ATTEMPT_AT = "2026-03-07T12:30:00.000Z";
 export const DEMO_ARBITRATION_AT = "2026-03-07T13:30:00.000Z";
+
+/**
+ * Third escrow for the closing batch section: funded with the same
+ * golden deposit but never submitted, so it is still FUNDED (not
+ * terminal, nothing to settle) when the batch runs — its batch entry
+ * must land as `{escrowId, error}` without blocking the other two.
+ */
+export const DEMO_PENDING_ESCROW_ID = "DEMO-ESC-003";
+export const DEMO_PENDING_FUND_AT = "2026-03-03T09:00:00.000Z";
 
 const steps: Array<{
   event: EscrowEvent;
@@ -157,6 +175,12 @@ export interface DemoResult {
    * part of the demo, and its refusal left the escrow untouched.
    */
   arbitrationRejection: string;
+  /** Third escrow, left FUNDED so the batch section has a failing item. */
+  pendingEscrow: Escrow;
+  /** Per-item batch results, in batch order (released, error, refunded). */
+  batchResults: SettlementReportResult[];
+  /** Reconciliation summary over {@link DemoResult.batchResults}. */
+  batchSummary: SettlementReportsSummary;
   lines: string[];
 }
 
@@ -328,6 +352,64 @@ export function runDemo(): DemoResult {
   lines.push("", "Settlement report (dispute refund):");
   lines.push(renderReport(disputeReport));
 
+  // --- Batch settlement: one batch -> per-item reports -> one summary ---
+  // The day-end pipeline the single-report sections above feed into.
+  // The batch set is the demo's fixed escrows in a deliberate order —
+  // released, still-FUNDED, refunded — so the failing item sits in the
+  // middle: its entry lands as {escrowId, error} and the refunded
+  // report after it still builds, proving per-item error isolation.
+  // Hand-computed expectations (golden deposit 10,630 on both terminal
+  // escrows; the error entry contributes nothing to any total):
+  // reports 2, errors 1; totalDeposit = totalInflow = totalOutflow =
+  // 21,260; sponsor net -10,630 (the released outflow; on the refunded
+  // escrow its inflow cancels its own outflow), creator net 10,098.50,
+  // platform net 531.50, referrer net 0; balanced true.
+  const pendingEscrow = new Escrow(DEMO_PENDING_ESCROW_ID);
+  pendingEscrow.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "sponsor",
+    at: DEMO_PENDING_FUND_AT,
+  });
+  const batchResults = buildSettlementReports([
+    {
+      escrowId: escrow.id,
+      history: escrow.history,
+      finalState: escrow.state,
+      deposit: fees,
+      settlement: { proFeeBps: DEMO_PRO_FEE_BPS },
+    },
+    {
+      escrowId: pendingEscrow.id,
+      history: pendingEscrow.history,
+      finalState: pendingEscrow.state,
+      deposit: fees,
+    },
+    {
+      escrowId: disputeEscrow.id,
+      history: disputeEscrow.history,
+      finalState: disputeEscrow.state,
+      deposit: fees,
+    },
+  ]);
+  const batchSummary = summarizeSettlementReports(batchResults);
+  lines.push(
+    "",
+    "Batch settlement reports (batch -> per-item isolation -> summary):",
+  );
+  for (const result of batchResults) {
+    if (result.report) {
+      lines.push(
+        `  ${result.escrowId}: report — outcome ${result.report.outcome}, deposit ${result.report.deposit.deposit}, balanced ${result.report.balanced}`,
+      );
+    } else {
+      lines.push(`  ${result.escrowId}: error — ${result.error}`);
+    }
+  }
+  lines.push(
+    `  summary: ${batchSummary.total} escrows — ${batchSummary.reports} reports, ${batchSummary.errors} error (released ${batchSummary.outcomes.released}, refunded ${batchSummary.outcomes.refunded}, expired ${batchSummary.outcomes.expired})`,
+    `  summary totals: deposit ${batchSummary.totalDeposit}, inflow ${batchSummary.totalInflow}, outflow ${batchSummary.totalOutflow} — ${batchSummary.balanced ? "balanced ✓" : "UNBALANCED ✗"}`,
+    `  summary parties: ${batchSummary.parties.map((p) => `${p.party} net ${p.net}`).join(", ")}`,
+  );
+
   return {
     escrow,
     report,
@@ -337,6 +419,9 @@ export function runDemo(): DemoResult {
     disputeReport,
     disputeQuorum,
     arbitrationRejection,
+    pendingEscrow,
+    batchResults,
+    batchSummary,
     lines,
   };
 }

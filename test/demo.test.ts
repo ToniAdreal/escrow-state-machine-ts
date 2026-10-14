@@ -8,6 +8,7 @@ import {
   DEMO_ARBITRATION_AT,
   DEMO_DISPUTE_ESCROW_ID,
   DEMO_ESCROW_ID,
+  DEMO_PENDING_ESCROW_ID,
   DEMO_QUORUM_APPROVAL_ATS,
   DEMO_QUORUM_SIGNERS,
   DEMO_QUORUM_THRESHOLD,
@@ -218,6 +219,100 @@ test("demo lines print the dispute / quorum / refund branch", () => {
   assert.ok(text.includes(`Outcome: refunded`));
 });
 
+test("demo batch section isolates the still-FUNDED escrow's error and still reports the escrow after it", () => {
+  const { pendingEscrow, batchResults } = runDemo();
+
+  assert.equal(pendingEscrow.id, DEMO_PENDING_ESCROW_ID);
+  assert.equal(pendingEscrow.state, "FUNDED");
+  assert.equal(pendingEscrow.isTerminal, false);
+  // Batch order is released -> pending (error) -> refunded: the error
+  // sits in the middle, and the entry after it still produced a report.
+  assert.equal(batchResults.length, 3);
+  assert.deepEqual(
+    batchResults.map((r) => r.escrowId),
+    [DEMO_ESCROW_ID, DEMO_PENDING_ESCROW_ID, DEMO_DISPUTE_ESCROW_ID],
+  );
+  assert.equal(batchResults[0].report?.outcome, "released");
+  assert.equal(batchResults[0].error, undefined);
+  assert.equal(batchResults[1].report, undefined);
+  assert.equal(
+    batchResults[1].error,
+    `cannot build settlement report for ${DEMO_PENDING_ESCROW_ID}: escrow is in FUNDED, no settlement has happened yet`,
+  );
+  assert.equal(batchResults[2].report?.outcome, "refunded");
+  assert.equal(batchResults[2].error, undefined);
+});
+
+test("demo batch summary aggregates only the successful reports (hand-computed totals)", () => {
+  const { batchSummary } = runDemo();
+
+  // Golden deposit 10,630 on both terminal escrows; the FUNDED error
+  // entry is counted but contributes nothing to any money figure.
+  assert.equal(batchSummary.total, 3);
+  assert.equal(batchSummary.reports, 2);
+  assert.equal(batchSummary.errors, 1);
+  assert.deepEqual(batchSummary.outcomes, {
+    released: 1,
+    refunded: 1,
+    expired: 0,
+  });
+  assert.equal(batchSummary.totalDeposit, 21260);
+  assert.equal(batchSummary.totalInflow, 21260);
+  assert.equal(batchSummary.totalOutflow, 21260);
+  assert.equal(batchSummary.balanced, true);
+  // Sponsor: -10,630 on the release, 0 net on the refund (in = out).
+  // Creator 10,098.50 and platform 531.50 come from the release only.
+  const byParty = Object.fromEntries(
+    batchSummary.parties.map((p) => [p.party, p.net]),
+  );
+  assert.deepEqual(byParty, {
+    sponsor: -10630,
+    creator: 10098.5,
+    platform: 531.5,
+    referrer: 0,
+  });
+});
+
+test("demo lines print the batch reports + summary section", () => {
+  const { lines } = runDemo();
+  const text = lines.join("\n");
+
+  assert.match(
+    text,
+    /Batch settlement reports \(batch -> per-item isolation -> summary\):/,
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_ESCROW_ID}: report — outcome released, deposit 10630, balanced true`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_PENDING_ESCROW_ID}: error — cannot build settlement report for ${DEMO_PENDING_ESCROW_ID}: escrow is in FUNDED, no settlement has happened yet`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_DISPUTE_ESCROW_ID}: report — outcome refunded, deposit 10630, balanced true`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  summary: 3 escrows — 2 reports, 1 error (released 1, refunded 1, expired 0)",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  summary totals: deposit 21260, inflow 21260, outflow 21260 — balanced ✓",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  summary parties: sponsor net -10630, creator net 10098.5, platform net 531.5, referrer net 0",
+    ),
+  );
+});
+
 test("demo is deterministic: two runs produce identical lines", () => {
   assert.deepEqual(runDemo().lines, runDemo().lines);
 });
@@ -263,4 +358,14 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
   assert.ok(out.includes(`  eventId:      ${DEMO_WEBHOOK_EVENT_ID}`));
   assert.match(out, / {2}signature: {4}sha256=[0-9a-f]{64}/);
   assert.match(out, /verifySettlementWebhook: ok/);
+  // Batch tail: per-item isolation (error in the middle) + summary
+  assert.match(out, /Batch settlement reports \(batch -> per-item isolation -> summary\):/);
+  assert.match(
+    out,
+    /DEMO-ESC-003: error — cannot build settlement report for DEMO-ESC-003: escrow is in FUNDED/,
+  );
+  assert.match(
+    out,
+    /summary totals: deposit 21260, inflow 21260, outflow 21260 — balanced ✓/,
+  );
 });

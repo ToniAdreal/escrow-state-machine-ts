@@ -18,6 +18,19 @@ version changes.
 
 ### Added
 
+- CLI demo coverage for the batch settlement pipeline: the demo
+  now closes by running `buildSettlementReports` over its three
+  fixed escrows in released -> still-`FUNDED` -> refunded order,
+  printing each per-item result (the `FUNDED` escrow lands as
+  `{escrowId, error}` in the middle of the batch and does not
+  block the refunded report after it), then
+  `summarizeSettlementReports` prints the reconciliation summary
+  (2 reports, 1 error; deposit / inflow / outflow totals of
+  21,260 over the two golden 10,630 deposits; per-party nets
+  sponsor -10,630, creator 10,098.50, platform 531.50, referrer
+  0). `DemoResult` exposes the pending escrow, the batch
+  results, and the summary; the demo tests pin the batch shapes,
+  the exact error message, and the hand-computed summary totals.
 - Benchmark coverage for the watchdog execution paths:
   `expireOverdueEscrows` and `actOnStaleEscrows` (with the
   production action `(e) => e.dispatch("EXPIRE")`) over the
