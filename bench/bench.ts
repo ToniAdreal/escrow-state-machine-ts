@@ -100,6 +100,19 @@
  *      quorum is checked against hand-written expectations (quorum
  *      reached, 7 counted approvals in record order, 7 audit-log
  *      entries) on every iteration.
+ *  15. release settlement netting — `settleRelease(inputs)` over one
+ *      fixed set of 4 representative inputs (composition and
+ *      hand-computed expectations in the fixture comment below: the
+ *      golden-deposit case at the case study's 5% fee, a mid-size
+ *      case with referral credits, one large-gross case, and one
+ *      half-cent bps rounding edge). This is the amount origin of
+ *      the whole settlement chain — gross minus pro fee (bps, via
+ *      round2) minus referral credits, with the negative-net guard —
+ *      that every report / webhook path downstream starts from, and
+ *      the one step that previously had no measured baseline. Every
+ *      timed iteration checks each result's proFee / net against
+ *      the hand-written expectations (never re-derived through the
+ *      implementation under test).
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -125,6 +138,7 @@ import {
   historyFromNdjson,
   historyToNdjson,
   restoreQuorum,
+  settleRelease,
   SettlementEventDedupe,
   staleEscrows,
   summarizeSettlementReports,
@@ -135,6 +149,7 @@ import {
   type EscrowState,
   type Quorum,
   type QuorumSnapshot,
+  type SettlementInputs,
   type SettlementReportInputs,
   type SettlementWebhookEndpoint,
 } from "../src/index.js";
@@ -1062,6 +1077,71 @@ function benchHistoryFromNdjson(): number {
   }, ITERATIONS);
 }
 
+
+// ---------------------------------------------------------------------
+// settleRelease fixture: 4 fixed representative settlement inputs.
+// Hand-computed expectations (formula: proFee = round2(gross *
+// proFeeBps / 10000); net = round2(gross - proFee - referralCredits);
+// expectations written by hand here, never re-derived through
+// settleRelease itself — the same hand-calc tradition as the golden
+// 10630 deposit and the economicsRounding tests):
+//   1. golden case: gross 10630, 500 bps (the case study's 5%),
+//      no credits -> proFee 531.50, net 10098.50.
+//   2. mid-size with credits: gross 1000, 500 bps, credits 100
+//      -> proFee 50, net 850.
+//   3. large gross: gross 1000000, 250 bps, credits 1250.25
+//      -> proFee 25000, net 973749.75.
+//   4. half-cent rounding edge: gross 10, 125 bps, no credits
+//      -> proFee round2(0.125) = 0.13 (half rounds up), net 9.87.
+// ---------------------------------------------------------------------
+const SETTLE_RELEASE_CASES: ReadonlyArray<{
+  inputs: SettlementInputs;
+  proFee: number;
+  net: number;
+}> = [
+  { inputs: { gross: 10630, proFeeBps: 500 }, proFee: 531.5, net: 10098.5 },
+  {
+    inputs: { gross: 1000, proFeeBps: 500, referralCredits: 100 },
+    proFee: 50,
+    net: 850,
+  },
+  {
+    inputs: { gross: 1000000, proFeeBps: 250, referralCredits: 1250.25 },
+    proFee: 25000,
+    net: 973749.75,
+  },
+  { inputs: { gross: 10, proFeeBps: 125 }, proFee: 0.13, net: 9.87 },
+];
+
+function checkSettleReleaseCase(
+  result: { gross: number; proFee: number; referralCredits: number; net: number },
+  expected: (typeof SETTLE_RELEASE_CASES)[number],
+): void {
+  if (
+    result.gross !== expected.inputs.gross ||
+    result.proFee !== expected.proFee ||
+    result.referralCredits !== (expected.inputs.referralCredits ?? 0) ||
+    result.net !== expected.net ||
+    result.net + result.proFee + result.referralCredits !== result.gross
+  ) {
+    throw new Error("benchmark self-check failed: settleRelease");
+  }
+}
+
+// Pre-check outside timing: every fixture case nets to its
+// hand-written expectation before any number is reported.
+for (const c of SETTLE_RELEASE_CASES) {
+  checkSettleReleaseCase(settleRelease(c.inputs), c);
+}
+
+function benchSettleRelease(): number {
+  return measure(() => {
+    for (const c of SETTLE_RELEASE_CASES) {
+      checkSettleReleaseCase(settleRelease(c.inputs), c);
+    }
+  }, ITERATIONS);
+}
+
 function benchExpiredEscrows(): number {
   return measure(() => {
     checkWatchdogIds(
@@ -1086,7 +1166,7 @@ console.log("escrow-state-machine-ts benchmark");
 console.log(`Node: ${process.version} on ${process.platform}/${process.arch}`);
 console.log(`CPU: ${cpus()[0]?.model ?? "unknown"}`);
 console.log(
-  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); settlement batch summary over that batch's 4 pre-built results (3 reports + 1 error); settlement batch webhooks over that same batch (3 signed webhooks with distinct deterministic eventIds bench-batch-event-1..3 plus the 1 forwarded per-item error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release); quorum of 9 signers with threshold 5 on a fixed injected clock, approved one vote at a time to the threshold; settlement webhook fan-out to 4 endpoints through a fake global fetch (immediate 200, no network); settlement event dedupe duplicate hits cycling over 1,000 pre-recorded eventIds under a fixed injected clock; Escrow.fromHistory replay over the same detached 4-entry history; watchdog screening over a fixed mixed batch of 100 escrows (40 hand-counted expired, 70 hand-counted stale under FUNDED 7d / MILESTONE_SUBMITTED 30d budgets) at a fixed screening instant; quorum snapshot restore from a persisted (JSON round-tripped) snapshot of the 9-signer / threshold-5 quorum carrying 7 recorded approvals",
+  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); settlement batch summary over that batch's 4 pre-built results (3 reports + 1 error); settlement batch webhooks over that same batch (3 signed webhooks with distinct deterministic eventIds bench-batch-event-1..3 plus the 1 forwarded per-item error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release); quorum of 9 signers with threshold 5 on a fixed injected clock, approved one vote at a time to the threshold; settlement webhook fan-out to 4 endpoints through a fake global fetch (immediate 200, no network); settlement event dedupe duplicate hits cycling over 1,000 pre-recorded eventIds under a fixed injected clock; Escrow.fromHistory replay over the same detached 4-entry history; watchdog screening over a fixed mixed batch of 100 escrows (40 hand-counted expired, 70 hand-counted stale under FUNDED 7d / MILESTONE_SUBMITTED 30d budgets) at a fixed screening instant; quorum snapshot restore from a persisted (JSON round-tripped) snapshot of the 9-signer / threshold-5 quorum carrying 7 recorded approvals; settleRelease netting over 4 fixed representative inputs (golden 10630 at 500 bps, 1000 at 500 bps with 100 credits, large gross 1000000 at 250 bps with 1250.25 credits, rounding edge 10 at 125 bps) checked against hand-computed proFee/net on every iteration",
 );
 console.log(`Iterations per op: ${ITERATIONS} (after ${WARMUP} warmup)`);
 console.log("");
@@ -1095,6 +1175,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "dispatch (full lifecycle, 4 dispatches)", ops: benchDispatchLifecycle() },
   { path: "verifyHistoryChain (4 entries)", ops: benchVerifyHistoryChain() },
   { path: "Escrow.fromHistory (4 entries)", ops: benchFromHistory() },
+  { path: "settleRelease (4 fixed inputs)", ops: benchSettleRelease() },
   { path: "buildSettlementReport (4 entries)", ops: benchBuildSettlementReport() },
   { path: "buildSettlementReports (batch 4 x 4 entries)", ops: benchBuildSettlementReports() },
   { path: "summarizeSettlementReports (batch 4 results)", ops: benchSummarizeSettlementReports() },

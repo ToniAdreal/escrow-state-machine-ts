@@ -18,6 +18,18 @@ version changes.
 
 ### Added
 
+- Benchmark coverage for the release settlement netting path:
+  `settleRelease` over 4 fixed representative inputs (the golden
+  10,630 at 500 bps, 1,000 at 500 bps with 100 referral credits, a
+  large gross of 1,000,000 at 250 bps with 1,250.25 credits, and a
+  10-at-125-bps half-cent rounding edge), built once outside the
+  timed loop. Every timed iteration self-checks each result's
+  proFee / net against hand-computed expectations (531.50 /
+  10,098.50; 50 / 850; 25,000 / 973,749.75; 0.13 / 9.87), never
+  re-derived through the implementation under test. The README
+  Benchmarks table was refreshed from one real run (taken under
+  parallel shared-host load, as the README environment note
+  records) and gained the row.
 - Benchmark coverage for the quorum snapshot-restore path:
   `restoreQuorum` rebuilding a live quorum from a persisted
   (JSON round-tripped) snapshot of the bench's fixed 9-signer /
