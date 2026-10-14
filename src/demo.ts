@@ -3,7 +3,11 @@
  * CREATED -> FUNDED -> MILESTONE_SUBMITTED -> VERIFIED -> RELEASED,
  * print the append-only audit history plus the final settlement report,
  * then build the signed settlement webhook for the released escrow and
- * verify it the way a receiver would. A second escrow then walks the
+ * verify it the way a receiver would. The receiver side then runs
+ * that webhook's `eventId` through `SettlementEventDedupe` on a fixed
+ * clock: the first delivery is new (booked), an immediate redelivery
+ * is a duplicate (skipped), and after the clock advances by exactly
+ * the TTL the same id counts as new again. A second escrow then walks the
  * dispute branch: VERIFY_FAIL lands it in DISPUTED, a 2-of-3 arbitrator
  * quorum is collected vote by vote — with one below-threshold
  * arbitration attempt refused without touching the escrow — and the
@@ -33,6 +37,7 @@
 import { fileURLToPath } from "node:url";
 import {
   Escrow,
+  SettlementEventDedupe,
   buildSettlementReport,
   buildSettlementReports,
   buildSettlementWebhook,
@@ -66,6 +71,17 @@ export const DEMO_WEBHOOK_SECRET =
 /** Fixed webhook eventId / `at` so the demo signature is deterministic. */
 export const DEMO_WEBHOOK_EVENT_ID = "evt_demo_settlement_001";
 export const DEMO_WEBHOOK_AT = "2026-03-06T08:17:00.000Z";
+
+/**
+ * Receiver-dedupe fixtures: a 1-hour TTL (the `SettlementEventDedupe`
+ * default, passed explicitly here) and a fixed clock that starts at
+ * the webhook's own `at` instant. After the first two deliveries the
+ * clock advances by exactly `DEMO_DEDUPE_TTL_MS`: an id is a
+ * duplicate only while `now - firstSeenAt < ttlMs`, so at exactly
+ * one TTL the record has expired and the id counts as new again.
+ */
+export const DEMO_DEDUPE_TTL_MS = 3_600_000;
+export const DEMO_DEDUPE_START_MS = Date.parse(DEMO_WEBHOOK_AT);
 
 /** Fixed fixture for the dispute branch: a second escrow, same deposit. */
 export const DEMO_DISPUTE_ESCROW_ID = "DEMO-ESC-002";
@@ -186,6 +202,12 @@ export interface DemoResult {
   report: SettlementReport;
   webhook: SettlementWebhook;
   webhookVerified: boolean;
+  /**
+   * Receiver-side dedupe store after the demo's three deliveries of
+   * the main webhook's `eventId` (new, duplicate, new-after-TTL):
+   * its stats read hits 1 / misses 2 / size 1.
+   */
+  webhookDedupe: SettlementEventDedupe;
   /** Second escrow, driven through the dispute branch to REFUNDED. */
   disputeEscrow: Escrow;
   /** Refund settlement report of the dispute escrow. */
@@ -291,6 +313,35 @@ export function runDemo(): DemoResult {
   lines.push(`  signature:    ${webhook.signature}`);
   lines.push(
     `  verifySettlementWebhook: ${webhookVerified ? "ok" : "FAILED"}`,
+  );
+
+  // --- Receiver dedupe: the same eventId delivered three times ---
+  // Verification proves a delivery is authentic; dedupe is the other
+  // half of the receiver's at-most-once story (see the README's
+  // receiver guidance): a retried delivery re-POSTs the same eventId,
+  // and booking it twice would settle twice. The dedupe runs on a
+  // fixed clock starting at the webhook's `at` (DEMO_DEDUPE_START_MS)
+  // with an explicit 1-hour TTL. Deliveries 1 and 2 happen at the
+  // same fixed instant; the clock then advances by exactly the TTL,
+  // at which point the record has expired (duplicates are only
+  // `now - firstSeenAt < ttlMs`), so delivery 3 counts as new again.
+  let dedupeNowMs = DEMO_DEDUPE_START_MS;
+  const webhookDedupe = new SettlementEventDedupe({
+    ttlMs: DEMO_DEDUPE_TTL_MS,
+    now: () => dedupeNowMs,
+  });
+  const dedupeFirst = webhookDedupe.checkAndRecord(webhook.payload.eventId);
+  const dedupeSecond = webhookDedupe.checkAndRecord(webhook.payload.eventId);
+  dedupeNowMs += DEMO_DEDUPE_TTL_MS;
+  const dedupeAfterTtl = webhookDedupe.checkAndRecord(webhook.payload.eventId);
+  const dedupeStats = webhookDedupe.stats();
+  lines.push(
+    "",
+    "Receiver dedupe (SettlementEventDedupe on the webhook eventId):",
+    `  delivery 1: eventId ${webhook.payload.eventId} — checkAndRecord: ${dedupeFirst} (new event, book the settlement)`,
+    `  delivery 2: eventId ${webhook.payload.eventId} — checkAndRecord: ${dedupeSecond} (duplicate, skip — no second booking)`,
+    `  delivery 3 (fixed clock +${DEMO_DEDUPE_TTL_MS} ms = TTL): eventId ${webhook.payload.eventId} — checkAndRecord: ${dedupeAfterTtl} (new event again, TTL expired)`,
+    `  dedupe stats: size ${dedupeStats.size}, hits ${dedupeStats.hits}, misses ${dedupeStats.misses}, evictions ${dedupeStats.evictions}`,
   );
 
   // --- Dispute branch: DISPUTED -> quorum arbitration -> REFUNDED ---
@@ -497,6 +548,7 @@ export function runDemo(): DemoResult {
     report,
     webhook,
     webhookVerified,
+    webhookDedupe,
     disputeEscrow,
     disputeReport,
     disputeQuorum,

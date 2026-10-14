@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 627 tests, all local
+npm test   # 629 tests, all local
 ```
 
 ## Quickstart
@@ -54,7 +54,12 @@ through `CREATED → FUNDED → MILESTONE_SUBMITTED → VERIFIED → RELEASED`
 history plus the balanced settlement report, then builds the signed
 settlement webhook for the released escrow (fixed `eventId`/`at`,
 demo-only secret printed in `src/demo.ts` — not a real credential)
-and verifies it the way a receiver would. A second escrow then walks
+and verifies it the way a receiver would. The receiver side then
+runs that webhook's `eventId` through `SettlementEventDedupe` on a
+fixed clock (1-hour TTL, starting at the webhook's `at`): the first
+delivery is new and booked, an immediate redelivery is a duplicate
+and skipped, and after the clock advances by exactly the TTL the
+same id counts as new again. A second escrow then walks
 the dispute branch: `VERIFY_FAIL` into `DISPUTED`, a 2-of-3 arbitrator
 quorum collected vote by vote (a below-threshold `dispatchArbitration`
 attempt is refused with the escrow untouched), and the reached quorum
@@ -681,7 +686,7 @@ and an empty batch yields an all-zero summary.
 
 ## Reproducibility
 
-`npm test` runs 627 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 629 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

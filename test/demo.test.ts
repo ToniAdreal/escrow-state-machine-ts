@@ -6,6 +6,7 @@ import path from "node:path";
 import {
   runDemo,
   DEMO_ARBITRATION_AT,
+  DEMO_DEDUPE_TTL_MS,
   DEMO_BATCH_WEBHOOK_AT,
   DEMO_BATCH_WEBHOOK_EVENT_IDS,
   DEMO_DISPUTE_ESCROW_ID,
@@ -134,6 +135,55 @@ test("demo lines print the webhook build + verify section", () => {
   assert.ok(text.includes(`  at:           ${DEMO_WEBHOOK_AT}`));
   assert.match(text, / {2}signature: {4}sha256=[0-9a-f]{64}/);
   assert.ok(text.includes("  verifySettlementWebhook: ok"));
+});
+
+test("demo receiver dedupe counts the main webhook eventId new, duplicate, then new after the TTL", () => {
+  const { webhookDedupe } = runDemo();
+
+  // Three deliveries of evt_demo_settlement_001 on the fixed clock:
+  // first sighting is a miss (book it), the immediate redelivery is
+  // the one hit (skip it), and after the clock advances by exactly
+  // the TTL the expired id is a miss again and re-recorded — so the
+  // store ends with one live entry, hits 1, misses 2, no evictions.
+  assert.deepEqual(webhookDedupe.stats(), {
+    size: 1,
+    hits: 1,
+    misses: 2,
+    evictions: 0,
+  });
+  assert.equal(DEMO_DEDUPE_TTL_MS, 3_600_000);
+});
+
+test("demo lines print the receiver dedupe section", () => {
+  const { lines } = runDemo();
+  const text = lines.join("\n");
+
+  assert.match(
+    text,
+    /Receiver dedupe \(SettlementEventDedupe on the webhook eventId\):/,
+  );
+  assert.ok(
+    text.includes(
+      `  delivery 1: eventId ${DEMO_WEBHOOK_EVENT_ID} — checkAndRecord: false (new event, book the settlement)`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  delivery 2: eventId ${DEMO_WEBHOOK_EVENT_ID} — checkAndRecord: true (duplicate, skip — no second booking)`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  delivery 3 (fixed clock +${DEMO_DEDUPE_TTL_MS} ms = TTL): eventId ${DEMO_WEBHOOK_EVENT_ID} — checkAndRecord: false (new event again, TTL expired)`,
+    ),
+  );
+  assert.ok(text.includes("  dedupe stats: size 1, hits 1, misses 2, evictions 0"));
+  // The dedupe section sits between the webhook section and the
+  // dispute branch — it is the receiver half of the webhook story.
+  const webhookAt = text.indexOf("Settlement webhook (signed");
+  const dedupeAt = text.indexOf("Receiver dedupe (SettlementEventDedupe");
+  const disputeAt = text.indexOf("Dispute branch (DISPUTE");
+  assert.ok(webhookAt < dedupeAt && dedupeAt < disputeAt);
 });
 
 test("demo dispute branch reaches DISPUTED, is refused below quorum, then refunds at quorum", () => {

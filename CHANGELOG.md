@@ -18,6 +18,17 @@ version changes.
 
 ### Added
 
+- CLI demo coverage for receiver-side webhook deduplication: after
+  the signed settlement webhook is built and verified, the demo runs
+  its `eventId` through `SettlementEventDedupe` on a fixed clock
+  (explicit 1-hour TTL, starting at the webhook's `at`) — the first
+  delivery is new and booked, an immediate redelivery is a duplicate
+  and skipped (no second booking), and after the clock advances by
+  exactly the TTL the same id counts as new again, closing with the
+  dedupe stats (size 1, hits 1, misses 2, evictions 0). `DemoResult`
+  exposes the dedupe store; the demo tests pin the stats and the
+  printed delivery lines and their position between the webhook and
+  dispute sections.
 - CLI demo coverage for the batch settlement webhook pipeline:
   the demo's closing batch section now feeds its
   `buildSettlementReports` results straight into
