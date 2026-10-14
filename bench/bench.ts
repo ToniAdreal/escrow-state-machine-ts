@@ -88,6 +88,18 @@
  *      pure, so the same batch is re-screened on every iteration and
  *      each result is checked against the hand-counted expected id
  *      list (in batch order) on every iteration.
+ *  14. quorum snapshot restore — `restoreQuorum(config, snapshot)`
+ *      rebuilding a live quorum from a persisted snapshot (the JSON
+ *      round-tripped form of `snapshot()`), over the bench's fixed
+ *      9-signer / threshold-5 quorum shape carrying 7 recorded
+ *      approvals (dao-1..dao-7, one second apart on the fixed
+ *      clock). This is the restart path an arbitration service runs
+ *      for every undecided quorum at startup: strict snapshot
+ *      validation (signer set, threshold, per-entry audit-trail
+ *      re-checks) plus the rebuild, on every call. The restored
+ *      quorum is checked against hand-written expectations (quorum
+ *      reached, 7 counted approvals in record order, 7 audit-log
+ *      entries) on every iteration.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -112,6 +124,7 @@ import {
   expiredEscrows,
   historyFromNdjson,
   historyToNdjson,
+  restoreQuorum,
   SettlementEventDedupe,
   staleEscrows,
   summarizeSettlementReports,
@@ -121,6 +134,7 @@ import {
   type EscrowHistoryEntry,
   type EscrowState,
   type Quorum,
+  type QuorumSnapshot,
   type SettlementReportInputs,
   type SettlementWebhookEndpoint,
 } from "../src/index.js";
@@ -554,6 +568,65 @@ if (!verifyHistoryChain(ndjsonHistoryFixture)) {
     throw new Error("benchmark fixture failed: quorum accumulation shape");
   }
 }
+
+// Restore fixture: a snapshot of that same 9-signer / threshold-5
+// quorum shape, carrying 7 recorded approvals — dao-1..dao-7 approving
+// in order, one second apart on a stepped fixed clock starting at
+// BASE_MS (approval i at BASE_MS + i * 1000). Built once, outside the
+// timed loop, then pushed through a JSON stringify/parse round-trip
+// so the timed path restores exactly the plain-data form a persisted
+// snapshot has after a restart. Hand-written expectations (NOT
+// produced by the implementation): 7 approvals recorded, all 7 count
+// (no expiry window is configured), the threshold of 5 is reached,
+// the counted approvals are dao-1..dao-7 in record order, and the
+// audit log holds exactly those 7 entries.
+const RESTORE_APPROVAL_COUNT = 7;
+const RESTORE_EXPECTED_APPROVALS: readonly string[] = QUORUM_SIGNERS.slice(
+  0,
+  RESTORE_APPROVAL_COUNT,
+);
+const RESTORE_CONFIG = {
+  threshold: QUORUM_THRESHOLD,
+  signers: QUORUM_SIGNERS,
+  now: () => BASE_MS,
+};
+const restoreSnapshot: QuorumSnapshot = ((): QuorumSnapshot => {
+  let clockMs = BASE_MS;
+  const source = createQuorum({
+    threshold: QUORUM_THRESHOLD,
+    signers: QUORUM_SIGNERS,
+    now: () => clockMs,
+  });
+  for (let i = 0; i < RESTORE_APPROVAL_COUNT; i++) {
+    clockMs = BASE_MS + i * 1000;
+    source.approve(QUORUM_SIGNERS[i]);
+  }
+  return source.snapshot();
+})();
+const restorePersisted: unknown = JSON.parse(JSON.stringify(restoreSnapshot));
+function checkRestoredQuorum(restored: Quorum): void {
+  const approvals = restored.approvals();
+  if (
+    !restored.hasQuorum() ||
+    restored.approvalCount() !== RESTORE_APPROVAL_COUNT ||
+    approvals.length !== RESTORE_APPROVAL_COUNT ||
+    approvals.some((s, i) => s !== RESTORE_EXPECTED_APPROVALS[i]) ||
+    restored.approvalLog().length !== RESTORE_APPROVAL_COUNT
+  ) {
+    throw new Error("benchmark restore check failed: restored quorum shape");
+  }
+}
+// Restore pre-checks (outside the timed loop): the restored quorum
+// matches the hand-written expectations, and re-snapshotting it
+// reproduces the persisted snapshot byte-for-byte (canonical JSON),
+// so the timed path restores a snapshot that itself round-trips.
+{
+  const restored = restoreQuorum(RESTORE_CONFIG, restorePersisted);
+  checkRestoredQuorum(restored);
+  if (JSON.stringify(restored.snapshot()) !== JSON.stringify(restoreSnapshot)) {
+    throw new Error("benchmark fixture failed: restored snapshot mismatch");
+  }
+}
 // Fan-out delivery fixture: the same settled report fanned out to 4
 // fixed endpoints, each with its own signing secret, under the shared
 // fixed `WEBHOOK_NOW` / `WEBHOOK_EVENT_ID` above. This library's
@@ -941,6 +1014,12 @@ function benchQuorumApproveToThreshold(): number {
   }, ITERATIONS);
 }
 
+function benchRestoreQuorum(): number {
+  return measure(() => {
+    checkRestoredQuorum(restoreQuorum(RESTORE_CONFIG, restorePersisted));
+  }, ITERATIONS);
+}
+
 async function benchDeliverSettlementWebhookToMany(): Promise<number> {
   return measureAsync(async () => {
     await runFanout();
@@ -1007,7 +1086,7 @@ console.log("escrow-state-machine-ts benchmark");
 console.log(`Node: ${process.version} on ${process.platform}/${process.arch}`);
 console.log(`CPU: ${cpus()[0]?.model ?? "unknown"}`);
 console.log(
-  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); settlement batch summary over that batch's 4 pre-built results (3 reports + 1 error); settlement batch webhooks over that same batch (3 signed webhooks with distinct deterministic eventIds bench-batch-event-1..3 plus the 1 forwarded per-item error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release); quorum of 9 signers with threshold 5 on a fixed injected clock, approved one vote at a time to the threshold; settlement webhook fan-out to 4 endpoints through a fake global fetch (immediate 200, no network); settlement event dedupe duplicate hits cycling over 1,000 pre-recorded eventIds under a fixed injected clock; Escrow.fromHistory replay over the same detached 4-entry history; watchdog screening over a fixed mixed batch of 100 escrows (40 hand-counted expired, 70 hand-counted stale under FUNDED 7d / MILESTONE_SUBMITTED 30d budgets) at a fixed screening instant",
+  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); settlement batch summary over that batch's 4 pre-built results (3 reports + 1 error); settlement batch webhooks over that same batch (3 signed webhooks with distinct deterministic eventIds bench-batch-event-1..3 plus the 1 forwarded per-item error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release); quorum of 9 signers with threshold 5 on a fixed injected clock, approved one vote at a time to the threshold; settlement webhook fan-out to 4 endpoints through a fake global fetch (immediate 200, no network); settlement event dedupe duplicate hits cycling over 1,000 pre-recorded eventIds under a fixed injected clock; Escrow.fromHistory replay over the same detached 4-entry history; watchdog screening over a fixed mixed batch of 100 escrows (40 hand-counted expired, 70 hand-counted stale under FUNDED 7d / MILESTONE_SUBMITTED 30d budgets) at a fixed screening instant; quorum snapshot restore from a persisted (JSON round-tripped) snapshot of the 9-signer / threshold-5 quorum carrying 7 recorded approvals",
 );
 console.log(`Iterations per op: ${ITERATIONS} (after ${WARMUP} warmup)`);
 console.log("");
@@ -1025,6 +1104,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "historyToNdjson (8 entries)", ops: benchHistoryToNdjson() },
   { path: "historyFromNdjson (8 entries, chain re-verify)", ops: benchHistoryFromNdjson() },
   { path: "quorum approve to threshold (5 of 9)", ops: benchQuorumApproveToThreshold() },
+  { path: "restoreQuorum (snapshot, 7 approvals of 9)", ops: benchRestoreQuorum() },
   { path: "deliverSettlementWebhookToMany (4 endpoints)", ops: await benchDeliverSettlementWebhookToMany() },
   { path: "SettlementEventDedupe checkAndRecord (hit, 1k)", ops: benchSettlementEventDedupe() },
   { path: "expiredEscrows (batch 100 escrows)", ops: benchExpiredEscrows() },

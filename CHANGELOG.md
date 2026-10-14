@@ -18,6 +18,19 @@ version changes.
 
 ### Added
 
+- Benchmark coverage for the quorum snapshot-restore path:
+  `restoreQuorum` rebuilding a live quorum from a persisted
+  (JSON round-tripped) snapshot of the bench's fixed 9-signer /
+  threshold-5 quorum carrying 7 recorded approvals (dao-1..dao-7,
+  one second apart on a stepped fixed clock), built once outside
+  the timed loop. Every timed iteration self-checks the restored
+  quorum against hand-written expectations (quorum reached, 7
+  counted approvals in record order, 7 audit-log entries), and a
+  pre-check outside timing verifies that re-snapshotting the
+  restored quorum reproduces the persisted snapshot byte-for-byte.
+  The README Benchmarks table was refreshed from one real run
+  (taken under heavy shared-host load, as the README environment
+  note records) and gained the row.
 - Benchmark coverage for the settlement batch webhook path:
   `buildSettlementWebhooks` over the bench's fixed batch of 4
   pre-built results (released / refunded / released reports plus one

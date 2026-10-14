@@ -692,6 +692,13 @@ settlement webhook build/verify, NDJSON
 audit-log export/import (`historyToNdjson` / `historyFromNdjson`),
 quorum approval to threshold (`createQuorum` approving one
 signer at a time with a `hasQuorum()` check after each vote),
+quorum snapshot restore (`restoreQuorum` rebuilding a live quorum
+from a persisted, JSON round-tripped snapshot of the same
+9-signer / threshold-5 quorum carrying 7 recorded approvals —
+the restart path that strictly re-validates the snapshot's
+signer set, threshold, and every audit-trail entry on every
+call, self-checked against hand-written expectations on every
+iteration),
 settlement webhook fan-out delivery (`deliverSettlementWebhookToMany`
 to 4 endpoints through a fake global `fetch` — zero network, so the
 number measures fan-out overhead only), settlement event dedupe
@@ -713,6 +720,9 @@ the NDJSON paths use a second fixed history of 8 chained
 entries (the golden deposit funded in five staged FUND dispatches,
 then milestone, verification, and release); the quorum path uses a
 fixed 9-signer set with threshold 5 on a fixed injected clock; the
+restore path reuses that shape, snapshotting a quorum with 7
+approvals (dao-1..dao-7, one second apart on a stepped fixed
+clock) and restoring the JSON round-tripped snapshot; the
 watchdog paths screen one fixed batch of 100 escrows (30 past-deadline
 FUNDED, 20 in-budget-deadline FUNDED, 10 fresh FUNDED, 10
 past-deadline MILESTONE_SUBMITTED, 10 fresh MILESTONE_SUBMITTED, 10
@@ -721,27 +731,33 @@ One real run on 2026-10-14:
 
 | path | throughput |
 |------|------------|
-| dispatch (full lifecycle, 4 dispatches) | ~29,700 ops/sec (~33.7 µs/op) |
-| verifyHistoryChain (4 entries) | ~85,300 ops/sec (~11.7 µs/op) |
-| Escrow.fromHistory (4 entries) | ~34,800 ops/sec (~28.7 µs/op) |
-| buildSettlementReport (4 entries) | ~67,200 ops/sec (~14.9 µs/op) |
-| buildSettlementReports (batch 4 x 4 entries) | ~10,100 ops/sec (~98.7 µs/op) |
-| summarizeSettlementReports (batch 4 results) | ~387,500 ops/sec (~2.6 µs/op) |
-| buildSettlementWebhooks (batch 4 results) | ~8,400 ops/sec (~118.7 µs/op) |
-| buildSettlementWebhook (sign) | ~47,400 ops/sec (~21.1 µs/op) |
-| verifySettlementWebhook | ~89,500 ops/sec (~11.2 µs/op) |
-| historyToNdjson (8 entries) | ~17,600 ops/sec (~56.9 µs/op) |
-| historyFromNdjson (8 entries, chain re-verify) | ~7,500 ops/sec (~133.0 µs/op) |
-| quorum approve to threshold (5 of 9) | ~130,000 ops/sec (~7.7 µs/op) |
-| deliverSettlementWebhookToMany (4 endpoints, fake fetch) | ~3,800 ops/sec (~262.8 µs/op) |
-| SettlementEventDedupe checkAndRecord (hit, 1,000 recorded ids) | ~3,903,900 ops/sec (~0.3 µs/op) |
-| expiredEscrows (batch 100 escrows) | ~22,300 ops/sec (~44.9 µs/op) |
-| staleEscrows (batch 100 escrows) | ~9,200 ops/sec (~109.0 µs/op) |
+| dispatch (full lifecycle, 4 dispatches) | ~10,800 ops/sec (~92.7 µs/op) |
+| verifyHistoryChain (4 entries) | ~49,800 ops/sec (~20.1 µs/op) |
+| Escrow.fromHistory (4 entries) | ~10,500 ops/sec (~95.0 µs/op) |
+| buildSettlementReport (4 entries) | ~25,800 ops/sec (~38.7 µs/op) |
+| buildSettlementReports (batch 4 x 4 entries) | ~8,600 ops/sec (~116.2 µs/op) |
+| summarizeSettlementReports (batch 4 results) | ~106,700 ops/sec (~9.4 µs/op) |
+| buildSettlementWebhooks (batch 4 results) | ~5,800 ops/sec (~171.8 µs/op) |
+| buildSettlementWebhook (sign) | ~40,300 ops/sec (~24.8 µs/op) |
+| verifySettlementWebhook | ~51,500 ops/sec (~19.4 µs/op) |
+| historyToNdjson (8 entries) | ~9,200 ops/sec (~108.3 µs/op) |
+| historyFromNdjson (8 entries, chain re-verify) | ~4,500 ops/sec (~223.3 µs/op) |
+| quorum approve to threshold (5 of 9) | ~44,100 ops/sec (~22.7 µs/op) |
+| restoreQuorum (snapshot, 7 approvals of 9) | ~15,800 ops/sec (~63.4 µs/op) |
+| deliverSettlementWebhookToMany (4 endpoints, fake fetch) | ~3,800 ops/sec (~266.2 µs/op) |
+| SettlementEventDedupe checkAndRecord (hit, 1,000 recorded ids) | ~917,500 ops/sec (~1.1 µs/op) |
+| expiredEscrows (batch 100 escrows) | ~11,800 ops/sec (~84.5 µs/op) |
+| staleEscrows (batch 100 escrows) | ~7,050 ops/sec (~141.9 µs/op) |
 
 Environment: Node v24.20.0, linux/x64, AMD EPYC 9D25 (virtualized;
-shared host, so numbers vary run to run). Machine-local measurements
-for capacity planning, not guaranteed throughput — run
-`npm run bench` on your own hardware.
+shared host, so numbers vary run to run). This run was taken while
+the shared host was under heavy parallel load (load average ≈8–13),
+so the absolute throughputs above sit well below the previous
+table's quieter-host run and individual rows carry unusually large
+variance — treat the table as this run's measurements, most useful
+for same-run relative comparison, not as a regression signal.
+Machine-local measurements for capacity planning, not guaranteed
+throughput — run `npm run bench` on your own hardware.
 
 ## License
 
