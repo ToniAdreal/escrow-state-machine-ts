@@ -67,6 +67,18 @@
  *      batch after the per-item reports are built. The summarizer is
  *      pure (it only reads the results), so the same pre-built result
  *      list is re-summarized on every iteration.
+ *  12. settlement batch webhook building — `buildSettlementWebhooks(
+ *      results, ...)` over that same fixed 4-item result list (built
+ *      once, outside the timed loop): the second half of the day-end
+ *      pipeline, batch reports -> batch webhooks. The 3 successful
+ *      reports are signed under the shared bench secret at the shared
+ *      fixed `WEBHOOK_NOW`, each with a DISTINCT `eventId` from a
+ *      deterministic counter factory (fresh per iteration, so the
+ *      expected ids are hand-known: bench-batch-event-1..3, in input
+ *      order); the batch's one per-item error entry is forwarded as
+ *      `{ escrowId, error }` untouched and consumes no `eventId`.
+ *      Every built webhook is re-verified with
+ *      `verifySettlementWebhook` on every iteration.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -83,6 +95,7 @@ import {
   buildSettlementReport,
   buildSettlementReports,
   buildSettlementWebhook,
+  buildSettlementWebhooks,
   calculateDeposit,
   createQuorum,
   deliverSettlementWebhookToMany,
@@ -400,6 +413,83 @@ function checkBatchSummary(
   }
 }
 checkBatchSummary(summarizeSettlementReports(batchResults));
+// Batch-webhook fixture: the pre-built batch results above are piped
+// straight into `buildSettlementWebhooks` — the reports -> webhooks
+// hand-off the batch API is designed for. Expectations are hand-derived
+// from the batch composition (NOT produced by the implementation):
+// entries 1..3 (released / refunded / released) each build a webhook
+// whose payload carries that entry's escrowId and the hand-known
+// outcome, signed under the shared bench secret at the shared fixed
+// WEBHOOK_NOW, with eventIds bench-batch-event-1..3 in input order
+// (the deterministic counter factory below is created fresh for every
+// call, so the sequence restarts per call); entry 4 is the batch's
+// per-item error: it must come back as { escrowId, error } with the
+// error forwarded byte-identical from batchResults and NO webhook,
+// and it must not consume an eventId. Every built webhook must
+// re-verify under the bench secret.
+const BATCH_WEBHOOK_EVENT_IDS = [
+  "bench-batch-event-1",
+  "bench-batch-event-2",
+  "bench-batch-event-3",
+];
+function batchWebhookEventIdFactory(): () => string {
+  let n = 0;
+  return () => `bench-batch-event-${++n}`;
+}
+function checkBatchWebhooks(
+  built: ReturnType<typeof buildSettlementWebhooks>,
+): void {
+  if (built.length !== batchResults.length) {
+    throw new Error("benchmark batch webhook check failed: count mismatch");
+  }
+  const seenEventIds = new Set<string>();
+  for (let i = 0; i < built.length; i++) {
+    if (built[i].escrowId !== batchResults[i].escrowId) {
+      throw new Error("benchmark batch webhook check failed: order not preserved");
+    }
+    const expectedOutcome = BATCH_EXPECTED_OUTCOMES[i];
+    if (expectedOutcome === undefined) {
+      const entryError = built[i].error;
+      if (
+        built[i].webhook !== undefined ||
+        entryError !== batchResults[i].error ||
+        typeof entryError !== "string" ||
+        entryError.length === 0
+      ) {
+        throw new Error("benchmark batch webhook check failed: error not forwarded");
+      }
+    } else {
+      const webhook = built[i].webhook;
+      if (
+        built[i].error !== undefined ||
+        webhook === undefined ||
+        webhook.payload.escrowId !== batchResults[i].escrowId ||
+        webhook.payload.outcome !== expectedOutcome ||
+        webhook.payload.eventId !==
+          BATCH_WEBHOOK_EVENT_IDS[seenEventIds.size] ||
+        seenEventIds.has(webhook.payload.eventId) ||
+        !verifySettlementWebhook(
+          JSON.stringify(webhook.payload),
+          webhook.signature,
+          WEBHOOK_SECRET,
+        )
+      ) {
+        throw new Error("benchmark batch webhook check failed: webhook mismatch");
+      }
+      seenEventIds.add(webhook.payload.eventId);
+    }
+  }
+  if (seenEventIds.size !== BATCH_WEBHOOK_EVENT_IDS.length) {
+    throw new Error("benchmark batch webhook check failed: eventId set mismatch");
+  }
+}
+checkBatchWebhooks(
+  buildSettlementWebhooks(batchResults, {
+    secret: WEBHOOK_SECRET,
+    now: WEBHOOK_NOW,
+    eventIdFactory: batchWebhookEventIdFactory(),
+  }),
+);
 const webhook = buildSettlementWebhook(report, {
   secret: WEBHOOK_SECRET,
   now: WEBHOOK_NOW,
@@ -664,6 +754,18 @@ function benchSummarizeSettlementReports(): number {
   }, ITERATIONS);
 }
 
+function benchBuildSettlementWebhooks(): number {
+  return measure(() => {
+    checkBatchWebhooks(
+      buildSettlementWebhooks(batchResults, {
+        secret: WEBHOOK_SECRET,
+        now: WEBHOOK_NOW,
+        eventIdFactory: batchWebhookEventIdFactory(),
+      }),
+    );
+  }, ITERATIONS);
+}
+
 function benchBuildSettlementWebhook(): number {
   return measure(() => {
     const built = buildSettlementWebhook(report, {
@@ -748,7 +850,7 @@ console.log("escrow-state-machine-ts benchmark");
 console.log(`Node: ${process.version} on ${process.platform}/${process.arch}`);
 console.log(`CPU: ${cpus()[0]?.model ?? "unknown"}`);
 console.log(
-  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); settlement batch summary over that batch's 4 pre-built results (3 reports + 1 error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release); quorum of 9 signers with threshold 5 on a fixed injected clock, approved one vote at a time to the threshold; settlement webhook fan-out to 4 endpoints through a fake global fetch (immediate 200, no network); settlement event dedupe duplicate hits cycling over 1,000 pre-recorded eventIds under a fixed injected clock; Escrow.fromHistory replay over the same detached 4-entry history",
+  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); settlement batch summary over that batch's 4 pre-built results (3 reports + 1 error); settlement batch webhooks over that same batch (3 signed webhooks with distinct deterministic eventIds bench-batch-event-1..3 plus the 1 forwarded per-item error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release); quorum of 9 signers with threshold 5 on a fixed injected clock, approved one vote at a time to the threshold; settlement webhook fan-out to 4 endpoints through a fake global fetch (immediate 200, no network); settlement event dedupe duplicate hits cycling over 1,000 pre-recorded eventIds under a fixed injected clock; Escrow.fromHistory replay over the same detached 4-entry history",
 );
 console.log(`Iterations per op: ${ITERATIONS} (after ${WARMUP} warmup)`);
 console.log("");
@@ -760,6 +862,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "buildSettlementReport (4 entries)", ops: benchBuildSettlementReport() },
   { path: "buildSettlementReports (batch 4 x 4 entries)", ops: benchBuildSettlementReports() },
   { path: "summarizeSettlementReports (batch 4 results)", ops: benchSummarizeSettlementReports() },
+  { path: "buildSettlementWebhooks (batch 4 results)", ops: benchBuildSettlementWebhooks() },
   { path: "buildSettlementWebhook (sign)", ops: benchBuildSettlementWebhook() },
   { path: "verifySettlementWebhook", ops: benchVerifySettlementWebhook() },
   { path: "historyToNdjson (8 entries)", ops: benchHistoryToNdjson() },

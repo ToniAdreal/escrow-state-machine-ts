@@ -18,6 +18,18 @@ version changes.
 
 ### Added
 
+- Benchmark coverage for the settlement batch webhook path:
+  `buildSettlementWebhooks` over the bench's fixed batch of 4
+  pre-built results (released / refunded / released reports plus one
+  per-item error), timed after the batch reports are built outside
+  the loop, with a shared fixed `now` and a deterministic counter
+  `eventIdFactory`. Every timed iteration self-checks the result
+  shape against hand-derived expectations (3 signed webhooks with
+  distinct eventIds `bench-batch-event-1..3` in input order, each
+  re-verified with `verifySettlementWebhook`; the error entry
+  forwarded byte-identical with no webhook and no eventId consumed).
+  The README Benchmarks table was refreshed from one real run and
+  gained the row.
 - Benchmark coverage for the settlement batch summary path:
   `summarizeSettlementReports` aggregating the bench's fixed batch
   of 4 pre-built results (released / refunded / released reports
