@@ -18,6 +18,19 @@ version changes.
 
 ### Added
 
+- Benchmark coverage for the funded-total summation path:
+  `depositAmountFromHistory(history, escrowId)` over a fixed
+  4-shape corpus (a single FUND of the golden 10,630, a two-FUND
+  top-up sequence summing to 12,630, a FUND recorded without an
+  amount, and an empty no-FUND history), built once outside the
+  timed loop from real escrows on the fixed bench clock.
+  Hand-pinned expectations: the two totals are the sums of every
+  FUND entry's amount (top-ups included), and both fail-fast
+  shapes throw their exact `settlement requires a FUND amount`
+  messages. Every timed iteration re-checks each total and each
+  error message against those expectations. The README Benchmarks
+  table was refreshed from one real run and gained the
+  `depositAmountFromHistory (4-shape corpus)` row.
 - CLI demo coverage for quorum snapshot restore: in the dispute
   branch, after the first arbitrator approval the demo snapshots
   the 2-of-3 quorum, round-trips the snapshot through JSON, and

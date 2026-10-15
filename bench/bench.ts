@@ -160,6 +160,19 @@
  *      delivery numbers. Every timed iteration re-checks each
  *      parsed result against the hand-pinned expectations in the
  *      corpus comment below.
+ *  19. funded-total summation — `depositAmountFromHistory(history,
+ *      escrowId)` over a fixed 4-shape corpus (a single FUND, a
+ *      two-FUND top-up sequence, a FUND recorded without an amount,
+ *      and a history with no FUND at all; composition and
+ *      hand-pinned totals / error messages in the fixture comment
+ *      below). This is the audit-trail scan every settlement
+ *      reconciliation pays per escrow to establish the locked
+ *      total (top-ups included) before any report math runs,
+ *      previously visible only inside the `buildSettlementReport`
+ *      numbers. Every timed iteration re-checks each returned
+ *      total against its hand-written expectation and each
+ *      fail-fast shape against its exact hand-written error
+ *      message.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -181,6 +194,7 @@ import {
   calculateDeposit,
   createQuorum,
   deliverSettlementWebhookToMany,
+  depositAmountFromHistory,
   Escrow,
   expiredEscrows,
   expireOverdueEscrows,
@@ -1179,6 +1193,111 @@ function checkRetryAfterCorpus(): void {
 checkRetryAfterCorpus();
 
 // ---------------------------------------------------------------------
+// depositAmountFromHistory fixture: a fixed 4-shape corpus of audit
+// histories, built once outside the timed loop by driving real
+// escrows on the shared fixed clock (BASE_MS plus per-step offsets)
+// and detaching plain copies — exactly what a persisted audit log
+// looks like. Hand-pinned expectations, written out here from the
+// documented semantics (the locked total is the SUM of every FUND
+// entry's amount, top-ups included; a total that cannot be
+// established in full is never silently treated as zero), never
+// derived by calling depositAmountFromHistory itself:
+//   1. single FUND — one FUND of the golden 10,630
+//      (BENCH-DEPOSIT-SINGLE) -> total 10,630.
+//   2. top-up sum — FUND 10,630 then a second FUND of 2,000 while
+//      still FUNDED (BENCH-DEPOSIT-TOPUP, the #43 top-up shape)
+//      -> total 12,630.
+//   3. FUND without an amount (BENCH-DEPOSIT-NOAMT) -> throws
+//      exactly "settlement requires a FUND amount for
+//      BENCH-DEPOSIT-NOAMT: a FUND event was recorded without an
+//      amount".
+//   4. no FUND at all — the empty history (BENCH-DEPOSIT-NOFUND)
+//      -> throws exactly "settlement requires a FUND amount for
+//      BENCH-DEPOSIT-NOFUND: no FUND event in the audit history".
+// One bench iteration runs all four shapes: the two totals are the
+// steady-state scan cost, and the two fail-fast shapes pin the
+// error boundary on every iteration at the same time.
+// ---------------------------------------------------------------------
+function depositCorpusEscrow(
+  id: string,
+  steps: Array<{ event: EscrowEvent; amount?: number }>,
+): EscrowHistoryEntry[] {
+  const escrow = new Escrow(id);
+  steps.forEach(({ event, amount }, i) => {
+    escrow.dispatch(event, undefined, amount, {
+      at: new Date(BASE_MS + i * 1000).toISOString(),
+    });
+  });
+  return escrow.history.map((e) => ({ ...e }));
+}
+
+const DEPOSIT_CASES: ReadonlyArray<{
+  escrowId: string;
+  history: EscrowHistoryEntry[];
+  total?: number;
+  error?: string;
+}> = [
+  {
+    escrowId: "BENCH-DEPOSIT-SINGLE",
+    history: depositCorpusEscrow("BENCH-DEPOSIT-SINGLE", [
+      { event: "FUND", amount: 10630 },
+    ]),
+    total: 10630,
+  },
+  {
+    escrowId: "BENCH-DEPOSIT-TOPUP",
+    history: depositCorpusEscrow("BENCH-DEPOSIT-TOPUP", [
+      { event: "FUND", amount: 10630 },
+      { event: "FUND", amount: 2000 },
+    ]),
+    total: 12630,
+  },
+  {
+    escrowId: "BENCH-DEPOSIT-NOAMT",
+    history: depositCorpusEscrow("BENCH-DEPOSIT-NOAMT", [
+      { event: "FUND" },
+    ]),
+    error:
+      "settlement requires a FUND amount for BENCH-DEPOSIT-NOAMT: " +
+      "a FUND event was recorded without an amount",
+  },
+  {
+    escrowId: "BENCH-DEPOSIT-NOFUND",
+    history: [],
+    error:
+      "settlement requires a FUND amount for BENCH-DEPOSIT-NOFUND: " +
+      "no FUND event in the audit history",
+  },
+];
+
+function checkDepositCorpus(): void {
+  for (const c of DEPOSIT_CASES) {
+    if (c.error === undefined) {
+      if (depositAmountFromHistory(c.history, c.escrowId) !== c.total) {
+        throw new Error(
+          "benchmark self-check failed: depositAmountFromHistory total",
+        );
+      }
+    } else {
+      let thrown: unknown;
+      try {
+        depositAmountFromHistory(c.history, c.escrowId);
+      } catch (err) {
+        thrown = err;
+      }
+      if (!(thrown instanceof Error) || thrown.message !== c.error) {
+        throw new Error(
+          "benchmark self-check failed: depositAmountFromHistory error",
+        );
+      }
+    }
+  }
+}
+// Pre-check outside the timed loop: the whole corpus sums / fails
+// to its hand-pinned expectations before any number is reported.
+checkDepositCorpus();
+
+// ---------------------------------------------------------------------
 // Scenarios (each with a self-check so a broken path cannot report a
 // plausible-looking number).
 // ---------------------------------------------------------------------
@@ -1259,6 +1378,12 @@ function benchBuildSettlementReport(): number {
     if (!built.balanced) {
       throw new Error("benchmark self-check failed: buildSettlementReport");
     }
+  }, ITERATIONS);
+}
+
+function benchDepositAmountFromHistory(): number {
+  return measure(() => {
+    checkDepositCorpus();
   }, ITERATIONS);
 }
 
@@ -1530,7 +1655,7 @@ console.log("escrow-state-machine-ts benchmark");
 console.log(`Node: ${process.version} on ${process.platform}/${process.arch}`);
 console.log(`CPU: ${cpus()[0]?.model ?? "unknown"}`);
 console.log(
-  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); settlement batch summary over that batch's 4 pre-built results (3 reports + 1 error); settlement batch webhooks over that same batch (3 signed webhooks with distinct deterministic eventIds bench-batch-event-1..3 plus the 1 forwarded per-item error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release); quorum of 9 signers with threshold 5 on a fixed injected clock, approved one vote at a time to the threshold; settlement webhook fan-out to 4 endpoints through a fake global fetch (immediate 200, no network); settlement event dedupe duplicate hits cycling over 1,000 pre-recorded eventIds under a fixed injected clock; settlement event dedupe restore from a 1,000-entry JSON-round-tripped snapshot under a fixed injected clock (all entries live at load, default TTL and capacity, observability counters restarting at zero); Escrow.fromHistory replay over the same detached 4-entry history; watchdog screening over a fixed mixed batch of 100 escrows (40 hand-counted expired, 70 hand-counted stale under FUNDED 7d / MILESTONE_SUBMITTED 30d budgets) at a fixed screening instant; watchdog execution (expireOverdueEscrows / actOnStaleEscrows with an EXPIRE-dispatch action) over fresh rebuilds of that same 100-escrow batch on every iteration because the executors mutate their inputs (40 of 40 expire attempts and 70 of 70 stale actions succeed — both selected states carry an EXPIRE edge); quorum snapshot restore from a persisted (JSON round-tripped) snapshot of the 9-signer / threshold-5 quorum carrying 7 recorded approvals; settleRelease netting over 4 fixed representative inputs (golden 10630 at 500 bps, 1000 at 500 bps with 100 credits, large gross 1000000 at 250 bps with 1250.25 credits, rounding edge 10 at 125 bps) checked against hand-computed proFee/net on every iteration; parseRetryAfter over a fixed 11-value corpus (delay-seconds, fractional and whitespace-padded values, zero, future and past HTTP-dates, signed numbers, a garbage string, null and undefined) against one injected fixed now, every result checked against hand-pinned expectations on every iteration",
+  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); settlement batch summary over that batch's 4 pre-built results (3 reports + 1 error); settlement batch webhooks over that same batch (3 signed webhooks with distinct deterministic eventIds bench-batch-event-1..3 plus the 1 forwarded per-item error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release); quorum of 9 signers with threshold 5 on a fixed injected clock, approved one vote at a time to the threshold; settlement webhook fan-out to 4 endpoints through a fake global fetch (immediate 200, no network); settlement event dedupe duplicate hits cycling over 1,000 pre-recorded eventIds under a fixed injected clock; settlement event dedupe restore from a 1,000-entry JSON-round-tripped snapshot under a fixed injected clock (all entries live at load, default TTL and capacity, observability counters restarting at zero); Escrow.fromHistory replay over the same detached 4-entry history; watchdog screening over a fixed mixed batch of 100 escrows (40 hand-counted expired, 70 hand-counted stale under FUNDED 7d / MILESTONE_SUBMITTED 30d budgets) at a fixed screening instant; watchdog execution (expireOverdueEscrows / actOnStaleEscrows with an EXPIRE-dispatch action) over fresh rebuilds of that same 100-escrow batch on every iteration because the executors mutate their inputs (40 of 40 expire attempts and 70 of 70 stale actions succeed — both selected states carry an EXPIRE edge); quorum snapshot restore from a persisted (JSON round-tripped) snapshot of the 9-signer / threshold-5 quorum carrying 7 recorded approvals; settleRelease netting over 4 fixed representative inputs (golden 10630 at 500 bps, 1000 at 500 bps with 100 credits, large gross 1000000 at 250 bps with 1250.25 credits, rounding edge 10 at 125 bps) checked against hand-computed proFee/net on every iteration; parseRetryAfter over a fixed 11-value corpus (delay-seconds, fractional and whitespace-padded values, zero, future and past HTTP-dates, signed numbers, a garbage string, null and undefined) against one injected fixed now, every result checked against hand-pinned expectations on every iteration; depositAmountFromHistory over a fixed 4-shape corpus (a single FUND of the golden 10630, a two-FUND top-up sequence summing to 12630, a FUND recorded without an amount, and an empty no-FUND history) checked against hand-pinned totals and exact fail-fast error messages on every iteration",
 );
 console.log(`Iterations per op: ${ITERATIONS} (after ${WARMUP} warmup)`);
 console.log("");
@@ -1541,6 +1666,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "Escrow.fromHistory (4 entries)", ops: benchFromHistory() },
   { path: "settleRelease (4 fixed inputs)", ops: benchSettleRelease() },
   { path: "buildSettlementReport (4 entries)", ops: benchBuildSettlementReport() },
+  { path: "depositAmountFromHistory (4-shape corpus)", ops: benchDepositAmountFromHistory() },
   { path: "buildSettlementReports (batch 4 x 4 entries)", ops: benchBuildSettlementReports() },
   { path: "summarizeSettlementReports (batch 4 results)", ops: benchSummarizeSettlementReports() },
   { path: "buildSettlementWebhooks (batch 4 results)", ops: benchBuildSettlementWebhooks() },
