@@ -18,6 +18,13 @@ version changes.
 
 ### Added
 
+- Benchmark coverage for the fee-calculation path:
+  `calculateDeposit(inputs)` over a fixed 3-shape corpus (the
+  golden vector, a complexity-1.5 case, and a large-pool case),
+  with each returned `adjustedBaseFee` / `deposit` checked
+  against hand-computed expectations on every timed iteration.
+  The README Benchmarks table was refreshed from one real run
+  and gained the `calculateDeposit (3-shape corpus)` row.
 - CLI demo coverage for the stale-watchdog screening: the demo
   closes with three further escrows screened on one fixed `now`
   under both watchdog axes — `staleEscrows` (dwell in the current

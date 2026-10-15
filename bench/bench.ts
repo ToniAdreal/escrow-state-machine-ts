@@ -197,6 +197,17 @@
  *      against them. (The backlog item that commissioned this
  *      path said "all 6 states"; the table in fact declares 8 —
  *      this path covers all 8.)
+ *  22. fee calculation — `calculateDeposit(inputs)` over a fixed
+ *      3-shape corpus (the golden vector, a complexity-multiplier
+ *      case, and a large-pool case; composition and hand-computed
+ *      `adjustedBaseFee` / `deposit` expectations in the fixture
+ *      comment below). This is the deposit preview every escrow
+ *      funding pays first — deposit = creatorPool + baseFee x
+ *      complexityMultiplier - loyaltyDiscount + oracleFee, with
+ *      per-field money validation and `round2` on both derived
+ *      figures — previously visible only as one fixture-construction
+ *      call at module scope. Every timed iteration re-checks each
+ *      returned breakdown against its hand-written expectation.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -1415,6 +1426,84 @@ function checkAllowedEventsPass(): void {
 checkAllowedEventsPass();
 
 // ---------------------------------------------------------------------
+// calculateDeposit fixture: a fixed 3-shape corpus, built once
+// outside the timed loop. Expectations are hand-computed from the
+// documented formula (adjustedBaseFee = round2(baseFee x
+// complexityMultiplier); deposit = round2(creatorPool +
+// adjustedBaseFee - loyaltyDiscount + oracleFee)) — written out as
+// arithmetic here, never derived by calling calculateDeposit itself:
+//   1. golden vector — pool 10,000, base 600, complexity 1.0,
+//      loyalty 30, oracle 60: adjusted = 600 x 1.0 = 600;
+//      deposit = 10,000 + 600 - 30 + 60 = 10,630.
+//   2. complexity != 1 — pool 5,000, base 800, complexity 1.5,
+//      loyalty 50, oracle 40: adjusted = 800 x 1.5 = 1,200;
+//      deposit = 5,000 + 1,200 - 50 + 40 = 6,190.
+//   3. large pool — pool 1,000,000, base 2,500, complexity 2.25,
+//      loyalty 500, oracle 250: adjusted = 2,500 x 2.25 = 5,625;
+//      deposit = 1,000,000 + 5,625 - 500 + 250 = 1,005,375.
+// One bench pass runs the whole corpus (all 3 shapes).
+// ---------------------------------------------------------------------
+const CALCULATE_DEPOSIT_CASES: ReadonlyArray<{
+  inputs: Parameters<typeof calculateDeposit>[0];
+  adjustedBaseFee: number;
+  deposit: number;
+}> = [
+  {
+    inputs: {
+      creatorPool: 10000,
+      baseFee: 600,
+      complexityMultiplier: 1.0,
+      loyaltyDiscount: 30,
+      oracleFee: 60,
+    },
+    adjustedBaseFee: 600,
+    deposit: 10630,
+  },
+  {
+    inputs: {
+      creatorPool: 5000,
+      baseFee: 800,
+      complexityMultiplier: 1.5,
+      loyaltyDiscount: 50,
+      oracleFee: 40,
+    },
+    adjustedBaseFee: 1200,
+    deposit: 6190,
+  },
+  {
+    inputs: {
+      creatorPool: 1000000,
+      baseFee: 2500,
+      complexityMultiplier: 2.25,
+      loyaltyDiscount: 500,
+      oracleFee: 250,
+    },
+    adjustedBaseFee: 5625,
+    deposit: 1005375,
+  },
+];
+
+function checkCalculateDepositCorpus(): void {
+  for (const c of CALCULATE_DEPOSIT_CASES) {
+    const got = calculateDeposit(c.inputs);
+    if (
+      got.creatorPool !== c.inputs.creatorPool ||
+      got.baseFee !== c.inputs.baseFee ||
+      got.complexityMultiplier !== c.inputs.complexityMultiplier ||
+      got.loyaltyDiscount !== c.inputs.loyaltyDiscount ||
+      got.oracleFee !== c.inputs.oracleFee ||
+      got.adjustedBaseFee !== c.adjustedBaseFee ||
+      got.deposit !== c.deposit
+    ) {
+      throw new Error("benchmark self-check failed: calculateDeposit");
+    }
+  }
+}
+// Pre-check outside the timed loop: the whole corpus computes to
+// its hand-computed expectations before any number is reported.
+checkCalculateDepositCorpus();
+
+// ---------------------------------------------------------------------
 // Scenarios (each with a self-check so a broken path cannot report a
 // plausible-looking number).
 // ---------------------------------------------------------------------
@@ -1780,11 +1869,17 @@ function benchAllowedEvents(): number {
   }, ITERATIONS);
 }
 
+function benchCalculateDeposit(): number {
+  return measure(() => {
+    checkCalculateDepositCorpus();
+  }, ITERATIONS);
+}
+
 console.log("escrow-state-machine-ts benchmark");
 console.log(`Node: ${process.version} on ${process.platform}/${process.arch}`);
 console.log(`CPU: ${cpus()[0]?.model ?? "unknown"}`);
 console.log(
-  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); settlement batch summary over that batch's 4 pre-built results (3 reports + 1 error); settlement batch webhooks over that same batch (3 signed webhooks with distinct deterministic eventIds bench-batch-event-1..3 plus the 1 forwarded per-item error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release); quorum of 9 signers with threshold 5 on a fixed injected clock, approved one vote at a time to the threshold; settlement webhook fan-out to 4 endpoints through a fake global fetch (immediate 200, no network); settlement event dedupe duplicate hits cycling over 1,000 pre-recorded eventIds under a fixed injected clock; settlement event dedupe restore from a 1,000-entry JSON-round-tripped snapshot under a fixed injected clock (all entries live at load, default TTL and capacity, observability counters restarting at zero); Escrow.fromHistory replay over the same detached 4-entry history; watchdog screening over a fixed mixed batch of 100 escrows (40 hand-counted expired, 70 hand-counted stale under FUNDED 7d / MILESTONE_SUBMITTED 30d budgets) at a fixed screening instant; watchdog execution (expireOverdueEscrows / actOnStaleEscrows with an EXPIRE-dispatch action) over fresh rebuilds of that same 100-escrow batch on every iteration because the executors mutate their inputs (40 of 40 expire attempts and 70 of 70 stale actions succeed — both selected states carry an EXPIRE edge); quorum snapshot restore from a persisted (JSON round-tripped) snapshot of the 9-signer / threshold-5 quorum carrying 7 recorded approvals; settleRelease netting over 4 fixed representative inputs (golden 10630 at 500 bps, 1000 at 500 bps with 100 credits, large gross 1000000 at 250 bps with 1250.25 credits, rounding edge 10 at 125 bps) checked against hand-computed proFee/net on every iteration; parseRetryAfter over a fixed 11-value corpus (delay-seconds, fractional and whitespace-padded values, zero, future and past HTTP-dates, signed numbers, a garbage string, null and undefined) against one injected fixed now, every result checked against hand-pinned expectations on every iteration; depositAmountFromHistory over a fixed 4-shape corpus (a single FUND of the golden 10630, a two-FUND top-up sequence summing to 12630, a FUND recorded without an amount, and an empty no-FUND history) checked against hand-pinned totals and exact fail-fast error messages on every iteration; renderReport rendering of the fixed golden released report (deposit 10630, released via VERIFY_PASS -> RELEASE, 4 party rows) checked against hand-written expected lines (header/outcome, deposit formula, creator net row) on every iteration; allowedEvents over all 8 states of the transition table (one pass = every state queried once in declaration order — CREATED, FUNDED, MILESTONE_SUBMITTED, VERIFIED, DISPUTED, RELEASED, REFUNDED, EXPIRED — with each result checked against its hand-pinned expected event list in declaration order, the three terminal states expecting the empty list) on every iteration",
+  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); settlement batch summary over that batch's 4 pre-built results (3 reports + 1 error); settlement batch webhooks over that same batch (3 signed webhooks with distinct deterministic eventIds bench-batch-event-1..3 plus the 1 forwarded per-item error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release); quorum of 9 signers with threshold 5 on a fixed injected clock, approved one vote at a time to the threshold; settlement webhook fan-out to 4 endpoints through a fake global fetch (immediate 200, no network); settlement event dedupe duplicate hits cycling over 1,000 pre-recorded eventIds under a fixed injected clock; settlement event dedupe restore from a 1,000-entry JSON-round-tripped snapshot under a fixed injected clock (all entries live at load, default TTL and capacity, observability counters restarting at zero); Escrow.fromHistory replay over the same detached 4-entry history; watchdog screening over a fixed mixed batch of 100 escrows (40 hand-counted expired, 70 hand-counted stale under FUNDED 7d / MILESTONE_SUBMITTED 30d budgets) at a fixed screening instant; watchdog execution (expireOverdueEscrows / actOnStaleEscrows with an EXPIRE-dispatch action) over fresh rebuilds of that same 100-escrow batch on every iteration because the executors mutate their inputs (40 of 40 expire attempts and 70 of 70 stale actions succeed — both selected states carry an EXPIRE edge); quorum snapshot restore from a persisted (JSON round-tripped) snapshot of the 9-signer / threshold-5 quorum carrying 7 recorded approvals; settleRelease netting over 4 fixed representative inputs (golden 10630 at 500 bps, 1000 at 500 bps with 100 credits, large gross 1000000 at 250 bps with 1250.25 credits, rounding edge 10 at 125 bps) checked against hand-computed proFee/net on every iteration; parseRetryAfter over a fixed 11-value corpus (delay-seconds, fractional and whitespace-padded values, zero, future and past HTTP-dates, signed numbers, a garbage string, null and undefined) against one injected fixed now, every result checked against hand-pinned expectations on every iteration; depositAmountFromHistory over a fixed 4-shape corpus (a single FUND of the golden 10630, a two-FUND top-up sequence summing to 12630, a FUND recorded without an amount, and an empty no-FUND history) checked against hand-pinned totals and exact fail-fast error messages on every iteration; renderReport rendering of the fixed golden released report (deposit 10630, released via VERIFY_PASS -> RELEASE, 4 party rows) checked against hand-written expected lines (header/outcome, deposit formula, creator net row) on every iteration; allowedEvents over all 8 states of the transition table (one pass = every state queried once in declaration order — CREATED, FUNDED, MILESTONE_SUBMITTED, VERIFIED, DISPUTED, RELEASED, REFUNDED, EXPIRED — with each result checked against its hand-pinned expected event list in declaration order, the three terminal states expecting the empty list) on every iteration; calculateDeposit over a fixed 3-shape corpus (the golden vector pool 10000 / base 600 / complexity 1.0 / loyalty 30 / oracle 60 -> deposit 10630, a complexity 1.5 case -> deposit 6190, and a large-pool 1000000 case -> deposit 1005375) checked against hand-computed adjustedBaseFee and deposit expectations on every iteration",
 );
 console.log(`Iterations per op: ${ITERATIONS} (after ${WARMUP} warmup)`);
 console.log("");
@@ -1815,6 +1910,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "expireOverdueEscrows (batch 100 escrows)", ops: benchExpireOverdueEscrows() },
   { path: "actOnStaleEscrows (batch 100 escrows)", ops: benchActOnStaleEscrows() },
   { path: "allowedEvents (all 8 states)", ops: benchAllowedEvents() },
+  { path: "calculateDeposit (3-shape corpus)", ops: benchCalculateDeposit() },
 ];
 
 console.log("path                                              throughput");
