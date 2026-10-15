@@ -18,6 +18,15 @@ version changes.
 
 ### Added
 
+- Benchmark coverage for the allowed-events lookup path:
+  `allowedEvents(state)` over all 8 states of the transition
+  table (one pass queries every state once, in declaration
+  order), with each result checked against its hand-pinned
+  expected event list (declaration order within each row; the
+  three terminal states — RELEASED, REFUNDED, EXPIRED — expect
+  the empty list) on every timed iteration. The README
+  Benchmarks table was refreshed from one real run and gained
+  the `allowedEvents (all 8 states)` row.
 - CLI demo coverage for the audit hash chain: after the main
   escrow's settlement report, the demo runs `verifyHistoryChain`
   on its history — the intact, genesis-linked chain passes
