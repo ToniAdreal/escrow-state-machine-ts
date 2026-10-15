@@ -2,6 +2,9 @@
  * Demo: drive one escrow through the full happy path
  * CREATED -> FUNDED -> MILESTONE_SUBMITTED -> VERIFIED -> RELEASED,
  * print the append-only audit history plus the final settlement report,
+ * verify that history's hash chain with `verifyHistoryChain` — the
+ * intact chain passes, and a detached copy whose FUND entry's amount
+ * is altered fails, while the escrow's own history stays untouched —
  * then build the signed settlement webhook for the released escrow and
  * verify it the way a receiver would. The receiver side then runs
  * that webhook's `eventId` through `SettlementEventDedupe` on a fixed
@@ -51,6 +54,7 @@ import {
   renderReport,
   restoreQuorum,
   summarizeSettlementReports,
+  verifyHistoryChain,
   verifySettlementWebhook,
   type BuildSettlementWebhooksResult,
   type EscrowEvent,
@@ -206,6 +210,20 @@ const disputeSteps: Array<{
 export interface DemoResult {
   escrow: Escrow;
   report: SettlementReport;
+  /**
+   * `verifyHistoryChain` verdict on the main escrow's intact audit
+   * history: `true` — every link recomputes, genesis-linked.
+   */
+  historyChainVerified: boolean;
+  /**
+   * `verifyHistoryChain` verdict on a detached copy of that history
+   * whose FUND entry's amount was altered by 1 (10630 -> 10631):
+   * `false` — the stored hash no longer recomputes from the altered
+   * content. The escrow's own history is untouched by the tamper.
+   */
+  tamperedChainVerified: boolean;
+  /** The FUND amount on the tampered copy (original 10630). */
+  tamperedFundAmount: number;
   webhook: SettlementWebhook;
   webhookVerified: boolean;
   /**
@@ -310,6 +328,36 @@ export function runDemo(): DemoResult {
   }
   lines.push("", "Settlement report:");
   lines.push(renderReport(report));
+
+  // --- Audit hash chain: verifyHistoryChain on the history above ---
+  // The settlement just printed is derived from this history, and the
+  // history is hash-chained (each entry links to its predecessor,
+  // genesis-linked to GENESIS_PREV_HASH): verifyHistoryChain
+  // recomputes every link and returns a plain boolean — true for
+  // the intact chain. To show what a rewrite looks like, build a
+  // detached copy (fresh entry objects — the escrow's history getter
+  // hands out frozen copies), alter the FUND entry's amount by 1,
+  // and verify again: the stored hash no longer recomputes from the
+  // altered canonical content, so the verdict flips to false. The
+  // escrow's own history is never touched, and re-verifying it
+  // after the tamper check still passes.
+  const historyChainVerified = verifyHistoryChain(escrow.history);
+  const tamperedHistory = escrow.history.map((entry) => ({ ...entry }));
+  const tamperedFund = tamperedHistory.find((entry) => entry.event === "FUND");
+  if (tamperedFund === undefined || tamperedFund.amount === undefined) {
+    throw new Error("demo fixture broken: main history has no FUND amount");
+  }
+  const originalFundAmount = tamperedFund.amount;
+  tamperedFund.amount = originalFundAmount + 1;
+  const tamperedFundAmount = tamperedFund.amount;
+  const tamperedChainVerified = verifyHistoryChain(tamperedHistory);
+  lines.push(
+    "",
+    "Audit hash chain (verifyHistoryChain on the main escrow history):",
+    `  intact history: verifyHistoryChain: ${historyChainVerified} (${escrow.history.length} entries, genesis-linked, every hash recomputes)`,
+    `  tampered copy: FUND amount ${originalFundAmount} -> ${tamperedFundAmount} — verifyHistoryChain: ${tamperedChainVerified} (tamper detected: the stored hash no longer recomputes)`,
+    `  original history after the tamper check: verifyHistoryChain: ${verifyHistoryChain(escrow.history)} (detached copy — the escrow's own history is untouched)`,
+  );
 
   // RELEASE is where settlement webhooks fire: build the signed
   // `escrow.settled` notification from the settlement report (fixed
@@ -609,6 +657,9 @@ export function runDemo(): DemoResult {
   return {
     escrow,
     report,
+    historyChainVerified,
+    tamperedChainVerified,
+    tamperedFundAmount,
     webhook,
     webhookVerified,
     webhookDedupe,

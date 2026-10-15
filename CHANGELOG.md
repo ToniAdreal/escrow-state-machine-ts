@@ -18,6 +18,16 @@ version changes.
 
 ### Added
 
+- CLI demo coverage for the audit hash chain: after the main
+  escrow's settlement report, the demo runs `verifyHistoryChain`
+  on its history — the intact, genesis-linked chain passes
+  (`true`) — then verifies a detached copy whose FUND entry's
+  amount is altered by 1 (10,630 → 10,631), which fails (`false`:
+  the stored hash no longer recomputes from the altered content),
+  and re-verifies the escrow's own untouched history. `DemoResult`
+  exposes the two verdicts and the tampered amount; the demo tests
+  pin them with an independent hand-built tamper cross-check and
+  the printed lines and their position.
 - Benchmark coverage for the settlement report rendering path:
   `renderReport(report)` over the fixed golden released report
   (escrow BENCH-001, deposit 10,630, released via

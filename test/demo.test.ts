@@ -19,7 +19,11 @@ import {
   DEMO_WEBHOOK_EVENT_ID,
   DEMO_WEBHOOK_SECRET,
 } from "../src/demo.js";
-import { restoreQuorum, verifySettlementWebhook } from "../src/index.js";
+import {
+  restoreQuorum,
+  verifyHistoryChain,
+  verifySettlementWebhook,
+} from "../src/index.js";
 
 const repoRoot = path.dirname(
   path.dirname(path.dirname(fileURLToPath(import.meta.url))),
@@ -64,6 +68,61 @@ test("demo settlement numbers are self-consistent with the golden deposit", () =
     platform: 531.5,
     referrer: 0,
   });
+});
+
+test("demo verifies the main history's hash chain and detects a tampered FUND amount on a detached copy", () => {
+  const { escrow, historyChainVerified, tamperedChainVerified, tamperedFundAmount } =
+    runDemo();
+
+  // The intact chain passes, both as reported by the demo and on an
+  // independent re-verification of the escrow's own history.
+  assert.equal(historyChainVerified, true);
+  assert.equal(verifyHistoryChain(escrow.history), true);
+  // The tampered copy is the golden FUND amount altered by exactly 1,
+  // and its stored hash no longer recomputes — verdict false.
+  assert.equal(tamperedFundAmount, 10631);
+  assert.equal(tamperedChainVerified, false);
+  // Independent cross-check: rebuilding the tamper by hand from the
+  // demo's history yields the same false verdict, while the escrow's
+  // own FUND amount is untouched at the golden 10630.
+  const handTampered = escrow.history.map((entry) => ({ ...entry }));
+  const fund = handTampered.find((entry) => entry.event === "FUND");
+  assert.ok(fund !== undefined && fund.amount !== undefined);
+  fund.amount += 1;
+  assert.equal(fund.amount, tamperedFundAmount);
+  assert.equal(verifyHistoryChain(handTampered), false);
+  assert.equal(
+    escrow.history.find((entry) => entry.event === "FUND")?.amount,
+    10630,
+  );
+});
+
+test("demo lines print the audit hash chain section between the settlement report and the webhook", () => {
+  const { lines } = runDemo();
+  const text = lines.join("\n");
+
+  assert.match(text, /Audit hash chain \(verifyHistoryChain on the main escrow history\):/);
+  assert.ok(
+    text.includes(
+      "  intact history: verifyHistoryChain: true (4 entries, genesis-linked, every hash recomputes)",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  tampered copy: FUND amount 10630 -> 10631 — verifyHistoryChain: false (tamper detected: the stored hash no longer recomputes)",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  original history after the tamper check: verifyHistoryChain: true (detached copy — the escrow's own history is untouched)",
+    ),
+  );
+  // Position: the chain verdicts describe the history whose settlement
+  // report was just printed, and precede the webhook built from it.
+  const reportAt = text.indexOf("Settlement report:");
+  const chainAt = text.indexOf("Audit hash chain (verifyHistoryChain");
+  const webhookAt = text.indexOf("Settlement webhook (signed");
+  assert.ok(reportAt < chainAt && chainAt < webhookAt);
 });
 
 test("demo builds a settlement webhook from the report and self-verifies it", () => {

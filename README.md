@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 631 tests, all local
+npm test   # 633 tests, all local
 ```
 
 ## Quickstart
@@ -51,7 +51,11 @@ console.log(settleRelease({ gross: 1000, proFeeBps: 500 }));
 Or run the bundled demo — one command drives a deterministic escrow
 through `CREATED → FUNDED → MILESTONE_SUBMITTED → VERIFIED → RELEASED`
 (the golden 10,630 deposit, fixed timestamps) and prints the audit
-history plus the balanced settlement report, then builds the signed
+history plus the balanced settlement report. It then runs
+`verifyHistoryChain` on that history — the intact, genesis-linked
+chain passes — and on a detached copy whose FUND entry's amount is
+altered by 1, which fails verification (the stored hash no longer
+recomputes), while the escrow's own history stays untouched — then builds the signed
 settlement webhook for the released escrow (fixed `eventId`/`at`,
 demo-only secret printed in `src/demo.ts` — not a real credential)
 and verifies it the way a receiver would. The receiver side then
@@ -689,7 +693,7 @@ and an empty batch yields an all-zero summary.
 
 ## Reproducibility
 
-`npm test` runs 631 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 633 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
