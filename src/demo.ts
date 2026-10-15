@@ -28,7 +28,14 @@
  * report from that same batch result — each with its own
  * factory-generated `eventId`, the failed entry forwarded as
  * `{escrowId, error}` — with a receiver-side re-verification of a
- * built webhook printed per successful item.
+ * built webhook printed per successful item. The demo closes with a
+ * watchdog screening over three further escrows on one fixed `now`:
+ * `staleEscrows` selects by dwell in the current state (the last
+ * history entry's `at` against a per-state budget, deadline ignored)
+ * while `expiredEscrows` selects the same batch by absolute deadline
+ * — the two axes pick different escrows — and `actOnStaleEscrows`
+ * then expires the one stale escrow, its dispatch pinned to the same
+ * fixed `now` so no wall clock enters the audit history.
  *
  * Usage: `npm run demo` (builds with tsc, then runs node on the compiled
  * output). Zero runtime dependencies: this file only imports the library
@@ -44,6 +51,7 @@ import { fileURLToPath } from "node:url";
 import {
   Escrow,
   SettlementEventDedupe,
+  actOnStaleEscrows,
   buildSettlementReport,
   buildSettlementReports,
   buildSettlementWebhook,
@@ -51,8 +59,10 @@ import {
   calculateDeposit,
   createQuorum,
   dispatchArbitration,
+  expiredEscrows,
   renderReport,
   restoreQuorum,
+  staleEscrows,
   summarizeSettlementReports,
   verifyHistoryChain,
   verifySettlementWebhook,
@@ -65,6 +75,7 @@ import {
   type SettlementReportResult,
   type SettlementReportsSummary,
   type SettlementWebhook,
+  type StaleEscrowActionResult,
 } from "./index.js";
 
 /** Fixed demo fixture: the portfolio golden fee vector (deposit 10,630). */
@@ -136,6 +147,39 @@ export const DEMO_BATCH_WEBHOOK_EVENT_IDS = [
   "evt_demo_batch_001",
   "evt_demo_batch_002",
 ] as const;
+
+/**
+ * Watchdog fixtures for the closing section: three further escrows
+ * screened on one fixed `now` (the morning after the batch webhook
+ * timestamp) under two different axes. Hand-computed expectations —
+ * dwell is `now` minus the last history entry's `at`, stale only when
+ * strictly past the state's budget (7 days for both screened states):
+ * - DEMO-ESC-004 (stale only): FUNDED at 2026-02-20T09:00 — dwell
+ *   17 days > 7-day FUNDED budget, so stale; deadline 2026-04-01 is
+ *   still ahead, so not expired.
+ * - DEMO-ESC-005 (expired only): milestone submitted at
+ *   2026-03-08T09:00 — dwell 1 day < 7-day MILESTONE_SUBMITTED
+ *   budget, so not stale; deadline 2026-03-08T12:00 has passed, so
+ *   expired.
+ * - DEMO-ESC-006 (neither): FUNDED at 2026-03-08T09:00 — dwell
+ *   1 day, deadline 2026-04-01 ahead, so neither stale nor expired.
+ * The stale disposition is an EXPIRE dispatch pinned to the same
+ * fixed `now` (actor `watchdog`): a dispatch without an explicit
+ * `at` would stamp the wall clock and break determinism.
+ */
+export const DEMO_STALE_NOW = "2026-03-09T09:00:00.000Z";
+export const DEMO_STALE_DAY_MS = 86_400_000;
+export const DEMO_STALE_MAX_AGE_MS = 7 * DEMO_STALE_DAY_MS;
+export const DEMO_STALE_ESCROW_ID = "DEMO-ESC-004";
+export const DEMO_STALE_FUND_AT = "2026-02-20T09:00:00.000Z";
+export const DEMO_STALE_DEADLINE = "2026-04-01T09:00:00.000Z";
+export const DEMO_OVERDUE_ONLY_ESCROW_ID = "DEMO-ESC-005";
+export const DEMO_OVERDUE_ONLY_FUND_AT = "2026-03-07T09:00:00.000Z";
+export const DEMO_OVERDUE_ONLY_SUBMIT_AT = "2026-03-08T09:00:00.000Z";
+export const DEMO_OVERDUE_ONLY_DEADLINE = "2026-03-08T12:00:00.000Z";
+export const DEMO_FRESH_ESCROW_ID = "DEMO-ESC-006";
+export const DEMO_FRESH_FUND_AT = "2026-03-08T09:00:00.000Z";
+export const DEMO_FRESH_DEADLINE = "2026-04-01T09:00:00.000Z";
 
 const steps: Array<{
   event: EscrowEvent;
@@ -279,6 +323,31 @@ export interface DemoResult {
    * webhook was built) — the receiver-side check the demo prints.
    */
   batchWebhooksVerified: boolean;
+  /**
+   * The three watchdog escrows, in screening order (stale-only,
+   * expired-only, neither), AFTER the stale action ran: the stale
+   * escrow is EXPIRED, the other two are untouched.
+   */
+  watchdogEscrows: Escrow[];
+  /**
+   * `staleEscrows` selection over {@link DemoResult.watchdogEscrows}
+   * on the fixed demo `now`, captured before the action ran: just
+   * the stale-only escrow (dwell axis).
+   */
+  staleSelected: Escrow[];
+  /**
+   * `expiredEscrows` selection over the same batch on the same fixed
+   * `now`, also captured before the action ran: just the
+   * expired-only escrow (deadline axis) — a different subset than
+   * {@link DemoResult.staleSelected}, which is the point of the
+   * closing section.
+   */
+  expiredSelected: Escrow[];
+  /**
+   * Per-escrow outcomes of `actOnStaleEscrows` expiring the stale
+   * selection: one entry, acted, the escrow now EXPIRED.
+   */
+  staleActionResults: StaleEscrowActionResult[];
   lines: string[];
 }
 
@@ -654,6 +723,101 @@ export function runDemo(): DemoResult {
     `  batch webhooks: ${builtCount} webhooks, ${batchWebhooks.length - builtCount} error — eventIds distinct (${DEMO_BATCH_WEBHOOK_EVENT_IDS.join(", ")}), factory-generated per report, never reused`,
   );
 
+  // --- Watchdog screening: staleEscrows (dwell) vs expiredEscrows ---
+  // Two production screening axes over one fresh batch of three
+  // escrows, all on the fixed DEMO_STALE_NOW — see the fixture
+  // comment above for the hand-computed expectations. staleEscrows
+  // measures dwell in the CURRENT state (last history entry's `at`
+  // against a per-state budget) and never looks at the deadline;
+  // expiredEscrows looks only at the absolute deadline and never at
+  // dwell. Both selections are captured BEFORE any action runs, so
+  // the printed comparison is a snapshot of the same pre-action
+  // batch. The disposition then goes through actOnStaleEscrows with
+  // an EXPIRE dispatch pinned to the fixed `now`: dispatching
+  // without an explicit `at` would stamp the wall clock into the
+  // audit history and break the demo's determinism.
+  const staleOnlyEscrow = new Escrow(DEMO_STALE_ESCROW_ID);
+  staleOnlyEscrow.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "sponsor",
+    at: DEMO_STALE_FUND_AT,
+  });
+  staleOnlyEscrow.setDeadline(DEMO_STALE_DEADLINE);
+  const overdueOnlyEscrow = new Escrow(DEMO_OVERDUE_ONLY_ESCROW_ID);
+  overdueOnlyEscrow.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "sponsor",
+    at: DEMO_OVERDUE_ONLY_FUND_AT,
+  });
+  overdueOnlyEscrow.dispatch(
+    "SUBMIT_MILESTONE",
+    "Deliverable URLs + IPFS metadata hash",
+    undefined,
+    { actor: "creator", at: DEMO_OVERDUE_ONLY_SUBMIT_AT },
+  );
+  overdueOnlyEscrow.setDeadline(DEMO_OVERDUE_ONLY_DEADLINE);
+  const freshEscrow = new Escrow(DEMO_FRESH_ESCROW_ID);
+  freshEscrow.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "sponsor",
+    at: DEMO_FRESH_FUND_AT,
+  });
+  freshEscrow.setDeadline(DEMO_FRESH_DEADLINE);
+  const watchdogEscrows = [staleOnlyEscrow, overdueOnlyEscrow, freshEscrow];
+  const staleMaxAgeByState = {
+    FUNDED: DEMO_STALE_MAX_AGE_MS,
+    MILESTONE_SUBMITTED: DEMO_STALE_MAX_AGE_MS,
+  };
+  const staleNow = new Date(DEMO_STALE_NOW);
+  const staleSelected = staleEscrows(
+    watchdogEscrows,
+    staleMaxAgeByState,
+    staleNow,
+  );
+  const expiredSelected = expiredEscrows(watchdogEscrows, staleNow);
+  const staleIds = new Set(staleSelected.map((e) => e.id));
+  const expiredIds = new Set(expiredSelected.map((e) => e.id));
+  const staleNowMs = Date.parse(DEMO_STALE_NOW);
+  lines.push(
+    "",
+    "Watchdog screening (stale dwell axis vs expired deadline axis):",
+    `  fixed now: ${DEMO_STALE_NOW} — stale budgets: FUNDED 7 days, MILESTONE_SUBMITTED 7 days (dwell from the last history entry, strictly past the budget)`,
+  );
+  for (const watchdogEscrow of watchdogEscrows) {
+    const lastEntry =
+      watchdogEscrow.history[watchdogEscrow.history.length - 1];
+    const dwellDays =
+      (staleNowMs - Date.parse(lastEntry.at)) / DEMO_STALE_DAY_MS;
+    lines.push(
+      `  ${watchdogEscrow.id}: state ${watchdogEscrow.state}, entered ${lastEntry.at}, dwell ${dwellDays} ${dwellDays === 1 ? "day" : "days"}, deadline ${watchdogEscrow.getDeadline()} — stale: ${staleIds.has(watchdogEscrow.id)}, expired: ${expiredIds.has(watchdogEscrow.id)}`,
+    );
+  }
+  lines.push(
+    `  stale vs expired on the same batch: stale [${staleSelected.map((e) => e.id).join(", ")}], expired [${expiredSelected.map((e) => e.id).join(", ")}] — different axes, different subsets (dwell in the current state vs absolute deadline)`,
+  );
+  const staleActionResults = actOnStaleEscrows(
+    watchdogEscrows,
+    (e) =>
+      e.dispatch(
+        "EXPIRE",
+        "Stale in current state past the 7-day budget — expired by watchdog",
+        undefined,
+        { actor: "watchdog", at: DEMO_STALE_NOW },
+      ),
+    staleMaxAgeByState,
+    staleNow,
+  );
+  lines.push(
+    `  actOnStaleEscrows (action: dispatch EXPIRE at the fixed now): ${staleActionResults.length} attempted`,
+  );
+  for (const result of staleActionResults) {
+    lines.push(
+      result.acted
+        ? `  ${result.escrow.id}: acted true — now ${result.escrow.state}`
+        : `  ${result.escrow.id}: acted false — error: ${result.error}`,
+    );
+  }
+  lines.push(
+    `  non-stale escrows untouched: ${overdueOnlyEscrow.id} still ${overdueOnlyEscrow.state}, ${freshEscrow.id} still ${freshEscrow.state}`,
+  );
+
   return {
     escrow,
     report,
@@ -675,6 +839,10 @@ export function runDemo(): DemoResult {
     batchSummary,
     batchWebhooks,
     batchWebhooksVerified,
+    watchdogEscrows,
+    staleSelected,
+    expiredSelected,
+    staleActionResults,
     lines,
   };
 }

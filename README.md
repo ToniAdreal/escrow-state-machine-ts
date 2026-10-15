@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 633 tests, all local
+npm test   # 635 tests, all local
 ```
 
 ## Quickstart
@@ -85,7 +85,16 @@ one factory-generated `eventId` per report (`evt_demo_batch_001`,
 `evt_demo_batch_002`, never reused, so a receiver deduplicating on
 `eventId` keeps both), the failed entry forwarded as
 `{escrowId, error}` — and the demo prints a receiver-side
-`verifySettlementWebhook` verdict on each built webhook's line:
+`verifySettlementWebhook` verdict on each built webhook's line.
+The demo closes with a watchdog screening over three further
+escrows on one fixed `now`: `staleEscrows` selects by dwell in the
+current state (7-day budgets; the escrow funded 17 days earlier is
+stale even though its deadline is still ahead) while
+`expiredEscrows` selects the same batch by absolute deadline (the
+escrow submitted 1 day earlier is expired, not stale) — different
+axes, different subsets — and `actOnStaleEscrows` then expires the
+one stale escrow with its dispatch pinned to the same fixed `now`,
+leaving the other two untouched:
 
 ```bash
 npm run demo
@@ -693,7 +702,7 @@ and an empty batch yields an all-zero summary.
 
 ## Reproducibility
 
-`npm test` runs 633 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 635 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

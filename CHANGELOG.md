@@ -18,6 +18,21 @@ version changes.
 
 ### Added
 
+- CLI demo coverage for the stale-watchdog screening: the demo
+  closes with three further escrows screened on one fixed `now`
+  under both watchdog axes — `staleEscrows` (dwell in the current
+  state against 7-day per-state budgets) selects the escrow funded
+  17 days earlier whose deadline is still ahead, while
+  `expiredEscrows` (absolute deadline) selects the escrow whose
+  milestone was submitted 1 day earlier but whose deadline has
+  passed, and a third fresh escrow is in neither subset — then
+  `actOnStaleEscrows` expires the stale escrow with the EXPIRE
+  dispatch pinned to the same fixed `now` (actor `watchdog`), so
+  no wall clock enters the audit history. `DemoResult` exposes
+  the watchdog batch, both pre-action selections, and the
+  per-escrow action results; the demo tests pin the disjoint
+  subsets, the hand-computed dwell days, the printed lines and
+  their closing position, and the EXPIRE entry's fixed timestamp.
 - Benchmark coverage for the allowed-events lookup path:
   `allowedEvents(state)` over all 8 states of the transition
   table (one pass queries every state once, in declaration

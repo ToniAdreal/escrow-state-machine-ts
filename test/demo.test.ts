@@ -11,10 +11,21 @@ import {
   DEMO_BATCH_WEBHOOK_EVENT_IDS,
   DEMO_DISPUTE_ESCROW_ID,
   DEMO_ESCROW_ID,
+  DEMO_FRESH_ESCROW_ID,
+  DEMO_FRESH_FUND_AT,
+  DEMO_OVERDUE_ONLY_DEADLINE,
+  DEMO_OVERDUE_ONLY_ESCROW_ID,
+  DEMO_OVERDUE_ONLY_SUBMIT_AT,
   DEMO_PENDING_ESCROW_ID,
   DEMO_QUORUM_APPROVAL_ATS,
   DEMO_QUORUM_SIGNERS,
   DEMO_QUORUM_THRESHOLD,
+  DEMO_STALE_DAY_MS,
+  DEMO_STALE_DEADLINE,
+  DEMO_STALE_ESCROW_ID,
+  DEMO_STALE_FUND_AT,
+  DEMO_STALE_MAX_AGE_MS,
+  DEMO_STALE_NOW,
   DEMO_WEBHOOK_AT,
   DEMO_WEBHOOK_EVENT_ID,
   DEMO_WEBHOOK_SECRET,
@@ -596,6 +607,135 @@ test("demo lines print the batch webhooks section with per-item isolation and re
   );
 });
 
+test("demo watchdog screening selects disjoint stale/expired subsets and expires only the stale escrow", () => {
+  const { watchdogEscrows, staleSelected, expiredSelected, staleActionResults } =
+    runDemo();
+
+  // Screening batch in fixture order: stale-only, expired-only, neither.
+  assert.deepEqual(
+    watchdogEscrows.map((e) => e.id),
+    [DEMO_STALE_ESCROW_ID, DEMO_OVERDUE_ONLY_ESCROW_ID, DEMO_FRESH_ESCROW_ID],
+  );
+  // The two axes pick different escrows out of the same batch — the
+  // dwell axis takes the long-FUNDED escrow (its deadline is still
+  // ahead), the deadline axis takes the just-submitted escrow (its
+  // dwell is only 1 day), and the fresh escrow is in neither subset.
+  assert.deepEqual(
+    staleSelected.map((e) => e.id),
+    [DEMO_STALE_ESCROW_ID],
+  );
+  assert.deepEqual(
+    expiredSelected.map((e) => e.id),
+    [DEMO_OVERDUE_ONLY_ESCROW_ID],
+  );
+  assert.equal(staleSelected[0], watchdogEscrows[0]);
+  assert.equal(expiredSelected[0], watchdogEscrows[1]);
+  // Hand-computed dwell on the fixed now (last history entry's `at`):
+  // 17 days in FUNDED, 1 day in MILESTONE_SUBMITTED, 1 day in FUNDED,
+  // against the pinned 7-day budget for both screened states.
+  assert.equal(DEMO_STALE_MAX_AGE_MS, 7 * DEMO_STALE_DAY_MS);
+  const nowMs = Date.parse(DEMO_STALE_NOW);
+  const dwellDays = watchdogEscrows.map((e) => {
+    const last = e.history[e.history.length - 1];
+    // For the stale escrow the last entry is the watchdog's own
+    // EXPIRE (asserted below), so dwell is read off the FUND entry —
+    // the entry that entered FUNDED — for that one.
+    const entered =
+      e.id === DEMO_STALE_ESCROW_ID ? e.history[0] : last;
+    return (nowMs - Date.parse(entered.at)) / DEMO_STALE_DAY_MS;
+  });
+  assert.deepEqual(dwellDays, [17, 1, 1]);
+  assert.equal(watchdogEscrows[0].history[0].at, DEMO_STALE_FUND_AT);
+  assert.equal(
+    watchdogEscrows[1].history[watchdogEscrows[1].history.length - 1].at,
+    DEMO_OVERDUE_ONLY_SUBMIT_AT,
+  );
+  assert.equal(
+    watchdogEscrows[2].history[watchdogEscrows[2].history.length - 1].at,
+    DEMO_FRESH_FUND_AT,
+  );
+  // Deadlines are the fixtures that make the deadline axis diverge.
+  assert.equal(watchdogEscrows[0].getDeadline(), DEMO_STALE_DEADLINE);
+  assert.equal(watchdogEscrows[1].getDeadline(), DEMO_OVERDUE_ONLY_DEADLINE);
+  // The executor attempted exactly the stale selection and expired it;
+  // the other two escrows are untouched (states + history lengths).
+  assert.equal(staleActionResults.length, 1);
+  assert.equal(staleActionResults[0].escrow, watchdogEscrows[0]);
+  assert.equal(staleActionResults[0].acted, true);
+  assert.equal(staleActionResults[0].error, undefined);
+  assert.deepEqual(
+    watchdogEscrows.map((e) => e.state),
+    ["EXPIRED", "MILESTONE_SUBMITTED", "FUNDED"],
+  );
+  assert.deepEqual(
+    watchdogEscrows.map((e) => e.history.length),
+    [2, 2, 1],
+  );
+  // The EXPIRE entry is pinned to the fixed now with the watchdog
+  // actor — a wall-clock stamp here would break determinism.
+  const expireEntry =
+    watchdogEscrows[0].history[watchdogEscrows[0].history.length - 1];
+  assert.equal(expireEntry.event, "EXPIRE");
+  assert.equal(expireEntry.from, "FUNDED");
+  assert.equal(expireEntry.to, "EXPIRED");
+  assert.equal(expireEntry.at, DEMO_STALE_NOW);
+  assert.equal(expireEntry.actor, "watchdog");
+});
+
+test("demo lines print the watchdog screening section after the batch webhooks", () => {
+  const { lines } = runDemo();
+  const text = lines.join("\n");
+
+  assert.match(
+    text,
+    /Watchdog screening \(stale dwell axis vs expired deadline axis\):/,
+  );
+  assert.ok(
+    text.includes(
+      `  fixed now: ${DEMO_STALE_NOW} — stale budgets: FUNDED 7 days, MILESTONE_SUBMITTED 7 days (dwell from the last history entry, strictly past the budget)`,
+    ),
+  );
+  // Per-escrow lines are full literals: fixture timestamps, dwell,
+  // and both verdicts are pinned, not recomputed from the demo.
+  assert.ok(
+    text.includes(
+      "  DEMO-ESC-004: state FUNDED, entered 2026-02-20T09:00:00.000Z, dwell 17 days, deadline 2026-04-01T09:00:00.000Z — stale: true, expired: false",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  DEMO-ESC-005: state MILESTONE_SUBMITTED, entered 2026-03-08T09:00:00.000Z, dwell 1 day, deadline 2026-03-08T12:00:00.000Z — stale: false, expired: true",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  DEMO-ESC-006: state FUNDED, entered 2026-03-08T09:00:00.000Z, dwell 1 day, deadline 2026-04-01T09:00:00.000Z — stale: false, expired: false",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  stale vs expired on the same batch: stale [DEMO-ESC-004], expired [DEMO-ESC-005] — different axes, different subsets (dwell in the current state vs absolute deadline)",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  actOnStaleEscrows (action: dispatch EXPIRE at the fixed now): 1 attempted",
+    ),
+  );
+  assert.ok(text.includes("  DEMO-ESC-004: acted true — now EXPIRED"));
+  assert.ok(
+    text.includes(
+      "  non-stale escrows untouched: DEMO-ESC-005 still MILESTONE_SUBMITTED, DEMO-ESC-006 still FUNDED",
+    ),
+  );
+  // Position: the screening closes the demo, after the batch webhooks.
+  const webhooksAt = text.indexOf(
+    "Batch settlement webhooks (batch reports",
+  );
+  const watchdogAt = text.indexOf("Watchdog screening (stale dwell axis");
+  assert.ok(webhooksAt < watchdogAt);
+});
+
 test("demo is deterministic: two runs produce identical lines", () => {
   assert.deepEqual(runDemo().lines, runDemo().lines);
 });
@@ -673,4 +813,20 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
     ),
   );
   assert.match(out, /batch webhooks: 2 webhooks, 1 error — eventIds distinct/);
+  // Watchdog tail: the closing screening prints both axes' subsets
+  // over the same batch and the stale disposition result. (The
+  // seq-row count above stays 8: the watchdog section prints no
+  // numbered history rows.)
+  assert.match(out, /Watchdog screening \(stale dwell axis vs expired deadline axis\):/);
+  assert.ok(
+    out.includes(
+      "  DEMO-ESC-004: state FUNDED, entered 2026-02-20T09:00:00.000Z, dwell 17 days, deadline 2026-04-01T09:00:00.000Z — stale: true, expired: false",
+    ),
+  );
+  assert.ok(
+    out.includes(
+      "  stale vs expired on the same batch: stale [DEMO-ESC-004], expired [DEMO-ESC-005] — different axes, different subsets (dwell in the current state vs absolute deadline)",
+    ),
+  );
+  assert.ok(out.includes("  DEMO-ESC-004: acted true — now EXPIRED"));
 });
