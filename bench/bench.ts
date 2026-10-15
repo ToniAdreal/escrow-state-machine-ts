@@ -173,6 +173,17 @@
  *      total against its hand-written expectation and each
  *      fail-fast shape against its exact hand-written error
  *      message.
+ *  20. settlement report rendering — `renderReport(report)` over
+ *      the fixed golden released report built once outside the
+ *      timed loop (deposit 10,630, released via
+ *      VERIFY_PASS -> RELEASE, 4 party rows). This is the final
+ *      day-end reconciliation step that turns a report into the
+ *      fixed-width text ledger a human reads — per-party
+ *      inflow / outflow / net rows plus the deposit formula line —
+ *      previously visible only inside the `buildSettlementReport`
+ *      numbers. Every timed iteration re-checks the rendered text
+ *      against hand-written expected lines (header / outcome,
+ *      deposit formula, and one party's net row).
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -201,6 +212,7 @@ import {
   historyFromNdjson,
   historyToNdjson,
   parseRetryAfter,
+  renderReport,
   restoreQuorum,
   settleRelease,
   SettlementEventDedupe,
@@ -1298,6 +1310,43 @@ function checkDepositCorpus(): void {
 checkDepositCorpus();
 
 // ---------------------------------------------------------------------
+// renderReport fixture: the module-scope `report` above, built once
+// outside the timed loop — the fixed golden released report
+// (escrow BENCH-001, 4-entry history, deposit 10,630 = pool 10,000 +
+// base 600 x1.0 - loyalty 30 + oracle 60, settled at proFeeBps 500:
+// platform pro fee 531.50, creator net 10,098.50, sponsor net
+// -10,630, referrer 0). renderReport is pure (it only reads the
+// report), so the same report is re-rendered on every iteration.
+// Hand-written expected lines, written out from the documented
+// ledger layout (party label padded to 30 chars, each money column
+// padded to 14 chars) and the golden figures above — never produced
+// by calling renderReport itself:
+//   header:  "Escrow settlement report — BENCH-001"
+//   outcome: "Outcome: released (via VERIFY_PASS → RELEASE)"
+//   deposit: "Deposit: $10,630.00 (pool $10,000.00 + base
+//             $600.00×1 − loyalty $30.00 + oracle $60.00)"
+//   creator: label "Creator (payee)", inflow $10,098.50, outflow
+//            $0.00, net $10,098.50 in the 30/14/14/14 columns.
+// ---------------------------------------------------------------------
+const RENDER_EXPECTED_LINES: readonly string[] = [
+  "Escrow settlement report — BENCH-001",
+  "Outcome: released (via VERIFY_PASS → RELEASE)",
+  "Deposit: $10,630.00 (pool $10,000.00 + base $600.00×1 − loyalty $30.00 + oracle $60.00)",
+  "Creator (payee)                   $10,098.50         $0.00    $10,098.50",
+];
+
+function checkRenderReport(text: string): void {
+  for (const line of RENDER_EXPECTED_LINES) {
+    if (!text.includes(line)) {
+      throw new Error("benchmark self-check failed: renderReport");
+    }
+  }
+}
+// Pre-check outside the timed loop: the rendered ledger carries
+// every hand-written expected line before any number is reported.
+checkRenderReport(renderReport(report));
+
+// ---------------------------------------------------------------------
 // Scenarios (each with a self-check so a broken path cannot report a
 // plausible-looking number).
 // ---------------------------------------------------------------------
@@ -1378,6 +1427,12 @@ function benchBuildSettlementReport(): number {
     if (!built.balanced) {
       throw new Error("benchmark self-check failed: buildSettlementReport");
     }
+  }, ITERATIONS);
+}
+
+function benchRenderReport(): number {
+  return measure(() => {
+    checkRenderReport(renderReport(report));
   }, ITERATIONS);
 }
 
@@ -1655,7 +1710,7 @@ console.log("escrow-state-machine-ts benchmark");
 console.log(`Node: ${process.version} on ${process.platform}/${process.arch}`);
 console.log(`CPU: ${cpus()[0]?.model ?? "unknown"}`);
 console.log(
-  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); settlement batch summary over that batch's 4 pre-built results (3 reports + 1 error); settlement batch webhooks over that same batch (3 signed webhooks with distinct deterministic eventIds bench-batch-event-1..3 plus the 1 forwarded per-item error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release); quorum of 9 signers with threshold 5 on a fixed injected clock, approved one vote at a time to the threshold; settlement webhook fan-out to 4 endpoints through a fake global fetch (immediate 200, no network); settlement event dedupe duplicate hits cycling over 1,000 pre-recorded eventIds under a fixed injected clock; settlement event dedupe restore from a 1,000-entry JSON-round-tripped snapshot under a fixed injected clock (all entries live at load, default TTL and capacity, observability counters restarting at zero); Escrow.fromHistory replay over the same detached 4-entry history; watchdog screening over a fixed mixed batch of 100 escrows (40 hand-counted expired, 70 hand-counted stale under FUNDED 7d / MILESTONE_SUBMITTED 30d budgets) at a fixed screening instant; watchdog execution (expireOverdueEscrows / actOnStaleEscrows with an EXPIRE-dispatch action) over fresh rebuilds of that same 100-escrow batch on every iteration because the executors mutate their inputs (40 of 40 expire attempts and 70 of 70 stale actions succeed — both selected states carry an EXPIRE edge); quorum snapshot restore from a persisted (JSON round-tripped) snapshot of the 9-signer / threshold-5 quorum carrying 7 recorded approvals; settleRelease netting over 4 fixed representative inputs (golden 10630 at 500 bps, 1000 at 500 bps with 100 credits, large gross 1000000 at 250 bps with 1250.25 credits, rounding edge 10 at 125 bps) checked against hand-computed proFee/net on every iteration; parseRetryAfter over a fixed 11-value corpus (delay-seconds, fractional and whitespace-padded values, zero, future and past HTTP-dates, signed numbers, a garbage string, null and undefined) against one injected fixed now, every result checked against hand-pinned expectations on every iteration; depositAmountFromHistory over a fixed 4-shape corpus (a single FUND of the golden 10630, a two-FUND top-up sequence summing to 12630, a FUND recorded without an amount, and an empty no-FUND history) checked against hand-pinned totals and exact fail-fast error messages on every iteration",
+  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); settlement batch summary over that batch's 4 pre-built results (3 reports + 1 error); settlement batch webhooks over that same batch (3 signed webhooks with distinct deterministic eventIds bench-batch-event-1..3 plus the 1 forwarded per-item error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release); quorum of 9 signers with threshold 5 on a fixed injected clock, approved one vote at a time to the threshold; settlement webhook fan-out to 4 endpoints through a fake global fetch (immediate 200, no network); settlement event dedupe duplicate hits cycling over 1,000 pre-recorded eventIds under a fixed injected clock; settlement event dedupe restore from a 1,000-entry JSON-round-tripped snapshot under a fixed injected clock (all entries live at load, default TTL and capacity, observability counters restarting at zero); Escrow.fromHistory replay over the same detached 4-entry history; watchdog screening over a fixed mixed batch of 100 escrows (40 hand-counted expired, 70 hand-counted stale under FUNDED 7d / MILESTONE_SUBMITTED 30d budgets) at a fixed screening instant; watchdog execution (expireOverdueEscrows / actOnStaleEscrows with an EXPIRE-dispatch action) over fresh rebuilds of that same 100-escrow batch on every iteration because the executors mutate their inputs (40 of 40 expire attempts and 70 of 70 stale actions succeed — both selected states carry an EXPIRE edge); quorum snapshot restore from a persisted (JSON round-tripped) snapshot of the 9-signer / threshold-5 quorum carrying 7 recorded approvals; settleRelease netting over 4 fixed representative inputs (golden 10630 at 500 bps, 1000 at 500 bps with 100 credits, large gross 1000000 at 250 bps with 1250.25 credits, rounding edge 10 at 125 bps) checked against hand-computed proFee/net on every iteration; parseRetryAfter over a fixed 11-value corpus (delay-seconds, fractional and whitespace-padded values, zero, future and past HTTP-dates, signed numbers, a garbage string, null and undefined) against one injected fixed now, every result checked against hand-pinned expectations on every iteration; depositAmountFromHistory over a fixed 4-shape corpus (a single FUND of the golden 10630, a two-FUND top-up sequence summing to 12630, a FUND recorded without an amount, and an empty no-FUND history) checked against hand-pinned totals and exact fail-fast error messages on every iteration; renderReport rendering of the fixed golden released report (deposit 10630, released via VERIFY_PASS -> RELEASE, 4 party rows) checked against hand-written expected lines (header/outcome, deposit formula, creator net row) on every iteration",
 );
 console.log(`Iterations per op: ${ITERATIONS} (after ${WARMUP} warmup)`);
 console.log("");
@@ -1666,6 +1721,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "Escrow.fromHistory (4 entries)", ops: benchFromHistory() },
   { path: "settleRelease (4 fixed inputs)", ops: benchSettleRelease() },
   { path: "buildSettlementReport (4 entries)", ops: benchBuildSettlementReport() },
+  { path: "renderReport (released report, 4 parties)", ops: benchRenderReport() },
   { path: "depositAmountFromHistory (4-shape corpus)", ops: benchDepositAmountFromHistory() },
   { path: "buildSettlementReports (batch 4 x 4 entries)", ops: benchBuildSettlementReports() },
   { path: "summarizeSettlementReports (batch 4 results)", ops: benchSummarizeSettlementReports() },
