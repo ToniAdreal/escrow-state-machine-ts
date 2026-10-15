@@ -18,6 +18,22 @@ version changes.
 
 ### Added
 
+- CLI demo coverage for the deadline watchdog: after the
+  stale-watchdog screening, the demo closes with three more
+  escrows screened by `expiredEscrows` on the same fixed `now`
+  and executed through `expireOverdueEscrows` — the past-deadline
+  `VERIFIED` escrow (no `EXPIRE` edge) lands as a per-item error
+  without blocking the past-deadline `FUNDED` escrow after it,
+  which expires, and the stale-only escrow (deadline still ahead)
+  is never attempted, so the deadline and stale axes pick
+  disjoint subsets of this batch too. The demo documents one
+  honest caveat in its source: the executor dispatches `EXPIRE`
+  without a pinned `at`, so its audit entries carry the
+  dispatch-time wall clock and the demo prints no timestamp for
+  them. `DemoResult` exposes the deadline batch, both pre-action
+  selections, and the per-escrow executor results; the demo tests
+  pin the selections, the per-item outcomes, and the printed
+  section.
 - Benchmark coverage for the fee-calculation path:
   `calculateDeposit(inputs)` over a fixed 3-shape corpus (the
   golden vector, a complexity-1.5 case, and a large-pool case),

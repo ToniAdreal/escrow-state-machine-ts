@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 635 tests, all local
+npm test   # 637 tests, all local
 ```
 
 ## Quickstart
@@ -94,7 +94,19 @@ stale even though its deadline is still ahead) while
 escrow submitted 1 day earlier is expired, not stale) — different
 axes, different subsets — and `actOnStaleEscrows` then expires the
 one stale escrow with its dispatch pinned to the same fixed `now`,
-leaving the other two untouched:
+leaving the other two untouched. The demo then closes with a
+deadline-watchdog section over three more escrows on the same
+fixed `now`: `expiredEscrows` screens the batch by deadline and
+`expireOverdueEscrows` executes that selection with per-item
+isolation — the past-deadline `VERIFIED` escrow has no `EXPIRE`
+edge and lands as `{expired: false, error}` without blocking the
+past-deadline `FUNDED` escrow after it, which expires, while the
+stale-only escrow (deadline still ahead) is never attempted, so
+the deadline and stale axes pick disjoint subsets of this batch
+too. (One caveat the demo documents in its source: the executor
+dispatches `EXPIRE` without a pinned `at`, so those audit entries
+carry the dispatch-time wall clock; the demo prints no timestamp
+for them and its printed output stays deterministic):
 
 ```bash
 npm run demo
@@ -702,7 +714,7 @@ and an empty batch yields an all-zero summary.
 
 ## Reproducibility
 
-`npm test` runs 635 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 637 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

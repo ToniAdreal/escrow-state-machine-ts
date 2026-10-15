@@ -35,7 +35,19 @@
  * while `expiredEscrows` selects the same batch by absolute deadline
  * — the two axes pick different escrows — and `actOnStaleEscrows`
  * then expires the one stale escrow, its dispatch pinned to the same
- * fixed `now` so no wall clock enters the audit history.
+ * fixed `now` so no wall clock enters the audit history. A final
+ * deadline-watchdog section then screens three more escrows with
+ * `expiredEscrows` on the same fixed `now` and runs that selection
+ * through the `expireOverdueEscrows` executor: the VERIFIED escrow
+ * past its deadline has no EXPIRE edge, so it lands as a per-item
+ * error without blocking the past-deadline FUNDED escrow after it,
+ * which expires; the third escrow is stale-only (its deadline is
+ * still ahead), so the deadline executor never attempts it — the
+ * two watchdog axes pick disjoint subsets of this batch too. One
+ * honest caveat: the executor dispatches EXPIRE with no pinned
+ * `at`, so its audit entries carry the dispatch-time wall clock;
+ * the demo prints no timestamp for those entries, so its printed
+ * output stays byte-identical across runs.
  *
  * Usage: `npm run demo` (builds with tsc, then runs node on the compiled
  * output). Zero runtime dependencies: this file only imports the library
@@ -60,6 +72,7 @@ import {
   createQuorum,
   dispatchArbitration,
   expiredEscrows,
+  expireOverdueEscrows,
   renderReport,
   restoreQuorum,
   staleEscrows,
@@ -68,6 +81,7 @@ import {
   verifySettlementWebhook,
   type BuildSettlementWebhooksResult,
   type EscrowEvent,
+  type ExpireOverdueResult,
   type Quorum,
   type QuorumConfig,
   type QuorumSnapshot,
@@ -180,6 +194,46 @@ export const DEMO_OVERDUE_ONLY_DEADLINE = "2026-03-08T12:00:00.000Z";
 export const DEMO_FRESH_ESCROW_ID = "DEMO-ESC-006";
 export const DEMO_FRESH_FUND_AT = "2026-03-08T09:00:00.000Z";
 export const DEMO_FRESH_DEADLINE = "2026-04-01T09:00:00.000Z";
+
+/**
+ * Deadline-watchdog fixtures for the closing section: three more
+ * escrows screened and executed on the SAME fixed `now`
+ * (DEMO_STALE_NOW) and under the SAME 7-day stale budgets as the
+ * screening section above, so the two sections compare like with
+ * like. Hand-computed expectations — dwell is `now` minus the last
+ * history entry's `at`:
+ * - DEMO-ESC-007 (expired, unexpirable): VERIFIED at
+ *   2026-03-07T09:00 — dwell 2 days, and VERIFIED carries no stale
+ *   budget in the demo map anyway, so not stale; deadline
+ *   2026-03-08T09:00 has passed, so expired. But VERIFIED has no
+ *   EXPIRE edge, so `expireOverdueEscrows` lands it as
+ *   `{expired: false, error}` — and must not block the batch.
+ * - DEMO-ESC-008 (expired, expirable): FUNDED at
+ *   2026-03-08T09:00 — dwell 1 day, so not stale; deadline
+ *   2026-03-08T12:00 has passed, so expired, and FUNDED does carry
+ *   an EXPIRE edge: it ends EXPIRED.
+ * - DEMO-ESC-009 (stale only): FUNDED at 2026-02-20T09:00 — dwell
+ *   17 days > the 7-day FUNDED budget, so stale; deadline
+ *   2026-04-01 is still ahead, so not expired and the deadline
+ *   executor never attempts it.
+ * Batch order is deliberate: the unexpirable escrow comes FIRST,
+ * so its per-item error visibly does not abort the batch.
+ * Caveat (see the file header): `expireOverdueEscrows` dispatches
+ * EXPIRE without a pinned `at`, so the appended audit entry carries
+ * the dispatch-time wall clock — the demo prints no timestamp for
+ * it and its printed output stays byte-identical across runs.
+ */
+export const DEMO_UNEXPIRABLE_ESCROW_ID = "DEMO-ESC-007";
+export const DEMO_UNEXPIRABLE_FUND_AT = "2026-03-02T09:00:00.000Z";
+export const DEMO_UNEXPIRABLE_SUBMIT_AT = "2026-03-06T09:00:00.000Z";
+export const DEMO_UNEXPIRABLE_VERIFY_AT = "2026-03-07T09:00:00.000Z";
+export const DEMO_UNEXPIRABLE_DEADLINE = "2026-03-08T09:00:00.000Z";
+export const DEMO_EXPIRABLE_ESCROW_ID = "DEMO-ESC-008";
+export const DEMO_EXPIRABLE_FUND_AT = "2026-03-08T09:00:00.000Z";
+export const DEMO_EXPIRABLE_DEADLINE = "2026-03-08T12:00:00.000Z";
+export const DEMO_DEADLINE_STALE_ESCROW_ID = "DEMO-ESC-009";
+export const DEMO_DEADLINE_STALE_FUND_AT = "2026-02-20T09:00:00.000Z";
+export const DEMO_DEADLINE_STALE_DEADLINE = "2026-04-01T09:00:00.000Z";
 
 const steps: Array<{
   event: EscrowEvent;
@@ -348,6 +402,33 @@ export interface DemoResult {
    * selection: one entry, acted, the escrow now EXPIRED.
    */
   staleActionResults: StaleEscrowActionResult[];
+  /**
+   * The three deadline-watchdog escrows, in batch order
+   * (unexpirable, expirable, stale-only), AFTER the executor ran:
+   * VERIFIED (unchanged by its failed attempt), EXPIRED, FUNDED
+   * (never attempted).
+   */
+  deadlineEscrows: Escrow[];
+  /**
+   * `expiredEscrows` selection over {@link DemoResult.deadlineEscrows}
+   * on the fixed demo `now`, captured before the executor ran: the
+   * unexpirable and expirable escrows, in batch order.
+   */
+  deadlineExpiredSelected: Escrow[];
+  /**
+   * `staleEscrows` selection over the same deadline batch on the
+   * same fixed `now` and budgets, also captured before the executor
+   * ran: just the stale-only escrow — a disjoint subset from
+   * {@link DemoResult.deadlineExpiredSelected}.
+   */
+  deadlineStaleSelected: Escrow[];
+  /**
+   * Per-escrow outcomes of `expireOverdueEscrows` over the deadline
+   * batch, in batch order: the VERIFIED escrow first as
+   * `{expired: false, error}`, then the FUNDED escrow expired —
+   * the first entry's error did not block the second.
+   */
+  deadlineExpireResults: ExpireOverdueResult[];
   lines: string[];
 }
 
@@ -818,6 +899,106 @@ export function runDemo(): DemoResult {
     `  non-stale escrows untouched: ${overdueOnlyEscrow.id} still ${overdueOnlyEscrow.state}, ${freshEscrow.id} still ${freshEscrow.state}`,
   );
 
+  // --- Deadline watchdog: expiredEscrows -> expireOverdueEscrows ---
+  // The execution half of the deadline axis, over a fresh batch of
+  // three escrows on the same fixed `now` and the same 7-day stale
+  // budgets — see the fixture comment above for the hand-computed
+  // expectations. Both selections are captured BEFORE the executor
+  // runs, so the printed comparison is a snapshot of the same
+  // pre-action batch. The executor then attempts exactly the
+  // expired selection: the VERIFIED escrow has no EXPIRE edge, so
+  // it lands as a per-item error and the batch continues to the
+  // FUNDED escrow after it, which expires. (The executor dispatches
+  // EXPIRE with no pinned `at` — its audit entries carry the
+  // dispatch-time wall clock, so no timestamp is printed for them;
+  // see the fixture comment.)
+  const unexpirableEscrow = new Escrow(DEMO_UNEXPIRABLE_ESCROW_ID);
+  unexpirableEscrow.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "sponsor",
+    at: DEMO_UNEXPIRABLE_FUND_AT,
+  });
+  unexpirableEscrow.dispatch(
+    "SUBMIT_MILESTONE",
+    "Deliverable URLs + IPFS metadata hash",
+    undefined,
+    { actor: "creator", at: DEMO_UNEXPIRABLE_SUBMIT_AT },
+  );
+  unexpirableEscrow.dispatch(
+    "VERIFY_PASS",
+    "KPIs validated by oracle",
+    undefined,
+    {
+      actor: "oracle",
+      at: DEMO_UNEXPIRABLE_VERIFY_AT,
+      evidence: "demo-oracle-attestation-002",
+    },
+  );
+  unexpirableEscrow.setDeadline(DEMO_UNEXPIRABLE_DEADLINE);
+  const expirableEscrow = new Escrow(DEMO_EXPIRABLE_ESCROW_ID);
+  expirableEscrow.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "sponsor",
+    at: DEMO_EXPIRABLE_FUND_AT,
+  });
+  expirableEscrow.setDeadline(DEMO_EXPIRABLE_DEADLINE);
+  const deadlineStaleEscrow = new Escrow(DEMO_DEADLINE_STALE_ESCROW_ID);
+  deadlineStaleEscrow.dispatch(
+    "FUND",
+    "Deposit locked (wire received)",
+    10630,
+    { actor: "sponsor", at: DEMO_DEADLINE_STALE_FUND_AT },
+  );
+  deadlineStaleEscrow.setDeadline(DEMO_DEADLINE_STALE_DEADLINE);
+  const deadlineEscrows = [
+    unexpirableEscrow,
+    expirableEscrow,
+    deadlineStaleEscrow,
+  ];
+  const deadlineExpiredSelected = expiredEscrows(deadlineEscrows, staleNow);
+  const deadlineStaleSelected = staleEscrows(
+    deadlineEscrows,
+    staleMaxAgeByState,
+    staleNow,
+  );
+  const deadlineExpiredIds = new Set(
+    deadlineExpiredSelected.map((e) => e.id),
+  );
+  const deadlineStaleIds = new Set(deadlineStaleSelected.map((e) => e.id));
+  lines.push(
+    "",
+    "Deadline watchdog (expiredEscrows screening -> expireOverdueEscrows execution):",
+    `  fixed now: ${DEMO_STALE_NOW} — screening and execution on the deadline axis; the stale budgets above (FUNDED 7 days, MILESTONE_SUBMITTED 7 days) are reused for the comparison line`,
+  );
+  for (const deadlineEscrow of deadlineEscrows) {
+    const lastEntry =
+      deadlineEscrow.history[deadlineEscrow.history.length - 1];
+    const dwellDays =
+      (staleNowMs - Date.parse(lastEntry.at)) / DEMO_STALE_DAY_MS;
+    lines.push(
+      `  ${deadlineEscrow.id}: state ${deadlineEscrow.state}, entered ${lastEntry.at}, dwell ${dwellDays} ${dwellDays === 1 ? "day" : "days"}, deadline ${deadlineEscrow.getDeadline()} — expired: ${deadlineExpiredIds.has(deadlineEscrow.id)}, stale: ${deadlineStaleIds.has(deadlineEscrow.id)}`,
+    );
+  }
+  lines.push(
+    `  expiredEscrows selection: [${deadlineExpiredSelected.map((e) => e.id).join(", ")}] — the stale-only escrow ${deadlineStaleEscrow.id} is not selected (its deadline is still ahead)`,
+  );
+  const deadlineExpireResults = expireOverdueEscrows(
+    deadlineEscrows,
+    staleNow,
+  );
+  lines.push(
+    `  expireOverdueEscrows: ${deadlineExpireResults.length} attempted`,
+  );
+  for (const result of deadlineExpireResults) {
+    lines.push(
+      result.expired
+        ? `  ${result.escrow.id}: expired true — now ${result.escrow.state}`
+        : `  ${result.escrow.id}: expired false — error: ${result.error} (escrow unchanged at ${result.escrow.state})`,
+    );
+  }
+  lines.push(
+    `  deadline vs stale on the same batch: expired [${deadlineExpiredSelected.map((e) => e.id).join(", ")}], stale [${deadlineStaleSelected.map((e) => e.id).join(", ")}] — different axes, different subsets (absolute deadline vs dwell in the current state)`,
+    `  non-expired escrows untouched: ${deadlineStaleEscrow.id} still ${deadlineStaleEscrow.state}`,
+  );
+
   return {
     escrow,
     report,
@@ -843,6 +1024,10 @@ export function runDemo(): DemoResult {
     staleSelected,
     expiredSelected,
     staleActionResults,
+    deadlineEscrows,
+    deadlineExpiredSelected,
+    deadlineStaleSelected,
+    deadlineExpireResults,
     lines,
   };
 }

@@ -9,8 +9,14 @@ import {
   DEMO_DEDUPE_TTL_MS,
   DEMO_BATCH_WEBHOOK_AT,
   DEMO_BATCH_WEBHOOK_EVENT_IDS,
+  DEMO_DEADLINE_STALE_DEADLINE,
+  DEMO_DEADLINE_STALE_ESCROW_ID,
+  DEMO_DEADLINE_STALE_FUND_AT,
   DEMO_DISPUTE_ESCROW_ID,
   DEMO_ESCROW_ID,
+  DEMO_EXPIRABLE_DEADLINE,
+  DEMO_EXPIRABLE_ESCROW_ID,
+  DEMO_EXPIRABLE_FUND_AT,
   DEMO_FRESH_ESCROW_ID,
   DEMO_FRESH_FUND_AT,
   DEMO_OVERDUE_ONLY_DEADLINE,
@@ -26,6 +32,9 @@ import {
   DEMO_STALE_FUND_AT,
   DEMO_STALE_MAX_AGE_MS,
   DEMO_STALE_NOW,
+  DEMO_UNEXPIRABLE_DEADLINE,
+  DEMO_UNEXPIRABLE_ESCROW_ID,
+  DEMO_UNEXPIRABLE_VERIFY_AT,
   DEMO_WEBHOOK_AT,
   DEMO_WEBHOOK_EVENT_ID,
   DEMO_WEBHOOK_SECRET,
@@ -736,6 +745,141 @@ test("demo lines print the watchdog screening section after the batch webhooks",
   assert.ok(webhooksAt < watchdogAt);
 });
 
+test("demo deadline watchdog expires the expirable escrow, isolates the VERIFIED one, and never attempts the stale-only one", () => {
+  const {
+    deadlineEscrows,
+    deadlineExpiredSelected,
+    deadlineStaleSelected,
+    deadlineExpireResults,
+  } = runDemo();
+
+  // Deadline batch in fixture order: unexpirable, expirable, stale-only.
+  assert.deepEqual(
+    deadlineEscrows.map((e) => e.id),
+    [
+      DEMO_UNEXPIRABLE_ESCROW_ID,
+      DEMO_EXPIRABLE_ESCROW_ID,
+      DEMO_DEADLINE_STALE_ESCROW_ID,
+    ],
+  );
+  // The deadline axis selects the two past-deadline escrows in batch
+  // order; the stale axis on the same batch selects only the third —
+  // disjoint subsets, captured before the executor ran.
+  assert.deepEqual(
+    deadlineExpiredSelected.map((e) => e.id),
+    [DEMO_UNEXPIRABLE_ESCROW_ID, DEMO_EXPIRABLE_ESCROW_ID],
+  );
+  assert.deepEqual(
+    deadlineStaleSelected.map((e) => e.id),
+    [DEMO_DEADLINE_STALE_ESCROW_ID],
+  );
+  assert.equal(deadlineExpiredSelected[0], deadlineEscrows[0]);
+  assert.equal(deadlineExpiredSelected[1], deadlineEscrows[1]);
+  assert.equal(deadlineStaleSelected[0], deadlineEscrows[2]);
+  // Fixture deadlines and entry timestamps are the pinned constants.
+  assert.equal(deadlineEscrows[0].getDeadline(), DEMO_UNEXPIRABLE_DEADLINE);
+  assert.equal(deadlineEscrows[1].getDeadline(), DEMO_EXPIRABLE_DEADLINE);
+  assert.equal(
+    deadlineEscrows[2].getDeadline(),
+    DEMO_DEADLINE_STALE_DEADLINE,
+  );
+  assert.equal(
+    deadlineEscrows[0].history[deadlineEscrows[0].history.length - 1].at,
+    DEMO_UNEXPIRABLE_VERIFY_AT,
+  );
+  assert.equal(deadlineEscrows[1].history[0].at, DEMO_EXPIRABLE_FUND_AT);
+  assert.equal(deadlineEscrows[2].history[0].at, DEMO_DEADLINE_STALE_FUND_AT);
+  // The executor attempted exactly the expired selection, in order:
+  // the VERIFIED escrow first — per-item error, escrow untouched —
+  // and its failure did not block the FUNDED escrow after it.
+  assert.equal(deadlineExpireResults.length, 2);
+  assert.equal(deadlineExpireResults[0].escrow, deadlineEscrows[0]);
+  assert.equal(deadlineExpireResults[0].expired, false);
+  assert.match(
+    deadlineExpireResults[0].error ?? "",
+    /invalid transition: EXPIRE from VERIFIED/,
+  );
+  assert.equal(deadlineExpireResults[1].escrow, deadlineEscrows[1]);
+  assert.equal(deadlineExpireResults[1].expired, true);
+  assert.equal(deadlineExpireResults[1].error, undefined);
+  assert.deepEqual(
+    deadlineEscrows.map((e) => e.state),
+    ["VERIFIED", "EXPIRED", "FUNDED"],
+  );
+  // History lengths: the failed attempt appended nothing (3 entries
+  // stay 3), the successful expiry appended exactly the EXPIRE entry
+  // (1 -> 2), and the never-attempted escrow is untouched (1).
+  // The EXPIRE entry's `at` is deliberately NOT asserted: the
+  // executor dispatches without a pinned `at`, so it carries the
+  // dispatch-time wall clock (see the demo fixture comment).
+  assert.deepEqual(
+    deadlineEscrows.map((e) => e.history.length),
+    [3, 2, 1],
+  );
+  const expireEntry =
+    deadlineEscrows[1].history[deadlineEscrows[1].history.length - 1];
+  assert.equal(expireEntry.event, "EXPIRE");
+  assert.equal(expireEntry.from, "FUNDED");
+  assert.equal(expireEntry.to, "EXPIRED");
+});
+
+test("demo lines print the deadline watchdog section after the stale screening", () => {
+  const { lines } = runDemo();
+  const text = lines.join("\n");
+
+  assert.match(
+    text,
+    /Deadline watchdog \(expiredEscrows screening -> expireOverdueEscrows execution\):/,
+  );
+  assert.ok(
+    text.includes(
+      `  fixed now: ${DEMO_STALE_NOW} — screening and execution on the deadline axis; the stale budgets above (FUNDED 7 days, MILESTONE_SUBMITTED 7 days) are reused for the comparison line`,
+    ),
+  );
+  // Per-escrow lines are full literals: fixture timestamps, dwell,
+  // and both verdicts are pinned, not recomputed from the demo.
+  assert.ok(
+    text.includes(
+      "  DEMO-ESC-007: state VERIFIED, entered 2026-03-07T09:00:00.000Z, dwell 2 days, deadline 2026-03-08T09:00:00.000Z — expired: true, stale: false",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  DEMO-ESC-008: state FUNDED, entered 2026-03-08T09:00:00.000Z, dwell 1 day, deadline 2026-03-08T12:00:00.000Z — expired: true, stale: false",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  DEMO-ESC-009: state FUNDED, entered 2026-02-20T09:00:00.000Z, dwell 17 days, deadline 2026-04-01T09:00:00.000Z — expired: false, stale: true",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  expiredEscrows selection: [DEMO-ESC-007, DEMO-ESC-008] — the stale-only escrow DEMO-ESC-009 is not selected (its deadline is still ahead)",
+    ),
+  );
+  assert.ok(text.includes("  expireOverdueEscrows: 2 attempted"));
+  assert.ok(
+    text.includes(
+      "  DEMO-ESC-007: expired false — error: invalid transition: EXPIRE from VERIFIED (escrow unchanged at VERIFIED)",
+    ),
+  );
+  assert.ok(text.includes("  DEMO-ESC-008: expired true — now EXPIRED"));
+  assert.ok(
+    text.includes(
+      "  deadline vs stale on the same batch: expired [DEMO-ESC-007, DEMO-ESC-008], stale [DEMO-ESC-009] — different axes, different subsets (absolute deadline vs dwell in the current state)",
+    ),
+  );
+  assert.ok(
+    text.includes("  non-expired escrows untouched: DEMO-ESC-009 still FUNDED"),
+  );
+  // Position: the deadline watchdog closes the demo, after the
+  // stale screening section.
+  const screeningAt = text.indexOf("Watchdog screening (stale dwell axis");
+  const deadlineAt = text.indexOf("Deadline watchdog (expiredEscrows");
+  assert.ok(screeningAt < deadlineAt);
+});
+
 test("demo is deterministic: two runs produce identical lines", () => {
   assert.deepEqual(runDemo().lines, runDemo().lines);
 });
@@ -829,4 +973,30 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
     ),
   );
   assert.ok(out.includes("  DEMO-ESC-004: acted true — now EXPIRED"));
+  // Deadline watchdog tail: the closing section screens three more
+  // escrows by deadline and executes the selection — the VERIFIED
+  // escrow's per-item error printed before the FUNDED escrow's
+  // successful expiry, and the stale-only escrow never attempted.
+  // (The seq-row count above stays 8: this section prints no
+  // numbered history rows either.)
+  assert.match(
+    out,
+    /Deadline watchdog \(expiredEscrows screening -> expireOverdueEscrows execution\):/,
+  );
+  assert.ok(
+    out.includes(
+      "  expiredEscrows selection: [DEMO-ESC-007, DEMO-ESC-008] — the stale-only escrow DEMO-ESC-009 is not selected (its deadline is still ahead)",
+    ),
+  );
+  assert.ok(
+    out.includes(
+      "  DEMO-ESC-007: expired false — error: invalid transition: EXPIRE from VERIFIED (escrow unchanged at VERIFIED)",
+    ),
+  );
+  assert.ok(out.includes("  DEMO-ESC-008: expired true — now EXPIRED"));
+  assert.ok(
+    out.includes(
+      "  deadline vs stale on the same batch: expired [DEMO-ESC-007, DEMO-ESC-008], stale [DEMO-ESC-009] — different axes, different subsets (absolute deadline vs dwell in the current state)",
+    ),
+  );
 });
