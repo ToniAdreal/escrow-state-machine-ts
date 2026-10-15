@@ -208,6 +208,26 @@
  *      figures — previously visible only as one fixture-construction
  *      call at module scope. Every timed iteration re-checks each
  *      returned breakdown against its hand-written expectation.
+ *  23. arbitration dispatch — `dispatchArbitration(escrow, quorum,
+ *      "refund")` over a fixed DISPUTED escrow and a threshold-reached
+ *      5/9 quorum: the combined cost of the `hasQuorum()` gate, the
+ *      `Escrow.dispatch` transition, the hash-chained audit entry
+ *      append, and the quorum-count note assembly that every disputed
+ *      escrow pays once the vote reaches threshold. Because the
+ *      dispatch mutates the escrow, every iteration rebuilds both
+ *      sides from fixed prefixes first — the escrow via
+ *      `Escrow.fromHistory` from its detached 2-entry prefix
+ *      (FUND 10,630 at BASE, then DISPUTE at BASE + 1s) and the
+ *      quorum via `createQuorum` approving dao-1..dao-5 on the
+ *      fixed clock — so the reported number INCLUDES that rebuild
+ *      cost and is a conservative lower bound on the dispatch-only
+ *      throughput, the same accounting the watchdog-execution paths
+ *      use. The dispatch itself is pinned to a fixed audit
+ *      timestamp (BASE + 2s), so no wall clock enters the checks.
+ *      Every timed iteration checks the returned and stored state
+ *      is REFUNDED, the history grew by exactly one entry, and that
+ *      entry is the ARBITRATE_REFUND from DISPUTED carrying the
+ *      hand-pinned note `quorum 5/5`.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -231,6 +251,7 @@ import {
   createQuorum,
   deliverSettlementWebhookToMany,
   depositAmountFromHistory,
+  dispatchArbitration,
   Escrow,
   expiredEscrows,
   expireOverdueEscrows,
@@ -1504,6 +1525,72 @@ function checkCalculateDepositCorpus(): void {
 checkCalculateDepositCorpus();
 
 // ---------------------------------------------------------------------
+// dispatchArbitration fixture: a fixed DISPUTED escrow prefix and a
+// threshold-reached 5/9 quorum, both rebuilt on every iteration
+// because the dispatch mutates the escrow (see the header: the
+// rebuild cost is inside the timed region, so the reported number
+// is a conservative lower bound on the dispatch-only throughput).
+// The prefix is built once, outside the timed loop, by driving a
+// real escrow on the shared fixed clock — FUND the golden 10,630
+// at BASE_MS, then DISPUTE at BASE_MS + 1s — and detaching plain
+// copies, exactly what a persisted audit log looks like (2 entries,
+// ending DISPUTED). The quorum is rebuilt per iteration by
+// `runQuorumToThreshold` above (a fresh `createQuorum` on the fixed
+// clock approving dao-1..dao-5). Hand-pinned expectations, written
+// from the documented arbitration semantics — never derived by
+// calling dispatchArbitration itself: the call returns REFUNDED,
+// the history grows by exactly one entry, and that entry is
+// ARBITRATE_REFUND from DISPUTED to REFUNDED carrying the note
+// "quorum 5/5" (approvalCount 5 over threshold 5, no caller note)
+// at the pinned dispatch timestamp BASE_MS + 2s.
+// ---------------------------------------------------------------------
+const ARBITRATION_ESCROW_ID = "BENCH-ARB-001";
+const ARBITRATION_AT = new Date(BASE_MS + 2000).toISOString();
+const arbitrationPrefix: EscrowHistoryEntry[] = ((): EscrowHistoryEntry[] => {
+  const escrow = new Escrow(ARBITRATION_ESCROW_ID);
+  escrow.dispatch("FUND", undefined, DEPOSIT_AMOUNT, {
+    at: new Date(BASE_MS).toISOString(),
+  });
+  escrow.dispatch("DISPUTE", undefined, undefined, {
+    at: new Date(BASE_MS + 1000).toISOString(),
+  });
+  if (escrow.state !== "DISPUTED" || escrow.history.length !== 2) {
+    throw new Error("benchmark fixture failed: arbitration prefix shape");
+  }
+  return escrow.history.map((e) => ({ ...e }));
+})();
+
+function checkDispatchArbitration(): void {
+  const escrow = Escrow.fromHistory(
+    ARBITRATION_ESCROW_ID,
+    arbitrationPrefix.map((e) => ({ ...e })),
+  );
+  const quorum = runQuorumToThreshold();
+  const historyBefore = escrow.history.length;
+  const state = dispatchArbitration(escrow, quorum, "refund", undefined, {
+    at: ARBITRATION_AT,
+  });
+  const last = escrow.history[escrow.history.length - 1];
+  if (
+    escrow.state !== "REFUNDED" ||
+    state !== "REFUNDED" ||
+    historyBefore !== arbitrationPrefix.length ||
+    escrow.history.length !== historyBefore + 1 ||
+    last.event !== "ARBITRATE_REFUND" ||
+    last.from !== "DISPUTED" ||
+    last.to !== "REFUNDED" ||
+    last.note !== "quorum 5/5" ||
+    last.at !== ARBITRATION_AT
+  ) {
+    throw new Error("benchmark self-check failed: dispatchArbitration");
+  }
+}
+// Pre-check outside the timed loop: the rebuilt disputed escrow and
+// threshold quorum dispatch to the hand-pinned refund outcome
+// before any number is reported.
+checkDispatchArbitration();
+
+// ---------------------------------------------------------------------
 // Scenarios (each with a self-check so a broken path cannot report a
 // plausible-looking number).
 // ---------------------------------------------------------------------
@@ -1875,11 +1962,17 @@ function benchCalculateDeposit(): number {
   }, ITERATIONS);
 }
 
+function benchDispatchArbitration(): number {
+  return measure(() => {
+    checkDispatchArbitration();
+  }, ITERATIONS);
+}
+
 console.log("escrow-state-machine-ts benchmark");
 console.log(`Node: ${process.version} on ${process.platform}/${process.arch}`);
 console.log(`CPU: ${cpus()[0]?.model ?? "unknown"}`);
 console.log(
-  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); settlement batch summary over that batch's 4 pre-built results (3 reports + 1 error); settlement batch webhooks over that same batch (3 signed webhooks with distinct deterministic eventIds bench-batch-event-1..3 plus the 1 forwarded per-item error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release); quorum of 9 signers with threshold 5 on a fixed injected clock, approved one vote at a time to the threshold; settlement webhook fan-out to 4 endpoints through a fake global fetch (immediate 200, no network); settlement event dedupe duplicate hits cycling over 1,000 pre-recorded eventIds under a fixed injected clock; settlement event dedupe restore from a 1,000-entry JSON-round-tripped snapshot under a fixed injected clock (all entries live at load, default TTL and capacity, observability counters restarting at zero); Escrow.fromHistory replay over the same detached 4-entry history; watchdog screening over a fixed mixed batch of 100 escrows (40 hand-counted expired, 70 hand-counted stale under FUNDED 7d / MILESTONE_SUBMITTED 30d budgets) at a fixed screening instant; watchdog execution (expireOverdueEscrows / actOnStaleEscrows with an EXPIRE-dispatch action) over fresh rebuilds of that same 100-escrow batch on every iteration because the executors mutate their inputs (40 of 40 expire attempts and 70 of 70 stale actions succeed — both selected states carry an EXPIRE edge); quorum snapshot restore from a persisted (JSON round-tripped) snapshot of the 9-signer / threshold-5 quorum carrying 7 recorded approvals; settleRelease netting over 4 fixed representative inputs (golden 10630 at 500 bps, 1000 at 500 bps with 100 credits, large gross 1000000 at 250 bps with 1250.25 credits, rounding edge 10 at 125 bps) checked against hand-computed proFee/net on every iteration; parseRetryAfter over a fixed 11-value corpus (delay-seconds, fractional and whitespace-padded values, zero, future and past HTTP-dates, signed numbers, a garbage string, null and undefined) against one injected fixed now, every result checked against hand-pinned expectations on every iteration; depositAmountFromHistory over a fixed 4-shape corpus (a single FUND of the golden 10630, a two-FUND top-up sequence summing to 12630, a FUND recorded without an amount, and an empty no-FUND history) checked against hand-pinned totals and exact fail-fast error messages on every iteration; renderReport rendering of the fixed golden released report (deposit 10630, released via VERIFY_PASS -> RELEASE, 4 party rows) checked against hand-written expected lines (header/outcome, deposit formula, creator net row) on every iteration; allowedEvents over all 8 states of the transition table (one pass = every state queried once in declaration order — CREATED, FUNDED, MILESTONE_SUBMITTED, VERIFIED, DISPUTED, RELEASED, REFUNDED, EXPIRED — with each result checked against its hand-pinned expected event list in declaration order, the three terminal states expecting the empty list) on every iteration; calculateDeposit over a fixed 3-shape corpus (the golden vector pool 10000 / base 600 / complexity 1.0 / loyalty 30 / oracle 60 -> deposit 10630, a complexity 1.5 case -> deposit 6190, and a large-pool 1000000 case -> deposit 1005375) checked against hand-computed adjustedBaseFee and deposit expectations on every iteration",
+  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); settlement batch summary over that batch's 4 pre-built results (3 reports + 1 error); settlement batch webhooks over that same batch (3 signed webhooks with distinct deterministic eventIds bench-batch-event-1..3 plus the 1 forwarded per-item error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release); quorum of 9 signers with threshold 5 on a fixed injected clock, approved one vote at a time to the threshold; settlement webhook fan-out to 4 endpoints through a fake global fetch (immediate 200, no network); settlement event dedupe duplicate hits cycling over 1,000 pre-recorded eventIds under a fixed injected clock; settlement event dedupe restore from a 1,000-entry JSON-round-tripped snapshot under a fixed injected clock (all entries live at load, default TTL and capacity, observability counters restarting at zero); Escrow.fromHistory replay over the same detached 4-entry history; watchdog screening over a fixed mixed batch of 100 escrows (40 hand-counted expired, 70 hand-counted stale under FUNDED 7d / MILESTONE_SUBMITTED 30d budgets) at a fixed screening instant; watchdog execution (expireOverdueEscrows / actOnStaleEscrows with an EXPIRE-dispatch action) over fresh rebuilds of that same 100-escrow batch on every iteration because the executors mutate their inputs (40 of 40 expire attempts and 70 of 70 stale actions succeed — both selected states carry an EXPIRE edge); quorum snapshot restore from a persisted (JSON round-tripped) snapshot of the 9-signer / threshold-5 quorum carrying 7 recorded approvals; settleRelease netting over 4 fixed representative inputs (golden 10630 at 500 bps, 1000 at 500 bps with 100 credits, large gross 1000000 at 250 bps with 1250.25 credits, rounding edge 10 at 125 bps) checked against hand-computed proFee/net on every iteration; parseRetryAfter over a fixed 11-value corpus (delay-seconds, fractional and whitespace-padded values, zero, future and past HTTP-dates, signed numbers, a garbage string, null and undefined) against one injected fixed now, every result checked against hand-pinned expectations on every iteration; depositAmountFromHistory over a fixed 4-shape corpus (a single FUND of the golden 10630, a two-FUND top-up sequence summing to 12630, a FUND recorded without an amount, and an empty no-FUND history) checked against hand-pinned totals and exact fail-fast error messages on every iteration; renderReport rendering of the fixed golden released report (deposit 10630, released via VERIFY_PASS -> RELEASE, 4 party rows) checked against hand-written expected lines (header/outcome, deposit formula, creator net row) on every iteration; allowedEvents over all 8 states of the transition table (one pass = every state queried once in declaration order — CREATED, FUNDED, MILESTONE_SUBMITTED, VERIFIED, DISPUTED, RELEASED, REFUNDED, EXPIRED — with each result checked against its hand-pinned expected event list in declaration order, the three terminal states expecting the empty list) on every iteration; calculateDeposit over a fixed 3-shape corpus (the golden vector pool 10000 / base 600 / complexity 1.0 / loyalty 30 / oracle 60 -> deposit 10630, a complexity 1.5 case -> deposit 6190, and a large-pool 1000000 case -> deposit 1005375) checked against hand-computed adjustedBaseFee and deposit expectations on every iteration; arbitration dispatch (dispatchArbitration with outcome \"refund\", rebuilding a DISPUTED escrow from its fixed 2-entry history prefix via Escrow.fromHistory and a threshold-reached 5/9 quorum via createQuorum on every iteration — rebuild cost inside the timed region — pinned to a fixed audit timestamp, checked for the REFUNDED terminal state, exactly one appended ARBITRATE_REFUND entry, and its \"quorum 5/5\" note on every iteration)",
 );
 console.log(`Iterations per op: ${ITERATIONS} (after ${WARMUP} warmup)`);
 console.log("");
@@ -1911,6 +2004,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "actOnStaleEscrows (batch 100 escrows)", ops: benchActOnStaleEscrows() },
   { path: "allowedEvents (all 8 states)", ops: benchAllowedEvents() },
   { path: "calculateDeposit (3-shape corpus)", ops: benchCalculateDeposit() },
+  { path: "dispatchArbitration (refund, rebuilt fixture)", ops: benchDispatchArbitration() },
 ];
 
 console.log("path                                              throughput");

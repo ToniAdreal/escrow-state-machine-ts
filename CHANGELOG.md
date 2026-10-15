@@ -18,6 +18,19 @@ version changes.
 
 ### Added
 
+- Benchmark coverage for the arbitration dispatch path:
+  `dispatchArbitration(escrow, quorum, "refund")` over a
+  DISPUTED escrow rebuilt from its fixed 2-entry history prefix
+  via `Escrow.fromHistory` and a threshold-reached 5/9 quorum
+  rebuilt via `createQuorum` on every timed iteration (the
+  dispatch mutates the escrow, so the rebuild cost is inside
+  the timed region and the number is a conservative lower
+  bound), pinned to a fixed audit timestamp, with the REFUNDED
+  terminal state, exactly one appended `ARBITRATE_REFUND`
+  entry, and its `quorum 5/5` note checked on every iteration.
+  The README Benchmarks table was refreshed from one real run
+  and gained the `dispatchArbitration (refund, rebuilt
+  fixture)` row.
 - CLI demo coverage for the deadline watchdog: after the
   stale-watchdog screening, the demo closes with three more
   escrows screened by `expiredEscrows` on the same fixed `now`

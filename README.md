@@ -816,7 +816,18 @@ deposit 6,190), and a large-pool case (pool 1,000,000 / base
 2,500 / complexity 2.25 / loyalty 500 / oracle 250 → adjusted
 5,625, deposit 1,005,375) — with each returned `adjustedBaseFee`
 and `deposit` checked against hand-computed expectations on
-every iteration).
+every iteration), and
+arbitration dispatch (`dispatchArbitration` with outcome
+`"refund"` over a DISPUTED escrow rebuilt from its fixed 2-entry
+history prefix via `Escrow.fromHistory` and a threshold-reached
+5/9 quorum rebuilt via `createQuorum` on every iteration,
+because the dispatch mutates the escrow — the rebuild cost is
+inside this row's timed region, so the number is a conservative
+lower bound on the dispatch-only throughput, the same accounting
+the watchdog-execution rows use; the dispatch is pinned to a
+fixed audit timestamp, and every iteration checks the REFUNDED
+terminal state, exactly one appended `ARBITRATE_REFUND` entry,
+and its `quorum 5/5` note).
 Fixtures are deterministic — one escrow driven through the full
 `CREATED → RELEASED` lifecycle (4 hash-chained audit entries, golden
 deposit 10,630), with a fixed webhook secret, payload timestamp, and
@@ -845,42 +856,46 @@ allowed-events path needs no fixture beyond the transition table
 itself — all 8 states in declaration order with hand-pinned
 expected event lists; the
 fee-calculation path needs no fixture beyond its 3 fixed input
-shapes with hand-computed expectations.
+shapes with hand-computed expectations; the
+arbitration path rebuilds its DISPUTED escrow (FUND 10,630, then
+DISPUTE, on the fixed clock) from the detached 2-entry prefix and
+its 5/9 quorum from scratch on every iteration.
 One real run on 2026-10-15:
 
 | path | throughput |
 |------|------------|
-| dispatch (full lifecycle, 4 dispatches) | ~10,700 ops/sec (~93.2 µs/op) |
-| verifyHistoryChain (4 entries) | ~7,600 ops/sec (~131.8 µs/op) |
-| Escrow.fromHistory (4 entries) | ~6,800 ops/sec (~147.8 µs/op) |
-| settleRelease (4 fixed inputs) | ~363,300 ops/sec (~2.75 µs/op) |
-| buildSettlementReport (4 entries) | ~20,200 ops/sec (~49.6 µs/op) |
-| renderReport (released report, 4 parties) | ~280 ops/sec (~3,568.3 µs/op) |
-| depositAmountFromHistory (4-shape corpus) | ~4,900 ops/sec (~202.9 µs/op) |
-| buildSettlementReports (batch 4 x 4 entries) | ~1,800 ops/sec (~554.0 µs/op) |
-| summarizeSettlementReports (batch 4 results) | ~62,200 ops/sec (~16.1 µs/op) |
-| buildSettlementWebhooks (batch 4 results) | ~4,800 ops/sec (~208.0 µs/op) |
-| buildSettlementWebhook (sign) | ~21,900 ops/sec (~45.7 µs/op) |
-| verifySettlementWebhook | ~38,700 ops/sec (~25.8 µs/op) |
-| parseRetryAfter (11-value corpus) | ~82,800 ops/sec (~12.1 µs/op) |
-| historyToNdjson (8 entries) | ~3,200 ops/sec (~317.3 µs/op) |
-| historyFromNdjson (8 entries, chain re-verify) | ~2,000 ops/sec (~504.7 µs/op) |
-| quorum approve to threshold (5 of 9) | ~47,800 ops/sec (~20.9 µs/op) |
-| restoreQuorum (snapshot, 7 approvals of 9) | ~1,800 ops/sec (~549.0 µs/op) |
-| deliverSettlementWebhookToMany (4 endpoints, fake fetch) | ~1,100 ops/sec (~945.9 µs/op) |
-| SettlementEventDedupe checkAndRecord (hit, 1,000 recorded ids) | ~187,300 ops/sec (~5.34 µs/op) |
-| SettlementEventDedupe.restore (1,000-entry snapshot) | ~553 ops/sec (~1,809.0 µs/op) |
-| expiredEscrows (batch 100 escrows) | ~6,000 ops/sec (~167.1 µs/op) |
-| staleEscrows (batch 100 escrows) | ~5,800 ops/sec (~172.3 µs/op) |
-| expireOverdueEscrows (batch 100 escrows, fresh fixture) | ~205 ops/sec (~4,886.0 µs/op) |
-| actOnStaleEscrows (batch 100 escrows, fresh fixture) | ~245 ops/sec (~4,089.1 µs/op) |
-| allowedEvents (all 8 states) | ~665,800 ops/sec (~1.50 µs/op) |
-| calculateDeposit (3-shape corpus) | ~140,500 ops/sec (~7.12 µs/op) |
+| dispatch (full lifecycle, 4 dispatches) | ~13,200 ops/sec (~75.9 µs/op) |
+| verifyHistoryChain (4 entries) | ~63,400 ops/sec (~15.8 µs/op) |
+| Escrow.fromHistory (4 entries) | ~15,400 ops/sec (~64.8 µs/op) |
+| settleRelease (4 fixed inputs) | ~395,000 ops/sec (~2.53 µs/op) |
+| buildSettlementReport (4 entries) | ~36,100 ops/sec (~27.7 µs/op) |
+| renderReport (released report, 4 parties) | ~712 ops/sec (~1,405.4 µs/op) |
+| depositAmountFromHistory (4-shape corpus) | ~15,000 ops/sec (~66.8 µs/op) |
+| buildSettlementReports (batch 4 x 4 entries) | ~8,120 ops/sec (~123.1 µs/op) |
+| summarizeSettlementReports (batch 4 results) | ~175,000 ops/sec (~5.72 µs/op) |
+| buildSettlementWebhooks (batch 4 results) | ~12,600 ops/sec (~79.5 µs/op) |
+| buildSettlementWebhook (sign) | ~83,000 ops/sec (~12.1 µs/op) |
+| verifySettlementWebhook | ~91,700 ops/sec (~10.9 µs/op) |
+| parseRetryAfter (11-value corpus) | ~228,000 ops/sec (~4.39 µs/op) |
+| historyToNdjson (8 entries) | ~6,650 ops/sec (~150.3 µs/op) |
+| historyFromNdjson (8 entries, chain re-verify) | ~2,890 ops/sec (~346.7 µs/op) |
+| quorum approve to threshold (5 of 9) | ~61,700 ops/sec (~16.2 µs/op) |
+| restoreQuorum (snapshot, 7 approvals of 9) | ~13,100 ops/sec (~76.5 µs/op) |
+| deliverSettlementWebhookToMany (4 endpoints, fake fetch) | ~2,300 ops/sec (~434.4 µs/op) |
+| SettlementEventDedupe checkAndRecord (hit, 1,000 recorded ids) | ~1,570,000 ops/sec (~0.64 µs/op) |
+| SettlementEventDedupe.restore (1,000-entry snapshot) | ~1,760 ops/sec (~569.2 µs/op) |
+| expiredEscrows (batch 100 escrows) | ~26,100 ops/sec (~38.4 µs/op) |
+| staleEscrows (batch 100 escrows) | ~9,500 ops/sec (~105.2 µs/op) |
+| expireOverdueEscrows (batch 100 escrows, fresh fixture) | ~341 ops/sec (~2,929.8 µs/op) |
+| actOnStaleEscrows (batch 100 escrows, fresh fixture) | ~304 ops/sec (~3,294.8 µs/op) |
+| allowedEvents (all 8 states) | ~144,000 ops/sec (~6.94 µs/op) |
+| calculateDeposit (3-shape corpus) | ~154,000 ops/sec (~6.50 µs/op) |
+| dispatchArbitration (refund, rebuilt fixture) | ~11,100 ops/sec (~90.1 µs/op) |
 
 Environment: Node v24.20.0, linux/x64, AMD EPYC 9D25 126-Core
 Processor (virtualized; shared host, so numbers vary run to
 run). This run was taken on a 2-core host with load average
-≈8.5 (1-minute) to ≈8.6 (15-minute); repeated runs swing
+≈8.0 (1-minute) to ≈5.1 (15-minute); repeated runs swing
 individual rows widely in both directions (some by an order of
 magnitude), so treat the table as this run's measurements, most
 useful for same-run relative comparison, not as a regression
