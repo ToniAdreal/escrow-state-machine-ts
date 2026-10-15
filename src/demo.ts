@@ -47,7 +47,14 @@
  * honest caveat: the executor dispatches EXPIRE with no pinned
  * `at`, so its audit entries carry the dispatch-time wall clock;
  * the demo prints no timestamp for those entries, so its printed
- * output stays byte-identical across runs.
+ * output stays byte-identical across runs. The demo finally closes
+ * with an allowed-events listing: `allowedEvents(state)` is run
+ * over all 8 states in transition-table order and printed as a
+ * one-line-per-state overview — the query an escrow-list UI or a
+ * watchdog consults to decide what an escrow can do next — with
+ * the three terminal states (RELEASED / REFUNDED / EXPIRED)
+ * returning the empty list, and the main escrow's own RELEASED
+ * state called out on its own line as that same empty set.
  *
  * Usage: `npm run demo` (builds with tsc, then runs node on the compiled
  * output). Zero runtime dependencies: this file only imports the library
@@ -64,6 +71,7 @@ import {
   Escrow,
   SettlementEventDedupe,
   actOnStaleEscrows,
+  allowedEvents,
   buildSettlementReport,
   buildSettlementReports,
   buildSettlementWebhook,
@@ -81,6 +89,7 @@ import {
   verifySettlementWebhook,
   type BuildSettlementWebhooksResult,
   type EscrowEvent,
+  type EscrowState,
   type ExpireOverdueResult,
   type Quorum,
   type QuorumConfig,
@@ -429,6 +438,10 @@ export interface DemoResult {
    * the first entry's error did not block the second.
    */
   deadlineExpireResults: ExpireOverdueResult[];
+  /** `allowedEvents(state)` for every state, in transition-table order. */
+  allowedEventsByState: Array<{ state: EscrowState; events: EscrowEvent[] }>;
+  /** `allowedEvents` for the main escrow's RELEASED state — the empty list. */
+  mainEscrowAllowedEvents: EscrowEvent[];
   lines: string[];
 }
 
@@ -999,6 +1012,54 @@ export function runDemo(): DemoResult {
     `  non-expired escrows untouched: ${deadlineStaleEscrow.id} still ${deadlineStaleEscrow.state}`,
   );
 
+  // --- Allowed-events listing: allowedEvents over all 8 states ---
+  // Every section above dispatches a fixed script, so a reader never
+  // sees the query an escrow-list UI or a watchdog consults BEFORE
+  // dispatching — "what can this escrow do next?" `allowedEvents(state)`
+  // answers it from the transition table alone: pure, no escrow
+  // instance, no dispatch, no mutation (no network, no randomness,
+  // no wall clock). All 8 states are listed in transition-table
+  // declaration order. Hand-pinned expectations — written out here
+  // from TRANSITIONS in src/stateMachine.ts, never derived by calling
+  // allowedEvents itself (the demo tests cross-check the printed
+  // listing against the transitionTable snapshot as well, and bench
+  // #304's fixture pins the same lists):
+  //   CREATED:             FUND, EXPIRE
+  //   FUNDED:              FUND, SUBMIT_MILESTONE, DISPUTE, EXPIRE
+  //   MILESTONE_SUBMITTED: VERIFY_PASS, VERIFY_FAIL, DISPUTE, EXPIRE
+  //   VERIFIED:            RELEASE, DISPUTE
+  //   DISPUTED:            ARBITRATE_RELEASE, ARBITRATE_REFUND
+  //   RELEASED:            (none — terminal)
+  //   REFUNDED:            (none — terminal)
+  //   EXPIRED:             (none — terminal)
+  const ALL_STATES: EscrowState[] = [
+    "CREATED",
+    "FUNDED",
+    "MILESTONE_SUBMITTED",
+    "VERIFIED",
+    "DISPUTED",
+    "RELEASED",
+    "REFUNDED",
+    "EXPIRED",
+  ];
+  const allowedEventsByState = ALL_STATES.map((state) => ({
+    state,
+    events: allowedEvents(state),
+  }));
+  const mainEscrowAllowedEvents = allowedEvents(escrow.state);
+  lines.push(
+    "",
+    "Allowed events by state (allowedEvents over all 8 states):",
+  );
+  for (const { state, events } of allowedEventsByState) {
+    lines.push(
+      `  ${state.padEnd(20)} -> ${events.length > 0 ? events.join(", ") : "(none — terminal)"}`,
+    );
+  }
+  lines.push(
+    `  main escrow ${escrow.id} (${escrow.state}): allowedEvents -> ${mainEscrowAllowedEvents.length > 0 ? mainEscrowAllowedEvents.join(", ") : "(none)"} — a terminal escrow offers no further events, so an escrow-list UI renders no actions for it`,
+  );
+
   return {
     escrow,
     report,
@@ -1028,6 +1089,8 @@ export function runDemo(): DemoResult {
     deadlineExpiredSelected,
     deadlineStaleSelected,
     deadlineExpireResults,
+    allowedEventsByState,
+    mainEscrowAllowedEvents,
     lines,
   };
 }

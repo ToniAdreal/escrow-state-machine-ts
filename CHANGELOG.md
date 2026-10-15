@@ -18,6 +18,21 @@ version changes.
 
 ### Added
 
+- An allowed-events listing segment closing the CLI demo:
+  `allowedEvents(state)` is run over all 8 states in
+  transition-table order and printed as one line per state — the
+  query an escrow-list UI or a watchdog consults to decide what an
+  escrow can do next. The three terminal states (RELEASED /
+  REFUNDED / EXPIRED) return the empty list, and the main escrow's
+  own RELEASED state is called out on its own line as that same
+  empty set. The query is pure — no escrow instance, no dispatch,
+  no mutation — so the segment adds no network, no randomness, and
+  no wall clock. `DemoResult` exposes the per-state listing plus
+  the main escrow's (empty) allowed set; the demo tests pin the
+  structured results against hand-pinned expectations
+  cross-checked against the transition table, the exact printed
+  lines, and the segment's determinism across two runs. Demo and
+  tests only; no library behavior change.
 - Benchmark coverage for the arbitration dispatch path:
   `dispatchArbitration(escrow, quorum, "refund")` over a
   DISPUTED escrow rebuilt from its fixed 2-entry history prefix

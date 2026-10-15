@@ -40,7 +40,9 @@ import {
   DEMO_WEBHOOK_SECRET,
 } from "../src/demo.js";
 import {
+  allowedEvents,
   restoreQuorum,
+  transitionTable,
   verifyHistoryChain,
   verifySettlementWebhook,
 } from "../src/index.js";
@@ -880,6 +882,97 @@ test("demo lines print the deadline watchdog section after the stale screening",
   assert.ok(screeningAt < deadlineAt);
 });
 
+test("demo shows the allowed-events listing: every state's events match the hand-pinned table, cross-checked against the transition table", () => {
+  const { allowedEventsByState, mainEscrowAllowedEvents, escrow, lines } =
+    runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned expectations — written out here from TRANSITIONS in
+  // src/stateMachine.ts, in declaration order, never derived by
+  // calling allowedEvents itself. Terminal states (RELEASED /
+  // REFUNDED / EXPIRED) expect the empty list. The same lists are
+  // pinned by bench's allowedEvents fixture.
+  const EXPECTED: Array<{ state: string; events: string[] }> = [
+    { state: "CREATED", events: ["FUND", "EXPIRE"] },
+    {
+      state: "FUNDED",
+      events: ["FUND", "SUBMIT_MILESTONE", "DISPUTE", "EXPIRE"],
+    },
+    {
+      state: "MILESTONE_SUBMITTED",
+      events: ["VERIFY_PASS", "VERIFY_FAIL", "DISPUTE", "EXPIRE"],
+    },
+    { state: "VERIFIED", events: ["RELEASE", "DISPUTE"] },
+    {
+      state: "DISPUTED",
+      events: ["ARBITRATE_RELEASE", "ARBITRATE_REFUND"],
+    },
+    { state: "RELEASED", events: [] },
+    { state: "REFUNDED", events: [] },
+    { state: "EXPIRED", events: [] },
+  ];
+  assert.deepEqual(allowedEventsByState, EXPECTED);
+  // Cross-check against the transition table itself (the source of
+  // the committed snapshot in test/__snapshots__): grouping its
+  // edges by `from` must reproduce the same per-state lists — the
+  // demo segment is not self-certifying.
+  const fromTable = new Map<string, string[]>();
+  for (const { from, event } of transitionTable()) {
+    const list = fromTable.get(from) ?? [];
+    list.push(event);
+    fromTable.set(from, list);
+  }
+  for (const { state, events } of EXPECTED) {
+    assert.deepEqual(events, fromTable.get(state) ?? [], `state ${state}`);
+    assert.deepEqual(allowedEvents(state as never), events, `state ${state}`);
+  }
+  // The main escrow is RELEASED, so its own allowed set is the
+  // empty list — the boundary the segment calls out on its own line.
+  assert.equal(escrow.state, "RELEASED");
+  assert.deepEqual(mainEscrowAllowedEvents, []);
+  // The segment closes the demo: it follows the deadline watchdog,
+  // prints every state line verbatim, and its main-escrow line is
+  // the demo's last line.
+  const allowedAt = text.indexOf(
+    "Allowed events by state (allowedEvents over all 8 states):",
+  );
+  assert.ok(
+    allowedAt >
+      text.indexOf(
+        "Deadline watchdog (expiredEscrows screening -> expireOverdueEscrows execution):",
+      ),
+    "allowed-events segment must follow the deadline watchdog",
+  );
+  for (const { state, events } of EXPECTED) {
+    const line =
+      events.length > 0
+        ? `  ${state.padEnd(20)} -> ${events.join(", ")}`
+        : `  ${state.padEnd(20)} -> (none — terminal)`;
+    assert.ok(text.includes(line), `missing listing line for ${state}`);
+  }
+  assert.equal(
+    lines[lines.length - 1],
+    `  main escrow ${DEMO_ESCROW_ID} (RELEASED): allowedEvents -> (none) — a terminal escrow offers no further events, so an escrow-list UI renders no actions for it`,
+  );
+});
+
+test("demo allowed-events segment is deterministic: two runs print byte-identical listing lines", () => {
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf("Allowed events by state (allowedEvents over all 8 states):"),
+    );
+  const a = runDemo();
+  const b = runDemo();
+  const segA = segment(a.lines);
+  // Header + 8 state lines + the main-escrow line; every value is
+  // derived from the transition table alone, so no normalization
+  // is needed.
+  assert.equal(segA.length, 10);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(a.allowedEventsByState, b.allowedEventsByState);
+  assert.deepEqual(a.mainEscrowAllowedEvents, b.mainEscrowAllowedEvents);
+});
+
 test("demo is deterministic: two runs produce identical lines", () => {
   assert.deepEqual(runDemo().lines, runDemo().lines);
 });
@@ -997,6 +1090,22 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
   assert.ok(
     out.includes(
       "  deadline vs stale on the same batch: expired [DEMO-ESC-007, DEMO-ESC-008], stale [DEMO-ESC-009] — different axes, different subsets (absolute deadline vs dwell in the current state)",
+    ),
+  );
+  // Allowed-events tail: the closing listing prints every state in
+  // transition-table order, the terminal states as (none — terminal),
+  // and the main escrow's own empty set on the last line.
+  assert.match(out, /Allowed events by state \(allowedEvents over all 8 states\):/);
+  assert.ok(out.includes("  CREATED              -> FUND, EXPIRE"));
+  assert.ok(
+    out.includes(
+      "  MILESTONE_SUBMITTED  -> VERIFY_PASS, VERIFY_FAIL, DISPUTE, EXPIRE",
+    ),
+  );
+  assert.ok(out.includes("  RELEASED             -> (none — terminal)"));
+  assert.ok(
+    out.trimEnd().endsWith(
+      `main escrow ${DEMO_ESCROW_ID} (RELEASED): allowedEvents -> (none) — a terminal escrow offers no further events, so an escrow-list UI renders no actions for it`,
     ),
   );
 });

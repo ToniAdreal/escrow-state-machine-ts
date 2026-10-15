@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 637 tests, all local
+npm test   # 639 tests, all local
 ```
 
 ## Quickstart
@@ -106,7 +106,14 @@ the deadline and stale axes pick disjoint subsets of this batch
 too. (One caveat the demo documents in its source: the executor
 dispatches `EXPIRE` without a pinned `at`, so those audit entries
 carry the dispatch-time wall clock; the demo prints no timestamp
-for them and its printed output stays deterministic):
+for them and its printed output stays deterministic.) The demo
+finally closes with an allowed-events listing that runs
+`allowedEvents()` over all 8 states in transition-table order and
+prints one line per state — the query an escrow-list UI or a
+watchdog consults to decide what an escrow can do next — with the
+three terminal states (RELEASED / REFUNDED / EXPIRED) returning
+the empty list, and the main escrow's own RELEASED state called
+out on its own line as that same empty set:
 
 ```bash
 npm run demo
@@ -714,7 +721,7 @@ and an empty batch yields an all-zero summary.
 
 ## Reproducibility
 
-`npm test` runs 637 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 639 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
