@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 629 tests, all local
+npm test   # 631 tests, all local
 ```
 
 ## Quickstart
@@ -61,8 +61,11 @@ delivery is new and booked, an immediate redelivery is a duplicate
 and skipped, and after the clock advances by exactly the TTL the
 same id counts as new again. A second escrow then walks
 the dispute branch: `VERIFY_FAIL` into `DISPUTED`, a 2-of-3 arbitrator
-quorum collected vote by vote (a below-threshold `dispatchArbitration`
-attempt is refused with the escrow untouched), and the reached quorum
+quorum collected vote by vote — after the first vote the quorum is
+snapshotted, round-tripped through JSON, and restored with
+`restoreQuorum` at the identical 1-of-2 count (the arbitration-restart
+path), a below-threshold `dispatchArbitration`
+attempt is refused with the escrow untouched — and the reached quorum
 refunding the sponsor in full to `REFUNDED` with its refund settlement
 report. The demo closes with the day-end batch pipeline over all three
 escrows (a third escrow is left `FUNDED`): `buildSettlementReports`
@@ -686,7 +689,7 @@ and an empty batch yields an all-zero summary.
 
 ## Reproducibility
 
-`npm test` runs 629 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 631 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

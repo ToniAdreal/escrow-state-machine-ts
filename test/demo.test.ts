@@ -19,7 +19,7 @@ import {
   DEMO_WEBHOOK_EVENT_ID,
   DEMO_WEBHOOK_SECRET,
 } from "../src/demo.js";
-import { verifySettlementWebhook } from "../src/index.js";
+import { restoreQuorum, verifySettlementWebhook } from "../src/index.js";
 
 const repoRoot = path.dirname(
   path.dirname(path.dirname(fileURLToPath(import.meta.url))),
@@ -226,6 +226,81 @@ test("demo dispute branch reaches DISPUTED, is refused below quorum, then refund
     { signerId: DEMO_QUORUM_SIGNERS[0], at: DEMO_QUORUM_APPROVAL_ATS[0] },
     { signerId: DEMO_QUORUM_SIGNERS[1], at: DEMO_QUORUM_APPROVAL_ATS[1] },
   ]);
+});
+
+test("demo quorum restore preserves the mid-collection count across a JSON round-trip", () => {
+  const {
+    disputeQuorum,
+    quorumSnapshot,
+    quorumRestoredApprovalCount,
+    quorumRestoredHasQuorum,
+  } = runDemo();
+
+  // The snapshot was taken after exactly one approval (arb-1 at the
+  // first fixed approval timestamp), under the demo config.
+  assert.equal(quorumSnapshot.v, 1);
+  assert.equal(quorumSnapshot.threshold, DEMO_QUORUM_THRESHOLD);
+  assert.deepEqual(quorumSnapshot.signers, [...DEMO_QUORUM_SIGNERS]);
+  assert.deepEqual(quorumSnapshot.approvals, [
+    { signerId: DEMO_QUORUM_SIGNERS[0], at: DEMO_QUORUM_APPROVAL_ATS[0] },
+  ]);
+  // The restore reproduced the pre-snapshot counting state exactly:
+  // one approval, still below threshold.
+  assert.equal(quorumRestoredApprovalCount, 1);
+  assert.equal(quorumRestoredHasQuorum, false);
+  // Independent cross-check: restoring the same snapshot again (fresh
+  // JSON round-trip; a config without the injected clock — counting
+  // without an expiry window never consults it) yields the same
+  // state, and collection continues seamlessly to threshold.
+  const independentlyRestored = restoreQuorum(
+    { threshold: DEMO_QUORUM_THRESHOLD, signers: [...DEMO_QUORUM_SIGNERS] },
+    JSON.parse(JSON.stringify(quorumSnapshot)),
+  );
+  assert.equal(independentlyRestored.approvalCount(), 1);
+  assert.equal(independentlyRestored.hasQuorum(), false);
+  assert.deepEqual(independentlyRestored.approvals(), [
+    DEMO_QUORUM_SIGNERS[0],
+  ]);
+  independentlyRestored.approve(DEMO_QUORUM_SIGNERS[1]);
+  assert.equal(independentlyRestored.approvalCount(), 2);
+  assert.equal(independentlyRestored.hasQuorum(), true);
+  // And the demo's own restored quorum is the one that finished the
+  // arbitration: both fixed-timestamp approvals are in its log.
+  assert.equal(disputeQuorum.approvalCount(), 2);
+  assert.deepEqual(disputeQuorum.approvalLog(), [
+    { signerId: DEMO_QUORUM_SIGNERS[0], at: DEMO_QUORUM_APPROVAL_ATS[0] },
+    { signerId: DEMO_QUORUM_SIGNERS[1], at: DEMO_QUORUM_APPROVAL_ATS[1] },
+  ]);
+});
+
+test("demo lines print the quorum snapshot restore segment between the first vote and the refused attempt", () => {
+  const { lines } = runDemo();
+  const text = lines.join("\n");
+
+  assert.ok(
+    text.includes(
+      `  quorum snapshot: 1 approval(s) persisted via JSON round-trip (v1, threshold ${DEMO_QUORUM_THRESHOLD}, signers ${DEMO_QUORUM_SIGNERS.join(", ")})`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  quorum restored: approvalCount 1/${DEMO_QUORUM_THRESHOLD} — hasQuorum: false (matches pre-snapshot 1/${DEMO_QUORUM_THRESHOLD} — hasQuorum: false)`,
+    ),
+  );
+  // Position: after the first approval, before the below-threshold
+  // refusal and the second approval (which lands on the restored
+  // quorum).
+  const firstVoteAt = text.indexOf(`  approve ${DEMO_QUORUM_SIGNERS[0]}`);
+  const snapshotAt = text.indexOf("  quorum snapshot:");
+  const restoredAt = text.indexOf("  quorum restored:");
+  const refusalAt = text.indexOf('  dispatchArbitration("refund") rejected:');
+  const secondVoteAt = text.indexOf(`  approve ${DEMO_QUORUM_SIGNERS[1]}`);
+  assert.ok(
+    firstVoteAt < snapshotAt &&
+      snapshotAt < restoredAt &&
+      restoredAt < refusalAt &&
+      refusalAt < secondVoteAt,
+  );
 });
 
 test("demo dispute refund report returns the full deposit to the sponsor", () => {

@@ -9,9 +9,12 @@
  * is a duplicate (skipped), and after the clock advances by exactly
  * the TTL the same id counts as new again. A second escrow then walks the
  * dispute branch: VERIFY_FAIL lands it in DISPUTED, a 2-of-3 arbitrator
- * quorum is collected vote by vote — with one below-threshold
- * arbitration attempt refused without touching the escrow — and the
- * reached quorum refunds the sponsor in full (REFUNDED), closing with
+ * quorum is collected vote by vote — after the first vote the quorum
+ * is snapshotted, round-tripped through JSON, and restored with
+ * `restoreQuorum` at the identical count (the arbitration-restart
+ * path), with one below-threshold arbitration attempt refused
+ * without touching the escrow — and the reached quorum refunds the
+ * sponsor in full (REFUNDED), closing with
  * that escrow's refund settlement report. The demo closes with the
  * day-end batch pipeline over all three escrows: `buildSettlementReports`
  * builds one report per escrow with per-item error isolation (the
@@ -46,11 +49,14 @@ import {
   createQuorum,
   dispatchArbitration,
   renderReport,
+  restoreQuorum,
   summarizeSettlementReports,
   verifySettlementWebhook,
   type BuildSettlementWebhooksResult,
   type EscrowEvent,
   type Quorum,
+  type QuorumConfig,
+  type QuorumSnapshot,
   type SettlementReport,
   type SettlementReportResult,
   type SettlementReportsSummary,
@@ -212,8 +218,29 @@ export interface DemoResult {
   disputeEscrow: Escrow;
   /** Refund settlement report of the dispute escrow. */
   disputeReport: SettlementReport;
-  /** The 2-of-3 arbitrator quorum, at threshold after two approvals. */
+  /**
+   * The 2-of-3 arbitrator quorum, at threshold after two approvals.
+   * This is the quorum restored from the mid-collection snapshot
+   * (see {@link DemoResult.quorumSnapshot}): the below-threshold
+   * attempt, the second approval, and the arbitration dispatch all
+   * run on the restored instance.
+   */
   disputeQuorum: Quorum;
+  /**
+   * Snapshot of the dispute quorum taken after its first approval
+   * (1 of 2), before the simulated restart — plain JSON, `v: 1`,
+   * carrying the one recorded approval at its fixed timestamp.
+   */
+  quorumSnapshot: QuorumSnapshot;
+  /**
+   * Counting state of the quorum restored from
+   * {@link DemoResult.quorumSnapshot} via a JSON round-trip +
+   * `restoreQuorum`, captured immediately after the restore:
+   * 1 approval, below threshold — identical to the pre-snapshot
+   * quorum, which is the point of the segment.
+   */
+  quorumRestoredApprovalCount: number;
+  quorumRestoredHasQuorum: boolean;
   /**
    * Error message of the below-threshold `dispatchArbitration` attempt
    * (`arbitration requires quorum: 1/2 approvals`) — the attempt is
@@ -351,7 +378,16 @@ export function runDemo(): DemoResult {
   // whole printout — stays deterministic.
   const disputeEscrow = new Escrow(DEMO_DISPUTE_ESCROW_ID);
   let approvalTick = 0;
-  const disputeQuorum = createQuorum({
+  // One config object, shared by createQuorum below and the later
+  // restoreQuorum call: restore validates the snapshot against the
+  // config it is restored into (threshold / signer set must match),
+  // and the shared injected clock keeps approval timestamps on the
+  // fixed DEMO_QUORUM_APPROVAL_ATS sequence across the restore —
+  // the first approval stamps ATS[0], the post-restore approval
+  // stamps ATS[1], exactly as without a restart. (Counting never
+  // consults the clock here: with no maxApprovalAgeMs configured,
+  // approvals do not expire.)
+  const quorumConfig: QuorumConfig = {
     threshold: DEMO_QUORUM_THRESHOLD,
     signers: [...DEMO_QUORUM_SIGNERS],
     now: () =>
@@ -360,7 +396,8 @@ export function runDemo(): DemoResult {
           Math.min(approvalTick++, DEMO_QUORUM_APPROVAL_ATS.length - 1)
         ],
       ),
-  });
+  };
+  let disputeQuorum = createQuorum(quorumConfig);
   lines.push(
     "",
     "Dispute branch (DISPUTE -> quorum arbitration -> refund):",
@@ -380,6 +417,31 @@ export function runDemo(): DemoResult {
   lines.push(
     `  approve ${DEMO_QUORUM_SIGNERS[0]}        quorum ${disputeQuorum.approvalCount()}/${disputeQuorum.threshold} — hasQuorum: ${disputeQuorum.hasQuorum()}`,
   );
+
+  // --- Simulated restart: snapshot -> JSON -> restoreQuorum ---
+  // The arbitration process restarts mid-collection: the quorum's
+  // state survives only as its snapshot, persisted as JSON text and
+  // parsed back (the snapshot is the export format — restore
+  // re-validates the signer set and threshold against the config).
+  // The restored quorum must count exactly what the pre-snapshot
+  // quorum counted (1 approval, below threshold); collection then
+  // continues on the restored instance, not the original — the
+  // refused attempt and the second vote below both run against it.
+  const countBeforeSnapshot = disputeQuorum.approvalCount();
+  const hasQuorumBeforeSnapshot = disputeQuorum.hasQuorum();
+  const quorumSnapshot = disputeQuorum.snapshot();
+  const restoredQuorum = restoreQuorum(
+    quorumConfig,
+    JSON.parse(JSON.stringify(quorumSnapshot)),
+  );
+  const quorumRestoredApprovalCount = restoredQuorum.approvalCount();
+  const quorumRestoredHasQuorum = restoredQuorum.hasQuorum();
+  lines.push(
+    `  quorum snapshot: ${quorumSnapshot.approvals.length} approval(s) persisted via JSON round-trip (v${quorumSnapshot.v}, threshold ${quorumSnapshot.threshold}, signers ${quorumSnapshot.signers.join(", ")})`,
+    `  quorum restored: approvalCount ${quorumRestoredApprovalCount}/${restoredQuorum.threshold} — hasQuorum: ${quorumRestoredHasQuorum} (matches pre-snapshot ${countBeforeSnapshot}/${quorumSnapshot.threshold} — hasQuorum: ${hasQuorumBeforeSnapshot})`,
+  );
+  disputeQuorum = restoredQuorum;
+
   const historyBeforeAttempt = disputeEscrow.history.length;
   let arbitrationRejection = "";
   try {
@@ -394,7 +456,8 @@ export function runDemo(): DemoResult {
     `  dispatchArbitration("refund") rejected: ${arbitrationRejection} — escrow unchanged at ${disputeEscrow.state} (history ${historyBeforeAttempt} -> ${disputeEscrow.history.length} entries)`,
   );
 
-  // Second vote reaches the threshold; the same call now dispatches
+  // Second vote — cast on the restored quorum — reaches the
+  // threshold; the same call now dispatches
   // ARBITRATE_REFUND (actor + fixed `at` forwarded to the audit entry)
   // and the full deposit returns to the sponsor.
   disputeQuorum.approve(DEMO_QUORUM_SIGNERS[1]);
@@ -552,6 +615,9 @@ export function runDemo(): DemoResult {
     disputeEscrow,
     disputeReport,
     disputeQuorum,
+    quorumSnapshot,
+    quorumRestoredApprovalCount,
+    quorumRestoredHasQuorum,
     arbitrationRejection,
     pendingEscrow,
     batchResults,

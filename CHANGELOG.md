@@ -18,6 +18,18 @@ version changes.
 
 ### Added
 
+- CLI demo coverage for quorum snapshot restore: in the dispute
+  branch, after the first arbitrator approval the demo snapshots
+  the 2-of-3 quorum, round-trips the snapshot through JSON, and
+  restores it with `restoreQuorum` under the same config object
+  (shared injected clock, so approval timestamps stay on the fixed
+  sequence across the restore) — printing the restored approval
+  count / `hasQuorum` matching the pre-snapshot state — then runs
+  the below-threshold refusal, the second approval, and the refund
+  arbitration on the restored quorum. `DemoResult` exposes the
+  snapshot and the restored counting state; the demo tests pin the
+  snapshot shape, an independent re-restore that continues to
+  threshold, and the printed lines and their position.
 - Benchmark coverage for the `Retry-After` parsing path:
   `parseRetryAfter(value, nowMs)` over a fixed 11-value corpus
   (delay-seconds, a fractional value, a whitespace-padded value,
