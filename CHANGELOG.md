@@ -18,6 +18,18 @@ version changes.
 
 ### Added
 
+- Benchmark coverage for the settlement report rendering path:
+  `renderReport(report)` over the fixed golden released report
+  (escrow BENCH-001, deposit 10,630, released via
+  VERIFY_PASS → RELEASE, 4 party rows), built once outside the
+  timed loop. Every timed iteration re-renders the report and
+  re-checks the text against hand-written expected lines — the
+  header / outcome line, the deposit formula line, and the
+  creator net row (inflow $10,098.50, outflow $0.00, net
+  $10,098.50 in the fixed-width ledger columns). The README
+  Benchmarks table was refreshed from one real run and gained
+  the `renderReport (released report, 4 parties)` row
+  (commit 5d15360, 2026-10-15).
 - Benchmark coverage for the funded-total summation path:
   `depositAmountFromHistory(history, escrowId)` over a fixed
   4-shape corpus (a single FUND of the golden 10,630, a two-FUND
