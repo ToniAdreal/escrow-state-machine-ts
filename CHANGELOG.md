@@ -18,6 +18,18 @@ version changes.
 
 ### Added
 
+- Benchmark coverage for the README diagram sync check
+  path: `readmeDiagramInSync()` with no arguments (imported
+  directly from `src/diagram.ts`), checked on every iteration
+  against the hand-pinned expectation `true` — the same
+  expectation the diagram tests and the diagram CLI
+  `--check` pin; file reading is limited to this repo's
+  README. To make that import side-effect free, the diagram
+  CLI entry now runs only when the file is executed directly
+  (the same guard `src/demo.ts` uses); the CLI's print /
+  `--check` / `--write` behavior is unchanged. The README
+  Benchmarks table was refreshed from one real run and
+  gained the `readmeDiagramInSync (README sync check)` row.
 - An overdue-judgement segment closing the CLI demo: a funded
   escrow with a fixed deadline is judged by `isOverdue` at
   three fixed instants — before the deadline (false), exactly

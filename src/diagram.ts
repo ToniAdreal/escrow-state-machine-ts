@@ -57,4 +57,8 @@ function main(): void {
   console.log(DIAGRAM);
 }
 
-main();
+// Run only when executed directly (`node dist/src/diagram.js`), not when
+// imported by bench / tests.
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main();
+}
