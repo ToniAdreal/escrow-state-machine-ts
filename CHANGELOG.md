@@ -18,6 +18,16 @@ version changes.
 
 ### Added
 
+- Benchmark coverage for the transition-table JSON export
+  path: `transitionTableJson()` with no arguments, parsed back
+  on every iteration and checked against hand-pinned
+  expectations (14 edges; first edge CREATED / FUND / FUNDED;
+  the release edge VERIFIED / RELEASE / RELEASED at index 10;
+  last edge DISPUTED / ARBITRATE_REFUND / REFUNDED; every
+  edge's keys in from / event / to order; a single trailing
+  newline). The README Benchmarks table was refreshed from
+  one real run and gained the `transitionTableJson (14 edges)`
+  row.
 - Benchmark coverage for the money-guard path:
   `assertNonNegativeMoney(name, value)` over a fixed legal
   corpus (0, 0.01, the golden 10,630, and 1,000,000.25), with

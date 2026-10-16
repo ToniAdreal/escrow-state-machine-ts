@@ -257,6 +257,17 @@
  *      for correctness ONCE, outside the timed loop, never timed.
  *      Every timed iteration re-checks that the whole legal corpus
  *      passes without throwing.
+ *  26. transition-table JSON export — `transitionTableJson()` with
+ *      no arguments: the canonical JSON form (declaration order,
+ *      2-space indent, trailing newline) that front-end and docs
+ *      tooling consumes instead of re-deriving the state machine.
+ *      This is the full-edge enumeration plus JSON assembly a docs
+ *      or UI build pays per export, previously unmeasured. Every
+ *      timed iteration parses the output back and checks it against
+ *      hand-pinned expectations (14 edges, pinned first / release /
+ *      last edges, pinned per-edge key order — expectations written
+ *      from the committed snapshot, never derived by calling
+ *      `transitionTable()` or the function under test).
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -294,6 +305,7 @@ import {
   settleRelease,
   SettlementEventDedupe,
   staleEscrows,
+  transitionTableJson,
   summarizeSettlementReports,
   verifyHistoryChain,
   verifySettlementWebhook,
@@ -1748,6 +1760,47 @@ checkMoneyGuardLegalCorpus();
 checkMoneyGuardIllegalCorpus();
 
 // ---------------------------------------------------------------------
+// transitionTableJson fixture: no input — the function exports the
+// whole transition table. Expectations are hand-pinned from the
+// committed snapshot test/__snapshots__/transitionTable.snapshot.json
+// (cross-checked against test/transitionSnapshot.test.ts, which pins
+// the same 14-edge count and trailing-newline shape), never derived
+// by calling transitionTable() or transitionTableJson() itself:
+//   edge count 14; first edge CREATED / FUND / FUNDED; the release
+//   edge VERIFIED / RELEASE / RELEASED at index 10; last edge
+//   DISPUTED / ARBITRATE_REFUND / REFUNDED; every edge's keys in the
+//   pinned order from,event,to; the raw text ends with "]\n" and
+//   not "]\n\n".
+// ---------------------------------------------------------------------
+const TRANSITION_TABLE_JSON_EDGE_COUNT = 14;
+const TRANSITION_TABLE_JSON_FIRST = { from: "CREATED", event: "FUND", to: "FUNDED" };
+const TRANSITION_TABLE_JSON_RELEASE_INDEX = 10;
+const TRANSITION_TABLE_JSON_RELEASE = { from: "VERIFIED", event: "RELEASE", to: "RELEASED" };
+const TRANSITION_TABLE_JSON_LAST = { from: "DISPUTED", event: "ARBITRATE_REFUND", to: "REFUNDED" };
+
+function checkTransitionTableJson(): void {
+  const text = transitionTableJson();
+  if (!text.endsWith("]\n") || text.endsWith("]\n\n")) {
+    throw new Error("benchmark self-check failed: transitionTableJson shape");
+  }
+  const edges = JSON.parse(text) as Array<{ from: string; event: string; to: string }>;
+  const pinned = (edge: { from: string; event: string; to: string }, expected: typeof TRANSITION_TABLE_JSON_FIRST) =>
+    edge.from === expected.from && edge.event === expected.event && edge.to === expected.to;
+  if (
+    edges.length !== TRANSITION_TABLE_JSON_EDGE_COUNT ||
+    !pinned(edges[0], TRANSITION_TABLE_JSON_FIRST) ||
+    !pinned(edges[TRANSITION_TABLE_JSON_RELEASE_INDEX], TRANSITION_TABLE_JSON_RELEASE) ||
+    !pinned(edges[edges.length - 1], TRANSITION_TABLE_JSON_LAST) ||
+    edges.some((edge) => Object.keys(edge).join(",") !== "from,event,to")
+  ) {
+    throw new Error("benchmark self-check failed: transitionTableJson");
+  }
+}
+// Pre-check outside the timed loop: the export parses and matches
+// every hand-pinned expectation before any number is reported.
+checkTransitionTableJson();
+
+// ---------------------------------------------------------------------
 // Scenarios (each with a self-check so a broken path cannot report a
 // plausible-looking number).
 // ---------------------------------------------------------------------
@@ -2137,11 +2190,17 @@ function benchAssertNonNegativeMoney(): number {
   }, ITERATIONS);
 }
 
+function benchTransitionTableJson(): number {
+  return measure(() => {
+    checkTransitionTableJson();
+  }, ITERATIONS);
+}
+
 console.log("escrow-state-machine-ts benchmark");
 console.log(`Node: ${process.version} on ${process.platform}/${process.arch}`);
 console.log(`CPU: ${cpus()[0]?.model ?? "unknown"}`);
 console.log(
-  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); settlement batch summary over that batch's 4 pre-built results (3 reports + 1 error); settlement batch webhooks over that same batch (3 signed webhooks with distinct deterministic eventIds bench-batch-event-1..3 plus the 1 forwarded per-item error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release); quorum of 9 signers with threshold 5 on a fixed injected clock, approved one vote at a time to the threshold; settlement webhook fan-out to 4 endpoints through a fake global fetch (immediate 200, no network); settlement event dedupe duplicate hits cycling over 1,000 pre-recorded eventIds under a fixed injected clock; settlement event dedupe restore from a 1,000-entry JSON-round-tripped snapshot under a fixed injected clock (all entries live at load, default TTL and capacity, observability counters restarting at zero); Escrow.fromHistory replay over the same detached 4-entry history; watchdog screening over a fixed mixed batch of 100 escrows (40 hand-counted expired, 70 hand-counted stale under FUNDED 7d / MILESTONE_SUBMITTED 30d budgets) at a fixed screening instant; watchdog execution (expireOverdueEscrows / actOnStaleEscrows with an EXPIRE-dispatch action) over fresh rebuilds of that same 100-escrow batch on every iteration because the executors mutate their inputs (40 of 40 expire attempts and 70 of 70 stale actions succeed — both selected states carry an EXPIRE edge); quorum snapshot restore from a persisted (JSON round-tripped) snapshot of the 9-signer / threshold-5 quorum carrying 7 recorded approvals; settleRelease netting over 4 fixed representative inputs (golden 10630 at 500 bps, 1000 at 500 bps with 100 credits, large gross 1000000 at 250 bps with 1250.25 credits, rounding edge 10 at 125 bps) checked against hand-computed proFee/net on every iteration; parseRetryAfter over a fixed 11-value corpus (delay-seconds, fractional and whitespace-padded values, zero, future and past HTTP-dates, signed numbers, a garbage string, null and undefined) against one injected fixed now, every result checked against hand-pinned expectations on every iteration; depositAmountFromHistory over a fixed 4-shape corpus (a single FUND of the golden 10630, a two-FUND top-up sequence summing to 12630, a FUND recorded without an amount, and an empty no-FUND history) checked against hand-pinned totals and exact fail-fast error messages on every iteration; renderReport rendering of the fixed golden released report (deposit 10630, released via VERIFY_PASS -> RELEASE, 4 party rows) checked against hand-written expected lines (header/outcome, deposit formula, creator net row) on every iteration; allowedEvents over all 8 states of the transition table (one pass = every state queried once in declaration order — CREATED, FUNDED, MILESTONE_SUBMITTED, VERIFIED, DISPUTED, RELEASED, REFUNDED, EXPIRED — with each result checked against its hand-pinned expected event list in declaration order, the three terminal states expecting the empty list) on every iteration; calculateDeposit over a fixed 3-shape corpus (the golden vector pool 10000 / base 600 / complexity 1.0 / loyalty 30 / oracle 60 -> deposit 10630, a complexity 1.5 case -> deposit 6190, and a large-pool 1000000 case -> deposit 1005375) checked against hand-computed adjustedBaseFee and deposit expectations on every iteration; arbitration dispatch (dispatchArbitration with outcome \"refund\", rebuilding a DISPUTED escrow from its fixed 2-entry history prefix via Escrow.fromHistory and a threshold-reached 5/9 quorum via createQuorum on every iteration — rebuild cost inside the timed region — pinned to a fixed audit timestamp, checked for the REFUNDED terminal state, exactly one appended ARBITRATE_REFUND entry, and its \"quorum 5/5\" note on every iteration; isOverdue over a fixed 4-case corpus (past-deadline FUNDED, future-deadline FUNDED, deadline-less FUNDED, and past-deadline terminal RELEASED escrows) checked against hand-pinned booleans (true/false/false/false) against one injected fixed now on every iteration; assertNonNegativeMoney over a fixed legal corpus (0, 0.01, the golden 10630, and 1000000.25) checked to pass without throwing on every iteration, with the illegal corpus (negative, NaN, Infinity, -Infinity, a numeric string, undefined, and null — each throwing the exact message \"amount must be a finite non-negative number\") asserted once outside the timed loop and never timed)",
+  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); settlement batch summary over that batch's 4 pre-built results (3 reports + 1 error); settlement batch webhooks over that same batch (3 signed webhooks with distinct deterministic eventIds bench-batch-event-1..3 plus the 1 forwarded per-item error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release); quorum of 9 signers with threshold 5 on a fixed injected clock, approved one vote at a time to the threshold; settlement webhook fan-out to 4 endpoints through a fake global fetch (immediate 200, no network); settlement event dedupe duplicate hits cycling over 1,000 pre-recorded eventIds under a fixed injected clock; settlement event dedupe restore from a 1,000-entry JSON-round-tripped snapshot under a fixed injected clock (all entries live at load, default TTL and capacity, observability counters restarting at zero); Escrow.fromHistory replay over the same detached 4-entry history; watchdog screening over a fixed mixed batch of 100 escrows (40 hand-counted expired, 70 hand-counted stale under FUNDED 7d / MILESTONE_SUBMITTED 30d budgets) at a fixed screening instant; watchdog execution (expireOverdueEscrows / actOnStaleEscrows with an EXPIRE-dispatch action) over fresh rebuilds of that same 100-escrow batch on every iteration because the executors mutate their inputs (40 of 40 expire attempts and 70 of 70 stale actions succeed — both selected states carry an EXPIRE edge); quorum snapshot restore from a persisted (JSON round-tripped) snapshot of the 9-signer / threshold-5 quorum carrying 7 recorded approvals; settleRelease netting over 4 fixed representative inputs (golden 10630 at 500 bps, 1000 at 500 bps with 100 credits, large gross 1000000 at 250 bps with 1250.25 credits, rounding edge 10 at 125 bps) checked against hand-computed proFee/net on every iteration; parseRetryAfter over a fixed 11-value corpus (delay-seconds, fractional and whitespace-padded values, zero, future and past HTTP-dates, signed numbers, a garbage string, null and undefined) against one injected fixed now, every result checked against hand-pinned expectations on every iteration; depositAmountFromHistory over a fixed 4-shape corpus (a single FUND of the golden 10630, a two-FUND top-up sequence summing to 12630, a FUND recorded without an amount, and an empty no-FUND history) checked against hand-pinned totals and exact fail-fast error messages on every iteration; renderReport rendering of the fixed golden released report (deposit 10630, released via VERIFY_PASS -> RELEASE, 4 party rows) checked against hand-written expected lines (header/outcome, deposit formula, creator net row) on every iteration; allowedEvents over all 8 states of the transition table (one pass = every state queried once in declaration order — CREATED, FUNDED, MILESTONE_SUBMITTED, VERIFIED, DISPUTED, RELEASED, REFUNDED, EXPIRED — with each result checked against its hand-pinned expected event list in declaration order, the three terminal states expecting the empty list) on every iteration; calculateDeposit over a fixed 3-shape corpus (the golden vector pool 10000 / base 600 / complexity 1.0 / loyalty 30 / oracle 60 -> deposit 10630, a complexity 1.5 case -> deposit 6190, and a large-pool 1000000 case -> deposit 1005375) checked against hand-computed adjustedBaseFee and deposit expectations on every iteration; arbitration dispatch (dispatchArbitration with outcome \"refund\", rebuilding a DISPUTED escrow from its fixed 2-entry history prefix via Escrow.fromHistory and a threshold-reached 5/9 quorum via createQuorum on every iteration — rebuild cost inside the timed region — pinned to a fixed audit timestamp, checked for the REFUNDED terminal state, exactly one appended ARBITRATE_REFUND entry, and its \"quorum 5/5\" note on every iteration; isOverdue over a fixed 4-case corpus (past-deadline FUNDED, future-deadline FUNDED, deadline-less FUNDED, and past-deadline terminal RELEASED escrows) checked against hand-pinned booleans (true/false/false/false) against one injected fixed now on every iteration; assertNonNegativeMoney over a fixed legal corpus (0, 0.01, the golden 10630, and 1000000.25) checked to pass without throwing on every iteration, with the illegal corpus (negative, NaN, Infinity, -Infinity, a numeric string, undefined, and null — each throwing the exact message \"amount must be a finite non-negative number\") asserted once outside the timed loop and never timed); transitionTableJson (fixed no-arg transition-table JSON export, parsed back and checked against hand-pinned expectations — 14 edges, first CREATED/FUND/FUNDED, release edge VERIFIED/RELEASE/RELEASED at index 10, last DISPUTED/ARBITRATE_REFUND/REFUNDED, per-edge key order from,event,to, and a single trailing newline — on every iteration)",
 );
 console.log(`Iterations per op: ${ITERATIONS} (after ${WARMUP} warmup)`);
 console.log("");
@@ -2176,6 +2235,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "dispatchArbitration (refund, rebuilt fixture)", ops: benchDispatchArbitration() },
   { path: "isOverdue (4-case corpus)", ops: benchIsOverdue() },
   { path: "assertNonNegativeMoney (legal corpus)", ops: benchAssertNonNegativeMoney() },
+  { path: "transitionTableJson (14 edges)", ops: benchTransitionTableJson() },
 ];
 
 console.log("path                                              throughput");
