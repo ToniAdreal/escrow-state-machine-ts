@@ -42,6 +42,7 @@ import {
 } from "../src/demo.js";
 import {
   allowedEvents,
+  depositAmountFromHistory,
   parseRetryAfter,
   restoreQuorum,
   transitionTable,
@@ -1009,9 +1010,9 @@ test("demo shows the allowed-events listing: every state's events match the hand
   // empty list — the boundary the segment calls out on its own line.
   assert.equal(escrow.state, "RELEASED");
   assert.deepEqual(mainEscrowAllowedEvents, []);
-  // The segment closes the demo: it follows the deadline watchdog,
-  // prints every state line verbatim, and its main-escrow line is
-  // the demo's last line.
+  // The segment follows the deadline watchdog and precedes the
+  // closing deposit-provenance segment; it prints every state line
+  // verbatim, including its main-escrow line.
   const allowedAt = text.indexOf(
     "Allowed events by state (allowedEvents over all 8 states):",
   );
@@ -1022,6 +1023,13 @@ test("demo shows the allowed-events listing: every state's events match the hand
       ),
     "allowed-events segment must follow the deadline watchdog",
   );
+  assert.ok(
+    allowedAt <
+      text.indexOf(
+        "Deposit provenance (depositAmountFromHistory on the main escrow history):",
+      ),
+    "allowed-events segment must precede the deposit-provenance segment",
+  );
   for (const { state, events } of EXPECTED) {
     const line =
       events.length > 0
@@ -1029,17 +1037,20 @@ test("demo shows the allowed-events listing: every state's events match the hand
         : `  ${state.padEnd(20)} -> (none — terminal)`;
     assert.ok(text.includes(line), `missing listing line for ${state}`);
   }
-  assert.equal(
-    lines[lines.length - 1],
-    `  main escrow ${DEMO_ESCROW_ID} (RELEASED): allowedEvents -> (none) — a terminal escrow offers no further events, so an escrow-list UI renders no actions for it`,
+  assert.ok(
+    text.includes(
+      `  main escrow ${DEMO_ESCROW_ID} (RELEASED): allowedEvents -> (none) — a terminal escrow offers no further events, so an escrow-list UI renders no actions for it`,
+    ),
   );
 });
 
 test("demo allowed-events segment is deterministic: two runs print byte-identical listing lines", () => {
-  const segment = (ls: string[]) =>
-    ls.slice(
-      ls.indexOf("Allowed events by state (allowedEvents over all 8 states):"),
+  const segment = (ls: string[]) => {
+    const start = ls.indexOf(
+      "Allowed events by state (allowedEvents over all 8 states):",
     );
+    return ls.slice(start, start + 10);
+  };
   const a = runDemo();
   const b = runDemo();
   const segA = segment(a.lines);
@@ -1050,6 +1061,81 @@ test("demo allowed-events segment is deterministic: two runs print byte-identica
   assert.deepEqual(segA, segment(b.lines));
   assert.deepEqual(a.allowedEventsByState, b.allowedEventsByState);
   assert.deepEqual(a.mainEscrowAllowedEvents, b.mainEscrowAllowedEvents);
+});
+
+test("demo shows deposit provenance: traced amount matches the hand-pinned golden deposit and a no-FUND copy fails explicitly", () => {
+  const { escrow, report, tracedDepositAmount, noFundDepositError, lines } =
+    runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned expectations — written out here from the main
+  // escrow's fixed steps (one FUND entry, amount 10630) and from
+  // settlementReport.ts's documented error wording, never derived
+  // by calling depositAmountFromHistory itself.
+  assert.equal(tracedDepositAmount, 10630);
+  assert.equal(
+    noFundDepositError,
+    `settlement requires a FUND amount for ${DEMO_ESCROW_ID}: no FUND event in the audit history`,
+  );
+  // Cross-checks: an independent call on the escrow's own history
+  // traces the same amount, it equals the settlement report's
+  // deposit, and an independently built no-FUND copy throws the
+  // same explicit error.
+  assert.equal(depositAmountFromHistory(escrow.history, escrow.id), 10630);
+  assert.equal(tracedDepositAmount, report.deposit.deposit);
+  const handNoFund = escrow.history.filter((entry) => entry.event !== "FUND");
+  assert.equal(handNoFund.length, 3);
+  assert.throws(
+    () => depositAmountFromHistory(handNoFund, escrow.id),
+    (err: unknown) =>
+      err instanceof Error && err.message === noFundDepositError,
+  );
+  // The escrow's own history is untouched by the copy: still 4
+  // entries, its FUND amount still the golden 10630.
+  assert.equal(escrow.history.length, 4);
+  assert.equal(
+    escrow.history.find((entry) => entry.event === "FUND")?.amount,
+    10630,
+  );
+  // The segment closes the demo: it follows the allowed-events
+  // listing, prints both lines verbatim, and its FAILED line is
+  // the demo's last line.
+  const provenanceAt = text.indexOf(
+    "Deposit provenance (depositAmountFromHistory on the main escrow history):",
+  );
+  assert.ok(
+    provenanceAt >
+      text.indexOf("Allowed events by state (allowedEvents over all 8 states):"),
+    "deposit-provenance segment must follow the allowed-events listing",
+  );
+  assert.ok(
+    text.includes(
+      `  main escrow ${DEMO_ESCROW_ID}: depositAmountFromHistory -> 10630 (the sum of every FUND amount in the audit trail — matches the settlement report deposit 10630)`,
+    ),
+  );
+  assert.equal(
+    lines[lines.length - 1],
+    `  no-FUND copy (3 entries, every FUND entry removed): depositAmountFromHistory FAILED — settlement requires a FUND amount for ${DEMO_ESCROW_ID}: no FUND event in the audit history (a history with no FUND event cannot corroborate a deposit, so settlement refuses rather than guessing)`,
+  );
+});
+
+test("demo deposit-provenance segment is deterministic: two runs print byte-identical provenance lines", () => {
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf(
+        "Deposit provenance (depositAmountFromHistory on the main escrow history):",
+      ),
+    );
+  const a = runDemo();
+  const b = runDemo();
+  const segA = segment(a.lines);
+  // Header + the traced-amount line + the FAILED line; every value
+  // is derived from the fixed main history alone, so no
+  // normalization is needed.
+  assert.equal(segA.length, 3);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.equal(a.tracedDepositAmount, b.tracedDepositAmount);
+  assert.equal(a.noFundDepositError, b.noFundDepositError);
 });
 
 test("demo is deterministic: two runs produce identical lines", () => {
@@ -1179,9 +1265,9 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
       "  deadline vs stale on the same batch: expired [DEMO-ESC-007, DEMO-ESC-008], stale [DEMO-ESC-009] — different axes, different subsets (absolute deadline vs dwell in the current state)",
     ),
   );
-  // Allowed-events tail: the closing listing prints every state in
+  // Allowed-events tail: the listing prints every state in
   // transition-table order, the terminal states as (none — terminal),
-  // and the main escrow's own empty set on the last line.
+  // and the main escrow's own empty set on its own line.
   assert.match(out, /Allowed events by state \(allowedEvents over all 8 states\):/);
   assert.ok(out.includes("  CREATED              -> FUND, EXPIRE"));
   assert.ok(
@@ -1191,8 +1277,25 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
   );
   assert.ok(out.includes("  RELEASED             -> (none — terminal)"));
   assert.ok(
-    out.trimEnd().endsWith(
+    out.includes(
       `main escrow ${DEMO_ESCROW_ID} (RELEASED): allowedEvents -> (none) — a terminal escrow offers no further events, so an escrow-list UI renders no actions for it`,
+    ),
+  );
+  // Deposit-provenance tail: the closing segment traces the golden
+  // deposit out of the main history alone and shows the no-FUND
+  // copy's explicit failure on the demo's last line.
+  assert.match(
+    out,
+    /Deposit provenance \(depositAmountFromHistory on the main escrow history\):/,
+  );
+  assert.ok(
+    out.includes(
+      `  main escrow ${DEMO_ESCROW_ID}: depositAmountFromHistory -> 10630 (the sum of every FUND amount in the audit trail — matches the settlement report deposit 10630)`,
+    ),
+  );
+  assert.ok(
+    out.trimEnd().endsWith(
+      `no-FUND copy (3 entries, every FUND entry removed): depositAmountFromHistory FAILED — settlement requires a FUND amount for ${DEMO_ESCROW_ID}: no FUND event in the audit history (a history with no FUND event cannot corroborate a deposit, so settlement refuses rather than guessing)`,
     ),
   );
 });

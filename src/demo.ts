@@ -54,14 +54,22 @@
  * honest caveat: the executor dispatches EXPIRE with no pinned
  * `at`, so its audit entries carry the dispatch-time wall clock;
  * the demo prints no timestamp for those entries, so its printed
- * output stays byte-identical across runs. The demo finally closes
- * with an allowed-events listing: `allowedEvents(state)` is run
+ * output stays byte-identical across runs. The demo then prints an
+ * allowed-events listing: `allowedEvents(state)` is run
  * over all 8 states in transition-table order and printed as a
  * one-line-per-state overview — the query an escrow-list UI or a
  * watchdog consults to decide what an escrow can do next — with
  * the three terminal states (RELEASED / REFUNDED / EXPIRED)
  * returning the empty list, and the main escrow's own RELEASED
- * state called out on its own line as that same empty set.
+ * state called out on its own line as that same empty set. The demo
+ * finally closes with a deposit-provenance segment:
+ * `depositAmountFromHistory` traces the locked deposit back out of
+ * the main escrow's audit history alone (the sum of every FUND
+ * amount — the golden 10,630 the settlement report above was built
+ * on), and a fixed copy of that history with every FUND entry
+ * removed is shown failing with the explicit
+ * `settlement requires a FUND amount` error — a history that cannot
+ * corroborate a deposit settles nothing, rather than guessing.
  *
  * Usage: `npm run demo` (builds with tsc, then runs node on the compiled
  * output). Zero runtime dependencies: this file only imports the library
@@ -85,6 +93,7 @@ import {
   buildSettlementWebhooks,
   calculateDeposit,
   createQuorum,
+  depositAmountFromHistory,
   dispatchArbitration,
   expiredEscrows,
   expireOverdueEscrows,
@@ -470,6 +479,20 @@ export interface DemoResult {
   allowedEventsByState: Array<{ state: EscrowState; events: EscrowEvent[] }>;
   /** `allowedEvents` for the main escrow's RELEASED state — the empty list. */
   mainEscrowAllowedEvents: EscrowEvent[];
+  /**
+   * Deposit traced from the main escrow's audit history alone by
+   * `depositAmountFromHistory`: the sum of every FUND amount —
+   * the golden 10630, identical to the settlement report's deposit.
+   */
+  tracedDepositAmount: number;
+  /**
+   * Error message of `depositAmountFromHistory` on a fixed copy of
+   * the main history with every FUND entry removed
+   * (`settlement requires a FUND amount for DEMO-ESC-001: no FUND
+   * event in the audit history`) — the failure is part of the demo,
+   * and the escrow's own history is untouched by the copy.
+   */
+  noFundDepositError: string;
   lines: string[];
 }
 
@@ -1138,6 +1161,50 @@ export function runDemo(): DemoResult {
     `  main escrow ${escrow.id} (${escrow.state}): allowedEvents -> ${mainEscrowAllowedEvents.length > 0 ? mainEscrowAllowedEvents.join(", ") : "(none)"} — a terminal escrow offers no further events, so an escrow-list UI renders no actions for it`,
   );
 
+  // --- Deposit provenance: depositAmountFromHistory (closing) ---
+  // Every figure in the settlement report printed at the top of the
+  // demo rests on the locked deposit, but the report receives that
+  // deposit from the caller (`calculateDeposit`) — a reader never
+  // sees it corroborated by the audit trail alone, which is the
+  // reconciliation / audit question: "show me, from the history
+  // only, how much was actually locked." `depositAmountFromHistory`
+  // answers it: the SUM of the `amount` on every FUND entry (the
+  // initial deposit plus any top-ups). Hand-pinned expectation —
+  // written out here from the main escrow's fixed steps above,
+  // never derived by calling the function itself (the demo tests
+  // cross-check the printed amount against the settlement report's
+  // deposit as well):
+  //   main history FUND entries: one, amount 10630 -> traced 10630
+  // The failure half runs on a fixed detached copy of the same
+  // history with every FUND entry removed (the remaining entries
+  // are SUBMIT_MILESTONE / VERIFY_PASS / RELEASE): with no FUND
+  // event at all, the function must throw the explicit
+  // `settlement requires a FUND amount` error instead of returning
+  // undefined / NaN and poisoning settlement math downstream. The
+  // throw is asserted outside the printing (captured as a string),
+  // and the escrow's own history is never touched — the copy is
+  // built by filtering the frozen entries the history getter hands
+  // out. Pure: no dispatch, no network, no randomness, no wall clock.
+  const tracedDepositAmount = depositAmountFromHistory(
+    escrow.history,
+    escrow.id,
+  );
+  const noFundHistory = escrow.history.filter(
+    (entry) => entry.event !== "FUND",
+  );
+  let noFundDepositError = "";
+  try {
+    depositAmountFromHistory(noFundHistory, escrow.id);
+  } catch (err) {
+    noFundDepositError = err instanceof Error ? err.message : String(err);
+  }
+  lines.push(
+    "",
+    "Deposit provenance (depositAmountFromHistory on the main escrow history):",
+    `  main escrow ${escrow.id}: depositAmountFromHistory -> ${tracedDepositAmount} (the sum of every FUND amount in the audit trail — matches the settlement report deposit 10630)`,
+    `  no-FUND copy (${noFundHistory.length} entries, every FUND entry removed): depositAmountFromHistory FAILED — ${noFundDepositError} (a history with no FUND event cannot corroborate a deposit, so settlement refuses rather than guessing)`,
+  );
+
   return {
     escrow,
     report,
@@ -1170,6 +1237,8 @@ export function runDemo(): DemoResult {
     deadlineExpireResults,
     allowedEventsByState,
     mainEscrowAllowedEvents,
+    tracedDepositAmount,
+    noFundDepositError,
     lines,
   };
 }

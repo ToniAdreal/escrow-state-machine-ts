@@ -18,6 +18,18 @@ version changes.
 
 ### Added
 
+- A deposit-provenance segment closing the CLI demo:
+  `depositAmountFromHistory` traces the locked deposit back out
+  of the main escrow's audit history alone (10630, the sum of
+  every FUND amount, matching the settlement report's deposit),
+  and a fixed copy of that history with every FUND entry removed
+  is shown failing with the explicit
+  `settlement requires a FUND amount` error on one FAILED line.
+  `DemoResult` exposes the traced amount and the captured error;
+  the demo tests pin them against hand-pinned expectations
+  cross-checked by independent calls, the exact printed lines,
+  and the segment's determinism across two runs. Demo and tests
+  only; no library behavior change.
 - Benchmark coverage for the transition-table JSON export
   path: `transitionTableJson()` with no arguments, parsed back
   on every iteration and checked against hand-pinned
