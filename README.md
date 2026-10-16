@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 639 tests, all local
+npm test   # 641 tests, all local
 ```
 
 ## Quickstart
@@ -63,7 +63,16 @@ runs that webhook's `eventId` through `SettlementEventDedupe` on a
 fixed clock (1-hour TTL, starting at the webhook's `at`): the first
 delivery is new and booked, an immediate redelivery is a duplicate
 and skipped, and after the clock advances by exactly the TTL the
-same id counts as new again. A second escrow then walks
+same id counts as new again. The sender side then parses
+`Retry-After` hints with `parseRetryAfter` on the same fixed
+clock: a fixed corpus (delay-seconds, a whitespace-padded value,
+future and past HTTP-dates, a signed value, a garbage string,
+and null) is printed value by value — both hint forms normalize
+to milliseconds, a past date yields 0, and unparsable or absent
+values yield `undefined`, the sender's cue to fall back to
+exponential backoff (on a 429 the parsed hint, clamped by
+`maxRetryDelayMs`, sets the wait before the next attempt).
+A second escrow then walks
 the dispute branch: `VERIFY_FAIL` into `DISPUTED`, a 2-of-3 arbitrator
 quorum collected vote by vote — after the first vote the quorum is
 snapshotted, round-tripped through JSON, and restored with
@@ -721,7 +730,7 @@ and an empty batch yields an all-zero summary.
 
 ## Reproducibility
 
-`npm test` runs 639 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 641 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

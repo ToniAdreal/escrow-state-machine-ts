@@ -18,6 +18,23 @@ version changes.
 
 ### Added
 
+- A Retry-After parsing segment in the CLI demo, between the
+  receiver-dedupe segment and the dispute branch: a fixed
+  7-value corpus (`"2"`, `" 30 "`, a future HTTP-date, a past
+  HTTP-date, `"-5"`, `"banana"`, and null) is parsed with
+  `parseRetryAfter` against one injected fixed now (the
+  webhook's `at`) and printed value by value — delay-seconds
+  and HTTP-date hints normalize to milliseconds (2000 /
+  30000 / 5000), a past date yields 0, and the signed, garbage,
+  and absent values yield `undefined`. A closing line ties the
+  parsed hint back to the delivery retry context: on a 429 the
+  hint, clamped by `maxRetryDelayMs`, sets the wait before the
+  next attempt, and `undefined` falls back to exponential
+  backoff. `DemoResult` exposes the structured
+  `retryAfterParsed` results; the demo tests pin them against
+  hand-pinned expectations cross-checked by re-parsing, the
+  exact printed lines, and the segment's determinism across
+  two runs. Demo and tests only; no library behavior change.
 - Benchmark coverage for the single-escrow deadline judgement
   path: `isOverdue(escrow, now)` over a fixed 4-case corpus
   (past-deadline FUNDED, future-deadline FUNDED, deadline-less

@@ -10,7 +10,14 @@
  * that webhook's `eventId` through `SettlementEventDedupe` on a fixed
  * clock: the first delivery is new (booked), an immediate redelivery
  * is a duplicate (skipped), and after the clock advances by exactly
- * the TTL the same id counts as new again. A second escrow then walks the
+ * the TTL the same id counts as new again. The sender side then
+ * parses `Retry-After` hints with `parseRetryAfter` on the same
+ * fixed clock: a fixed corpus (delay-seconds, a whitespace-padded
+ * value, future and past HTTP-dates, a signed value, a garbage
+ * string, and null) is printed value by value — both hint forms
+ * normalize to milliseconds, a past date yields 0, and unparsable
+ * or absent values yield `undefined`, the caller's cue to fall
+ * back to exponential backoff. A second escrow then walks the
  * dispute branch: VERIFY_FAIL lands it in DISPUTED, a 2-of-3 arbitrator
  * quorum is collected vote by vote — after the first vote the quorum
  * is snapshotted, round-tripped through JSON, and restored with
@@ -81,6 +88,7 @@ import {
   dispatchArbitration,
   expiredEscrows,
   expireOverdueEscrows,
+  parseRetryAfter,
   renderReport,
   restoreQuorum,
   staleEscrows,
@@ -126,6 +134,15 @@ export const DEMO_WEBHOOK_AT = "2026-03-06T08:17:00.000Z";
  */
 export const DEMO_DEDUPE_TTL_MS = 3_600_000;
 export const DEMO_DEDUPE_START_MS = Date.parse(DEMO_WEBHOOK_AT);
+
+/**
+ * Fixed clock for the Retry-After parsing segment: the same instant
+ * the dedupe clock starts at (the webhook's own `at`), second-aligned
+ * so the HTTP-date corpus values — which carry one-second precision —
+ * land exactly. Injected into every `parseRetryAfter` call, so no
+ * wall clock enters the segment.
+ */
+export const DEMO_RETRY_AFTER_NOW_MS = DEMO_DEDUPE_START_MS;
 
 /** Fixed fixture for the dispute branch: a second escrow, same deposit. */
 export const DEMO_DISPUTE_ESCROW_ID = "DEMO-ESC-002";
@@ -339,6 +356,17 @@ export interface DemoResult {
    * its stats read hits 1 / misses 2 / size 1.
    */
   webhookDedupe: SettlementEventDedupe;
+  /**
+   * Sender-side `parseRetryAfter` results over the fixed corpus, in
+   * corpus order, parsed against {@link DEMO_RETRY_AFTER_NOW_MS}:
+   * delay-seconds and HTTP-date hints normalized to milliseconds,
+   * a past date at 0, and the signed / garbage / null values at
+   * `undefined` (the fallback-to-backoff cue).
+   */
+  retryAfterParsed: Array<{
+    value: string | null;
+    parsed: number | undefined;
+  }>;
   /** Second escrow, driven through the dispute branch to REFUNDED. */
   disputeEscrow: Escrow;
   /** Refund settlement report of the dispute escrow. */
@@ -580,6 +608,56 @@ export function runDemo(): DemoResult {
     `  delivery 2: eventId ${webhook.payload.eventId} — checkAndRecord: ${dedupeSecond} (duplicate, skip — no second booking)`,
     `  delivery 3 (fixed clock +${DEMO_DEDUPE_TTL_MS} ms = TTL): eventId ${webhook.payload.eventId} — checkAndRecord: ${dedupeAfterTtl} (new event again, TTL expired)`,
     `  dedupe stats: size ${dedupeStats.size}, hits ${dedupeStats.hits}, misses ${dedupeStats.misses}, evictions ${dedupeStats.evictions}`,
+  );
+
+  // --- Retry-After parsing: how the sender reads a 429 hint ---
+  // Dedupe is the receiver's half of a retried delivery; this is the
+  // sender's half. When a settlement-webhook endpoint answers 429,
+  // `deliverSettlementWebhook` reads its `Retry-After` header through
+  // `parseRetryAfter` before the next attempt — but the demo never
+  // runs a live delivery, so the two hint forms were never shown.
+  // A fixed 7-value corpus is parsed against one injected fixed now
+  // (DEMO_RETRY_AFTER_NOW_MS — the webhook's `at`, second-aligned so
+  // the HTTP-date strings below land exactly). Hand-pinned
+  // expectations, written from the documented semantics
+  // (delay-seconds -> seconds * 1000; an HTTP-date ->
+  // max(0, date - now); signed numbers, garbage, and absent values
+  // -> undefined), never derived by calling parseRetryAfter itself
+  // (the demo tests cross-check the printed results against the
+  // bench fixture's independently pinned corpus as well):
+  //   "2"                                    -> 2000
+  //   " 30 " (whitespace is trimmed)         -> 30000
+  //   "Fri, 06 Mar 2026 08:17:05 GMT" (+5 s) -> 5000
+  //   "Fri, 06 Mar 2026 08:16:59 GMT" (-1 s) -> 0
+  //   "-5" (signed)                          -> undefined
+  //   "banana"                               -> undefined
+  //   null                                   -> undefined
+  const RETRY_AFTER_CASES: ReadonlyArray<string | null> = [
+    "2",
+    " 30 ",
+    new Date(DEMO_RETRY_AFTER_NOW_MS + 5000).toUTCString(),
+    new Date(DEMO_RETRY_AFTER_NOW_MS - 1000).toUTCString(),
+    "-5",
+    "banana",
+    null,
+  ];
+  const retryAfterParsed = RETRY_AFTER_CASES.map((value) => ({
+    value,
+    parsed: parseRetryAfter(value, DEMO_RETRY_AFTER_NOW_MS),
+  }));
+  lines.push(
+    "",
+    "Retry-After parsing (parseRetryAfter on a fixed clock):",
+    `  fixed now: ${DEMO_WEBHOOK_AT} — every value below is parsed against this injected instant, never the wall clock`,
+  );
+  for (const { value, parsed } of retryAfterParsed) {
+    const shown = value === null ? "null" : `"${value}"`;
+    lines.push(
+      `  parseRetryAfter(${shown}) -> ${parsed === undefined ? "undefined" : parsed}`,
+    );
+  }
+  lines.push(
+    "  sender rule: on a 429 the parsed hint, clamped by maxRetryDelayMs, sets the wait before the next attempt; undefined — absent or unparsable — falls back to exponential backoff",
   );
 
   // --- Dispute branch: DISPUTED -> quorum arbitration -> REFUNDED ---
@@ -1069,6 +1147,7 @@ export function runDemo(): DemoResult {
     webhook,
     webhookVerified,
     webhookDedupe,
+    retryAfterParsed,
     disputeEscrow,
     disputeReport,
     disputeQuorum,

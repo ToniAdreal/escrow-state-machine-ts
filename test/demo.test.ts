@@ -26,6 +26,7 @@ import {
   DEMO_QUORUM_APPROVAL_ATS,
   DEMO_QUORUM_SIGNERS,
   DEMO_QUORUM_THRESHOLD,
+  DEMO_RETRY_AFTER_NOW_MS,
   DEMO_STALE_DAY_MS,
   DEMO_STALE_DEADLINE,
   DEMO_STALE_ESCROW_ID,
@@ -41,6 +42,7 @@ import {
 } from "../src/demo.js";
 import {
   allowedEvents,
+  parseRetryAfter,
   restoreQuorum,
   transitionTable,
   verifyHistoryChain,
@@ -265,6 +267,83 @@ test("demo lines print the receiver dedupe section", () => {
   const dedupeAt = text.indexOf("Receiver dedupe (SettlementEventDedupe");
   const disputeAt = text.indexOf("Dispute branch (DISPUTE");
   assert.ok(webhookAt < dedupeAt && dedupeAt < disputeAt);
+});
+
+test("demo shows Retry-After parsing: both hint forms normalize to milliseconds on a fixed clock", () => {
+  const { retryAfterParsed, lines } = runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned expectations — written out here from the documented
+  // semantics (delay-seconds -> seconds * 1000; an HTTP-date ->
+  // max(0, date - now); signed numbers, garbage, and absent values
+  // -> undefined), never derived by calling parseRetryAfter itself.
+  // The fixed now is the webhook's `at` (second-aligned, so the two
+  // HTTP-date strings land exactly); the same corpus shapes are
+  // pinned independently by the bench fixture and by
+  // test/webhookDelivery.test.ts.
+  assert.equal(DEMO_RETRY_AFTER_NOW_MS, Date.parse(DEMO_WEBHOOK_AT));
+  const EXPECTED: Array<{ value: string | null; parsed: number | undefined }> = [
+    { value: "2", parsed: 2000 },
+    { value: " 30 ", parsed: 30_000 },
+    { value: "Fri, 06 Mar 2026 08:17:05 GMT", parsed: 5000 },
+    { value: "Fri, 06 Mar 2026 08:16:59 GMT", parsed: 0 },
+    { value: "-5", parsed: undefined },
+    { value: "banana", parsed: undefined },
+    { value: null, parsed: undefined },
+  ];
+  assert.deepEqual(retryAfterParsed, EXPECTED);
+  // Independent cross-check: re-parsing each corpus value against
+  // the same fixed now reproduces the demo's structured results.
+  for (const { value, parsed } of EXPECTED) {
+    assert.equal(parseRetryAfter(value, DEMO_RETRY_AFTER_NOW_MS), parsed);
+  }
+  // Every printed line verbatim, in corpus order, between the
+  // receiver-dedupe segment and the dispute branch — the sender
+  // half of the same webhook retry story — closing with the rule
+  // that ties the parsed hint back to the delivery retry context.
+  assert.ok(
+    text.includes("Retry-After parsing (parseRetryAfter on a fixed clock):"),
+  );
+  assert.ok(
+    text.includes(
+      `  fixed now: ${DEMO_WEBHOOK_AT} — every value below is parsed against this injected instant, never the wall clock`,
+    ),
+  );
+  for (const { value, parsed } of EXPECTED) {
+    const shown = value === null ? "null" : `"${value}"`;
+    assert.ok(
+      text.includes(
+        `  parseRetryAfter(${shown}) -> ${parsed === undefined ? "undefined" : parsed}`,
+      ),
+      `missing Retry-After line for ${shown}`,
+    );
+  }
+  assert.ok(
+    text.includes(
+      "  sender rule: on a 429 the parsed hint, clamped by maxRetryDelayMs, sets the wait before the next attempt; undefined — absent or unparsable — falls back to exponential backoff",
+    ),
+  );
+  const dedupeAt = text.indexOf("Receiver dedupe (SettlementEventDedupe");
+  const retryAt = text.indexOf("Retry-After parsing (parseRetryAfter");
+  const disputeAt = text.indexOf("Dispute branch (DISPUTE");
+  assert.ok(dedupeAt < retryAt && retryAt < disputeAt);
+});
+
+test("demo Retry-After segment is deterministic: two runs print byte-identical parsing lines", () => {
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf("Retry-After parsing (parseRetryAfter on a fixed clock):"),
+      ls.indexOf("Dispute branch (DISPUTE -> quorum arbitration -> refund):") - 1,
+    );
+  const a = runDemo();
+  const b = runDemo();
+  const segA = segment(a.lines);
+  // Header + fixed-now line + 7 corpus lines + the sender-rule line;
+  // every value is derived from the fixed corpus and the injected
+  // fixed now alone, so no normalization is needed.
+  assert.equal(segA.length, 10);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(a.retryAfterParsed, b.retryAfterParsed);
 });
 
 test("demo dispute branch reaches DISPUTED, is refused below quorum, then refunds at quorum", () => {
@@ -1018,6 +1097,14 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
   assert.ok(out.includes(`  eventId:      ${DEMO_WEBHOOK_EVENT_ID}`));
   assert.match(out, / {2}signature: {4}sha256=[0-9a-f]{64}/);
   assert.match(out, /verifySettlementWebhook: ok/);
+  // Retry-After tail of the webhook story: the sender-side parsing
+  // segment prints both hint forms normalized against the fixed now.
+  assert.match(out, /Retry-After parsing \(parseRetryAfter on a fixed clock\):/);
+  assert.ok(out.includes('  parseRetryAfter(" 30 ") -> 30000'));
+  assert.ok(
+    out.includes('  parseRetryAfter("Fri, 06 Mar 2026 08:17:05 GMT") -> 5000'),
+  );
+  assert.ok(out.includes("  parseRetryAfter(null) -> undefined"));
   // Batch tail: per-item isolation (error in the middle) + summary
   assert.match(out, /Batch settlement reports \(batch -> per-item isolation -> summary\):/);
   assert.match(
