@@ -18,6 +18,17 @@ version changes.
 
 ### Added
 
+- Benchmark coverage for the money-guard path:
+  `assertNonNegativeMoney(name, value)` over a fixed legal
+  corpus (0, 0.01, the golden 10,630, and 1,000,000.25), with
+  the whole corpus checked to pass without throwing on every
+  iteration. Only the legal branch is timed; the illegal branch
+  (a negative, NaN, ±Infinity, a numeric string, undefined, and
+  null — each throwing the exact `amount must be a finite
+  non-negative number` message) is asserted once, outside the
+  timed loop. The README Benchmarks table was refreshed from
+  one real run and gained the `assertNonNegativeMoney (legal
+  corpus)` row.
 - A Retry-After parsing segment in the CLI demo, between the
   receiver-dedupe segment and the dispute branch: a fixed
   7-value corpus (`"2"`, `" 30 "`, a future HTTP-date, a past
