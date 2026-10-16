@@ -18,6 +18,14 @@ version changes.
 
 ### Added
 
+- Benchmark coverage for the single-escrow deadline judgement
+  path: `isOverdue(escrow, now)` over a fixed 4-case corpus
+  (past-deadline FUNDED, future-deadline FUNDED, deadline-less
+  FUNDED, and past-deadline terminal RELEASED escrows) against
+  one injected fixed `now`, with every result checked against
+  hand-pinned booleans (true / false / false / false) on every
+  iteration. The README Benchmarks table was refreshed from
+  one real run and gained the `isOverdue (4-case corpus)` row.
 - An allowed-events listing segment closing the CLI demo:
   `allowedEvents(state)` is run over all 8 states in
   transition-table order and printed as one line per state — the

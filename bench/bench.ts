@@ -228,6 +228,23 @@
  *      is REFUNDED, the history grew by exactly one entry, and that
  *      entry is the ARBITRATE_REFUND from DISPUTED carrying the
  *      hand-pinned note `quorum 5/5`.
+ *  24. deadline judgement — `isOverdue(escrow, now)` over a fixed
+ *      4-case corpus (a past-deadline FUNDED escrow, a
+ *      future-deadline FUNDED escrow, a deadline-less FUNDED
+ *      escrow, and a past-deadline terminal RELEASED escrow),
+ *      always against one injected fixed `now`. This is the
+ *      per-escrow primitive the watchdog screening paths pay for
+ *      every escrow in a batch — `expiredEscrows` is this check
+ *      over a list — previously visible only inside the batch-100
+ *      screening numbers. The function is pure (it reads the
+ *      deadline and the terminal flag, never mutates or
+ *      dispatches), so the same four escrows are re-judged on
+ *      every iteration. Expected booleans are hand-pinned in the
+ *      fixture comment below (true / false / false / false,
+ *      written from the documented semantics — no deadline means
+ *      never overdue, and a terminal escrow is never overdue even
+ *      past its deadline), and every timed iteration re-checks
+ *      each result against them.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -257,6 +274,7 @@ import {
   expireOverdueEscrows,
   historyFromNdjson,
   historyToNdjson,
+  isOverdue,
   parseRetryAfter,
   renderReport,
   restoreQuorum,
@@ -1591,6 +1609,74 @@ function checkDispatchArbitration(): void {
 checkDispatchArbitration();
 
 // ---------------------------------------------------------------------
+// isOverdue fixture: a fixed 4-case corpus judged against one
+// injected fixed instant IS_OVERDUE_NOW = BASE + 90 days (the same
+// screening instant as the watchdog batch). The four escrows are
+// built once, outside the timed loop, by driving real escrows on
+// the shared fixed clock; `isOverdue` is pure, so the same four
+// instances are re-judged on every iteration. Hand-pinned
+// expectations, written from the documented semantics in
+// src/stateMachine.ts — never derived by calling isOverdue
+// itself (cross-checked against test/deadline.test.ts):
+//   1. FUNDED, deadline BASE+30d (past)               -> true
+//   2. FUNDED, deadline BASE+120d (future)            -> false
+//   3. FUNDED, no deadline                            -> false
+//   4. RELEASED (terminal), deadline BASE+30d (past) -> false
+// One bench pass judges all 4 cases once.
+// ---------------------------------------------------------------------
+const IS_OVERDUE_NOW = new Date(BASE_MS + 90 * DAY_MS);
+const IS_OVERDUE_CASES: ReadonlyArray<{
+  escrow: Escrow;
+  expected: boolean;
+}> = (() => {
+  const overdue = watchdogFunded(
+    "BENCH-OVERDUE-001",
+    BASE_MS,
+    BASE_MS + 30 * DAY_MS,
+  );
+  const future = watchdogFunded(
+    "BENCH-OVERDUE-002",
+    BASE_MS,
+    BASE_MS + 120 * DAY_MS,
+  );
+  const noDeadline = watchdogFunded("BENCH-OVERDUE-003", BASE_MS);
+  const terminal = watchdogFunded(
+    "BENCH-OVERDUE-004",
+    BASE_MS,
+    BASE_MS + 30 * DAY_MS,
+  );
+  terminal.dispatch("SUBMIT_MILESTONE", undefined, undefined, {
+    at: isoAt(BASE_MS + 1 * DAY_MS),
+  });
+  terminal.dispatch("VERIFY_PASS", undefined, undefined, {
+    at: isoAt(BASE_MS + 2 * DAY_MS),
+  });
+  terminal.dispatch("RELEASE", undefined, undefined, {
+    at: isoAt(BASE_MS + 3 * DAY_MS),
+  });
+  if (terminal.state !== "RELEASED" || !terminal.isTerminal) {
+    throw new Error("benchmark fixture failed: isOverdue terminal shape");
+  }
+  return [
+    { escrow: overdue, expected: true },
+    { escrow: future, expected: false },
+    { escrow: noDeadline, expected: false },
+    { escrow: terminal, expected: false },
+  ];
+})();
+
+function checkIsOverdueCorpus(): void {
+  for (const c of IS_OVERDUE_CASES) {
+    if (isOverdue(c.escrow, IS_OVERDUE_NOW) !== c.expected) {
+      throw new Error("benchmark self-check failed: isOverdue");
+    }
+  }
+}
+// Pre-check outside the timed loop: every case judges to its
+// hand-pinned expectation before any number is reported.
+checkIsOverdueCorpus();
+
+// ---------------------------------------------------------------------
 // Scenarios (each with a self-check so a broken path cannot report a
 // plausible-looking number).
 // ---------------------------------------------------------------------
@@ -1968,11 +2054,17 @@ function benchDispatchArbitration(): number {
   }, ITERATIONS);
 }
 
+function benchIsOverdue(): number {
+  return measure(() => {
+    checkIsOverdueCorpus();
+  }, ITERATIONS);
+}
+
 console.log("escrow-state-machine-ts benchmark");
 console.log(`Node: ${process.version} on ${process.platform}/${process.arch}`);
 console.log(`CPU: ${cpus()[0]?.model ?? "unknown"}`);
 console.log(
-  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); settlement batch summary over that batch's 4 pre-built results (3 reports + 1 error); settlement batch webhooks over that same batch (3 signed webhooks with distinct deterministic eventIds bench-batch-event-1..3 plus the 1 forwarded per-item error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release); quorum of 9 signers with threshold 5 on a fixed injected clock, approved one vote at a time to the threshold; settlement webhook fan-out to 4 endpoints through a fake global fetch (immediate 200, no network); settlement event dedupe duplicate hits cycling over 1,000 pre-recorded eventIds under a fixed injected clock; settlement event dedupe restore from a 1,000-entry JSON-round-tripped snapshot under a fixed injected clock (all entries live at load, default TTL and capacity, observability counters restarting at zero); Escrow.fromHistory replay over the same detached 4-entry history; watchdog screening over a fixed mixed batch of 100 escrows (40 hand-counted expired, 70 hand-counted stale under FUNDED 7d / MILESTONE_SUBMITTED 30d budgets) at a fixed screening instant; watchdog execution (expireOverdueEscrows / actOnStaleEscrows with an EXPIRE-dispatch action) over fresh rebuilds of that same 100-escrow batch on every iteration because the executors mutate their inputs (40 of 40 expire attempts and 70 of 70 stale actions succeed — both selected states carry an EXPIRE edge); quorum snapshot restore from a persisted (JSON round-tripped) snapshot of the 9-signer / threshold-5 quorum carrying 7 recorded approvals; settleRelease netting over 4 fixed representative inputs (golden 10630 at 500 bps, 1000 at 500 bps with 100 credits, large gross 1000000 at 250 bps with 1250.25 credits, rounding edge 10 at 125 bps) checked against hand-computed proFee/net on every iteration; parseRetryAfter over a fixed 11-value corpus (delay-seconds, fractional and whitespace-padded values, zero, future and past HTTP-dates, signed numbers, a garbage string, null and undefined) against one injected fixed now, every result checked against hand-pinned expectations on every iteration; depositAmountFromHistory over a fixed 4-shape corpus (a single FUND of the golden 10630, a two-FUND top-up sequence summing to 12630, a FUND recorded without an amount, and an empty no-FUND history) checked against hand-pinned totals and exact fail-fast error messages on every iteration; renderReport rendering of the fixed golden released report (deposit 10630, released via VERIFY_PASS -> RELEASE, 4 party rows) checked against hand-written expected lines (header/outcome, deposit formula, creator net row) on every iteration; allowedEvents over all 8 states of the transition table (one pass = every state queried once in declaration order — CREATED, FUNDED, MILESTONE_SUBMITTED, VERIFIED, DISPUTED, RELEASED, REFUNDED, EXPIRED — with each result checked against its hand-pinned expected event list in declaration order, the three terminal states expecting the empty list) on every iteration; calculateDeposit over a fixed 3-shape corpus (the golden vector pool 10000 / base 600 / complexity 1.0 / loyalty 30 / oracle 60 -> deposit 10630, a complexity 1.5 case -> deposit 6190, and a large-pool 1000000 case -> deposit 1005375) checked against hand-computed adjustedBaseFee and deposit expectations on every iteration; arbitration dispatch (dispatchArbitration with outcome \"refund\", rebuilding a DISPUTED escrow from its fixed 2-entry history prefix via Escrow.fromHistory and a threshold-reached 5/9 quorum via createQuorum on every iteration — rebuild cost inside the timed region — pinned to a fixed audit timestamp, checked for the REFUNDED terminal state, exactly one appended ARBITRATE_REFUND entry, and its \"quorum 5/5\" note on every iteration)",
+  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); settlement batch summary over that batch's 4 pre-built results (3 reports + 1 error); settlement batch webhooks over that same batch (3 signed webhooks with distinct deterministic eventIds bench-batch-event-1..3 plus the 1 forwarded per-item error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release); quorum of 9 signers with threshold 5 on a fixed injected clock, approved one vote at a time to the threshold; settlement webhook fan-out to 4 endpoints through a fake global fetch (immediate 200, no network); settlement event dedupe duplicate hits cycling over 1,000 pre-recorded eventIds under a fixed injected clock; settlement event dedupe restore from a 1,000-entry JSON-round-tripped snapshot under a fixed injected clock (all entries live at load, default TTL and capacity, observability counters restarting at zero); Escrow.fromHistory replay over the same detached 4-entry history; watchdog screening over a fixed mixed batch of 100 escrows (40 hand-counted expired, 70 hand-counted stale under FUNDED 7d / MILESTONE_SUBMITTED 30d budgets) at a fixed screening instant; watchdog execution (expireOverdueEscrows / actOnStaleEscrows with an EXPIRE-dispatch action) over fresh rebuilds of that same 100-escrow batch on every iteration because the executors mutate their inputs (40 of 40 expire attempts and 70 of 70 stale actions succeed — both selected states carry an EXPIRE edge); quorum snapshot restore from a persisted (JSON round-tripped) snapshot of the 9-signer / threshold-5 quorum carrying 7 recorded approvals; settleRelease netting over 4 fixed representative inputs (golden 10630 at 500 bps, 1000 at 500 bps with 100 credits, large gross 1000000 at 250 bps with 1250.25 credits, rounding edge 10 at 125 bps) checked against hand-computed proFee/net on every iteration; parseRetryAfter over a fixed 11-value corpus (delay-seconds, fractional and whitespace-padded values, zero, future and past HTTP-dates, signed numbers, a garbage string, null and undefined) against one injected fixed now, every result checked against hand-pinned expectations on every iteration; depositAmountFromHistory over a fixed 4-shape corpus (a single FUND of the golden 10630, a two-FUND top-up sequence summing to 12630, a FUND recorded without an amount, and an empty no-FUND history) checked against hand-pinned totals and exact fail-fast error messages on every iteration; renderReport rendering of the fixed golden released report (deposit 10630, released via VERIFY_PASS -> RELEASE, 4 party rows) checked against hand-written expected lines (header/outcome, deposit formula, creator net row) on every iteration; allowedEvents over all 8 states of the transition table (one pass = every state queried once in declaration order — CREATED, FUNDED, MILESTONE_SUBMITTED, VERIFIED, DISPUTED, RELEASED, REFUNDED, EXPIRED — with each result checked against its hand-pinned expected event list in declaration order, the three terminal states expecting the empty list) on every iteration; calculateDeposit over a fixed 3-shape corpus (the golden vector pool 10000 / base 600 / complexity 1.0 / loyalty 30 / oracle 60 -> deposit 10630, a complexity 1.5 case -> deposit 6190, and a large-pool 1000000 case -> deposit 1005375) checked against hand-computed adjustedBaseFee and deposit expectations on every iteration; arbitration dispatch (dispatchArbitration with outcome \"refund\", rebuilding a DISPUTED escrow from its fixed 2-entry history prefix via Escrow.fromHistory and a threshold-reached 5/9 quorum via createQuorum on every iteration — rebuild cost inside the timed region — pinned to a fixed audit timestamp, checked for the REFUNDED terminal state, exactly one appended ARBITRATE_REFUND entry, and its \"quorum 5/5\" note on every iteration; isOverdue over a fixed 4-case corpus (past-deadline FUNDED, future-deadline FUNDED, deadline-less FUNDED, and past-deadline terminal RELEASED escrows) checked against hand-pinned booleans (true/false/false/false) against one injected fixed now on every iteration)",
 );
 console.log(`Iterations per op: ${ITERATIONS} (after ${WARMUP} warmup)`);
 console.log("");
@@ -2005,6 +2097,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "allowedEvents (all 8 states)", ops: benchAllowedEvents() },
   { path: "calculateDeposit (3-shape corpus)", ops: benchCalculateDeposit() },
   { path: "dispatchArbitration (refund, rebuilt fixture)", ops: benchDispatchArbitration() },
+  { path: "isOverdue (4-case corpus)", ops: benchIsOverdue() },
 ];
 
 console.log("path                                              throughput");
