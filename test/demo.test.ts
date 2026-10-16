@@ -19,6 +19,11 @@ import {
   DEMO_EXPIRABLE_FUND_AT,
   DEMO_FRESH_ESCROW_ID,
   DEMO_FRESH_FUND_AT,
+  DEMO_OVERDUE_CHECK_AFTER_AT,
+  DEMO_OVERDUE_CHECK_AT_DEADLINE,
+  DEMO_OVERDUE_CHECK_BEFORE_AT,
+  DEMO_OVERDUE_CHECK_DEADLINE,
+  DEMO_OVERDUE_CHECK_ESCROW_ID,
   DEMO_OVERDUE_ONLY_DEADLINE,
   DEMO_OVERDUE_ONLY_ESCROW_ID,
   DEMO_OVERDUE_ONLY_SUBMIT_AT,
@@ -46,6 +51,7 @@ import {
   depositAmountFromHistory,
   historyFromNdjson,
   historyToNdjson,
+  isOverdue,
   parseRetryAfter,
   restoreQuorum,
   settleRelease,
@@ -1299,9 +1305,9 @@ test("demo shows history NDJSON round-trip: exported lines read back verbatim wi
   assert.equal(historyToNdjson(escrow.history), historyNdjson);
   assert.deepEqual(historyFromNdjson(historyNdjson), historyNdjsonRoundTripped);
   assert.equal(historyToNdjson(historyNdjsonRoundTripped), historyNdjson);
-  // The segment closes the demo: it follows the settlement-split
-  // segment, prints its lines verbatim, and its re-export line is
-  // the demo's last line.
+  // The segment follows the settlement-split segment and prints
+  // its lines verbatim; the overdue-judgement segment now closes
+  // the demo after it (its own tests pin the closing position).
   const ndjsonAt = text.indexOf(
     "Audit history NDJSON round-trip (historyToNdjson / historyFromNdjson on the main escrow history):",
   );
@@ -1321,9 +1327,16 @@ test("demo shows history NDJSON round-trip: exported lines read back verbatim wi
       "  historyFromNdjson -> 4 entries — round-trip identical: seq chain 1 -> 4 continuous, final entry lands in RELEASED, every entry matches the original history verbatim",
     ),
   );
-  assert.equal(
-    lines[lines.length - 1],
+  const reexportAt = lines.indexOf(
     "  re-export: historyToNdjson(round-tripped entries) reproduces the NDJSON text byte-for-byte",
+  );
+  assert.ok(reexportAt > 0, "NDJSON re-export line must be printed");
+  assert.ok(
+    reexportAt <
+      lines.indexOf(
+        "Overdue judgement (isOverdue on a funded escrow at three fixed instants):",
+      ),
+    "overdue-judgement segment must follow the NDJSON segment",
   );
 });
 
@@ -1333,17 +1346,101 @@ test("demo history NDJSON segment is deterministic: two runs print byte-identica
       ls.indexOf(
         "Audit history NDJSON round-trip (historyToNdjson / historyFromNdjson on the main escrow history):",
       ),
+      ls.indexOf(
+        "Overdue judgement (isOverdue on a funded escrow at three fixed instants):",
+      ),
     );
   const a = runDemo();
   const b = runDemo();
   const segA = segment(a.lines);
   // Header + the export line + the first-line line + the round-trip
-  // line + the re-export line; every value is derived from the
-  // fixed main history alone, so no normalization is needed.
-  assert.equal(segA.length, 5);
+  // line + the re-export line + the blank separator before the
+  // next segment; every value is derived from the fixed main
+  // history alone, so no normalization is needed.
+  assert.equal(segA.length, 6);
   assert.deepEqual(segA, segment(b.lines));
   assert.equal(a.historyNdjson, b.historyNdjson);
   assert.deepEqual(a.historyNdjsonRoundTripped, b.historyNdjsonRoundTripped);
+});
+
+test("demo shows overdue judgement: isOverdue false before, true at and after the deadline", () => {
+  const { overdueCheckEscrow, overdueChecks, lines } = runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned expectations — written out here from
+  // src/stateMachine.ts (`now >= deadline` for a non-terminal
+  // escrow with a deadline), never derived by calling isOverdue
+  // to produce them. test/deadline.test.ts pins the same boundary
+  // independently: now exactly at the deadline counts as overdue.
+  assert.deepEqual(overdueChecks, [
+    { at: DEMO_OVERDUE_CHECK_BEFORE_AT, overdue: false },
+    { at: DEMO_OVERDUE_CHECK_AT_DEADLINE, overdue: true },
+    { at: DEMO_OVERDUE_CHECK_AFTER_AT, overdue: true },
+  ]);
+  assert.equal(overdueCheckEscrow.id, DEMO_OVERDUE_CHECK_ESCROW_ID);
+  assert.equal(overdueCheckEscrow.state, "FUNDED");
+  assert.equal(overdueCheckEscrow.getDeadline(), DEMO_OVERDUE_CHECK_DEADLINE);
+  assert.equal(overdueCheckEscrow.history.length, 1);
+  // Independent cross-checks: fresh isOverdue calls on the demo's
+  // escrow reproduce the three verdicts at the same instants.
+  for (const { at, overdue } of overdueChecks) {
+    assert.equal(isOverdue(overdueCheckEscrow, new Date(at)), overdue);
+  }
+  // The segment closes the demo: it follows the NDJSON segment,
+  // prints its lines verbatim, and its unchanged line is last.
+  const overdueAt = text.indexOf(
+    "Overdue judgement (isOverdue on a funded escrow at three fixed instants):",
+  );
+  assert.ok(
+    overdueAt >
+      text.indexOf(
+        "Audit history NDJSON round-trip (historyToNdjson / historyFromNdjson on the main escrow history):",
+      ),
+    "overdue-judgement segment must follow the NDJSON segment",
+  );
+  assert.ok(
+    text.includes(
+      `  escrow ${DEMO_OVERDUE_CHECK_ESCROW_ID}: state FUNDED, deadline ${DEMO_OVERDUE_CHECK_DEADLINE} — isOverdue is advisory only (it reads the escrow, dispatches nothing)`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  before deadline (${DEMO_OVERDUE_CHECK_BEFORE_AT}): isOverdue -> false`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  at deadline (${DEMO_OVERDUE_CHECK_AT_DEADLINE}): isOverdue -> true (boundary: now >= deadline counts as overdue)`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  after deadline (${DEMO_OVERDUE_CHECK_AFTER_AT}): isOverdue -> true`,
+    ),
+  );
+  assert.equal(
+    lines[lines.length - 1],
+    "  escrow unchanged after the three judgements: still FUNDED (1 history entry) — a watchdog dispatches EXPIRE explicitly",
+  );
+});
+
+test("demo overdue-judgement segment is deterministic: two runs print byte-identical judgement lines", () => {
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf(
+        "Overdue judgement (isOverdue on a funded escrow at three fixed instants):",
+      ),
+    );
+  const a = runDemo();
+  const b = runDemo();
+  const segA = segment(a.lines);
+  // Header + the escrow line + the three judgement lines + the
+  // unchanged line; every value is derived from the fixed
+  // deadline and fixed instants alone, so no normalization is
+  // needed.
+  assert.equal(segA.length, 6);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(a.overdueChecks, b.overdueChecks);
 });
 
 test("demo is deterministic: two runs produce identical lines", () => {
@@ -1528,9 +1625,8 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
       "cross-check: the settlement report above is this same split — creator net 10098.5 (= net), platform net 531.5 (= proFee), referrer net 0 (= referralCredits)",
     ),
   );
-  // NDJSON round-trip tail: the closing segment exports the main
-  // history as NDJSON, reads it back verbatim, and ends on the
-  // byte-for-byte re-export line.
+  // NDJSON round-trip tail: that segment exports the main
+  // history as NDJSON and reads it back verbatim.
   assert.match(
     out,
     /Audit history NDJSON round-trip \(historyToNdjson \/ historyFromNdjson on the main escrow history\):/,
@@ -1546,8 +1642,38 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
     ),
   );
   assert.ok(
-    out.trimEnd().endsWith(
-      "re-export: historyToNdjson(round-tripped entries) reproduces the NDJSON text byte-for-byte",
+    out.includes(
+      "  re-export: historyToNdjson(round-tripped entries) reproduces the NDJSON text byte-for-byte",
     ),
+  );
+  // Overdue-judgement tail: the closing segment judges a funded
+  // escrow at three fixed instants — before (false), exactly at
+  // the deadline (true), after (true) — and ends on the
+  // escrow-unchanged line.
+  assert.match(
+    out,
+    /Overdue judgement \(isOverdue on a funded escrow at three fixed instants\):/,
+  );
+  assert.ok(
+    out.includes(
+      `  before deadline (${DEMO_OVERDUE_CHECK_BEFORE_AT}): isOverdue -> false`,
+    ),
+  );
+  assert.ok(
+    out.includes(
+      `  at deadline (${DEMO_OVERDUE_CHECK_AT_DEADLINE}): isOverdue -> true (boundary: now >= deadline counts as overdue)`,
+    ),
+  );
+  assert.ok(
+    out.includes(
+      `  after deadline (${DEMO_OVERDUE_CHECK_AFTER_AT}): isOverdue -> true`,
+    ),
+  );
+  assert.ok(
+    out
+      .trimEnd()
+      .endsWith(
+        "escrow unchanged after the three judgements: still FUNDED (1 history entry) — a watchdog dispatches EXPIRE explicitly",
+      ),
   );
 });

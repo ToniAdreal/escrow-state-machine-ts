@@ -77,7 +77,7 @@
  * referral credits, the three parts summing back to the deposit
  * exactly — the same split the settlement report above was built
  * on, shown as the pure function's own input and output.
- * The demo finally closes with an audit-history NDJSON round-trip
+ * The demo then shows an audit-history NDJSON round-trip
  * segment: the main escrow's history is exported with
  * `historyToNdjson` (one JSON entry per line, seq order) and read
  * back with `historyFromNdjson` — the persistence channel an
@@ -85,7 +85,14 @@
  * reconciliation — and the round-tripped entries are asserted,
  * outside the printing, to match the original history verbatim:
  * same entry count, continuous seq chain, and the final entry
- * landing in RELEASED.
+ * landing in RELEASED. The demo finally closes with an overdue
+ * judgement segment: a further funded escrow with a fixed
+ * deadline is judged by `isOverdue` at three fixed instants —
+ * before the deadline (false), exactly at the deadline (true:
+ * the boundary counts as overdue), and after it (true) — the
+ * advisory boolean a watchdog reads before it dispatches EXPIRE
+ * explicitly; the judgement itself dispatches nothing and the
+ * escrow stays FUNDED.
  *
  * Usage: `npm run demo` (builds with tsc, then runs node on the compiled
  * output). Zero runtime dependencies: this file only imports the library
@@ -115,6 +122,7 @@ import {
   expireOverdueEscrows,
   historyFromNdjson,
   historyToNdjson,
+  isOverdue,
   parseRetryAfter,
   renderReport,
   restoreQuorum,
@@ -290,6 +298,31 @@ export const DEMO_EXPIRABLE_DEADLINE = "2026-03-08T12:00:00.000Z";
 export const DEMO_DEADLINE_STALE_ESCROW_ID = "DEMO-ESC-009";
 export const DEMO_DEADLINE_STALE_FUND_AT = "2026-02-20T09:00:00.000Z";
 export const DEMO_DEADLINE_STALE_DEADLINE = "2026-04-01T09:00:00.000Z";
+
+/**
+ * Overdue-judgement fixtures for the closing section: one further
+ * escrow, funded with the same golden deposit and given a fixed
+ * deadline, judged by `isOverdue` at three fixed instants.
+ * Hand-computed expectations — written from src/stateMachine.ts
+ * (`now.getTime() >= Date.parse(deadline)` for a non-terminal
+ * escrow with a deadline; no deadline or a terminal state is
+ * never overdue), never derived by calling `isOverdue` itself,
+ * and cross-checked against test/deadline.test.ts, whose boundary
+ * case pins the same rule (now exactly at the deadline is true):
+ * - before the deadline (2026-03-09, one day ahead): false
+ * - exactly at the deadline (2026-03-10): true — the boundary
+ *   counts as overdue because the comparison is >=
+ * - after the deadline (2026-03-11, one day past): true
+ * The escrow stays FUNDED throughout: `isOverdue` is advisory
+ * only and never dispatches, so all three judgements read the
+ * same escrow in the same state.
+ */
+export const DEMO_OVERDUE_CHECK_ESCROW_ID = "DEMO-ESC-010";
+export const DEMO_OVERDUE_CHECK_FUND_AT = "2026-03-08T09:00:00.000Z";
+export const DEMO_OVERDUE_CHECK_DEADLINE = "2026-03-10T09:00:00.000Z";
+export const DEMO_OVERDUE_CHECK_BEFORE_AT = "2026-03-09T09:00:00.000Z";
+export const DEMO_OVERDUE_CHECK_AT_DEADLINE = "2026-03-10T09:00:00.000Z";
+export const DEMO_OVERDUE_CHECK_AFTER_AT = "2026-03-11T09:00:00.000Z";
 
 const steps: Array<{
   event: EscrowEvent;
@@ -544,6 +577,21 @@ export interface DemoResult {
    * landing in RELEASED.
    */
   historyNdjsonRoundTripped: EscrowHistoryEntry[];
+  /**
+   * The closing segment's funded escrow (DEMO-ESC-010), after the
+   * three `isOverdue` judgements ran: still FUNDED with its fixed
+   * deadline set — the judgement is advisory and dispatched
+   * nothing, so its history still holds the single FUND entry.
+   */
+  overdueCheckEscrow: Escrow;
+  /**
+   * `isOverdue(overdueCheckEscrow, now)` at the three fixed
+   * instants, in order: before the deadline (false), exactly at
+   * the deadline (true — the >= boundary counts as overdue), and
+   * after it (true). Hand-pinned in the fixture comment above and
+   * cross-checked against test/deadline.test.ts's boundary case.
+   */
+  overdueChecks: Array<{ at: string; overdue: boolean }>;
   lines: string[];
 }
 
@@ -1351,6 +1399,69 @@ export function runDemo(): DemoResult {
     `  re-export: historyToNdjson(round-tripped entries) reproduces the NDJSON text byte-for-byte`,
   );
 
+  // --- Overdue judgement: isOverdue at three fixed instants (closing) ---
+  // Every watchdog section above reaches the deadline axis only
+  // through the batch helpers (`expiredEscrows` /
+  // `expireOverdueEscrows`), so a reader never sees the single-
+  // escrow boolean those helpers are built on — yet that boolean
+  // is the SLA question every escrow row answers before any
+  // EXPIRE / refund decision: "is this one escrow past its
+  // deadline right now?" A further funded escrow with a fixed
+  // deadline is judged at three fixed instants. Hand-pinned
+  // expectations — written out in the fixture comment above from
+  // src/stateMachine.ts (`now >= deadline` for a non-terminal
+  // escrow with a deadline), never derived by calling isOverdue
+  // itself (test/deadline.test.ts pins the same boundary case
+  // independently — now exactly at the deadline is true):
+  //   before (2026-03-09) -> false
+  //   at deadline (2026-03-10) -> true
+  //   after (2026-03-11) -> true
+  // The three verdicts are asserted HERE, outside the printing —
+  // a mismatch throws instead of printing a false verdict. Pure:
+  // isOverdue reads the escrow and never dispatches, so the
+  // escrow stays FUNDED with its one FUND entry; no network, no
+  // randomness, no wall clock (every `now` is a fixed constant).
+  const overdueCheckEscrow = new Escrow(DEMO_OVERDUE_CHECK_ESCROW_ID);
+  overdueCheckEscrow.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "sponsor",
+    at: DEMO_OVERDUE_CHECK_FUND_AT,
+  });
+  overdueCheckEscrow.setDeadline(DEMO_OVERDUE_CHECK_DEADLINE);
+  const overdueCheckAts = [
+    DEMO_OVERDUE_CHECK_BEFORE_AT,
+    DEMO_OVERDUE_CHECK_AT_DEADLINE,
+    DEMO_OVERDUE_CHECK_AFTER_AT,
+  ] as const;
+  const overdueChecks = overdueCheckAts.map((at) => ({
+    at,
+    overdue: isOverdue(overdueCheckEscrow, new Date(at)),
+  }));
+  const overdueExpected: readonly boolean[] = [false, true, true];
+  for (const [i, check] of overdueChecks.entries()) {
+    if (check.overdue !== overdueExpected[i]) {
+      throw new Error(
+        `demo fixture broken: isOverdue at ${check.at} is ${check.overdue}, expected ${overdueExpected[i]}`,
+      );
+    }
+  }
+  if (
+    overdueCheckEscrow.state !== "FUNDED" ||
+    overdueCheckEscrow.history.length !== 1
+  ) {
+    throw new Error(
+      "demo fixture broken: isOverdue mutated the escrow it judged",
+    );
+  }
+  lines.push(
+    "",
+    "Overdue judgement (isOverdue on a funded escrow at three fixed instants):",
+    `  escrow ${overdueCheckEscrow.id}: state ${overdueCheckEscrow.state}, deadline ${overdueCheckEscrow.getDeadline()} — isOverdue is advisory only (it reads the escrow, dispatches nothing)`,
+    `  before deadline (${overdueChecks[0].at}): isOverdue -> ${overdueChecks[0].overdue}`,
+    `  at deadline (${overdueChecks[1].at}): isOverdue -> ${overdueChecks[1].overdue} (boundary: now >= deadline counts as overdue)`,
+    `  after deadline (${overdueChecks[2].at}): isOverdue -> ${overdueChecks[2].overdue}`,
+    `  escrow unchanged after the three judgements: still ${overdueCheckEscrow.state} (${overdueCheckEscrow.history.length} history entry) — a watchdog dispatches EXPIRE explicitly`,
+  );
+
   return {
     escrow,
     report,
@@ -1390,6 +1501,8 @@ export function runDemo(): DemoResult {
     historyNdjsonLineCount,
     historyNdjsonFirstLine,
     historyNdjsonRoundTripped,
+    overdueCheckEscrow,
+    overdueChecks,
     lines,
   };
 }

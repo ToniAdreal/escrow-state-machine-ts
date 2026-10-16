@@ -18,6 +18,19 @@ version changes.
 
 ### Added
 
+- An overdue-judgement segment closing the CLI demo: a funded
+  escrow with a fixed deadline is judged by `isOverdue` at
+  three fixed instants — before the deadline (false), exactly
+  at the deadline (true: the `>=` boundary counts as overdue),
+  and after it (true) — asserted outside the printing against
+  hand-pinned expectations cross-checked against the deadline
+  tests' boundary case, with the escrow shown unchanged
+  (still FUNDED) because the judgement is advisory only.
+  `DemoResult` exposes the escrow and the three verdicts; the
+  demo tests pin them against hand-pinned expectations
+  cross-checked by independent calls, the exact printed
+  lines, and the segment's determinism across two runs. Demo
+  and tests only; no library behavior change.
 - An audit-history NDJSON round-trip segment closing the CLI
   demo: the main escrow's history is exported with
   `historyToNdjson` (4 lines, one JSON entry per line in seq
