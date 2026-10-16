@@ -18,6 +18,15 @@ version changes.
 
 ### Added
 
+- Benchmark coverage for the state-diagram generation
+  path: `stateDiagram()` with no arguments, checked on every
+  iteration against hand-pinned expectations (21 lines in
+  total; all 14 edge lines written out in full in declaration
+  order; the start line pinning CREATED; the 3 terminal lines
+  RELEASED / REFUNDED / EXPIRED; all 8 declared states present
+  as an edge source or target). The README Benchmarks table
+  was refreshed from one real run and gained the
+  `stateDiagram (14 edges, 21 lines)` row.
 - A deposit-provenance segment closing the CLI demo:
   `depositAmountFromHistory` traces the locked deposit back out
   of the main escrow's audit history alone (10630, the sum of
