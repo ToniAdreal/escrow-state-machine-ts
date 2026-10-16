@@ -70,13 +70,22 @@
  * removed is shown failing with the explicit
  * `settlement requires a FUND amount` error — a history that cannot
  * corroborate a deposit settles nothing, rather than guessing.
- * The demo finally closes with a settlement-split segment:
+ * The demo then shows a settlement-split segment:
  * `settleRelease` splits that same golden deposit in isolation —
  * gross 10,630 at the main escrow's 500 bps pro fee yields a
  * 531.50 platform fee and a 10,098.50 creator net with zero
  * referral credits, the three parts summing back to the deposit
  * exactly — the same split the settlement report above was built
  * on, shown as the pure function's own input and output.
+ * The demo finally closes with an audit-history NDJSON round-trip
+ * segment: the main escrow's history is exported with
+ * `historyToNdjson` (one JSON entry per line, seq order) and read
+ * back with `historyFromNdjson` — the persistence channel an
+ * escrow's fund-flow audit log uses to land on disk and feed
+ * reconciliation — and the round-tripped entries are asserted,
+ * outside the printing, to match the original history verbatim:
+ * same entry count, continuous seq chain, and the final entry
+ * landing in RELEASED.
  *
  * Usage: `npm run demo` (builds with tsc, then runs node on the compiled
  * output). Zero runtime dependencies: this file only imports the library
@@ -104,6 +113,8 @@ import {
   dispatchArbitration,
   expiredEscrows,
   expireOverdueEscrows,
+  historyFromNdjson,
+  historyToNdjson,
   parseRetryAfter,
   renderReport,
   restoreQuorum,
@@ -114,6 +125,7 @@ import {
   verifySettlementWebhook,
   type BuildSettlementWebhooksResult,
   type EscrowEvent,
+  type EscrowHistoryEntry,
   type EscrowState,
   type ExpireOverdueResult,
   type Quorum,
@@ -512,6 +524,26 @@ export interface DemoResult {
    * function on this same deposit).
    */
   releaseSettlement: Settlement;
+  /**
+   * NDJSON export of the main escrow's audit history by
+   * `historyToNdjson`: 4 lines, one JSON entry per line in seq
+   * order, every line `\n`-terminated (including the last).
+   */
+  historyNdjson: string;
+  /** Number of NDJSON lines in {@link DemoResult.historyNdjson}: 4. */
+  historyNdjsonLineCount: number;
+  /**
+   * First NDJSON line of {@link DemoResult.historyNdjson}: the
+   * canonical JSON of the FUND entry (seq 1, CREATED -> FUNDED).
+   */
+  historyNdjsonFirstLine: string;
+  /**
+   * Entries read back from {@link DemoResult.historyNdjson} by
+   * `historyFromNdjson`: identical to the main escrow's history
+   * verbatim — 4 entries, seq 1 -> 4 continuous, the final entry
+   * landing in RELEASED.
+   */
+  historyNdjsonRoundTripped: EscrowHistoryEntry[];
   lines: string[];
 }
 
@@ -1262,6 +1294,63 @@ export function runDemo(): DemoResult {
     `  cross-check: the settlement report above is this same split — creator net ${releaseSettlement.net} (= net), platform net ${releaseSettlement.proFee} (= proFee), referrer net ${releaseSettlement.referralCredits} (= referralCredits)`,
   );
 
+  // --- Audit history NDJSON round-trip: historyToNdjson /
+  // historyFromNdjson (closing) ---
+  // The audit history printed at the top of the demo lives in
+  // memory; shipping it to disk, appending it line by line, or
+  // feeding it to a reconciliation pipeline is the NDJSON
+  // transport's job — one canonical JSON entry per line, line
+  // order = seq order, every line `\n`-terminated. Hand-pinned
+  // expectations — written out here from the main escrow's fixed
+  // steps above, never derived by calling the NDJSON functions
+  // themselves (the demo tests cross-check them against independent
+  // calls and against test/ndjson.test.ts's pinned behaviour):
+  //   4 entries -> 4 lines; seq 1 (FUND, CREATED -> FUNDED),
+  //   2 (SUBMIT_MILESTONE), 3 (VERIFY_PASS), 4 (RELEASE, -> RELEASED)
+  // The round-trip is asserted HERE, outside the printing: entry
+  // count, seq continuity, from/to chain continuity, the final
+  // entry's state, and verbatim equality with the original history
+  // — a mismatch throws instead of printing a false verdict. Pure:
+  // no dispatch, no network, no randomness, no wall clock.
+  const historyNdjson = historyToNdjson(escrow.history);
+  const historyNdjsonRoundTripped = historyFromNdjson(historyNdjson);
+  const historyNdjsonLines = historyNdjson.replace(/\n$/, "").split("\n");
+  const historyNdjsonLineCount = historyNdjsonLines.length;
+  const historyNdjsonFirstLine = historyNdjsonLines[0];
+  if (historyNdjsonRoundTripped.length !== escrow.history.length) {
+    throw new Error("demo fixture broken: NDJSON round-trip entry count differs");
+  }
+  for (const [i, entry] of historyNdjsonRoundTripped.entries()) {
+    if (entry.seq !== i + 1) {
+      throw new Error("demo fixture broken: NDJSON round-trip seq chain is not continuous");
+    }
+    if (i > 0 && entry.from !== historyNdjsonRoundTripped[i - 1].to) {
+      throw new Error("demo fixture broken: NDJSON round-trip from/to chain is not continuous");
+    }
+  }
+  const ndjsonLastEntry =
+    historyNdjsonRoundTripped[historyNdjsonRoundTripped.length - 1];
+  if (ndjsonLastEntry.to !== escrow.state) {
+    throw new Error("demo fixture broken: NDJSON round-trip final state differs");
+  }
+  if (
+    JSON.stringify(historyNdjsonRoundTripped) !==
+    JSON.stringify([...escrow.history])
+  ) {
+    throw new Error("demo fixture broken: NDJSON round-trip entries differ from the original history");
+  }
+  if (historyToNdjson(historyNdjsonRoundTripped) !== historyNdjson) {
+    throw new Error("demo fixture broken: NDJSON re-export differs from the original export");
+  }
+  lines.push(
+    "",
+    "Audit history NDJSON round-trip (historyToNdjson / historyFromNdjson on the main escrow history):",
+    `  main escrow ${escrow.id}: historyToNdjson -> ${historyNdjsonLineCount} lines (one JSON entry per line, seq order, every line terminated)`,
+    `  first line: ${historyNdjsonFirstLine}`,
+    `  historyFromNdjson -> ${historyNdjsonRoundTripped.length} entries — round-trip identical: seq chain 1 -> ${ndjsonLastEntry.seq} continuous, final entry lands in ${ndjsonLastEntry.to}, every entry matches the original history verbatim`,
+    `  re-export: historyToNdjson(round-tripped entries) reproduces the NDJSON text byte-for-byte`,
+  );
+
   return {
     escrow,
     report,
@@ -1297,6 +1386,10 @@ export function runDemo(): DemoResult {
     tracedDepositAmount,
     noFundDepositError,
     releaseSettlement,
+    historyNdjson,
+    historyNdjsonLineCount,
+    historyNdjsonFirstLine,
+    historyNdjsonRoundTripped,
     lines,
   };
 }

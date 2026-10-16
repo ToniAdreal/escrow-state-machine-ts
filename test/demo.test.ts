@@ -44,6 +44,8 @@ import {
 import {
   allowedEvents,
   depositAmountFromHistory,
+  historyFromNdjson,
+  historyToNdjson,
   parseRetryAfter,
   restoreQuorum,
   settleRelease,
@@ -1187,9 +1189,9 @@ test("demo shows settlement split: settleRelease on the golden deposit conserves
   assert.equal(byParty.creator, releaseSettlement.net);
   assert.equal(byParty.platform, releaseSettlement.proFee);
   assert.equal(byParty.referrer, releaseSettlement.referralCredits);
-  // The segment closes the demo: it follows the deposit-provenance
-  // segment, prints all three lines verbatim, and its cross-check
-  // line is the demo's last line.
+  // The segment follows the deposit-provenance segment and precedes
+  // the closing NDJSON round-trip segment, printing all three lines
+  // verbatim.
   const splitAt = text.indexOf(
     "Settlement split (settleRelease on the main escrow deposit):",
   );
@@ -1201,6 +1203,13 @@ test("demo shows settlement split: settleRelease on the golden deposit conserves
     "settlement-split segment must follow the deposit-provenance segment",
   );
   assert.ok(
+    splitAt <
+      text.indexOf(
+        "Audit history NDJSON round-trip (historyToNdjson / historyFromNdjson on the main escrow history):",
+      ),
+    "settlement-split segment must precede the NDJSON round-trip segment",
+  );
+  assert.ok(
     text.includes(
       `  main escrow ${DEMO_ESCROW_ID}: settleRelease(gross 10630, proFeeBps 500, referralCredits 0) -> net 10098.5, proFee 531.5`,
     ),
@@ -1210,17 +1219,20 @@ test("demo shows settlement split: settleRelease on the golden deposit conserves
       "  conservation: net 10098.5 + proFee 531.5 + referralCredits 0 = 10630 — equals gross 10630, the main escrow deposit (every part of the deposit is accounted for)",
     ),
   );
-  assert.equal(
-    lines[lines.length - 1],
-    "  cross-check: the settlement report above is this same split — creator net 10098.5 (= net), platform net 531.5 (= proFee), referrer net 0 (= referralCredits)",
+  assert.ok(
+    text.includes(
+      "  cross-check: the settlement report above is this same split — creator net 10098.5 (= net), platform net 531.5 (= proFee), referrer net 0 (= referralCredits)",
+    ),
   );
 });
 
 test("demo settlement-split segment is deterministic: two runs print byte-identical split lines", () => {
-  const segment = (ls: string[]) =>
-    ls.slice(
-      ls.indexOf("Settlement split (settleRelease on the main escrow deposit):"),
+  const segment = (ls: string[]) => {
+    const start = ls.indexOf(
+      "Settlement split (settleRelease on the main escrow deposit):",
     );
+    return ls.slice(start, start + 4);
+  };
   const a = runDemo();
   const b = runDemo();
   const segA = segment(a.lines);
@@ -1230,6 +1242,108 @@ test("demo settlement-split segment is deterministic: two runs print byte-identi
   assert.equal(segA.length, 4);
   assert.deepEqual(segA, segment(b.lines));
   assert.deepEqual(a.releaseSettlement, b.releaseSettlement);
+});
+
+test("demo shows history NDJSON round-trip: exported lines read back verbatim with a continuous seq chain", () => {
+  const {
+    escrow,
+    historyNdjson,
+    historyNdjsonLineCount,
+    historyNdjsonFirstLine,
+    historyNdjsonRoundTripped,
+    lines,
+  } = runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned expectations — written out here from the main
+  // escrow's fixed steps (4 dispatches: FUND / SUBMIT_MILESTONE /
+  // VERIFY_PASS / RELEASE), never derived by calling the NDJSON
+  // functions themselves. The same export/import behaviour is
+  // pinned independently by test/ndjson.test.ts.
+  assert.equal(historyNdjsonLineCount, 4);
+  assert.ok(historyNdjson.endsWith("\n"));
+  assert.equal(historyNdjsonFirstLine, JSON.stringify(escrow.history[0]));
+  const firstEntry = JSON.parse(historyNdjsonFirstLine) as {
+    seq: number;
+    event: string;
+    from: string;
+    to: string;
+  };
+  assert.deepEqual(
+    [firstEntry.seq, firstEntry.event, firstEntry.from, firstEntry.to],
+    [1, "FUND", "CREATED", "FUNDED"],
+  );
+  // Round-trip: same count, seq 1 -> 4 continuous, from/to chain
+  // continuous, final entry lands in the escrow's RELEASED state,
+  // and every entry matches the original history verbatim.
+  assert.equal(historyNdjsonRoundTripped.length, 4);
+  assert.deepEqual(
+    historyNdjsonRoundTripped.map((e) => e.seq),
+    [1, 2, 3, 4],
+  );
+  assert.deepEqual(
+    historyNdjsonRoundTripped.map((e) => e.event),
+    ["FUND", "SUBMIT_MILESTONE", "VERIFY_PASS", "RELEASE"],
+  );
+  for (const [i, entry] of historyNdjsonRoundTripped.entries()) {
+    if (i > 0) assert.equal(entry.from, historyNdjsonRoundTripped[i - 1].to);
+  }
+  assert.equal(
+    historyNdjsonRoundTripped[historyNdjsonRoundTripped.length - 1].to,
+    "RELEASED",
+  );
+  assert.deepEqual(historyNdjsonRoundTripped, [...escrow.history]);
+  // Independent cross-checks: fresh export/import calls reproduce
+  // the demo's text and entries, and re-exporting the round-tripped
+  // entries is byte-identical to the original export.
+  assert.equal(historyToNdjson(escrow.history), historyNdjson);
+  assert.deepEqual(historyFromNdjson(historyNdjson), historyNdjsonRoundTripped);
+  assert.equal(historyToNdjson(historyNdjsonRoundTripped), historyNdjson);
+  // The segment closes the demo: it follows the settlement-split
+  // segment, prints its lines verbatim, and its re-export line is
+  // the demo's last line.
+  const ndjsonAt = text.indexOf(
+    "Audit history NDJSON round-trip (historyToNdjson / historyFromNdjson on the main escrow history):",
+  );
+  assert.ok(
+    ndjsonAt >
+      text.indexOf("Settlement split (settleRelease on the main escrow deposit):"),
+    "NDJSON round-trip segment must follow the settlement-split segment",
+  );
+  assert.ok(
+    text.includes(
+      `  main escrow ${DEMO_ESCROW_ID}: historyToNdjson -> 4 lines (one JSON entry per line, seq order, every line terminated)`,
+    ),
+  );
+  assert.ok(text.includes(`  first line: ${historyNdjsonFirstLine}`));
+  assert.ok(
+    text.includes(
+      "  historyFromNdjson -> 4 entries — round-trip identical: seq chain 1 -> 4 continuous, final entry lands in RELEASED, every entry matches the original history verbatim",
+    ),
+  );
+  assert.equal(
+    lines[lines.length - 1],
+    "  re-export: historyToNdjson(round-tripped entries) reproduces the NDJSON text byte-for-byte",
+  );
+});
+
+test("demo history NDJSON segment is deterministic: two runs print byte-identical NDJSON lines", () => {
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf(
+        "Audit history NDJSON round-trip (historyToNdjson / historyFromNdjson on the main escrow history):",
+      ),
+    );
+  const a = runDemo();
+  const b = runDemo();
+  const segA = segment(a.lines);
+  // Header + the export line + the first-line line + the round-trip
+  // line + the re-export line; every value is derived from the
+  // fixed main history alone, so no normalization is needed.
+  assert.equal(segA.length, 5);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.equal(a.historyNdjson, b.historyNdjson);
+  assert.deepEqual(a.historyNdjsonRoundTripped, b.historyNdjsonRoundTripped);
 });
 
 test("demo is deterministic: two runs produce identical lines", () => {
@@ -1392,9 +1506,9 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
       `no-FUND copy (3 entries, every FUND entry removed): depositAmountFromHistory FAILED — settlement requires a FUND amount for ${DEMO_ESCROW_ID}: no FUND event in the audit history (a history with no FUND event cannot corroborate a deposit, so settlement refuses rather than guessing)`,
     ),
   );
-  // Settlement-split tail: the closing segment splits the golden
-  // deposit with settleRelease in isolation, prints the conservation
-  // sum back to the gross, and ends on the report cross-check line.
+  // Settlement-split tail: that segment splits the golden
+  // deposit with settleRelease in isolation and prints the
+  // conservation sum back to the gross and the report cross-check.
   assert.match(
     out,
     /Settlement split \(settleRelease on the main escrow deposit\):/,
@@ -1410,8 +1524,30 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
     ),
   );
   assert.ok(
-    out.trimEnd().endsWith(
+    out.includes(
       "cross-check: the settlement report above is this same split — creator net 10098.5 (= net), platform net 531.5 (= proFee), referrer net 0 (= referralCredits)",
+    ),
+  );
+  // NDJSON round-trip tail: the closing segment exports the main
+  // history as NDJSON, reads it back verbatim, and ends on the
+  // byte-for-byte re-export line.
+  assert.match(
+    out,
+    /Audit history NDJSON round-trip \(historyToNdjson \/ historyFromNdjson on the main escrow history\):/,
+  );
+  assert.ok(
+    out.includes(
+      `  main escrow ${DEMO_ESCROW_ID}: historyToNdjson -> 4 lines (one JSON entry per line, seq order, every line terminated)`,
+    ),
+  );
+  assert.ok(
+    out.includes(
+      "  historyFromNdjson -> 4 entries — round-trip identical: seq chain 1 -> 4 continuous, final entry lands in RELEASED, every entry matches the original history verbatim",
+    ),
+  );
+  assert.ok(
+    out.trimEnd().endsWith(
+      "re-export: historyToNdjson(round-tripped entries) reproduces the NDJSON text byte-for-byte",
     ),
   );
 });

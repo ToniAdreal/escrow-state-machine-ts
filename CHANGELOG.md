@@ -18,6 +18,19 @@ version changes.
 
 ### Added
 
+- An audit-history NDJSON round-trip segment closing the CLI
+  demo: the main escrow's history is exported with
+  `historyToNdjson` (4 lines, one JSON entry per line in seq
+  order) and read back with `historyFromNdjson`, asserted
+  outside the printing to match the original history verbatim
+  (entry count, continuous seq chain, final entry landing in
+  RELEASED, re-export byte-identical). `DemoResult` exposes
+  the NDJSON text, its line count and first line, and the
+  round-tripped entries; the demo tests pin them against
+  hand-pinned expectations cross-checked by independent calls,
+  the exact printed lines, and the segment's determinism
+  across two runs. Demo and tests only; no library behavior
+  change.
 - A settlement-split segment closing the CLI demo:
   `settleRelease` splits the main escrow's golden deposit in
   isolation (gross 10630 at 500 bps → proFee 531.5,
