@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 643 tests, all local
+npm test   # 645 tests, all local
 ```
 
 ## Quickstart
@@ -122,15 +122,22 @@ prints one line per state — the query an escrow-list UI or a
 watchdog consults to decide what an escrow can do next — with the
 three terminal states (RELEASED / REFUNDED / EXPIRED) returning
 the empty list, and the main escrow's own RELEASED state called
-out on its own line as that same empty set. The demo finally
-closes with a deposit-provenance segment: `depositAmountFromHistory`
+out on its own line as that same empty set. The demo then prints
+a deposit-provenance segment: `depositAmountFromHistory`
 traces the locked deposit back out of the main escrow's audit
 history alone — 10,630, the sum of every FUND amount, matching
 the settlement report's deposit — and a fixed copy of that
 history with every FUND entry removed fails with the explicit
 `settlement requires a FUND amount` error, shown on one FAILED
 line (a history that cannot corroborate a deposit settles
-nothing, rather than guessing):
+nothing, rather than guessing). The demo finally closes with a
+settlement-split segment: `settleRelease` splits that same
+golden deposit in isolation — gross 10,630 at the main escrow's
+500 bps pro fee yields a 531.50 platform fee and a 10,098.50
+creator net with zero referral credits, the three parts summing
+back to the deposit exactly — the same split the settlement
+report above was built on, shown as the pure function's own
+input and output:
 
 ```bash
 npm run demo
@@ -738,7 +745,7 @@ and an empty batch yields an all-zero summary.
 
 ## Reproducibility
 
-`npm test` runs 643 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 645 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

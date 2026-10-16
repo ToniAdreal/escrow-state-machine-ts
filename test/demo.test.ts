@@ -23,6 +23,7 @@ import {
   DEMO_OVERDUE_ONLY_ESCROW_ID,
   DEMO_OVERDUE_ONLY_SUBMIT_AT,
   DEMO_PENDING_ESCROW_ID,
+  DEMO_PRO_FEE_BPS,
   DEMO_QUORUM_APPROVAL_ATS,
   DEMO_QUORUM_SIGNERS,
   DEMO_QUORUM_THRESHOLD,
@@ -45,6 +46,7 @@ import {
   depositAmountFromHistory,
   parseRetryAfter,
   restoreQuorum,
+  settleRelease,
   transitionTable,
   verifyHistoryChain,
   verifySettlementWebhook,
@@ -1097,9 +1099,9 @@ test("demo shows deposit provenance: traced amount matches the hand-pinned golde
     escrow.history.find((entry) => entry.event === "FUND")?.amount,
     10630,
   );
-  // The segment closes the demo: it follows the allowed-events
-  // listing, prints both lines verbatim, and its FAILED line is
-  // the demo's last line.
+  // The segment follows the allowed-events listing, prints both
+  // lines verbatim, and precedes the closing settlement-split
+  // segment.
   const provenanceAt = text.indexOf(
     "Deposit provenance (depositAmountFromHistory on the main escrow history):",
   );
@@ -1109,23 +1111,29 @@ test("demo shows deposit provenance: traced amount matches the hand-pinned golde
     "deposit-provenance segment must follow the allowed-events listing",
   );
   assert.ok(
+    provenanceAt <
+      text.indexOf("Settlement split (settleRelease on the main escrow deposit):"),
+    "deposit-provenance segment must precede the settlement-split segment",
+  );
+  assert.ok(
     text.includes(
       `  main escrow ${DEMO_ESCROW_ID}: depositAmountFromHistory -> 10630 (the sum of every FUND amount in the audit trail — matches the settlement report deposit 10630)`,
     ),
   );
-  assert.equal(
-    lines[lines.length - 1],
-    `  no-FUND copy (3 entries, every FUND entry removed): depositAmountFromHistory FAILED — settlement requires a FUND amount for ${DEMO_ESCROW_ID}: no FUND event in the audit history (a history with no FUND event cannot corroborate a deposit, so settlement refuses rather than guessing)`,
+  assert.ok(
+    text.includes(
+      `  no-FUND copy (3 entries, every FUND entry removed): depositAmountFromHistory FAILED — settlement requires a FUND amount for ${DEMO_ESCROW_ID}: no FUND event in the audit history (a history with no FUND event cannot corroborate a deposit, so settlement refuses rather than guessing)`,
+    ),
   );
 });
 
 test("demo deposit-provenance segment is deterministic: two runs print byte-identical provenance lines", () => {
-  const segment = (ls: string[]) =>
-    ls.slice(
-      ls.indexOf(
-        "Deposit provenance (depositAmountFromHistory on the main escrow history):",
-      ),
+  const segment = (ls: string[]) => {
+    const start = ls.indexOf(
+      "Deposit provenance (depositAmountFromHistory on the main escrow history):",
     );
+    return ls.slice(start, start + 3);
+  };
   const a = runDemo();
   const b = runDemo();
   const segA = segment(a.lines);
@@ -1136,6 +1144,92 @@ test("demo deposit-provenance segment is deterministic: two runs print byte-iden
   assert.deepEqual(segA, segment(b.lines));
   assert.equal(a.tracedDepositAmount, b.tracedDepositAmount);
   assert.equal(a.noFundDepositError, b.noFundDepositError);
+});
+
+test("demo shows settlement split: settleRelease on the golden deposit conserves every part and matches the report", () => {
+  const { report, releaseSettlement, lines } = runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned expectations — written out here from settlement.ts's
+  // documented arithmetic (proFee = round2(gross * bps / 10000);
+  // net = round2(gross - proFee - referralCredits)) on the main
+  // escrow's fixed inputs, never derived by calling settleRelease
+  // itself. The same arithmetic is pinned at another scale by
+  // economics.test.ts (1,000 at 500 bps -> proFee 50 / net 950) and
+  // this same golden input is pinned by the bench fixture.
+  assert.equal(DEMO_PRO_FEE_BPS, 500);
+  assert.deepEqual(releaseSettlement, {
+    gross: 10630,
+    proFee: 531.5,
+    referralCredits: 0,
+    net: 10098.5,
+  });
+  // Conservation: every part of the deposit is accounted for — the
+  // split parts sum back to the gross, which is the deposit itself.
+  assert.equal(
+    releaseSettlement.net +
+      releaseSettlement.proFee +
+      releaseSettlement.referralCredits,
+    10630,
+  );
+  assert.equal(releaseSettlement.gross, report.deposit.deposit);
+  // Independent cross-checks: a fresh call on the pinned inputs
+  // reproduces the demo's split, the settlement embedded in the
+  // main report is exactly this split, and its party rows carry
+  // the same figures (creator = net, platform = proFee,
+  // referrer = referralCredits).
+  assert.deepEqual(
+    settleRelease({ gross: 10630, proFeeBps: DEMO_PRO_FEE_BPS }),
+    releaseSettlement,
+  );
+  assert.deepEqual(report.settlement, releaseSettlement);
+  const byParty = Object.fromEntries(report.parties.map((p) => [p.party, p.net]));
+  assert.equal(byParty.creator, releaseSettlement.net);
+  assert.equal(byParty.platform, releaseSettlement.proFee);
+  assert.equal(byParty.referrer, releaseSettlement.referralCredits);
+  // The segment closes the demo: it follows the deposit-provenance
+  // segment, prints all three lines verbatim, and its cross-check
+  // line is the demo's last line.
+  const splitAt = text.indexOf(
+    "Settlement split (settleRelease on the main escrow deposit):",
+  );
+  assert.ok(
+    splitAt >
+      text.indexOf(
+        "Deposit provenance (depositAmountFromHistory on the main escrow history):",
+      ),
+    "settlement-split segment must follow the deposit-provenance segment",
+  );
+  assert.ok(
+    text.includes(
+      `  main escrow ${DEMO_ESCROW_ID}: settleRelease(gross 10630, proFeeBps 500, referralCredits 0) -> net 10098.5, proFee 531.5`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  conservation: net 10098.5 + proFee 531.5 + referralCredits 0 = 10630 — equals gross 10630, the main escrow deposit (every part of the deposit is accounted for)",
+    ),
+  );
+  assert.equal(
+    lines[lines.length - 1],
+    "  cross-check: the settlement report above is this same split — creator net 10098.5 (= net), platform net 531.5 (= proFee), referrer net 0 (= referralCredits)",
+  );
+});
+
+test("demo settlement-split segment is deterministic: two runs print byte-identical split lines", () => {
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf("Settlement split (settleRelease on the main escrow deposit):"),
+    );
+  const a = runDemo();
+  const b = runDemo();
+  const segA = segment(a.lines);
+  // Header + the split line + the conservation line + the
+  // cross-check line; every value is derived from the fixed golden
+  // deposit and fee rate alone, so no normalization is needed.
+  assert.equal(segA.length, 4);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(a.releaseSettlement, b.releaseSettlement);
 });
 
 test("demo is deterministic: two runs produce identical lines", () => {
@@ -1281,9 +1375,9 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
       `main escrow ${DEMO_ESCROW_ID} (RELEASED): allowedEvents -> (none) — a terminal escrow offers no further events, so an escrow-list UI renders no actions for it`,
     ),
   );
-  // Deposit-provenance tail: the closing segment traces the golden
+  // Deposit-provenance tail: that segment traces the golden
   // deposit out of the main history alone and shows the no-FUND
-  // copy's explicit failure on the demo's last line.
+  // copy's explicit failure.
   assert.match(
     out,
     /Deposit provenance \(depositAmountFromHistory on the main escrow history\):/,
@@ -1294,8 +1388,30 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
     ),
   );
   assert.ok(
-    out.trimEnd().endsWith(
+    out.includes(
       `no-FUND copy (3 entries, every FUND entry removed): depositAmountFromHistory FAILED — settlement requires a FUND amount for ${DEMO_ESCROW_ID}: no FUND event in the audit history (a history with no FUND event cannot corroborate a deposit, so settlement refuses rather than guessing)`,
+    ),
+  );
+  // Settlement-split tail: the closing segment splits the golden
+  // deposit with settleRelease in isolation, prints the conservation
+  // sum back to the gross, and ends on the report cross-check line.
+  assert.match(
+    out,
+    /Settlement split \(settleRelease on the main escrow deposit\):/,
+  );
+  assert.ok(
+    out.includes(
+      `  main escrow ${DEMO_ESCROW_ID}: settleRelease(gross 10630, proFeeBps 500, referralCredits 0) -> net 10098.5, proFee 531.5`,
+    ),
+  );
+  assert.ok(
+    out.includes(
+      "  conservation: net 10098.5 + proFee 531.5 + referralCredits 0 = 10630 — equals gross 10630, the main escrow deposit (every part of the deposit is accounted for)",
+    ),
+  );
+  assert.ok(
+    out.trimEnd().endsWith(
+      "cross-check: the settlement report above is this same split — creator net 10098.5 (= net), platform net 531.5 (= proFee), referrer net 0 (= referralCredits)",
     ),
   );
 });

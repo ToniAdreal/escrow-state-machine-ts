@@ -18,6 +18,17 @@ version changes.
 
 ### Added
 
+- A settlement-split segment closing the CLI demo:
+  `settleRelease` splits the main escrow's golden deposit in
+  isolation (gross 10630 at 500 bps → proFee 531.5,
+  referralCredits 0, net 10098.5), prints a conservation line
+  whose parts sum back to the gross exactly, and cross-checks
+  the split against the settlement report's party nets.
+  `DemoResult` exposes the split as `releaseSettlement`; the
+  demo tests pin it against hand-pinned expectations
+  cross-checked by independent calls, the exact printed lines,
+  and the segment's determinism across two runs. Demo and tests
+  only; no library behavior change.
 - Benchmark coverage for the state-diagram generation
   path: `stateDiagram()` with no arguments, checked on every
   iteration against hand-pinned expectations (21 lines in

@@ -62,7 +62,7 @@
  * the three terminal states (RELEASED / REFUNDED / EXPIRED)
  * returning the empty list, and the main escrow's own RELEASED
  * state called out on its own line as that same empty set. The demo
- * finally closes with a deposit-provenance segment:
+ * then prints a deposit-provenance segment:
  * `depositAmountFromHistory` traces the locked deposit back out of
  * the main escrow's audit history alone (the sum of every FUND
  * amount — the golden 10,630 the settlement report above was built
@@ -70,6 +70,13 @@
  * removed is shown failing with the explicit
  * `settlement requires a FUND amount` error — a history that cannot
  * corroborate a deposit settles nothing, rather than guessing.
+ * The demo finally closes with a settlement-split segment:
+ * `settleRelease` splits that same golden deposit in isolation —
+ * gross 10,630 at the main escrow's 500 bps pro fee yields a
+ * 531.50 platform fee and a 10,098.50 creator net with zero
+ * referral credits, the three parts summing back to the deposit
+ * exactly — the same split the settlement report above was built
+ * on, shown as the pure function's own input and output.
  *
  * Usage: `npm run demo` (builds with tsc, then runs node on the compiled
  * output). Zero runtime dependencies: this file only imports the library
@@ -100,6 +107,7 @@ import {
   parseRetryAfter,
   renderReport,
   restoreQuorum,
+  settleRelease,
   staleEscrows,
   summarizeSettlementReports,
   verifyHistoryChain,
@@ -111,6 +119,7 @@ import {
   type Quorum,
   type QuorumConfig,
   type QuorumSnapshot,
+  type Settlement,
   type SettlementReport,
   type SettlementReportResult,
   type SettlementReportsSummary,
@@ -493,6 +502,16 @@ export interface DemoResult {
    * and the escrow's own history is untouched by the copy.
    */
   noFundDepositError: string;
+  /**
+   * Pure settlement split of the main escrow's golden deposit by
+   * `settleRelease` at {@link DEMO_PRO_FEE_BPS} with no referral
+   * credits: gross 10630, proFee 531.5, referralCredits 0, net
+   * 10098.5 — the parts sum back to the gross exactly, and the
+   * split is identical to the settlement embedded in the main
+   * report (the report derives its RELEASE payout from this same
+   * function on this same deposit).
+   */
+  releaseSettlement: Settlement;
   lines: string[];
 }
 
@@ -1205,6 +1224,44 @@ export function runDemo(): DemoResult {
     `  no-FUND copy (${noFundHistory.length} entries, every FUND entry removed): depositAmountFromHistory FAILED — ${noFundDepositError} (a history with no FUND event cannot corroborate a deposit, so settlement refuses rather than guessing)`,
   );
 
+  // --- Settlement split: settleRelease (closing) ---
+  // The settlement report printed at the top of the demo derives
+  // its RELEASE payout from settleRelease internally, so a reader
+  // sees the split only as report party rows and never as the pure
+  // function's own input -> output — yet this gross-to-net step is
+  // the core money step of the RELEASE path. Here it runs in
+  // isolation on the main escrow's own fixed inputs: the golden
+  // deposit (fees.deposit, the calculateDeposit result already
+  // corroborated by the provenance segment above) as gross, the
+  // main escrow's DEMO_PRO_FEE_BPS as the fee rate, and no referral
+  // credits — exactly the parameters the report was built with.
+  // Hand-pinned expectations — written out here from settlement.ts's
+  // documented arithmetic (proFee = round2(gross * bps / 10000);
+  // net = round2(gross - proFee - referralCredits)), never derived
+  // by calling settleRelease itself (the demo tests cross-check the
+  // printed split against economics.test.ts's pinned vectors —
+  // 1,000 at 500 bps -> proFee 50 / net 950 — and against the bench
+  // fixture, which pins this same golden input independently):
+  //   gross 10630, proFeeBps 500 -> proFee 531.5
+  //   referralCredits 0 (the report passes none) -> net 10098.5
+  //   conservation: net 10098.5 + proFee 531.5 + credits 0 = 10630
+  // Pure: no dispatch, no network, no randomness, no wall clock.
+  const releaseSettlement = settleRelease({
+    gross: fees.deposit,
+    proFeeBps: DEMO_PRO_FEE_BPS,
+  });
+  const releaseSplitSum =
+    releaseSettlement.net +
+    releaseSettlement.proFee +
+    releaseSettlement.referralCredits;
+  lines.push(
+    "",
+    "Settlement split (settleRelease on the main escrow deposit):",
+    `  main escrow ${escrow.id}: settleRelease(gross ${releaseSettlement.gross}, proFeeBps ${DEMO_PRO_FEE_BPS}, referralCredits ${releaseSettlement.referralCredits}) -> net ${releaseSettlement.net}, proFee ${releaseSettlement.proFee}`,
+    `  conservation: net ${releaseSettlement.net} + proFee ${releaseSettlement.proFee} + referralCredits ${releaseSettlement.referralCredits} = ${releaseSplitSum} — equals gross ${releaseSettlement.gross}, the main escrow deposit (every part of the deposit is accounted for)`,
+    `  cross-check: the settlement report above is this same split — creator net ${releaseSettlement.net} (= net), platform net ${releaseSettlement.proFee} (= proFee), referrer net ${releaseSettlement.referralCredits} (= referralCredits)`,
+  );
+
   return {
     escrow,
     report,
@@ -1239,6 +1296,7 @@ export function runDemo(): DemoResult {
     mainEscrowAllowedEvents,
     tracedDepositAmount,
     noFundDepositError,
+    releaseSettlement,
     lines,
   };
 }
