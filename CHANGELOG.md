@@ -18,7 +18,25 @@ version changes.
 
 ### Added
 
-- An event-sourced rebuild segment closing the CLI demo:
+- A snapshot round-trip segment closing the CLI demo:
+  the main escrow (still carrying the fixed advisory
+  deadline from the rebuild segment) is exported with
+  `toJSON()` — snapshot v 1, id + RELEASED state + the 4
+  history entries + deadline, serialized to 1,344 bytes —
+  and restored with `Escrow.fromJSON()` from the parsed
+  serialization: the restored escrow lands in RELEASED
+  with the same 4 history entries verbatim and its
+  deadline IS restored, the envelope contrast with the
+  bare-history rebuild, all asserted outside the printing
+  against hand-pinned expectations cross-checked against
+  the serialization and deadline round-trip tests.
+  `DemoResult` exposes the snapshot, its serialized byte
+  count, and the restored escrow with its deadline; the
+  demo tests pin the snapshot shape, the exact byte count,
+  the restored state/history/deadline, the printed lines,
+  and the segment's closing position. Demo and tests
+  only; no library behavior change.
+- An event-sourced rebuild segment in the CLI demo:
   a fixed advisory deadline is attached to the main escrow
   and the escrow is then rebuilt from its history alone with
   `Escrow.fromHistory()` — the rebuilt escrow lands in

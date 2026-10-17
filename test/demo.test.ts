@@ -40,6 +40,7 @@ import {
   DEMO_QUORUM_THRESHOLD,
   DEMO_REBUILT_DEADLINE,
   DEMO_RETRY_AFTER_NOW_MS,
+  DEMO_SNAPSHOT_SERIALIZED_BYTES,
   DEMO_STALE_DAY_MS,
   DEMO_STALE_DEADLINE,
   DEMO_STALE_ESCROW_ID,
@@ -1822,8 +1823,8 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
   // Standalone history-parsing tail: the closing segment parses
   // the main history back on its own — the intact parse lands in
   // RELEASED and the tampered copy is rejected with the explicit
-  // hash-chain error. The event-sourced rebuild tail then closes
-  // the demo on its original-escrow line.
+  // hash-chain error. The event-sourced rebuild tail follows,
+  // and the snapshot round-trip tail then closes the demo.
   assert.match(
     out,
     /Standalone history parsing \(parseEscrowHistory on the main escrow history\):/,
@@ -1843,8 +1844,9 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
       "  original history after the tamper check: parseEscrowHistory still returns 4 entries (detached copy — the escrow's own history is untouched)",
     ),
   );
-  // Event-sourced rebuild tail: the closing segment rebuilds
-  // the main escrow from its history alone and ends the demo.
+  // Event-sourced rebuild tail: that segment rebuilds the
+  // main escrow from its history alone — deadline NOT
+  // restored, the bare-history trade-off.
   assert.match(
     out,
     /Event-sourced rebuild \(Escrow\.fromHistory on the main escrow history\):/,
@@ -1860,8 +1862,37 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
     ),
   );
   assert.ok(
-    out.trimEnd().endsWith(
+    out.includes(
       `  original escrow after the rebuild: still RELEASED with its deadline ${DEMO_REBUILT_DEADLINE} intact (the rebuild reads the history and dispatches nothing)`,
+    ),
+  );
+  // Snapshot round-trip tail: the closing segment exports
+  // the main escrow with toJSON and restores it with
+  // fromJSON — the deadline IS restored, the envelope
+  // contrast — and ends the demo on its original-escrow
+  // line.
+  assert.match(
+    out,
+    /Snapshot round-trip \(Escrow\.toJSON \/ Escrow\.fromJSON on the main escrow\):/,
+  );
+  assert.ok(
+    out.includes(
+      `  main escrow ${DEMO_ESCROW_ID}: toJSON() -> snapshot v 1 (id + state + 4 history entries + deadline) serialized to ${DEMO_SNAPSHOT_SERIALIZED_BYTES} bytes — the persistence envelope a document store keeps`,
+    ),
+  );
+  assert.ok(
+    out.includes(
+      `  Escrow.fromJSON(parsed snapshot) -> restored escrow in state RELEASED with 4 history entries — state and every entry identical to the original verbatim`,
+    ),
+  );
+  assert.ok(
+    out.includes(
+      `  deadline restored: main escrow deadline is ${DEMO_REBUILT_DEADLINE}, restored escrow deadline is ${DEMO_REBUILT_DEADLINE} — the envelope carries the deadline (and the consumed idempotency keys) that a bare history cannot`,
+    ),
+  );
+  assert.ok(
+    out.trimEnd().endsWith(
+      `  original escrow after the round-trip: still RELEASED with its deadline ${DEMO_REBUILT_DEADLINE} intact (the round-trip reads the escrow and dispatches nothing)`,
     ),
   );
 });
@@ -2127,9 +2158,10 @@ test("demo shows the event-sourced rebuild: Escrow.fromHistory rebuilds the main
   assert.equal(fresh.getDeadline(), undefined);
   assert.equal(escrow.state, "RELEASED");
   assert.equal(escrow.history.length, 4);
-  // The segment closes the demo: it follows the standalone
-  // history-parsing segment, prints its lines verbatim, and
-  // its original-escrow line is the demo's last line.
+  // The segment follows the standalone history-parsing
+  // segment and prints its lines verbatim; the snapshot
+  // round-trip segment now closes the demo after it (its
+  // own tests pin the closing position).
   const rebuildAt = text.indexOf(
     "Event-sourced rebuild (Escrow.fromHistory on the main escrow history):",
   );
@@ -2155,9 +2187,19 @@ test("demo shows the event-sourced rebuild: Escrow.fromHistory rebuilds the main
       `  deadline NOT restored: main escrow deadline is ${DEMO_REBUILT_DEADLINE}, rebuilt escrow deadline is undefined — a bare history carries no deadline (nor the consumed idempotency keys); use fromJSON when those must survive`,
     ),
   );
-  assert.equal(
-    lines[lines.length - 1],
-    `  original escrow after the rebuild: still RELEASED with its deadline ${DEMO_REBUILT_DEADLINE} intact (the rebuild reads the history and dispatches nothing)`,
+  assert.ok(
+    text.includes(
+      `  original escrow after the rebuild: still RELEASED with its deadline ${DEMO_REBUILT_DEADLINE} intact (the rebuild reads the history and dispatches nothing)`,
+    ),
+  );
+  assert.ok(
+    lines.indexOf(
+      "Snapshot round-trip (Escrow.toJSON / Escrow.fromJSON on the main escrow):",
+    ) >
+      lines.indexOf(
+        "Event-sourced rebuild (Escrow.fromHistory on the main escrow history):",
+      ),
+    "snapshot round-trip segment must follow the event-sourced rebuild segment",
   );
 });
 
@@ -2167,6 +2209,9 @@ test("demo event-sourced rebuild segment is deterministic: two runs print byte-i
       ls.indexOf(
         "Event-sourced rebuild (Escrow.fromHistory on the main escrow history):",
       ),
+      ls.indexOf(
+        "Snapshot round-trip (Escrow.toJSON / Escrow.fromJSON on the main escrow):",
+      ) - 1,
     );
   const a = await runDemo();
   const b = await runDemo();
@@ -2179,4 +2224,119 @@ test("demo event-sourced rebuild segment is deterministic: two runs print byte-i
   assert.deepEqual(segA, segment(b.lines));
   assert.deepEqual(a.historyRebuiltEscrow.history, b.historyRebuiltEscrow.history);
   assert.equal(a.historyRebuiltDeadline, b.historyRebuiltDeadline);
+});
+
+test("demo shows the snapshot round-trip: Escrow.toJSON/fromJSON restores state, history, and deadline verbatim", async () => {
+  const {
+    escrow,
+    escrowSnapshot,
+    snapshotJsonBytes,
+    snapshotRestoredEscrow,
+    snapshotRestoredDeadline,
+    lines,
+  } = await runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned expectations — written out here from the main
+  // escrow's fixed steps (4 dispatches landing in RELEASED,
+  // the fixed deadline attached by the rebuild segment) and
+  // the toJSON/fromJSON doc comments in src/stateMachine.ts
+  // (the envelope is v + id + state + history, plus deadline
+  // when set; idempotency keys and the RBAC policy are
+  // written only when non-empty), never derived by calling
+  // Escrow.toJSON to produce them. test/serialization.test.ts
+  // and test/deadline.test.ts pin the same round-trip
+  // independently.
+  assert.equal(DEMO_SNAPSHOT_SERIALIZED_BYTES, 1344);
+  assert.equal(escrowSnapshot.v, 1);
+  assert.equal(escrowSnapshot.id, DEMO_ESCROW_ID);
+  assert.equal(escrowSnapshot.state, "RELEASED");
+  assert.equal(escrowSnapshot.history.length, 4);
+  assert.deepEqual(escrowSnapshot.history, [...escrow.history]);
+  assert.equal(escrowSnapshot.deadline, DEMO_REBUILT_DEADLINE);
+  assert.equal(escrowSnapshot.idempotencyKeys, undefined);
+  assert.equal(escrowSnapshot.rolePolicy, undefined);
+  assert.equal(snapshotJsonBytes, DEMO_SNAPSHOT_SERIALIZED_BYTES);
+  assert.equal(
+    snapshotJsonBytes,
+    Buffer.byteLength(JSON.stringify(escrowSnapshot), "utf8"),
+  );
+  assert.equal(snapshotRestoredEscrow.id, DEMO_ESCROW_ID);
+  assert.equal(snapshotRestoredEscrow.state, "RELEASED");
+  assert.equal(snapshotRestoredEscrow.state, escrow.state);
+  assert.equal(snapshotRestoredEscrow.history.length, 4);
+  assert.deepEqual(snapshotRestoredEscrow.history, [...escrow.history]);
+  assert.deepEqual(
+    snapshotRestoredEscrow.history.map((e) => e.event),
+    ["FUND", "SUBMIT_MILESTONE", "VERIFY_PASS", "RELEASE"],
+  );
+  // The contrast with the fromHistory rebuild: the snapshot
+  // envelope DOES carry the deadline, so it is restored.
+  assert.equal(escrow.getDeadline(), DEMO_REBUILT_DEADLINE);
+  assert.equal(snapshotRestoredDeadline, DEMO_REBUILT_DEADLINE);
+  assert.equal(snapshotRestoredEscrow.getDeadline(), DEMO_REBUILT_DEADLINE);
+  // Independent cross-check: a fresh fromJSON restore of the
+  // same serialized snapshot reproduces the demo's restored
+  // escrow, and the original escrow is untouched.
+  const fresh = Escrow.fromJSON(
+    JSON.parse(JSON.stringify(escrowSnapshot)) as unknown,
+  );
+  assert.equal(fresh.state, snapshotRestoredEscrow.state);
+  assert.deepEqual(fresh.history, snapshotRestoredEscrow.history);
+  assert.equal(fresh.getDeadline(), DEMO_REBUILT_DEADLINE);
+  assert.equal(escrow.state, "RELEASED");
+  assert.equal(escrow.history.length, 4);
+  // The segment closes the demo: it follows the event-sourced
+  // rebuild segment, prints its lines verbatim, and its
+  // original-escrow line is the demo's last line.
+  const snapshotAt = text.indexOf(
+    "Snapshot round-trip (Escrow.toJSON / Escrow.fromJSON on the main escrow):",
+  );
+  assert.ok(
+    snapshotAt >
+      text.indexOf(
+        "Event-sourced rebuild (Escrow.fromHistory on the main escrow history):",
+      ),
+    "snapshot round-trip segment must follow the event-sourced rebuild segment",
+  );
+  assert.ok(
+    text.includes(
+      `  main escrow ${DEMO_ESCROW_ID}: toJSON() -> snapshot v 1 (id + state + 4 history entries + deadline) serialized to ${DEMO_SNAPSHOT_SERIALIZED_BYTES} bytes — the persistence envelope a document store keeps`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  Escrow.fromJSON(parsed snapshot) -> restored escrow in state RELEASED with 4 history entries — state and every entry identical to the original verbatim",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  deadline restored: main escrow deadline is ${DEMO_REBUILT_DEADLINE}, restored escrow deadline is ${DEMO_REBUILT_DEADLINE} — the envelope carries the deadline (and the consumed idempotency keys) that a bare history cannot`,
+    ),
+  );
+  assert.equal(
+    lines[lines.length - 1],
+    `  original escrow after the round-trip: still RELEASED with its deadline ${DEMO_REBUILT_DEADLINE} intact (the round-trip reads the escrow and dispatches nothing)`,
+  );
+});
+
+test("demo snapshot round-trip segment is deterministic: two runs print byte-identical snapshot lines", async () => {
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf(
+        "Snapshot round-trip (Escrow.toJSON / Escrow.fromJSON on the main escrow):",
+      ),
+    );
+  const a = await runDemo();
+  const b = await runDemo();
+  const segA = segment(a.lines);
+  // Header + the snapshot line + the restored line + the
+  // deadline line + the original-escrow line; every value is
+  // derived from the fixed main history and the fixed deadline
+  // alone, so no normalization is needed.
+  assert.equal(segA.length, 5);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(a.snapshotRestoredEscrow.history, b.snapshotRestoredEscrow.history);
+  assert.equal(a.snapshotJsonBytes, b.snapshotJsonBytes);
+  assert.equal(a.snapshotRestoredDeadline, b.snapshotRestoredDeadline);
 });

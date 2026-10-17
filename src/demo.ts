@@ -125,7 +125,7 @@
  * and a detached copy whose middle entry's note is rewritten is
  * shown failing with the explicit hash-chain-broken error,
  * while the escrow's own history stays untouched.
- * The demo finally closes with an event-sourced rebuild
+ * The demo then shows an event-sourced rebuild
  * segment: a fixed advisory deadline is attached to the main
  * escrow (it lives only in the snapshot envelope, never in
  * the history), and the escrow is then rebuilt from its
@@ -137,6 +137,19 @@
  * subscriptions) is exactly the rebuild trade-off the
  * `fromHistory` doc comment states, and it is asserted
  * outside the printing.
+ * The demo finally closes with a snapshot round-trip
+ * segment: the main escrow — still carrying that fixed
+ * deadline — is exported with `toJSON()` (the serialized
+ * snapshot printed with its byte count) and restored with
+ * `Escrow.fromJSON()` from the parsed serialization: the
+ * restored escrow lands in the same RELEASED state with a
+ * history identical to the original verbatim, and its
+ * deadline IS restored — the snapshot envelope (state +
+ * history + deadline + the consumed idempotency-key set)
+ * is the persistence channel that carries exactly what a
+ * bare history cannot, the contrast the rebuild segment
+ * above sets up; the fidelity is asserted outside the
+ * printing.
  *
  * Usage: `npm run demo` (builds with tsc, then runs node on the compiled
  * output). Zero runtime dependencies: this file only imports the library
@@ -183,6 +196,7 @@ import {
   type DeliverSettlementWebhookToManyResult,
   type EscrowEvent,
   type EscrowHistoryEntry,
+  type EscrowSnapshot,
   type EscrowState,
   type ExpireOverdueResult,
   type Quorum,
@@ -465,6 +479,36 @@ export const DEMO_PARSED_HISTORY_TAMPER_ERROR =
  * rebuild only reads the history and dispatches nothing.
  */
 export const DEMO_REBUILT_DEADLINE = "2026-04-01T09:00:00.000Z";
+
+/**
+ * Snapshot round-trip expectations for the closing segment:
+ * the main escrow (RELEASED, 4 history entries, carrying
+ * {@link DEMO_REBUILT_DEADLINE}) is exported with `toJSON()`
+ * and restored with `Escrow.fromJSON()`. Hand-pinned
+ * expectations — written from the `toJSON`/`fromJSON` doc
+ * comments in src/stateMachine.ts (the snapshot envelope is
+ * `v` + id + state + history, plus `deadline` when one is
+ * set; the consumed idempotency keys and the RBAC policy are
+ * written only when non-empty, and the main escrow has
+ * neither, so neither field appears), never derived by
+ * calling `toJSON` itself, and cross-checked against
+ * test/serialization.test.ts and test/deadline.test.ts's
+ * round-trip cases:
+ * - the snapshot carries `v: 1` (the SNAPSHOT_VERSION the
+ *   envelope is stamped with) and the fixed deadline
+ * - the restored escrow lands in RELEASED with the same 4
+ *   history entries verbatim and its deadline restored to
+ *   {@link DEMO_REBUILT_DEADLINE} — the envelope carries
+ *   what the bare history in the rebuild segment above
+ *   cannot
+ * - the serialized snapshot is exactly
+ *   {@link DEMO_SNAPSHOT_SERIALIZED_BYTES} bytes as UTF-8
+ *   (1,342 characters; the RELEASE entry's note carries an
+ *   em dash, a 3-byte UTF-8 character, so bytes ≠ characters)
+ * The original escrow keeps its state and deadline: the
+ * round-trip only reads the escrow and dispatches nothing.
+ */
+export const DEMO_SNAPSHOT_SERIALIZED_BYTES = 1344;
 
 const steps: Array<{
   event: EscrowEvent;
@@ -795,6 +839,37 @@ export interface DemoResult {
    * trade-off the closing segment pins.
    */
   historyRebuiltDeadline: string | undefined;
+  /**
+   * Snapshot of the main escrow taken by `toJSON()` in the
+   * closing segment: `v: 1`, id + RELEASED state + the 4
+   * history entries + the fixed deadline — no
+   * `idempotencyKeys` / `rolePolicy` fields, because the main
+   * escrow consumed no keys and carries no policy, so both
+   * keep their absent legacy shape.
+   */
+  escrowSnapshot: EscrowSnapshot;
+  /**
+   * UTF-8 byte count of the serialized
+   * {@link DemoResult.escrowSnapshot}:
+   * {@link DEMO_SNAPSHOT_SERIALIZED_BYTES} (1,344) — the size
+   * of the persistence envelope a document store would keep.
+   */
+  snapshotJsonBytes: number;
+  /**
+   * The main escrow restored by `Escrow.fromJSON()` from the
+   * parsed serialization of {@link DemoResult.escrowSnapshot}
+   * in the closing segment: same id, same RELEASED state, and
+   * a history identical to the main escrow's verbatim.
+   */
+  snapshotRestoredEscrow: Escrow;
+  /**
+   * Deadline of {@link DemoResult.snapshotRestoredEscrow}:
+   * {@link DEMO_REBUILT_DEADLINE} — RESTORED, in contrast to
+   * {@link DemoResult.historyRebuiltDeadline}: the snapshot
+   * envelope carries the deadline (and the consumed
+   * idempotency-key set) that a bare history cannot.
+   */
+  snapshotRestoredDeadline: string | undefined;
   lines: string[];
 }
 
@@ -1990,6 +2065,102 @@ export async function runDemo(): Promise<DemoResult> {
     `  original escrow after the rebuild: still ${escrow.state} with its deadline ${escrow.getDeadline()} intact (the rebuild reads the history and dispatches nothing)`,
   );
 
+  // --- Snapshot round-trip: toJSON / fromJSON (closing) ---
+  // The rebuild segment above shows what a bare history can
+  // restore — and what it cannot: the deadline (and the
+  // consumed idempotency-key set) live only in the snapshot
+  // envelope, never in the history. This closing segment
+  // shows that envelope itself: the persistence channel an
+  // escrow actually lands in when a service stores it in a
+  // document store and rehydrates it after a restart.
+  // `toJSON()` exports v + id + state + history, plus the
+  // deadline when one is set (the main escrow carries
+  // DEMO_REBUILT_DEADLINE from the rebuild segment); the
+  // consumed idempotency keys and the RBAC policy are
+  // exported only when non-empty, and the main escrow has
+  // neither, so neither field appears. The snapshot is
+  // serialized with JSON.stringify (its UTF-8 byte count is
+  // printed — the size a store would keep), parsed back
+  // from plain JSON, and restored with `Escrow.fromJSON()`,
+  // which re-validates the envelope strictly and
+  // re-verifies the hash chain on the way in.
+  // Hand-pinned expectations — written out in the fixture
+  // comment above from src/stateMachine.ts, never derived
+  // by calling toJSON itself (test/serialization.test.ts
+  // and test/deadline.test.ts pin the same round-trip
+  // independently):
+  //   snapshot v 1, RELEASED, 4 entries, deadline
+  //   DEMO_REBUILT_DEADLINE, serialized to exactly
+  //   DEMO_SNAPSHOT_SERIALIZED_BYTES bytes; restored
+  //   escrow RELEASED with the same 4 entries verbatim
+  //   and the deadline restored
+  // The round-trip is asserted HERE, outside the printing
+  // — a mismatch throws instead of printing a false
+  // verdict. Pure: toJSON only reads the escrow and
+  // fromJSON only builds a new one; no dispatch, no
+  // network, no randomness, no wall clock.
+  const escrowSnapshot = escrow.toJSON();
+  const snapshotJson = JSON.stringify(escrowSnapshot);
+  const snapshotJsonBytes = Buffer.byteLength(snapshotJson, "utf8");
+  const snapshotRestoredEscrow = Escrow.fromJSON(
+    JSON.parse(snapshotJson) as unknown,
+  );
+  const snapshotRestoredDeadline = snapshotRestoredEscrow.getDeadline();
+  if (
+    escrowSnapshot.v !== 1 ||
+    escrowSnapshot.id !== escrow.id ||
+    escrowSnapshot.state !== "RELEASED" ||
+    escrowSnapshot.history.length !== 4 ||
+    escrowSnapshot.deadline !== DEMO_REBUILT_DEADLINE ||
+    escrowSnapshot.idempotencyKeys !== undefined ||
+    escrowSnapshot.rolePolicy !== undefined
+  ) {
+    throw new Error(
+      "demo fixture broken: toJSON snapshot envelope does not have the pinned shape (v 1, main id, RELEASED, 4 entries, fixed deadline, no key/policy fields)",
+    );
+  }
+  if (snapshotJsonBytes !== DEMO_SNAPSHOT_SERIALIZED_BYTES) {
+    throw new Error(
+      `demo fixture broken: serialized snapshot is ${snapshotJsonBytes} bytes, expected ${DEMO_SNAPSHOT_SERIALIZED_BYTES}`,
+    );
+  }
+  if (
+    snapshotRestoredEscrow.id !== escrow.id ||
+    snapshotRestoredEscrow.state !== "RELEASED" ||
+    snapshotRestoredEscrow.state !== escrow.state
+  ) {
+    throw new Error(
+      "demo fixture broken: Escrow.fromJSON restored escrow does not land in the main escrow state",
+    );
+  }
+  if (
+    snapshotRestoredEscrow.history.length !== escrow.history.length ||
+    JSON.stringify(snapshotRestoredEscrow.history) !==
+      JSON.stringify([...escrow.history])
+  ) {
+    throw new Error(
+      "demo fixture broken: Escrow.fromJSON restored history differs from the original history",
+    );
+  }
+  if (
+    snapshotRestoredDeadline !== DEMO_REBUILT_DEADLINE ||
+    escrow.getDeadline() !== DEMO_REBUILT_DEADLINE ||
+    escrow.state !== "RELEASED" ||
+    escrow.history.length !== 4
+  ) {
+    throw new Error(
+      "demo fixture broken: Escrow.fromJSON did not restore the deadline the snapshot envelope carries, or the original escrow changed",
+    );
+  }
+  lines.push(
+    "",
+    "Snapshot round-trip (Escrow.toJSON / Escrow.fromJSON on the main escrow):",
+    `  main escrow ${escrow.id}: toJSON() -> snapshot v ${escrowSnapshot.v} (id + state + ${escrowSnapshot.history.length} history entries + deadline) serialized to ${snapshotJsonBytes} bytes — the persistence envelope a document store keeps`,
+    `  Escrow.fromJSON(parsed snapshot) -> restored escrow in state ${snapshotRestoredEscrow.state} with ${snapshotRestoredEscrow.history.length} history entries — state and every entry identical to the original verbatim`,
+    `  deadline restored: main escrow deadline is ${DEMO_REBUILT_DEADLINE}, restored escrow deadline is ${String(snapshotRestoredDeadline)} — the envelope carries the deadline (and the consumed idempotency keys) that a bare history cannot`,
+    `  original escrow after the round-trip: still ${escrow.state} with its deadline ${escrow.getDeadline()} intact (the round-trip reads the escrow and dispatches nothing)`,
+  );
+
   return {
     escrow,
     report,
@@ -2039,6 +2210,10 @@ export async function runDemo(): Promise<DemoResult> {
     parsedHistoryTamperError,
     historyRebuiltEscrow,
     historyRebuiltDeadline,
+    escrowSnapshot,
+    snapshotJsonBytes,
+    snapshotRestoredEscrow,
+    snapshotRestoredDeadline,
     lines,
   };
 }
