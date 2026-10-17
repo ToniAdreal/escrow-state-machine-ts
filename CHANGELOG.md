@@ -18,7 +18,22 @@ version changes.
 
 ### Added
 
-- A standalone history-parsing segment closing the CLI demo:
+- An event-sourced rebuild segment closing the CLI demo:
+  a fixed advisory deadline is attached to the main escrow
+  and the escrow is then rebuilt from its history alone with
+  `Escrow.fromHistory()` — the rebuilt escrow lands in
+  RELEASED with the same 4 history entries verbatim, while
+  its deadline is not restored (`undefined`), because a bare
+  history carries no deadline (nor the consumed
+  idempotency keys), all asserted outside the printing
+  against hand-pinned expectations cross-checked against
+  the `fromHistory` honest-limits tests. `DemoResult`
+  exposes the rebuilt escrow and its (absent) deadline; the
+  demo tests pin the rebuilt state and history, the exact
+  deadline trade-off, the printed lines, and the segment's
+  closing position. Demo and tests only; no library
+  behavior change.
+- A standalone history-parsing segment in the CLI demo:
   the main escrow's history is serialized to JSON and parsed
   back on its own with `parseEscrowHistory()` (no `Escrow`
   instance involved) — 4 entries identical to the original

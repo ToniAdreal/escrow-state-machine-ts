@@ -38,6 +38,7 @@ import {
   DEMO_QUORUM_APPROVAL_ATS,
   DEMO_QUORUM_SIGNERS,
   DEMO_QUORUM_THRESHOLD,
+  DEMO_REBUILT_DEADLINE,
   DEMO_RETRY_AFTER_NOW_MS,
   DEMO_STALE_DAY_MS,
   DEMO_STALE_DEADLINE,
@@ -53,6 +54,7 @@ import {
   DEMO_WEBHOOK_SECRET,
 } from "../src/demo.js";
 import {
+  Escrow,
   allowedEvents,
   depositAmountFromHistory,
   historyFromNdjson,
@@ -1480,9 +1482,10 @@ test("demo shows overdue judgement: isOverdue false before, true at and after th
     assert.equal(isOverdue(overdueCheckEscrow, new Date(at)), overdue);
   }
   // The segment follows the NDJSON segment and prints its lines
-  // verbatim; the state-diagram segment follows it and the
-  // standalone-parsing segment now closes the demo after that
-  // (its own tests pin the closing position).
+  // verbatim; the state-diagram segment follows it, then the
+  // standalone-parsing segment, and the event-sourced rebuild
+  // segment now closes the demo after those (their own tests
+  // pin the closing position).
   const overdueAt = text.indexOf(
     "Overdue judgement (isOverdue on a funded escrow at three fixed instants):",
   );
@@ -1818,8 +1821,9 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
   assert.ok(out.includes("  last line: ```"));
   // Standalone history-parsing tail: the closing segment parses
   // the main history back on its own — the intact parse lands in
-  // RELEASED, the tampered copy is rejected with the explicit
-  // hash-chain error, and the demo ends on the untouched line.
+  // RELEASED and the tampered copy is rejected with the explicit
+  // hash-chain error. The event-sourced rebuild tail then closes
+  // the demo on its original-escrow line.
   assert.match(
     out,
     /Standalone history parsing \(parseEscrowHistory on the main escrow history\):/,
@@ -1835,8 +1839,29 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
     ),
   );
   assert.ok(
-    out.trimEnd().endsWith(
+    out.includes(
       "  original history after the tamper check: parseEscrowHistory still returns 4 entries (detached copy — the escrow's own history is untouched)",
+    ),
+  );
+  // Event-sourced rebuild tail: the closing segment rebuilds
+  // the main escrow from its history alone and ends the demo.
+  assert.match(
+    out,
+    /Event-sourced rebuild \(Escrow\.fromHistory on the main escrow history\):/,
+  );
+  assert.ok(
+    out.includes(
+      `  main escrow ${DEMO_ESCROW_ID}: Escrow.fromHistory(id, history) -> rebuilt escrow in state RELEASED with 4 history entries (history alone — no snapshot envelope)`,
+    ),
+  );
+  assert.ok(
+    out.includes(
+      `  deadline NOT restored: main escrow deadline is ${DEMO_REBUILT_DEADLINE}, rebuilt escrow deadline is undefined — a bare history carries no deadline (nor the consumed idempotency keys); use fromJSON when those must survive`,
+    ),
+  );
+  assert.ok(
+    out.trimEnd().endsWith(
+      `  original escrow after the rebuild: still RELEASED with its deadline ${DEMO_REBUILT_DEADLINE} intact (the rebuild reads the history and dispatches nothing)`,
     ),
   );
 });
@@ -1886,8 +1911,9 @@ test("demo shows the state diagram generation segment in-process: the generated 
   assert.equal(stateDiagramText, stateDiagram());
   // The segment follows the overdue-judgement segment and
   // prints its summary lines verbatim; the standalone
-  // history-parsing segment now closes the demo after it
-  // (its own tests pin the closing position).
+  // history-parsing segment follows it and the event-sourced
+  // rebuild segment now closes the demo after that (their own
+  // tests pin the closing position).
   const diagramAt = text.indexOf(
     "State diagram generation (stateDiagram from the transition table):",
   );
@@ -1997,9 +2023,10 @@ test("demo shows standalone history parsing: serialized history parses back verb
     escrow.history[DEMO_PARSED_HISTORY_TAMPERED_SEQ - 1].note,
     DEMO_PARSED_HISTORY_TAMPERED_NOTE,
   );
-  // The segment closes the demo: it follows the state-diagram
-  // segment, prints its lines verbatim, and its untouched line
-  // is the demo's last line.
+  // The segment follows the state-diagram segment and prints
+  // its lines verbatim; the event-sourced rebuild segment now
+  // closes the demo after it (its own tests pin the closing
+  // position).
   const parseAt = text.indexOf(
     "Standalone history parsing (parseEscrowHistory on the main escrow history):",
   );
@@ -2025,9 +2052,19 @@ test("demo shows standalone history parsing: serialized history parses back verb
       `  tampered copy: entry seq ${DEMO_PARSED_HISTORY_TAMPERED_SEQ} (SUBMIT_MILESTONE) note rewritten — parseEscrowHistory FAILED — ${DEMO_PARSED_HISTORY_TAMPER_ERROR}`,
     ),
   );
-  assert.equal(
-    lines[lines.length - 1],
-    "  original history after the tamper check: parseEscrowHistory still returns 4 entries (detached copy — the escrow's own history is untouched)",
+  assert.ok(
+    text.includes(
+      "  original history after the tamper check: parseEscrowHistory still returns 4 entries (detached copy — the escrow's own history is untouched)",
+    ),
+  );
+  assert.ok(
+    lines.indexOf(
+      "Event-sourced rebuild (Escrow.fromHistory on the main escrow history):",
+    ) >
+      lines.indexOf(
+        "Standalone history parsing (parseEscrowHistory on the main escrow history):",
+      ),
+    "event-sourced rebuild segment must follow the standalone history-parsing segment",
   );
 });
 
@@ -2037,6 +2074,9 @@ test("demo standalone history parsing segment is deterministic: two runs print b
       ls.indexOf(
         "Standalone history parsing (parseEscrowHistory on the main escrow history):",
       ),
+      ls.indexOf(
+        "Event-sourced rebuild (Escrow.fromHistory on the main escrow history):",
+      ) - 1,
     );
   const a = await runDemo();
   const b = await runDemo();
@@ -2048,4 +2088,95 @@ test("demo standalone history parsing segment is deterministic: two runs print b
   assert.deepEqual(segA, segment(b.lines));
   assert.deepEqual(a.parsedHistoryEntries, b.parsedHistoryEntries);
   assert.equal(a.parsedHistoryTamperError, b.parsedHistoryTamperError);
+});
+
+test("demo shows the event-sourced rebuild: Escrow.fromHistory rebuilds the main escrow from its history alone and the deadline is not restored", async () => {
+  const { escrow, historyRebuiltEscrow, historyRebuiltDeadline, lines } =
+    await runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned expectations — written out here from the main
+  // escrow's fixed steps (4 dispatches landing in RELEASED) and
+  // the fromHistory doc comment in src/stateMachine.ts (a bare
+  // history restores neither the advisory deadline nor the
+  // consumed idempotency-key set), never derived by calling
+  // Escrow.fromHistory to produce them. test/fromHistory.test.ts
+  // pins the same semantics independently, including the
+  // honest-limits deadline case.
+  assert.equal(DEMO_REBUILT_DEADLINE, "2026-04-01T09:00:00.000Z");
+  assert.equal(historyRebuiltEscrow.id, DEMO_ESCROW_ID);
+  assert.equal(historyRebuiltEscrow.state, "RELEASED");
+  assert.equal(historyRebuiltEscrow.state, escrow.state);
+  assert.equal(historyRebuiltEscrow.history.length, 4);
+  assert.deepEqual(historyRebuiltEscrow.history, [...escrow.history]);
+  assert.deepEqual(
+    historyRebuiltEscrow.history.map((e) => e.event),
+    ["FUND", "SUBMIT_MILESTONE", "VERIFY_PASS", "RELEASE"],
+  );
+  // The trade-off: the main escrow carries the fixed deadline
+  // at rebuild time, the rebuilt escrow has none.
+  assert.equal(escrow.getDeadline(), DEMO_REBUILT_DEADLINE);
+  assert.equal(historyRebuiltDeadline, undefined);
+  assert.equal(historyRebuiltEscrow.getDeadline(), undefined);
+  // Independent cross-check: a fresh fromHistory rebuild of the
+  // same history reproduces the demo's rebuilt escrow, and the
+  // original escrow is untouched by the rebuild.
+  const fresh = Escrow.fromHistory(escrow.id, escrow.history);
+  assert.equal(fresh.state, historyRebuiltEscrow.state);
+  assert.deepEqual(fresh.history, historyRebuiltEscrow.history);
+  assert.equal(fresh.getDeadline(), undefined);
+  assert.equal(escrow.state, "RELEASED");
+  assert.equal(escrow.history.length, 4);
+  // The segment closes the demo: it follows the standalone
+  // history-parsing segment, prints its lines verbatim, and
+  // its original-escrow line is the demo's last line.
+  const rebuildAt = text.indexOf(
+    "Event-sourced rebuild (Escrow.fromHistory on the main escrow history):",
+  );
+  assert.ok(
+    rebuildAt >
+      text.indexOf(
+        "Standalone history parsing (parseEscrowHistory on the main escrow history):",
+      ),
+    "event-sourced rebuild segment must follow the standalone history-parsing segment",
+  );
+  assert.ok(
+    text.includes(
+      `  main escrow ${DEMO_ESCROW_ID}: Escrow.fromHistory(id, history) -> rebuilt escrow in state RELEASED with 4 history entries (history alone — no snapshot envelope)`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  rebuilt history matches the original verbatim: every entry identical (seq chain 1 -> 4 continuous, hash chain re-verified on rebuild)",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  deadline NOT restored: main escrow deadline is ${DEMO_REBUILT_DEADLINE}, rebuilt escrow deadline is undefined — a bare history carries no deadline (nor the consumed idempotency keys); use fromJSON when those must survive`,
+    ),
+  );
+  assert.equal(
+    lines[lines.length - 1],
+    `  original escrow after the rebuild: still RELEASED with its deadline ${DEMO_REBUILT_DEADLINE} intact (the rebuild reads the history and dispatches nothing)`,
+  );
+});
+
+test("demo event-sourced rebuild segment is deterministic: two runs print byte-identical rebuild lines", async () => {
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf(
+        "Event-sourced rebuild (Escrow.fromHistory on the main escrow history):",
+      ),
+    );
+  const a = await runDemo();
+  const b = await runDemo();
+  const segA = segment(a.lines);
+  // Header + the rebuild line + the verbatim line + the
+  // deadline line + the original-escrow line; every value is
+  // derived from the fixed main history and the fixed deadline
+  // alone, so no normalization is needed.
+  assert.equal(segA.length, 5);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(a.historyRebuiltEscrow.history, b.historyRebuiltEscrow.history);
+  assert.equal(a.historyRebuiltDeadline, b.historyRebuiltDeadline);
 });

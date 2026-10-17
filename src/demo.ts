@@ -114,7 +114,7 @@
  * edge — and the segment asserts, outside the printing, that
  * the edge count equals `transitionTable()`'s edge count, so a
  * diagram whose shape broke would fail the demo itself.
- * The demo finally closes with a standalone history-parsing
+ * The demo then shows a standalone history-parsing
  * segment: the main escrow's history is serialized to JSON and
  * parsed back on its own with `parseEscrowHistory()` — no
  * `Escrow` instance involved — the recovery / reconciliation
@@ -125,6 +125,18 @@
  * and a detached copy whose middle entry's note is rewritten is
  * shown failing with the explicit hash-chain-broken error,
  * while the escrow's own history stays untouched.
+ * The demo finally closes with an event-sourced rebuild
+ * segment: a fixed advisory deadline is attached to the main
+ * escrow (it lives only in the snapshot envelope, never in
+ * the history), and the escrow is then rebuilt from its
+ * history alone with `Escrow.fromHistory()` — the rebuilt
+ * escrow lands in the same RELEASED state with a history
+ * identical to the original verbatim, but its deadline is
+ * undefined: what a bare history cannot restore (the
+ * deadline, the consumed idempotency-key set, and
+ * subscriptions) is exactly the rebuild trade-off the
+ * `fromHistory` doc comment states, and it is asserted
+ * outside the printing.
  *
  * Usage: `npm run demo` (builds with tsc, then runs node on the compiled
  * output). Zero runtime dependencies: this file only imports the library
@@ -429,6 +441,30 @@ export const DEMO_PARSED_HISTORY_TAMPERED_NOTE =
   "REWRITTEN after the fact — milestone note altered";
 export const DEMO_PARSED_HISTORY_TAMPER_ERROR =
   "invalid snapshot: history hash chain is broken (an entry was tampered with, deleted, or reordered)";
+
+/**
+ * Event-sourced rebuild fixture for the closing segment: the
+ * fixed advisory deadline attached to the main escrow just
+ * before it is rebuilt from its history alone with
+ * `Escrow.fromHistory()`. Hand-pinned expectations — written
+ * from the `fromHistory` doc comment in src/stateMachine.ts
+ * (a bare history cannot restore the advisory deadline, the
+ * consumed idempotency-key set, or subscriptions: a rebuild
+ * starts with no deadline, an empty key set, and zero
+ * listeners), never derived by calling `fromHistory` itself,
+ * and cross-checked against test/fromHistory.test.ts's
+ * honest-limits case, where a live escrow carrying a
+ * 2026-04-01 deadline keeps it through `fromJSON` but loses
+ * it through `fromHistory`:
+ * - the rebuilt escrow lands in RELEASED (the main escrow's
+ *   own final state) with the same 4 history entries verbatim
+ * - the rebuilt escrow's deadline is `undefined`, even though
+ *   the main escrow carries {@link DEMO_REBUILT_DEADLINE} at
+ *   rebuild time — the deadline was never in the history
+ * The original escrow keeps its deadline and its state: the
+ * rebuild only reads the history and dispatches nothing.
+ */
+export const DEMO_REBUILT_DEADLINE = "2026-04-01T09:00:00.000Z";
 
 const steps: Array<{
   event: EscrowEvent;
@@ -742,6 +778,23 @@ export interface DemoResult {
    * escrow's own history is untouched by the copy.
    */
   parsedHistoryTamperError: string;
+  /**
+   * The main escrow rebuilt from its history alone by
+   * `Escrow.fromHistory(id, history)` in the closing segment:
+   * same id, same RELEASED state, and a history identical to
+   * the main escrow's verbatim — 4 entries, seq 1 -> 4
+   * continuous, hash chain re-verified on rebuild.
+   */
+  historyRebuiltEscrow: Escrow;
+  /**
+   * Deadline of {@link DemoResult.historyRebuiltEscrow}:
+   * `undefined` — NOT restored, even though the main escrow
+   * carries {@link DEMO_REBUILT_DEADLINE} at rebuild time.
+   * A bare history carries no deadline (it lives only in the
+   * snapshot envelope), which is the honest `fromHistory`
+   * trade-off the closing segment pins.
+   */
+  historyRebuiltDeadline: string | undefined;
   lines: string[];
 }
 
@@ -1872,6 +1925,71 @@ export async function runDemo(): Promise<DemoResult> {
     `  original history after the tamper check: parseEscrowHistory still returns ${parsedHistoryEntries.length} entries (detached copy — the escrow's own history is untouched)`,
   );
 
+  // --- Event-sourced rebuild: Escrow.fromHistory (closing) ---
+  // Every segment above either drives an Escrow or reads its
+  // history back through a parser (the closing segment above
+  // validates the bare history on its own) — none of them shows
+  // the event-sourcing payoff itself: rebuilding the escrow
+  // from the audit log alone, with no snapshot envelope at all.
+  // That is `Escrow.fromHistory(id, history)`: the history is
+  // validated exactly as `parseEscrowHistory` validates it
+  // (seq chain, legal edges, canonical timestamps, hash-chain
+  // re-verification) and the final entry's `to` becomes the
+  // rebuilt state. To make the rebuild trade-off visible, a
+  // fixed advisory deadline is attached to the main escrow
+  // first: the deadline lives only in the snapshot envelope,
+  // never in the history, so it cannot come back.
+  // Hand-pinned expectations — written out in the fixture
+  // comment above from the `fromHistory` doc comment in
+  // src/stateMachine.ts, never derived by calling fromHistory
+  // itself (test/fromHistory.test.ts pins the same semantics
+  // independently, including the honest-limits deadline case):
+  //   rebuilt state RELEASED, 4 history entries identical to
+  //   the original verbatim, rebuilt deadline undefined while
+  //   the original keeps DEMO_REBUILT_DEADLINE
+  // The rebuild is asserted HERE, outside the printing — a
+  // mismatch throws instead of printing a false verdict. Pure:
+  // the rebuild only reads the history (setDeadline is the
+  // advisory setter, it appends no history entry), no network,
+  // no randomness, no wall clock.
+  escrow.setDeadline(DEMO_REBUILT_DEADLINE);
+  const historyRebuiltEscrow = Escrow.fromHistory(escrow.id, escrow.history);
+  const historyRebuiltDeadline = historyRebuiltEscrow.getDeadline();
+  if (
+    historyRebuiltEscrow.id !== escrow.id ||
+    historyRebuiltEscrow.state !== "RELEASED" ||
+    historyRebuiltEscrow.state !== escrow.state
+  ) {
+    throw new Error(
+      "demo fixture broken: Escrow.fromHistory rebuild does not land in the main escrow state",
+    );
+  }
+  if (
+    historyRebuiltEscrow.history.length !== escrow.history.length ||
+    JSON.stringify(historyRebuiltEscrow.history) !==
+      JSON.stringify([...escrow.history])
+  ) {
+    throw new Error(
+      "demo fixture broken: Escrow.fromHistory rebuilt history differs from the original history",
+    );
+  }
+  if (
+    historyRebuiltDeadline !== undefined ||
+    escrow.getDeadline() !== DEMO_REBUILT_DEADLINE
+  ) {
+    throw new Error(
+      "demo fixture broken: Escrow.fromHistory restored a deadline a bare history cannot carry",
+    );
+  }
+  lines.push(
+    "",
+    "Event-sourced rebuild (Escrow.fromHistory on the main escrow history):",
+    `  main escrow ${escrow.id}: Escrow.fromHistory(id, history) -> rebuilt escrow in state ${historyRebuiltEscrow.state} with ${historyRebuiltEscrow.history.length} history entries (history alone — no snapshot envelope)`,
+    `  rebuilt history matches the original verbatim: every entry identical (seq chain 1 -> ${historyRebuiltEscrow.history.length} continuous, hash chain re-verified on rebuild)`,
+    `  deadline NOT restored: main escrow deadline is ${DEMO_REBUILT_DEADLINE}, rebuilt escrow deadline is ${String(historyRebuiltDeadline)} — a bare history carries no deadline (nor the consumed idempotency keys); use fromJSON when those must survive`,
+    `  original escrow after the rebuild: still ${escrow.state} with its deadline ${escrow.getDeadline()} intact (the rebuild reads the history and dispatches nothing)`,
+  );
+
   return {
     escrow,
     report,
@@ -1919,6 +2037,8 @@ export async function runDemo(): Promise<DemoResult> {
     stateDiagramEdgeCount,
     parsedHistoryEntries,
     parsedHistoryTamperError,
+    historyRebuiltEscrow,
+    historyRebuiltDeadline,
     lines,
   };
 }
