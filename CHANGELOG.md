@@ -18,6 +18,18 @@ version changes.
 
 ### Added
 
+- A strengthened self-check for the benchmark's
+  event-sourced replay path: `Escrow.fromHistory` is now
+  checked on every timed iteration for rebuild fidelity —
+  the rebuilt escrow's id and state and every history
+  entry field for field (`hash` / `prevHash` included),
+  compared field-wise and through the canonical NDJSON
+  serializer — and a detached tampered copy (the FUND
+  entry's amount altered from 10630 to 10631) is rejected
+  with the hash-chain error once, outside the timed loop,
+  with the intact fixture still rebuilding afterwards.
+  Bench only; no library behavior change. The README
+  Benchmarks table is refreshed from one real run.
 - A money-guard segment closing the CLI demo:
   `assertNonNegativeMoney()` — the boundary check every
   amount entry point shares — is run over a fixed legal
