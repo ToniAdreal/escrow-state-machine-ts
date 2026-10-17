@@ -47,6 +47,8 @@ import {
   DEMO_STALE_FUND_AT,
   DEMO_STALE_MAX_AGE_MS,
   DEMO_STALE_NOW,
+  DEMO_TRANSITION_TABLE_EDGE_COUNT,
+  DEMO_TRANSITION_TABLE_JSON_BYTES,
   DEMO_UNEXPIRABLE_DEADLINE,
   DEMO_UNEXPIRABLE_ESCROW_ID,
   DEMO_UNEXPIRABLE_VERIFY_AT,
@@ -67,6 +69,7 @@ import {
   settleRelease,
   stateDiagram,
   transitionTable,
+  transitionTableJson,
   verifyHistoryChain,
   verifySettlementWebhook,
 } from "../src/index.js";
@@ -1866,11 +1869,10 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
       `  original escrow after the rebuild: still RELEASED with its deadline ${DEMO_REBUILT_DEADLINE} intact (the rebuild reads the history and dispatches nothing)`,
     ),
   );
-  // Snapshot round-trip tail: the closing segment exports
+  // Snapshot round-trip tail: that segment exports
   // the main escrow with toJSON and restores it with
   // fromJSON — the deadline IS restored, the envelope
-  // contrast — and ends the demo on its original-escrow
-  // line.
+  // contrast.
   assert.match(
     out,
     /Snapshot round-trip \(Escrow\.toJSON \/ Escrow\.fromJSON on the main escrow\):/,
@@ -1891,9 +1893,34 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
     ),
   );
   assert.ok(
-    out.trimEnd().endsWith(
+    out.includes(
       `  original escrow after the round-trip: still RELEASED with its deadline ${DEMO_REBUILT_DEADLINE} intact (the round-trip reads the escrow and dispatches nothing)`,
     ),
+  );
+  // Machine-readable transition-table tail: the closing
+  // segment serializes the same transition table as
+  // canonical JSON — the form a caller feeds to static
+  // validation or code generation — and ends the demo on
+  // its last-edge line.
+  assert.match(
+    out,
+    /Machine-readable transition table \(transitionTableJson from the transition table\):/,
+  );
+  assert.ok(
+    out.includes(
+      "  transitionTableJson(): 1160 bytes, 14 edges (canonical JSON — the machine-readable form of the same table stateDiagram() renders for humans, byte-identical to the committed transition-table snapshot)",
+    ),
+  );
+  assert.ok(
+    out.includes(
+      "  parsed back: 14 edges, every (from, event, to) triple matches transitionTable() edge for edge",
+    ),
+  );
+  assert.ok(out.includes("  first edge: CREATED --FUND--> FUNDED"));
+  assert.ok(
+    out
+      .trimEnd()
+      .endsWith("  last edge: DISPUTED --ARBITRATE_REFUND--> REFUNDED"),
   );
 });
 
@@ -2286,9 +2313,10 @@ test("demo shows the snapshot round-trip: Escrow.toJSON/fromJSON restores state,
   assert.equal(fresh.getDeadline(), DEMO_REBUILT_DEADLINE);
   assert.equal(escrow.state, "RELEASED");
   assert.equal(escrow.history.length, 4);
-  // The segment closes the demo: it follows the event-sourced
-  // rebuild segment, prints its lines verbatim, and its
-  // original-escrow line is the demo's last line.
+  // The segment follows the event-sourced rebuild segment and
+  // prints its lines verbatim; the machine-readable
+  // transition-table segment now closes the demo after it
+  // (its own tests pin the closing position).
   const snapshotAt = text.indexOf(
     "Snapshot round-trip (Escrow.toJSON / Escrow.fromJSON on the main escrow):",
   );
@@ -2314,9 +2342,19 @@ test("demo shows the snapshot round-trip: Escrow.toJSON/fromJSON restores state,
       `  deadline restored: main escrow deadline is ${DEMO_REBUILT_DEADLINE}, restored escrow deadline is ${DEMO_REBUILT_DEADLINE} — the envelope carries the deadline (and the consumed idempotency keys) that a bare history cannot`,
     ),
   );
-  assert.equal(
-    lines[lines.length - 1],
-    `  original escrow after the round-trip: still RELEASED with its deadline ${DEMO_REBUILT_DEADLINE} intact (the round-trip reads the escrow and dispatches nothing)`,
+  assert.ok(
+    text.includes(
+      `  original escrow after the round-trip: still RELEASED with its deadline ${DEMO_REBUILT_DEADLINE} intact (the round-trip reads the escrow and dispatches nothing)`,
+    ),
+  );
+  assert.ok(
+    lines.indexOf(
+      "Machine-readable transition table (transitionTableJson from the transition table):",
+    ) >
+      lines.indexOf(
+        "Snapshot round-trip (Escrow.toJSON / Escrow.fromJSON on the main escrow):",
+      ),
+    "machine-readable transition-table segment must follow the snapshot round-trip segment",
   );
 });
 
@@ -2326,6 +2364,9 @@ test("demo snapshot round-trip segment is deterministic: two runs print byte-ide
       ls.indexOf(
         "Snapshot round-trip (Escrow.toJSON / Escrow.fromJSON on the main escrow):",
       ),
+      ls.indexOf(
+        "Machine-readable transition table (transitionTableJson from the transition table):",
+      ) - 1,
     );
   const a = await runDemo();
   const b = await runDemo();
@@ -2339,4 +2380,107 @@ test("demo snapshot round-trip segment is deterministic: two runs print byte-ide
   assert.deepEqual(a.snapshotRestoredEscrow.history, b.snapshotRestoredEscrow.history);
   assert.equal(a.snapshotJsonBytes, b.snapshotJsonBytes);
   assert.equal(a.snapshotRestoredDeadline, b.snapshotRestoredDeadline);
+});
+
+test("demo shows the machine-readable transition table: transitionTableJson parses back to the transition table edge for edge", async () => {
+  const {
+    transitionTableJsonText,
+    transitionTableJsonBytes,
+    transitionTableEdges,
+    transitionTableEdgeCount,
+    lines,
+  } = await runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned expectations — written out here from
+  // TRANSITIONS in src/stateMachine.ts and the committed
+  // snapshot test/__snapshots__/transitionTable.snapshot.json,
+  // never derived by calling transitionTableJson to produce
+  // them. test/transitionSnapshot.test.ts and the diagram
+  // tests pin the same table independently: 14 edges, the
+  // first CREATED --FUND--> FUNDED, the last
+  // DISPUTED --ARBITRATE_REFUND--> REFUNDED.
+  assert.equal(DEMO_TRANSITION_TABLE_EDGE_COUNT, 14);
+  assert.equal(DEMO_TRANSITION_TABLE_JSON_BYTES, 1160);
+  assert.equal(transitionTableEdgeCount, DEMO_TRANSITION_TABLE_EDGE_COUNT);
+  assert.equal(transitionTableJsonBytes, DEMO_TRANSITION_TABLE_JSON_BYTES);
+  assert.equal(
+    transitionTableJsonBytes,
+    Buffer.byteLength(transitionTableJsonText, "utf8"),
+  );
+  assert.ok(transitionTableJsonText.endsWith("]\n"));
+  assert.ok(!transitionTableJsonText.endsWith("]\n\n"));
+  assert.deepEqual(transitionTableEdges[0], {
+    from: "CREATED",
+    event: "FUND",
+    to: "FUNDED",
+  });
+  assert.deepEqual(transitionTableEdges.at(-1), {
+    from: "DISPUTED",
+    event: "ARBITRATE_REFUND",
+    to: "REFUNDED",
+  });
+  for (const edge of transitionTableEdges) {
+    assert.deepEqual(Object.keys(edge), ["from", "event", "to"]);
+  }
+  // The parsed-back edge set equals the transition table's
+  // edge set triple for triple, and the full lists match
+  // edge for edge in order.
+  const triple = (e: { from: string; event: string; to: string }) =>
+    `${e.from}:${e.event}:${e.to}`;
+  assert.deepEqual(
+    new Set(transitionTableEdges.map(triple)),
+    new Set(transitionTable().map(triple)),
+  );
+  assert.deepEqual(transitionTableEdges, transitionTable());
+  assert.equal(transitionTableEdgeCount, transitionTable().length);
+  // Cross-check against the library export itself — the demo
+  // segment is not self-certifying.
+  assert.equal(transitionTableJsonText, transitionTableJson());
+  // The segment closes the demo: it follows the snapshot
+  // round-trip segment, prints its lines verbatim, and its
+  // last-edge line is the demo's last line.
+  const tableAt = text.indexOf(
+    "Machine-readable transition table (transitionTableJson from the transition table):",
+  );
+  assert.ok(
+    tableAt >
+      text.indexOf(
+        "Snapshot round-trip (Escrow.toJSON / Escrow.fromJSON on the main escrow):",
+      ),
+    "machine-readable transition-table segment must follow the snapshot round-trip segment",
+  );
+  for (const line of [
+    "  transitionTableJson(): 1160 bytes, 14 edges (canonical JSON — the machine-readable form of the same table stateDiagram() renders for humans, byte-identical to the committed transition-table snapshot)",
+    "  parsed back: 14 edges, every (from, event, to) triple matches transitionTable() edge for edge",
+    "  first edge: CREATED --FUND--> FUNDED",
+  ]) {
+    assert.ok(text.includes(line), `missing transition-table line: ${line}`);
+  }
+  assert.equal(
+    lines[lines.length - 1],
+    "  last edge: DISPUTED --ARBITRATE_REFUND--> REFUNDED",
+  );
+});
+
+test("demo machine-readable transition table segment is deterministic: two runs print byte-identical table lines", async () => {
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf(
+        "Machine-readable transition table (transitionTableJson from the transition table):",
+      ),
+    );
+  const a = await runDemo();
+  const b = await runDemo();
+  const segA = segment(a.lines);
+  // Header + the byte/edge line + the parsed-back line + the
+  // first-edge line + the last-edge line; every value is
+  // derived from the transition table alone, so no
+  // normalization is needed.
+  assert.equal(segA.length, 5);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.equal(a.transitionTableJsonText, b.transitionTableJsonText);
+  assert.equal(a.transitionTableJsonBytes, b.transitionTableJsonBytes);
+  assert.deepEqual(a.transitionTableEdges, b.transitionTableEdges);
+  assert.equal(a.transitionTableEdgeCount, b.transitionTableEdgeCount);
 });

@@ -18,6 +18,21 @@ version changes.
 
 ### Added
 
+- A machine-readable transition-table segment closing
+  the CLI demo: `transitionTableJson()` serializes the
+  transition table as canonical JSON — 1,160 bytes, 14
+  edges, byte-identical to the committed transition-table
+  snapshot — and the parsed-back edges are asserted
+  outside the printing to match `transitionTable()` edge
+  for edge (every `from` / `event` / `to` triple, pinned
+  key order, first edge CREATED --FUND--> FUNDED, last
+  edge DISPUTED --ARBITRATE_REFUND--> REFUNDED),
+  cross-checked against the transition-snapshot and
+  diagram tests. `DemoResult` exposes the JSON text, its
+  byte count, and the parsed edges with their count; the
+  demo tests pin the byte count, the edge set, the
+  printed lines, and the segment's closing position.
+  Demo and tests only; no library behavior change.
 - A snapshot round-trip segment closing the CLI demo:
   the main escrow (still carrying the fixed advisory
   deadline from the rebuild segment) is exported with

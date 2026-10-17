@@ -137,7 +137,7 @@
  * subscriptions) is exactly the rebuild trade-off the
  * `fromHistory` doc comment states, and it is asserted
  * outside the printing.
- * The demo finally closes with a snapshot round-trip
+ * The demo then shows a snapshot round-trip
  * segment: the main escrow — still carrying that fixed
  * deadline — is exported with `toJSON()` (the serialized
  * snapshot printed with its byte count) and restored with
@@ -150,6 +150,17 @@
  * bare history cannot, the contrast the rebuild segment
  * above sets up; the fidelity is asserted outside the
  * printing.
+ * The demo finally closes with a machine-readable
+ * transition-table segment: `transitionTableJson()`
+ * serializes the same transition table the state-diagram
+ * segment renders for humans as canonical JSON — the form
+ * a caller feeds to static validation or code generation —
+ * printed with its serialized byte count and edge total,
+ * and the segment asserts, outside the printing, that the
+ * edges parsed back from the JSON match `transitionTable()`
+ * edge for edge (every `from` / `event` / `to` triple), with
+ * the edge total hand-pinned at the same 14 the committed
+ * snapshot and the diagram tests pin.
  *
  * Usage: `npm run demo` (builds with tsc, then runs node on the compiled
  * output). Zero runtime dependencies: this file only imports the library
@@ -190,6 +201,7 @@ import {
   stateDiagram,
   summarizeSettlementReports,
   transitionTable,
+  transitionTableJson,
   verifyHistoryChain,
   verifySettlementWebhook,
   type BuildSettlementWebhooksResult,
@@ -209,6 +221,7 @@ import {
   type SettlementWebhook,
   type SettlementWebhookEndpoint,
   type StaleEscrowActionResult,
+  type TransitionEdge,
 } from "./index.js";
 
 /** Fixed demo fixture: the portfolio golden fee vector (deposit 10,630). */
@@ -509,6 +522,33 @@ export const DEMO_REBUILT_DEADLINE = "2026-04-01T09:00:00.000Z";
  * round-trip only reads the escrow and dispatches nothing.
  */
 export const DEMO_SNAPSHOT_SERIALIZED_BYTES = 1344;
+
+/**
+ * Machine-readable transition-table expectations for the
+ * closing segment: `transitionTableJson()` serializes the
+ * transition table as canonical JSON (declaration order,
+ * 2-space indent, exactly one trailing newline). Hand-pinned
+ * expectations — written from TRANSITIONS in
+ * src/stateMachine.ts and the committed snapshot
+ * test/__snapshots__/transitionTable.snapshot.json, never
+ * derived by calling `transitionTableJson` itself, and
+ * cross-checked against test/transitionSnapshot.test.ts and
+ * the diagram tests, which pin the same table:
+ * - exactly {@link DEMO_TRANSITION_TABLE_EDGE_COUNT} edges
+ *   (14), the first CREATED --FUND--> FUNDED and the last
+ *   DISPUTED --ARBITRATE_REFUND--> REFUNDED
+ * - the serialized text is exactly
+ *   {@link DEMO_TRANSITION_TABLE_JSON_BYTES} bytes as UTF-8
+ *   (the table is pure ASCII, so bytes = characters)
+ * - the edges parsed back from the JSON match
+ *   `transitionTable()` edge for edge: every
+ *   `from` / `event` / `to` triple, in the same order, with
+ *   the pinned key order `from`, `event`, `to`
+ * The segment is pure: no escrow instance, no dispatch, no
+ * network, no randomness, no wall clock.
+ */
+export const DEMO_TRANSITION_TABLE_EDGE_COUNT = 14;
+export const DEMO_TRANSITION_TABLE_JSON_BYTES = 1160;
 
 const steps: Array<{
   event: EscrowEvent;
@@ -870,6 +910,34 @@ export interface DemoResult {
    * idempotency-key set) that a bare history cannot.
    */
   snapshotRestoredDeadline: string | undefined;
+  /**
+   * Full `transitionTableJson()` canonical JSON text: the
+   * machine-readable form of the same transition table the
+   * state-diagram segment renders for humans — 2-space
+   * indent, exactly one trailing newline, byte-identical to
+   * the committed snapshot
+   * `test/__snapshots__/transitionTable.snapshot.json`.
+   */
+  transitionTableJsonText: string;
+  /**
+   * UTF-8 byte count of
+   * {@link DemoResult.transitionTableJsonText}:
+   * {@link DEMO_TRANSITION_TABLE_JSON_BYTES} (1,160).
+   */
+  transitionTableJsonBytes: number;
+  /**
+   * Edges parsed back from
+   * {@link DemoResult.transitionTableJsonText} with
+   * `JSON.parse`: identical to `transitionTable()` edge for
+   * edge — every `from` / `event` / `to` triple in order.
+   */
+  transitionTableEdges: TransitionEdge[];
+  /**
+   * Number of edges in {@link DemoResult.transitionTableEdges}:
+   * {@link DEMO_TRANSITION_TABLE_EDGE_COUNT} (14), equal to
+   * `transitionTable().length`.
+   */
+  transitionTableEdgeCount: number;
   lines: string[];
 }
 
@@ -2161,6 +2229,86 @@ export async function runDemo(): Promise<DemoResult> {
     `  original escrow after the round-trip: still ${escrow.state} with its deadline ${escrow.getDeadline()} intact (the round-trip reads the escrow and dispatches nothing)`,
   );
 
+  // --- Machine-readable transition table: transitionTableJson (closing) ---
+  // The state-diagram segment above shows the transition
+  // table rendered for humans (the Mermaid block the README
+  // embeds), but a caller doing static validation or code
+  // generation never parses a diagram — it consumes the same
+  // table as data. That is `transitionTableJson()`: canonical
+  // JSON (declaration order, 2-space indent, exactly one
+  // trailing newline), byte-identical to the committed
+  // snapshot test/__snapshots__/transitionTable.snapshot.json
+  // that test/transitionSnapshot.test.ts guards against
+  // drift. The demo prints the serialized byte count and the
+  // edge total, not the 1,160-byte text itself.
+  // Hand-pinned expectations — written out here from
+  // TRANSITIONS in src/stateMachine.ts, never derived by
+  // calling transitionTableJson itself (the transition
+  // snapshot tests and bench's transitionTableJson fixture
+  // pin the same shape independently):
+  //   14 edges, 1,160 serialized bytes, first edge
+  //   CREATED --FUND--> FUNDED, last edge
+  //   DISPUTED --ARBITRATE_REFUND--> REFUNDED, every parsed
+  //   edge carrying exactly the keys from/event/to in order
+  // The parse-back is asserted HERE, outside the printing:
+  // the triples parsed from the JSON must equal the
+  // transitionTable() triples as a set and edge for edge in
+  // order — a serialization whose shape broke would fail
+  // the demo itself, not just a test. The segment is pure:
+  // no escrow instance, no dispatch, no network, no
+  // randomness, no wall clock.
+  const transitionTableJsonText = transitionTableJson();
+  const transitionTableJsonBytes = Buffer.byteLength(
+    transitionTableJsonText,
+    "utf8",
+  );
+  const transitionTableEdges = JSON.parse(
+    transitionTableJsonText,
+  ) as TransitionEdge[];
+  const transitionTableEdgeCount = transitionTableEdges.length;
+  const transitionTableExpected = transitionTable();
+  const transitionTableTriple = (edge: TransitionEdge): string =>
+    `${edge.from}:${edge.event}:${edge.to}`;
+  const parsedTripleSet = new Set(
+    transitionTableEdges.map(transitionTableTriple),
+  );
+  const expectedTripleSet = new Set(
+    transitionTableExpected.map(transitionTableTriple),
+  );
+  if (
+    transitionTableJsonBytes !== DEMO_TRANSITION_TABLE_JSON_BYTES ||
+    !transitionTableJsonText.endsWith("]\n") ||
+    transitionTableJsonText.endsWith("]\n\n") ||
+    transitionTableEdgeCount !== DEMO_TRANSITION_TABLE_EDGE_COUNT ||
+    transitionTableEdgeCount !== transitionTableExpected.length ||
+    parsedTripleSet.size !== transitionTableEdgeCount ||
+    parsedTripleSet.size !== expectedTripleSet.size ||
+    [...expectedTripleSet].some((triple) => !parsedTripleSet.has(triple)) ||
+    JSON.stringify(transitionTableEdges) !==
+      JSON.stringify(transitionTableExpected) ||
+    transitionTableEdges.some(
+      (edge) =>
+        JSON.stringify(Object.keys(edge)) !==
+        JSON.stringify(["from", "event", "to"]),
+    ) ||
+    transitionTableTriple(transitionTableEdges[0]) !==
+      "CREATED:FUND:FUNDED" ||
+    transitionTableTriple(transitionTableEdges.at(-1)!) !==
+      "DISPUTED:ARBITRATE_REFUND:REFUNDED"
+  ) {
+    throw new Error(
+      "demo fixture broken: transitionTableJson() output does not have the pinned shape (1,160 bytes, 14 edges matching transitionTable() edge for edge, pinned key order, first CREATED --FUND--> FUNDED, last DISPUTED --ARBITRATE_REFUND--> REFUNDED, exactly one trailing newline)",
+    );
+  }
+  lines.push(
+    "",
+    "Machine-readable transition table (transitionTableJson from the transition table):",
+    `  transitionTableJson(): ${transitionTableJsonBytes} bytes, ${transitionTableEdgeCount} edges (canonical JSON — the machine-readable form of the same table stateDiagram() renders for humans, byte-identical to the committed transition-table snapshot)`,
+    `  parsed back: ${transitionTableEdges.length} edges, every (from, event, to) triple matches transitionTable() edge for edge`,
+    `  first edge: ${transitionTableEdges[0].from} --${transitionTableEdges[0].event}--> ${transitionTableEdges[0].to}`,
+    `  last edge: ${transitionTableEdges.at(-1)!.from} --${transitionTableEdges.at(-1)!.event}--> ${transitionTableEdges.at(-1)!.to}`,
+  );
+
   return {
     escrow,
     report,
@@ -2214,6 +2362,10 @@ export async function runDemo(): Promise<DemoResult> {
     snapshotJsonBytes,
     snapshotRestoredEscrow,
     snapshotRestoredDeadline,
+    transitionTableJsonText,
+    transitionTableJsonBytes,
+    transitionTableEdges,
+    transitionTableEdgeCount,
     lines,
   };
 }
