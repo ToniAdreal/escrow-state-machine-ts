@@ -85,7 +85,7 @@
  * reconciliation — and the round-tripped entries are asserted,
  * outside the printing, to match the original history verbatim:
  * same entry count, continuous seq chain, and the final entry
- * landing in RELEASED. The demo finally closes with an overdue
+ * landing in RELEASED. The demo then shows an overdue
  * judgement segment: a further funded escrow with a fixed
  * deadline is judged by `isOverdue` at three fixed instants —
  * before the deadline (false), exactly at the deadline (true:
@@ -93,6 +93,13 @@
  * advisory boolean a watchdog reads before it dispatches EXPIRE
  * explicitly; the judgement itself dispatches nothing and the
  * escrow stays FUNDED.
+ * The demo finally closes with a state-diagram generation
+ * segment: `stateDiagram()` renders the transition table as the
+ * Mermaid stateDiagram-v2 block the README embeds verbatim —
+ * 21 lines, 14 of them edge lines, one per transition-table
+ * edge — and the segment asserts, outside the printing, that
+ * the edge count equals `transitionTable()`'s edge count, so a
+ * diagram whose shape broke would fail the demo itself.
  *
  * Usage: `npm run demo` (builds with tsc, then runs node on the compiled
  * output). Zero runtime dependencies: this file only imports the library
@@ -128,7 +135,9 @@ import {
   restoreQuorum,
   settleRelease,
   staleEscrows,
+  stateDiagram,
   summarizeSettlementReports,
+  transitionTable,
   verifyHistoryChain,
   verifySettlementWebhook,
   type BuildSettlementWebhooksResult,
@@ -592,6 +601,17 @@ export interface DemoResult {
    * cross-checked against test/deadline.test.ts's boundary case.
    */
   overdueChecks: Array<{ at: string; overdue: boolean }>;
+  /**
+   * Full `stateDiagram()` Mermaid block text (no trailing
+   * newline): 21 lines — the fenced stateDiagram-v2 block the
+   * README embeds verbatim, rendered from `transitionTable()`.
+   */
+  stateDiagramText: string;
+  /**
+   * Edge lines inside {@link DemoResult.stateDiagramText}: the
+   * 14 transition edges, equal to `transitionTable().length`.
+   */
+  stateDiagramEdgeCount: number;
   lines: string[];
 }
 
@@ -1462,6 +1482,70 @@ export function runDemo(): DemoResult {
     `  escrow unchanged after the three judgements: still ${overdueCheckEscrow.state} (${overdueCheckEscrow.history.length} history entry) — a watchdog dispatches EXPIRE explicitly`,
   );
 
+  // --- State diagram generation: stateDiagram (closing) ---
+  // Every section above walks the transition table one dispatch
+  // at a time, so a reader never sees the table rendered the way
+  // the README presents it — `stateDiagram()` generates the
+  // Mermaid stateDiagram-v2 block from transitionTable() (the
+  // single source of truth), the exact block the README embeds
+  // verbatim and test/diagram.test.ts guards against drift.
+  // The demo prints a summary, not the 21-line block: the line
+  // total and edge count plus the first, second, initial,
+  // first-edge, last-edge, terminal, and last lines.
+  // Hand-pinned expectations — written out here from
+  // TRANSITIONS in src/stateMachine.ts, never derived by calling
+  // stateDiagram itself (the demo tests cross-check the full
+  // generated block line by line as well, and bench's
+  // stateDiagram fixture pins the same shape independently):
+  //   21 lines in total, 14 of them edge lines
+  //   line 1:  ```mermaid (the opening fence)
+  //   line 2:  stateDiagram-v2
+  //   line 3:      [*] --> CREATED (the initial transition)
+  //   line 4:      CREATED --> FUNDED : FUND (the first edge)
+  //   line 17:     DISPUTED --> REFUNDED : ARBITRATE_REFUND (last edge)
+  //   lines 18-20: RELEASED / REFUNDED / EXPIRED --> [*] (terminals)
+  //   line 21: ``` (the closing fence)
+  // The edge-line count must equal the transition table's edge
+  // count — the same 14 the committed snapshot pins — and the
+  // segment asserts that here, outside the printed summary: a
+  // diagram whose shape broke would fail the demo itself, not
+  // just a test. The segment is pure: no escrow instance, no
+  // dispatch, no network, no randomness, no wall clock.
+  const stateDiagramText = stateDiagram();
+  const stateDiagramLines = stateDiagramText.split("\n");
+  const stateDiagramEdgeLines = stateDiagramLines.slice(3, -4);
+  const stateDiagramEdgeCount = stateDiagramEdgeLines.length;
+  const stateDiagramTerminalLines = stateDiagramLines.slice(-4, -1);
+  if (
+    stateDiagramLines.length !== 21 ||
+    stateDiagramLines[0] !== "```mermaid" ||
+    stateDiagramLines[1] !== "stateDiagram-v2" ||
+    stateDiagramLines[2] !== "    [*] --> CREATED" ||
+    stateDiagramEdgeCount !== transitionTable().length ||
+    stateDiagramEdgeLines[0] !== "    CREATED --> FUNDED : FUND" ||
+    stateDiagramEdgeLines[stateDiagramEdgeLines.length - 1] !==
+      "    DISPUTED --> REFUNDED : ARBITRATE_REFUND" ||
+    stateDiagramTerminalLines.join("\n") !==
+      "    RELEASED --> [*]\n    REFUNDED --> [*]\n    EXPIRED --> [*]" ||
+    stateDiagramLines[stateDiagramLines.length - 1] !== "```"
+  ) {
+    throw new Error(
+      "demo fixture broken: stateDiagram() output does not have the pinned shape (21 lines, mermaid fence, stateDiagram-v2 header, CREATED start, one edge line per transition-table edge, RELEASED/REFUNDED/EXPIRED terminals, closing fence)",
+    );
+  }
+  lines.push(
+    "",
+    "State diagram generation (stateDiagram from the transition table):",
+    `  stateDiagram(): ${stateDiagramLines.length} lines, ${stateDiagramEdgeCount} edges (generated from transitionTable() — the Mermaid block the README embeds verbatim)`,
+    `  first line: ${stateDiagramLines[0]}`,
+    `  second line: ${stateDiagramLines[1]}`,
+    `  initial transition (line 3): ${stateDiagramLines[2].trim()}`,
+    `  first edge (line 4): ${stateDiagramEdgeLines[0].trim()}`,
+    `  last edge (line 17): ${stateDiagramEdgeLines.at(-1)!.trim()}`,
+    `  terminal lines (lines 18-20): ${stateDiagramTerminalLines.map((line) => line.trim()).join(", ")}`,
+    `  last line: ${stateDiagramLines.at(-1)}`,
+  );
+
   return {
     escrow,
     report,
@@ -1503,6 +1587,8 @@ export function runDemo(): DemoResult {
     historyNdjsonRoundTripped,
     overdueCheckEscrow,
     overdueChecks,
+    stateDiagramText,
+    stateDiagramEdgeCount,
     lines,
   };
 }

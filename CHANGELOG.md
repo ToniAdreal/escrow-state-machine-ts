@@ -18,6 +18,21 @@ version changes.
 
 ### Added
 
+- A state-diagram generation segment closing the CLI demo:
+  `stateDiagram()` renders the transition table as the
+  Mermaid stateDiagram-v2 block the README embeds verbatim
+  (21 lines, 14 edge lines), printed as a summary — line
+  total, edge count, and the first, second, initial,
+  first-edge, last-edge, terminal, and last lines — and
+  asserted outside the printing that the edge count equals
+  `transitionTable()`'s edge count against hand-pinned
+  expectations cross-checked against the diagram tests and
+  the bench fixture. `DemoResult` exposes the full diagram
+  text and its edge count; the demo tests pin the generated
+  block line by line against a hand-written diagram, the
+  exact printed lines, the segment's closing position, and
+  its determinism across two runs. Demo and tests only; no
+  library behavior change.
 - Benchmark coverage for the README diagram sync check
   path: `readmeDiagramInSync()` with no arguments (imported
   directly from `src/diagram.ts`), checked on every iteration

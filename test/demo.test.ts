@@ -55,6 +55,7 @@ import {
   parseRetryAfter,
   restoreQuorum,
   settleRelease,
+  stateDiagram,
   transitionTable,
   verifyHistoryChain,
   verifySettlementWebhook,
@@ -1306,8 +1307,9 @@ test("demo shows history NDJSON round-trip: exported lines read back verbatim wi
   assert.deepEqual(historyFromNdjson(historyNdjson), historyNdjsonRoundTripped);
   assert.equal(historyToNdjson(historyNdjsonRoundTripped), historyNdjson);
   // The segment follows the settlement-split segment and prints
-  // its lines verbatim; the overdue-judgement segment now closes
-  // the demo after it (its own tests pin the closing position).
+  // its lines verbatim; the overdue-judgement segment follows it
+  // and the state-diagram segment now closes the demo after that
+  // (their own tests pin the closing position).
   const ndjsonAt = text.indexOf(
     "Audit history NDJSON round-trip (historyToNdjson / historyFromNdjson on the main escrow history):",
   );
@@ -1386,8 +1388,9 @@ test("demo shows overdue judgement: isOverdue false before, true at and after th
   for (const { at, overdue } of overdueChecks) {
     assert.equal(isOverdue(overdueCheckEscrow, new Date(at)), overdue);
   }
-  // The segment closes the demo: it follows the NDJSON segment,
-  // prints its lines verbatim, and its unchanged line is last.
+  // The segment follows the NDJSON segment and prints its lines
+  // verbatim; the state-diagram segment now closes the demo
+  // after it (its own tests pin the closing position).
   const overdueAt = text.indexOf(
     "Overdue judgement (isOverdue on a funded escrow at three fixed instants):",
   );
@@ -1418,9 +1421,15 @@ test("demo shows overdue judgement: isOverdue false before, true at and after th
       `  after deadline (${DEMO_OVERDUE_CHECK_AFTER_AT}): isOverdue -> true`,
     ),
   );
-  assert.equal(
-    lines[lines.length - 1],
+  const unchangedAt = lines.indexOf(
     "  escrow unchanged after the three judgements: still FUNDED (1 history entry) — a watchdog dispatches EXPIRE explicitly",
+  );
+  assert.ok(unchangedAt > 0, "overdue unchanged line must be printed");
+  assert.ok(
+    lines.indexOf(
+      "State diagram generation (stateDiagram from the transition table):",
+    ) > unchangedAt,
+    "state-diagram segment must follow the overdue-judgement segment",
   );
 });
 
@@ -1430,6 +1439,9 @@ test("demo overdue-judgement segment is deterministic: two runs print byte-ident
       ls.indexOf(
         "Overdue judgement (isOverdue on a funded escrow at three fixed instants):",
       ),
+      ls.indexOf(
+        "State diagram generation (stateDiagram from the transition table):",
+      ) - 1,
     );
   const a = runDemo();
   const b = runDemo();
@@ -1670,10 +1682,120 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
     ),
   );
   assert.ok(
-    out
-      .trimEnd()
-      .endsWith(
-        "escrow unchanged after the three judgements: still FUNDED (1 history entry) — a watchdog dispatches EXPIRE explicitly",
-      ),
+    out.includes(
+      "escrow unchanged after the three judgements: still FUNDED (1 history entry) — a watchdog dispatches EXPIRE explicitly",
+    ),
   );
+  // State-diagram tail: the closing segment renders the
+  // transition table as the README's Mermaid block and prints
+  // its summary — the demo ends on the closing-fence line.
+  assert.match(
+    out,
+    /State diagram generation \(stateDiagram from the transition table\):/,
+  );
+  assert.ok(
+    out.includes(
+      "  stateDiagram(): 21 lines, 14 edges (generated from transitionTable() — the Mermaid block the README embeds verbatim)",
+    ),
+  );
+  assert.ok(out.includes("  initial transition (line 3): [*] --> CREATED"));
+  assert.ok(
+    out.includes("  first edge (line 4): CREATED --> FUNDED : FUND"),
+  );
+  assert.ok(
+    out.includes(
+      "  last edge (line 17): DISPUTED --> REFUNDED : ARBITRATE_REFUND",
+    ),
+  );
+  assert.ok(out.trimEnd().endsWith("  last line: ```"));
+});
+
+test("demo shows the state diagram generation segment in-process: the generated block matches the hand-written diagram line by line", () => {
+  const { stateDiagramText, stateDiagramEdgeCount, lines } = runDemo();
+  const text = lines.join("\n");
+
+  // Hand-written expectations — the full 21-line Mermaid block
+  // written out here line by line from TRANSITIONS in
+  // src/stateMachine.ts, never derived by calling stateDiagram
+  // itself. test/diagram.test.ts and the bench stateDiagram
+  // fixture pin the same shape independently.
+  const EXPECTED_LINES = [
+    "```mermaid",
+    "stateDiagram-v2",
+    "    [*] --> CREATED",
+    "    CREATED --> FUNDED : FUND",
+    "    CREATED --> EXPIRED : EXPIRE",
+    "    FUNDED --> FUNDED : FUND",
+    "    FUNDED --> MILESTONE_SUBMITTED : SUBMIT_MILESTONE",
+    "    FUNDED --> DISPUTED : DISPUTE",
+    "    FUNDED --> EXPIRED : EXPIRE",
+    "    MILESTONE_SUBMITTED --> VERIFIED : VERIFY_PASS",
+    "    MILESTONE_SUBMITTED --> DISPUTED : VERIFY_FAIL",
+    "    MILESTONE_SUBMITTED --> DISPUTED : DISPUTE",
+    "    MILESTONE_SUBMITTED --> EXPIRED : EXPIRE",
+    "    VERIFIED --> RELEASED : RELEASE",
+    "    VERIFIED --> DISPUTED : DISPUTE",
+    "    DISPUTED --> RELEASED : ARBITRATE_RELEASE",
+    "    DISPUTED --> REFUNDED : ARBITRATE_REFUND",
+    "    RELEASED --> [*]",
+    "    REFUNDED --> [*]",
+    "    EXPIRED --> [*]",
+    "```",
+  ];
+  assert.deepEqual(stateDiagramText.split("\n"), EXPECTED_LINES);
+  // The shape the backlog pins: first line is the mermaid fence,
+  // the block carries the stateDiagram-v2 header, and the edge
+  // count equals the transition table's edge count.
+  assert.equal(stateDiagramText.split("\n")[0], "```mermaid");
+  assert.ok(stateDiagramText.includes("stateDiagram-v2"));
+  assert.equal(stateDiagramEdgeCount, 14);
+  assert.equal(stateDiagramEdgeCount, transitionTable().length);
+  // Cross-check against the library generator itself — the demo
+  // segment is not self-certifying.
+  assert.equal(stateDiagramText, stateDiagram());
+  // The segment closes the demo: it follows the
+  // overdue-judgement segment, prints its summary lines
+  // verbatim, and its last-line line is the demo's last line.
+  const diagramAt = text.indexOf(
+    "State diagram generation (stateDiagram from the transition table):",
+  );
+  assert.ok(
+    diagramAt >
+      text.indexOf(
+        "Overdue judgement (isOverdue on a funded escrow at three fixed instants):",
+      ),
+    "state-diagram segment must follow the overdue-judgement segment",
+  );
+  for (const line of [
+    "  stateDiagram(): 21 lines, 14 edges (generated from transitionTable() — the Mermaid block the README embeds verbatim)",
+    "  first line: ```mermaid",
+    "  second line: stateDiagram-v2",
+    "  initial transition (line 3): [*] --> CREATED",
+    "  first edge (line 4): CREATED --> FUNDED : FUND",
+    "  last edge (line 17): DISPUTED --> REFUNDED : ARBITRATE_REFUND",
+    "  terminal lines (lines 18-20): RELEASED --> [*], REFUNDED --> [*], EXPIRED --> [*]",
+  ]) {
+    assert.ok(text.includes(line), `missing diagram line: ${line}`);
+  }
+  assert.equal(lines[lines.length - 1], "  last line: ```");
+});
+
+test("demo state diagram generation segment is deterministic: two runs print byte-identical diagram lines", () => {
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf(
+        "State diagram generation (stateDiagram from the transition table):",
+      ),
+    );
+  const a = runDemo();
+  const b = runDemo();
+  const segA = segment(a.lines);
+  // Header + total / first / second / initial / first-edge /
+  // last-edge / terminal / last lines; every value is derived
+  // from the transition table alone, so no normalization is
+  // needed.
+  assert.equal(segA.length, 9);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.equal(a.stateDiagramText, b.stateDiagramText);
+  assert.equal(a.stateDiagramEdgeCount, b.stateDiagramEdgeCount);
 });
