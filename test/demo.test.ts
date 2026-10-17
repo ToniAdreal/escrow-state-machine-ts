@@ -22,6 +22,9 @@ import {
   DEMO_FANOUT_EVENT_ID,
   DEMO_FRESH_ESCROW_ID,
   DEMO_FRESH_FUND_AT,
+  DEMO_MONEY_GUARD_ERROR,
+  DEMO_MONEY_GUARD_ILLEGAL_AMOUNTS,
+  DEMO_MONEY_GUARD_LEGAL_AMOUNTS,
   DEMO_OVERDUE_CHECK_AFTER_AT,
   DEMO_OVERDUE_CHECK_AT_DEADLINE,
   DEMO_OVERDUE_CHECK_BEFORE_AT,
@@ -59,6 +62,7 @@ import {
 import {
   Escrow,
   allowedEvents,
+  assertNonNegativeMoney,
   depositAmountFromHistory,
   historyFromNdjson,
   historyToNdjson,
@@ -1897,11 +1901,10 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
       `  original escrow after the round-trip: still RELEASED with its deadline ${DEMO_REBUILT_DEADLINE} intact (the round-trip reads the escrow and dispatches nothing)`,
     ),
   );
-  // Machine-readable transition-table tail: the closing
-  // segment serializes the same transition table as
-  // canonical JSON — the form a caller feeds to static
-  // validation or code generation — and ends the demo on
-  // its last-edge line.
+  // Machine-readable transition-table segment: it
+  // serializes the same transition table as canonical
+  // JSON — the form a caller feeds to static validation
+  // or code generation.
   assert.match(
     out,
     /Machine-readable transition table \(transitionTableJson from the transition table\):/,
@@ -1917,10 +1920,31 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
     ),
   );
   assert.ok(out.includes("  first edge: CREATED --FUND--> FUNDED"));
+  assert.ok(out.includes("  last edge: DISPUTED --ARBITRATE_REFUND--> REFUNDED"));
+  // Money-guard tail: the closing segment runs the shared
+  // amount boundary check over its fixed legal corpus and
+  // its illegal pair, and ends the demo on the NaN
+  // rejection line.
+  assert.match(
+    out,
+    /Money guard \(assertNonNegativeMoney on the shared amount boundary\):/,
+  );
+  assert.ok(
+    out.includes(
+      "  accepted: 0, 0.01, 10630, 1000000.25 — every legal amount passes without throwing (zero, a cent, the golden deposit, a large amount with cents)",
+    ),
+  );
+  assert.ok(
+    out.includes(
+      '  rejected: -1 -> "amount must be a finite non-negative number"',
+    ),
+  );
   assert.ok(
     out
       .trimEnd()
-      .endsWith("  last edge: DISPUTED --ARBITRATE_REFUND--> REFUNDED"),
+      .endsWith(
+        '  rejected: NaN -> "amount must be a finite non-negative number"',
+      ),
   );
 });
 
@@ -2356,6 +2380,15 @@ test("demo shows the snapshot round-trip: Escrow.toJSON/fromJSON restores state,
       ),
     "machine-readable transition-table segment must follow the snapshot round-trip segment",
   );
+  assert.ok(
+    lines.indexOf(
+      "Money guard (assertNonNegativeMoney on the shared amount boundary):",
+    ) >
+      lines.indexOf(
+        "Machine-readable transition table (transitionTableJson from the transition table):",
+      ),
+    "money-guard segment must follow the machine-readable transition-table segment",
+  );
 });
 
 test("demo snapshot round-trip segment is deterministic: two runs print byte-identical snapshot lines", async () => {
@@ -2437,9 +2470,9 @@ test("demo shows the machine-readable transition table: transitionTableJson pars
   // Cross-check against the library export itself — the demo
   // segment is not self-certifying.
   assert.equal(transitionTableJsonText, transitionTableJson());
-  // The segment closes the demo: it follows the snapshot
-  // round-trip segment, prints its lines verbatim, and its
-  // last-edge line is the demo's last line.
+  // The segment follows the snapshot round-trip segment
+  // and precedes the closing money-guard segment; it
+  // prints its lines verbatim.
   const tableAt = text.indexOf(
     "Machine-readable transition table (transitionTableJson from the transition table):",
   );
@@ -2450,17 +2483,20 @@ test("demo shows the machine-readable transition table: transitionTableJson pars
       ),
     "machine-readable transition-table segment must follow the snapshot round-trip segment",
   );
+  assert.ok(
+    text.indexOf(
+      "Money guard (assertNonNegativeMoney on the shared amount boundary):",
+    ) > tableAt,
+    "money-guard segment must follow the machine-readable transition-table segment",
+  );
   for (const line of [
     "  transitionTableJson(): 1160 bytes, 14 edges (canonical JSON — the machine-readable form of the same table stateDiagram() renders for humans, byte-identical to the committed transition-table snapshot)",
     "  parsed back: 14 edges, every (from, event, to) triple matches transitionTable() edge for edge",
     "  first edge: CREATED --FUND--> FUNDED",
+    "  last edge: DISPUTED --ARBITRATE_REFUND--> REFUNDED",
   ]) {
     assert.ok(text.includes(line), `missing transition-table line: ${line}`);
   }
-  assert.equal(
-    lines[lines.length - 1],
-    "  last edge: DISPUTED --ARBITRATE_REFUND--> REFUNDED",
-  );
 });
 
 test("demo machine-readable transition table segment is deterministic: two runs print byte-identical table lines", async () => {
@@ -2469,6 +2505,9 @@ test("demo machine-readable transition table segment is deterministic: two runs 
       ls.indexOf(
         "Machine-readable transition table (transitionTableJson from the transition table):",
       ),
+      ls.indexOf(
+        "Money guard (assertNonNegativeMoney on the shared amount boundary):",
+      ) - 1,
     );
   const a = await runDemo();
   const b = await runDemo();
@@ -2483,4 +2522,102 @@ test("demo machine-readable transition table segment is deterministic: two runs 
   assert.equal(a.transitionTableJsonBytes, b.transitionTableJsonBytes);
   assert.deepEqual(a.transitionTableEdges, b.transitionTableEdges);
   assert.equal(a.transitionTableEdgeCount, b.transitionTableEdgeCount);
+});
+
+test("demo shows the money guard: assertNonNegativeMoney accepts the legal corpus and rejects the illegal pair with the pinned error", async () => {
+  const { moneyGuardLegalAmounts, moneyGuardRejections, lines } =
+    await runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned expectations — written out here from the
+  // documented semantics in src/stateMachine.ts, never
+  // derived by calling the guard to produce them.
+  // test/inputValidation.test.ts and the bench
+  // assertNonNegativeMoney fixture pin the same corpora
+  // and the same error message independently.
+  assert.equal(
+    DEMO_MONEY_GUARD_ERROR,
+    "amount must be a finite non-negative number",
+  );
+  assert.deepEqual(DEMO_MONEY_GUARD_LEGAL_AMOUNTS, [0, 0.01, 10630, 1000000.25]);
+  assert.deepEqual(moneyGuardLegalAmounts, [0, 0.01, 10630, 1000000.25]);
+  assert.equal(DEMO_MONEY_GUARD_ILLEGAL_AMOUNTS.length, 2);
+  assert.equal(DEMO_MONEY_GUARD_ILLEGAL_AMOUNTS[0], -1);
+  assert.ok(Number.isNaN(DEMO_MONEY_GUARD_ILLEGAL_AMOUNTS[1]));
+  assert.equal(moneyGuardRejections.length, 2);
+  assert.equal(moneyGuardRejections[0].value, -1);
+  assert.ok(Number.isNaN(moneyGuardRejections[1].value));
+  for (const rejection of moneyGuardRejections) {
+    assert.equal(
+      rejection.message,
+      "amount must be a finite non-negative number",
+    );
+  }
+  // Cross-check against the library export itself — the
+  // demo segment is not self-certifying: the legal corpus
+  // passes the real guard and each illegal value throws
+  // the exact pinned message from it.
+  for (const value of moneyGuardLegalAmounts) {
+    assertNonNegativeMoney("amount", value);
+  }
+  for (const rejection of moneyGuardRejections) {
+    assert.throws(
+      () => assertNonNegativeMoney("amount", rejection.value),
+      (err: unknown) =>
+        err instanceof Error &&
+        err.message === "amount must be a finite non-negative number",
+    );
+  }
+  // The segment closes the demo: it follows the
+  // machine-readable transition-table segment, prints its
+  // lines verbatim, and its NaN rejection line is the
+  // demo's last line.
+  const guardAt = text.indexOf(
+    "Money guard (assertNonNegativeMoney on the shared amount boundary):",
+  );
+  assert.ok(
+    guardAt >
+      text.indexOf(
+        "Machine-readable transition table (transitionTableJson from the transition table):",
+      ),
+    "money-guard segment must follow the machine-readable transition-table segment",
+  );
+  for (const line of [
+    "  accepted: 0, 0.01, 10630, 1000000.25 — every legal amount passes without throwing (zero, a cent, the golden deposit, a large amount with cents)",
+    '  rejected: -1 -> "amount must be a finite non-negative number"',
+  ]) {
+    assert.ok(text.includes(line), `missing money-guard line: ${line}`);
+  }
+  assert.equal(
+    lines[lines.length - 1],
+    '  rejected: NaN -> "amount must be a finite non-negative number"',
+  );
+});
+
+test("demo money guard segment is deterministic: two runs print byte-identical guard lines", async () => {
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf(
+        "Money guard (assertNonNegativeMoney on the shared amount boundary):",
+      ),
+    );
+  const a = await runDemo();
+  const b = await runDemo();
+  const segA = segment(a.lines);
+  // Header + the accepted line + the two rejected lines;
+  // every value is derived from the fixed corpora alone,
+  // so no normalization is needed.
+  assert.equal(segA.length, 4);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(a.moneyGuardLegalAmounts, b.moneyGuardLegalAmounts);
+  assert.equal(a.moneyGuardRejections.length, b.moneyGuardRejections.length);
+  for (let i = 0; i < a.moneyGuardRejections.length; i++) {
+    assert.ok(
+      Object.is(a.moneyGuardRejections[i].value, b.moneyGuardRejections[i].value),
+    );
+    assert.equal(
+      a.moneyGuardRejections[i].message,
+      b.moneyGuardRejections[i].message,
+    );
+  }
 });

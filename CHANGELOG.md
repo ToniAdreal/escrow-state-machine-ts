@@ -18,6 +18,21 @@ version changes.
 
 ### Added
 
+- A money-guard segment closing the CLI demo:
+  `assertNonNegativeMoney()` — the boundary check every
+  amount entry point shares — is run over a fixed legal
+  corpus (0, 0.01, the golden deposit 10630,
+  1000000.25), which passes without throwing, and over
+  a fixed illegal pair (-1 and NaN), each rejected with
+  the exact `amount must be a finite non-negative
+  number` error, both sides asserted outside the
+  printing against hand-pinned expectations
+  cross-checked against the input-validation tests and
+  the bench money-guard fixture. `DemoResult` exposes
+  the legal corpus and the rejections; the demo tests
+  pin the corpora, the exact error message, the printed
+  lines, and the segment's closing position. Demo and
+  tests only; no library behavior change.
 - A machine-readable transition-table segment closing
   the CLI demo: `transitionTableJson()` serializes the
   transition table as canonical JSON — 1,160 bytes, 14

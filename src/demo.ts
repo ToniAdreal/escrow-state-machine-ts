@@ -150,7 +150,7 @@
  * bare history cannot, the contrast the rebuild segment
  * above sets up; the fidelity is asserted outside the
  * printing.
- * The demo finally closes with a machine-readable
+ * The demo then shows a machine-readable
  * transition-table segment: `transitionTableJson()`
  * serializes the same transition table the state-diagram
  * segment renders for humans as canonical JSON — the form
@@ -161,6 +161,17 @@
  * edge for edge (every `from` / `event` / `to` triple), with
  * the edge total hand-pinned at the same 14 the committed
  * snapshot and the diagram tests pin.
+ * The demo finally closes with a money-guard segment:
+ * `assertNonNegativeMoney()` — the boundary check every
+ * amount entry point shares — is run over a fixed legal
+ * corpus (0, a cent, the golden deposit, a large amount
+ * with cents), which passes without throwing, and over a
+ * fixed illegal pair (a negative amount and NaN), each
+ * rejected with the exact
+ * `amount must be a finite non-negative number` error —
+ * illegal money stopped at the boundary, before any
+ * accounting sees it; both sides are asserted outside the
+ * printing against hand-pinned expectations.
  *
  * Usage: `npm run demo` (builds with tsc, then runs node on the compiled
  * output). Zero runtime dependencies: this file only imports the library
@@ -177,6 +188,7 @@ import {
   Escrow,
   SettlementEventDedupe,
   actOnStaleEscrows,
+  assertNonNegativeMoney,
   allowedEvents,
   buildSettlementReport,
   buildSettlementReports,
@@ -549,6 +561,33 @@ export const DEMO_SNAPSHOT_SERIALIZED_BYTES = 1344;
  */
 export const DEMO_TRANSITION_TABLE_EDGE_COUNT = 14;
 export const DEMO_TRANSITION_TABLE_JSON_BYTES = 1160;
+
+/**
+ * Money-guard expectations for the closing segment:
+ * `assertNonNegativeMoney(name, value)` is the boundary
+ * check every amount entry point shares — a monetary
+ * input must be a finite, non-negative number, anything
+ * else throws `${name} must be a finite non-negative
+ * number`. Hand-pinned from the documented semantics in
+ * src/stateMachine.ts, cross-checked against
+ * test/inputValidation.test.ts and bench's
+ * assertNonNegativeMoney fixture, never derived by
+ * calling the guard itself:
+ * - legal (must pass without throwing), under the name
+ *   "amount": 0, 0.01 (a cent), 10630 (the golden
+ *   deposit), 1000000.25 (a large amount with cents)
+ * - illegal (must throw exactly
+ *   {@link DEMO_MONEY_GUARD_ERROR}): -1 (a negative
+ *   amount) and NaN
+ * The segment is pure: no escrow instance, no dispatch,
+ * no network, no randomness, no wall clock.
+ */
+export const DEMO_MONEY_GUARD_ERROR =
+  "amount must be a finite non-negative number";
+export const DEMO_MONEY_GUARD_LEGAL_AMOUNTS: readonly number[] = [
+  0, 0.01, 10630, 1000000.25,
+];
+export const DEMO_MONEY_GUARD_ILLEGAL_AMOUNTS: readonly number[] = [-1, NaN];
 
 const steps: Array<{
   event: EscrowEvent;
@@ -938,6 +977,20 @@ export interface DemoResult {
    * `transitionTable().length`.
    */
   transitionTableEdgeCount: number;
+  /**
+   * Legal amounts the closing money-guard segment ran
+   * through `assertNonNegativeMoney("amount", …)`:
+   * {@link DEMO_MONEY_GUARD_LEGAL_AMOUNTS} — every one
+   * passed without throwing.
+   */
+  moneyGuardLegalAmounts: readonly number[];
+  /**
+   * Rejections from the closing money-guard segment, in
+   * corpus order: each illegal amount with the exact
+   * error message the guard threw for it
+   * ({@link DEMO_MONEY_GUARD_ERROR}).
+   */
+  moneyGuardRejections: Array<{ value: number; message: string }>;
   lines: string[];
 }
 
@@ -2309,6 +2362,61 @@ export async function runDemo(): Promise<DemoResult> {
     `  last edge: ${transitionTableEdges.at(-1)!.from} --${transitionTableEdges.at(-1)!.event}--> ${transitionTableEdges.at(-1)!.to}`,
   );
 
+  // --- Money guard: assertNonNegativeMoney (closing) ---
+  // Every amount entry point in the segments above — a
+  // FUND dispatch, a maxDeposit cap, a settlement input —
+  // funnels through one shared boundary check:
+  // `assertNonNegativeMoney(name, value)` requires a
+  // finite, non-negative number and throws
+  // `${name} must be a finite non-negative number` on
+  // anything else, so illegal money fails fast at the
+  // boundary instead of silently poisoning downstream
+  // accounting. The demo runs the guard directly, under
+  // the name "amount", over the fixed legal corpus the
+  // bench fixture also pins (0, a cent, the golden
+  // deposit, a large amount with cents) and over a fixed
+  // illegal pair (a negative amount and NaN).
+  // Hand-pinned expectations — written from the
+  // documented semantics in src/stateMachine.ts and
+  // cross-checked against test/inputValidation.test.ts,
+  // never derived by calling the guard itself: the legal
+  // corpus passes without throwing, and each illegal
+  // value throws exactly DEMO_MONEY_GUARD_ERROR. Both
+  // sides are asserted HERE, outside the printing — a
+  // guard that started accepting a negative amount, or
+  // whose error wording drifted, would fail the demo
+  // itself, not just a test. The segment is pure: no
+  // escrow instance, no dispatch, no network, no
+  // randomness, no wall clock.
+  const moneyGuardLegalAmounts = DEMO_MONEY_GUARD_LEGAL_AMOUNTS;
+  for (const value of moneyGuardLegalAmounts) {
+    assertNonNegativeMoney("amount", value);
+  }
+  const moneyGuardRejections: Array<{ value: number; message: string }> = [];
+  for (const value of DEMO_MONEY_GUARD_ILLEGAL_AMOUNTS) {
+    let message: string | undefined;
+    try {
+      assertNonNegativeMoney("amount", value);
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    if (message !== DEMO_MONEY_GUARD_ERROR) {
+      throw new Error(
+        "demo fixture broken: assertNonNegativeMoney did not reject an illegal amount with the pinned error (amount must be a finite non-negative number)",
+      );
+    }
+    moneyGuardRejections.push({ value, message });
+  }
+  lines.push(
+    "",
+    "Money guard (assertNonNegativeMoney on the shared amount boundary):",
+    `  accepted: ${moneyGuardLegalAmounts.join(", ")} — every legal amount passes without throwing (zero, a cent, the golden deposit, a large amount with cents)`,
+    ...moneyGuardRejections.map(
+      (rejection) =>
+        `  rejected: ${String(rejection.value)} -> "${rejection.message}"`,
+    ),
+  );
+
   return {
     escrow,
     report,
@@ -2366,6 +2474,8 @@ export async function runDemo(): Promise<DemoResult> {
     transitionTableJsonBytes,
     transitionTableEdges,
     transitionTableEdgeCount,
+    moneyGuardLegalAmounts,
+    moneyGuardRejections,
     lines,
   };
 }
