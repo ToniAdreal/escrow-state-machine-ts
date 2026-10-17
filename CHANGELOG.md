@@ -18,6 +18,26 @@ version changes.
 
 ### Added
 
+- A settlement webhook fan-out delivery segment in the CLI
+  demo (after the batch webhooks section):
+  `deliverSettlementWebhookToMany` delivers the main escrow's
+  settlement report as one logical event (shared fixed
+  `eventId` / `at`) to three fixed endpoints through an
+  injected deterministic fake `fetch` installed on
+  `globalThis` for the segment only (zero network, the
+  original restored afterwards), each endpoint with its own
+  demo-only secret — 3 delivered / 0 failed, one attempt at
+  status 200 per endpoint, byte-identical captured bodies,
+  and each signature verifiable only under its own endpoint's
+  secret, all asserted outside the printing against
+  hand-pinned expectations cross-checked against the fan-out
+  tests and the bench fixture. Because delivery is
+  asynchronous, `runDemo` is now async (its tests await it).
+  `DemoResult` exposes the aggregate result and the captured
+  calls; the demo tests pin the aggregate, the shared body,
+  the per-endpoint signatures, the exact printed lines, and
+  the segment's position. Demo and tests only; no library
+  behavior change.
 - A state-diagram generation segment closing the CLI demo:
   `stateDiagram()` renders the transition table as the
   Mermaid stateDiagram-v2 block the README embeds verbatim

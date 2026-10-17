@@ -17,6 +17,9 @@ import {
   DEMO_EXPIRABLE_DEADLINE,
   DEMO_EXPIRABLE_ESCROW_ID,
   DEMO_EXPIRABLE_FUND_AT,
+  DEMO_FANOUT_AT,
+  DEMO_FANOUT_ENDPOINTS,
+  DEMO_FANOUT_EVENT_ID,
   DEMO_FRESH_ESCROW_ID,
   DEMO_FRESH_FUND_AT,
   DEMO_OVERDUE_CHECK_AFTER_AT,
@@ -65,8 +68,8 @@ const repoRoot = path.dirname(
   path.dirname(path.dirname(fileURLToPath(import.meta.url))),
 ); // dist/test/*.test.js -> repo root
 
-test("demo runs the full CREATED -> RELEASED chain in-process without throwing", () => {
-  const { escrow, report } = runDemo();
+test("demo runs the full CREATED -> RELEASED chain in-process without throwing", async () => {
+  const { escrow, report } = await runDemo();
 
   assert.equal(escrow.id, DEMO_ESCROW_ID);
   assert.equal(escrow.state, "RELEASED");
@@ -85,8 +88,8 @@ test("demo runs the full CREATED -> RELEASED chain in-process without throwing",
   assert.equal(report.outcome, "released");
 });
 
-test("demo settlement numbers are self-consistent with the golden deposit", () => {
-  const { report } = runDemo();
+test("demo settlement numbers are self-consistent with the golden deposit", async () => {
+  const { report } = await runDemo();
 
   // Golden vector: deposit 10,630; 5% pro fee -> platform 531.50,
   // creator 10,098.50, referrer 0, sponsor -10,630.
@@ -106,9 +109,9 @@ test("demo settlement numbers are self-consistent with the golden deposit", () =
   });
 });
 
-test("demo verifies the main history's hash chain and detects a tampered FUND amount on a detached copy", () => {
+test("demo verifies the main history's hash chain and detects a tampered FUND amount on a detached copy", async () => {
   const { escrow, historyChainVerified, tamperedChainVerified, tamperedFundAmount } =
-    runDemo();
+    await runDemo();
 
   // The intact chain passes, both as reported by the demo and on an
   // independent re-verification of the escrow's own history.
@@ -133,8 +136,8 @@ test("demo verifies the main history's hash chain and detects a tampered FUND am
   );
 });
 
-test("demo lines print the audit hash chain section between the settlement report and the webhook", () => {
-  const { lines } = runDemo();
+test("demo lines print the audit hash chain section between the settlement report and the webhook", async () => {
+  const { lines } = await runDemo();
   const text = lines.join("\n");
 
   assert.match(text, /Audit hash chain \(verifyHistoryChain on the main escrow history\):/);
@@ -161,8 +164,8 @@ test("demo lines print the audit hash chain section between the settlement repor
   assert.ok(reportAt < chainAt && chainAt < webhookAt);
 });
 
-test("demo builds a settlement webhook from the report and self-verifies it", () => {
-  const { webhook, webhookVerified } = runDemo();
+test("demo builds a settlement webhook from the report and self-verifies it", async () => {
+  const { webhook, webhookVerified } = await runDemo();
 
   // Payload field set / values mirror the webhooks test fixture shape:
   // fixed eventId + fixed `at`, released outcome with its release path.
@@ -215,8 +218,8 @@ test("demo builds a settlement webhook from the report and self-verifies it", ()
   );
 });
 
-test("demo lines print the webhook build + verify section", () => {
-  const { lines } = runDemo();
+test("demo lines print the webhook build + verify section", async () => {
+  const { lines } = await runDemo();
   const text = lines.join("\n");
 
   assert.match(
@@ -232,8 +235,8 @@ test("demo lines print the webhook build + verify section", () => {
   assert.ok(text.includes("  verifySettlementWebhook: ok"));
 });
 
-test("demo receiver dedupe counts the main webhook eventId new, duplicate, then new after the TTL", () => {
-  const { webhookDedupe } = runDemo();
+test("demo receiver dedupe counts the main webhook eventId new, duplicate, then new after the TTL", async () => {
+  const { webhookDedupe } = await runDemo();
 
   // Three deliveries of evt_demo_settlement_001 on the fixed clock:
   // first sighting is a miss (book it), the immediate redelivery is
@@ -249,8 +252,8 @@ test("demo receiver dedupe counts the main webhook eventId new, duplicate, then 
   assert.equal(DEMO_DEDUPE_TTL_MS, 3_600_000);
 });
 
-test("demo lines print the receiver dedupe section", () => {
-  const { lines } = runDemo();
+test("demo lines print the receiver dedupe section", async () => {
+  const { lines } = await runDemo();
   const text = lines.join("\n");
 
   assert.match(
@@ -281,8 +284,8 @@ test("demo lines print the receiver dedupe section", () => {
   assert.ok(webhookAt < dedupeAt && dedupeAt < disputeAt);
 });
 
-test("demo shows Retry-After parsing: both hint forms normalize to milliseconds on a fixed clock", () => {
-  const { retryAfterParsed, lines } = runDemo();
+test("demo shows Retry-After parsing: both hint forms normalize to milliseconds on a fixed clock", async () => {
+  const { retryAfterParsed, lines } = await runDemo();
   const text = lines.join("\n");
 
   // Hand-pinned expectations — written out here from the documented
@@ -341,14 +344,14 @@ test("demo shows Retry-After parsing: both hint forms normalize to milliseconds 
   assert.ok(dedupeAt < retryAt && retryAt < disputeAt);
 });
 
-test("demo Retry-After segment is deterministic: two runs print byte-identical parsing lines", () => {
+test("demo Retry-After segment is deterministic: two runs print byte-identical parsing lines", async () => {
   const segment = (ls: string[]) =>
     ls.slice(
       ls.indexOf("Retry-After parsing (parseRetryAfter on a fixed clock):"),
       ls.indexOf("Dispute branch (DISPUTE -> quorum arbitration -> refund):") - 1,
     );
-  const a = runDemo();
-  const b = runDemo();
+  const a = await runDemo();
+  const b = await runDemo();
   const segA = segment(a.lines);
   // Header + fixed-now line + 7 corpus lines + the sender-rule line;
   // every value is derived from the fixed corpus and the injected
@@ -358,8 +361,8 @@ test("demo Retry-After segment is deterministic: two runs print byte-identical p
   assert.deepEqual(a.retryAfterParsed, b.retryAfterParsed);
 });
 
-test("demo dispute branch reaches DISPUTED, is refused below quorum, then refunds at quorum", () => {
-  const { disputeEscrow, disputeQuorum, arbitrationRejection } = runDemo();
+test("demo dispute branch reaches DISPUTED, is refused below quorum, then refunds at quorum", async () => {
+  const { disputeEscrow, disputeQuorum, arbitrationRejection } = await runDemo();
 
   assert.equal(disputeEscrow.id, DEMO_DISPUTE_ESCROW_ID);
   assert.equal(disputeEscrow.state, "REFUNDED");
@@ -400,13 +403,13 @@ test("demo dispute branch reaches DISPUTED, is refused below quorum, then refund
   ]);
 });
 
-test("demo quorum restore preserves the mid-collection count across a JSON round-trip", () => {
+test("demo quorum restore preserves the mid-collection count across a JSON round-trip", async () => {
   const {
     disputeQuorum,
     quorumSnapshot,
     quorumRestoredApprovalCount,
     quorumRestoredHasQuorum,
-  } = runDemo();
+  } = await runDemo();
 
   // The snapshot was taken after exactly one approval (arb-1 at the
   // first fixed approval timestamp), under the demo config.
@@ -445,8 +448,8 @@ test("demo quorum restore preserves the mid-collection count across a JSON round
   ]);
 });
 
-test("demo lines print the quorum snapshot restore segment between the first vote and the refused attempt", () => {
-  const { lines } = runDemo();
+test("demo lines print the quorum snapshot restore segment between the first vote and the refused attempt", async () => {
+  const { lines } = await runDemo();
   const text = lines.join("\n");
 
   assert.ok(
@@ -475,8 +478,8 @@ test("demo lines print the quorum snapshot restore segment between the first vot
   );
 });
 
-test("demo dispute refund report returns the full deposit to the sponsor", () => {
-  const { disputeReport } = runDemo();
+test("demo dispute refund report returns the full deposit to the sponsor", async () => {
+  const { disputeReport } = await runDemo();
 
   assert.equal(disputeReport.escrowId, DEMO_DISPUTE_ESCROW_ID);
   assert.equal(disputeReport.outcome, "refunded");
@@ -489,8 +492,8 @@ test("demo dispute refund report returns the full deposit to the sponsor", () =>
   assert.deepEqual(byParty, { sponsor: 0, creator: 0, platform: 0, referrer: 0 });
 });
 
-test("demo lines print the dispute / quorum / refund branch", () => {
-  const { lines } = runDemo();
+test("demo lines print the dispute / quorum / refund branch", async () => {
+  const { lines } = await runDemo();
   const text = lines.join("\n");
 
   assert.match(text, /Dispute branch \(DISPUTE -> quorum arbitration -> refund\):/);
@@ -518,8 +521,8 @@ test("demo lines print the dispute / quorum / refund branch", () => {
   assert.ok(text.includes(`Outcome: refunded`));
 });
 
-test("demo batch section isolates the still-FUNDED escrow's error and still reports the escrow after it", () => {
-  const { pendingEscrow, batchResults } = runDemo();
+test("demo batch section isolates the still-FUNDED escrow's error and still reports the escrow after it", async () => {
+  const { pendingEscrow, batchResults } = await runDemo();
 
   assert.equal(pendingEscrow.id, DEMO_PENDING_ESCROW_ID);
   assert.equal(pendingEscrow.state, "FUNDED");
@@ -542,8 +545,8 @@ test("demo batch section isolates the still-FUNDED escrow's error and still repo
   assert.equal(batchResults[2].error, undefined);
 });
 
-test("demo batch summary aggregates only the successful reports (hand-computed totals)", () => {
-  const { batchSummary } = runDemo();
+test("demo batch summary aggregates only the successful reports (hand-computed totals)", async () => {
+  const { batchSummary } = await runDemo();
 
   // Golden deposit 10,630 on both terminal escrows; the FUNDED error
   // entry is counted but contributes nothing to any money figure.
@@ -572,8 +575,8 @@ test("demo batch summary aggregates only the successful reports (hand-computed t
   });
 });
 
-test("demo lines print the batch reports + summary section", () => {
-  const { lines } = runDemo();
+test("demo lines print the batch reports + summary section", async () => {
+  const { lines } = await runDemo();
   const text = lines.join("\n");
 
   assert.match(
@@ -612,8 +615,8 @@ test("demo lines print the batch reports + summary section", () => {
   );
 });
 
-test("demo batch webhooks sign each successful report with a distinct factory eventId and isolate the error entry", () => {
-  const { batchResults, batchWebhooks, batchWebhooksVerified } = runDemo();
+test("demo batch webhooks sign each successful report with a distinct factory eventId and isolate the error entry", async () => {
+  const { batchResults, batchWebhooks, batchWebhooksVerified } = await runDemo();
 
   // Same order as the batch reports: released -> error -> refunded.
   // The batch results go straight into buildSettlementWebhooks.
@@ -679,8 +682,8 @@ test("demo batch webhooks sign each successful report with a distinct factory ev
   }
 });
 
-test("demo lines print the batch webhooks section with per-item isolation and re-verification", () => {
-  const { lines } = runDemo();
+test("demo lines print the batch webhooks section with per-item isolation and re-verification", async () => {
+  const { lines } = await runDemo();
   const text = lines.join("\n");
 
   assert.match(
@@ -709,9 +712,93 @@ test("demo lines print the batch webhooks section with per-item isolation and re
   );
 });
 
-test("demo watchdog screening selects disjoint stale/expired subsets and expires only the stale escrow", () => {
+test("demo fan-out delivers the main report to every fixed endpoint with a shared body and per-endpoint signatures", async () => {
+  const { fanoutResult, fanoutCalls } = await runDemo();
+
+  // Hand-pinned aggregate: 3 fixed endpoints, each answering 200 on
+  // its first attempt through the fake fetch — delivered 3,
+  // failed 0, results in endpoint order. Expectations are written
+  // from src/webhooks.ts's documented fan-out semantics and
+  // cross-checked against test/webhookFanout.test.ts, never
+  // derived by calling the fan-out here a second time.
+  assert.equal(DEMO_FANOUT_ENDPOINTS.length, 3);
+  assert.deepEqual(
+    fanoutResult.results,
+    DEMO_FANOUT_ENDPOINTS.map((endpoint) => ({
+      url: endpoint.url,
+      ok: true,
+      attempts: 1,
+      status: 200,
+    })),
+  );
+  assert.equal(fanoutResult.delivered, 3);
+  assert.equal(fanoutResult.failed, 0);
+  assert.equal(fanoutResult.delivered + fanoutResult.failed, 3);
+  // One logical event: every captured call carries byte-identical
+  // body bytes naming the shared fixed eventId / at and the main
+  // escrow, while the signatures are pairwise distinct — signed
+  // independently per endpoint.
+  assert.equal(fanoutCalls.length, 3);
+  assert.ok(fanoutCalls.every((call) => call.body === fanoutCalls[0].body));
+  const sharedPayload = JSON.parse(fanoutCalls[0].body);
+  assert.equal(sharedPayload.eventId, DEMO_FANOUT_EVENT_ID);
+  assert.equal(sharedPayload.at, DEMO_FANOUT_AT);
+  assert.equal(sharedPayload.escrowId, DEMO_ESCROW_ID);
+  assert.equal(new Set(fanoutCalls.map((call) => call.signature)).size, 3);
+  // Each signature verifies under its own endpoint's secret only.
+  for (const [i, endpoint] of DEMO_FANOUT_ENDPOINTS.entries()) {
+    const call = fanoutCalls.find((c) => c.url === endpoint.url);
+    assert.ok(call, `missing fan-out call for ${endpoint.url}`);
+    assert.ok(verifySettlementWebhook(call.body, call.signature, endpoint.secret));
+    for (const [j, other] of DEMO_FANOUT_ENDPOINTS.entries()) {
+      if (j === i) continue;
+      assert.equal(
+        verifySettlementWebhook(call.body, call.signature, other.secret),
+        false,
+      );
+    }
+  }
+});
+
+test("demo lines print the fan-out delivery section after the batch webhooks and before the watchdog screening", async () => {
+  const { lines } = await runDemo();
+  const text = lines.join("\n");
+
+  assert.match(
+    text,
+    /Settlement webhook fan-out \(deliverSettlementWebhookToMany via fake fetch, zero network\):/,
+  );
+  assert.ok(
+    text.includes(
+      `  one logical event: eventId ${DEMO_FANOUT_EVENT_ID}, at ${DEMO_FANOUT_AT} — the payload body is built once and shared by every endpoint, signed per endpoint with its own secret`,
+    ),
+  );
+  for (const endpoint of DEMO_FANOUT_ENDPOINTS) {
+    assert.ok(
+      text.includes(`  ${endpoint.url}: ok true — attempts 1, status 200`),
+      `missing fan-out line for ${endpoint.url}`,
+    );
+  }
+  assert.ok(
+    text.includes(
+      "  fan-out: 3 endpoints, 3 delivered, 0 failed — every endpoint received byte-identical body bytes, each signature verifies under its own endpoint's secret only",
+    ),
+  );
+  const fanoutAt = text.indexOf("Settlement webhook fan-out (deliverSettlementWebhookToMany");
+  assert.ok(
+    fanoutAt >
+      text.indexOf("Batch settlement webhooks (batch reports -> per-item signed webhooks):"),
+    "fan-out segment must follow the batch webhooks segment",
+  );
+  assert.ok(
+    text.indexOf("Watchdog screening (stale dwell axis") > fanoutAt,
+    "fan-out segment must precede the watchdog screening segment",
+  );
+});
+
+test("demo watchdog screening selects disjoint stale/expired subsets and expires only the stale escrow", async () => {
   const { watchdogEscrows, staleSelected, expiredSelected, staleActionResults } =
-    runDemo();
+    await runDemo();
 
   // Screening batch in fixture order: stale-only, expired-only, neither.
   assert.deepEqual(
@@ -784,8 +871,8 @@ test("demo watchdog screening selects disjoint stale/expired subsets and expires
   assert.equal(expireEntry.actor, "watchdog");
 });
 
-test("demo lines print the watchdog screening section after the batch webhooks", () => {
-  const { lines } = runDemo();
+test("demo lines print the watchdog screening section after the batch webhooks", async () => {
+  const { lines } = await runDemo();
   const text = lines.join("\n");
 
   assert.match(
@@ -838,13 +925,13 @@ test("demo lines print the watchdog screening section after the batch webhooks",
   assert.ok(webhooksAt < watchdogAt);
 });
 
-test("demo deadline watchdog expires the expirable escrow, isolates the VERIFIED one, and never attempts the stale-only one", () => {
+test("demo deadline watchdog expires the expirable escrow, isolates the VERIFIED one, and never attempts the stale-only one", async () => {
   const {
     deadlineEscrows,
     deadlineExpiredSelected,
     deadlineStaleSelected,
     deadlineExpireResults,
-  } = runDemo();
+  } = await runDemo();
 
   // Deadline batch in fixture order: unexpirable, expirable, stale-only.
   assert.deepEqual(
@@ -916,8 +1003,8 @@ test("demo deadline watchdog expires the expirable escrow, isolates the VERIFIED
   assert.equal(expireEntry.to, "EXPIRED");
 });
 
-test("demo lines print the deadline watchdog section after the stale screening", () => {
-  const { lines } = runDemo();
+test("demo lines print the deadline watchdog section after the stale screening", async () => {
+  const { lines } = await runDemo();
   const text = lines.join("\n");
 
   assert.match(
@@ -973,9 +1060,9 @@ test("demo lines print the deadline watchdog section after the stale screening",
   assert.ok(screeningAt < deadlineAt);
 });
 
-test("demo shows the allowed-events listing: every state's events match the hand-pinned table, cross-checked against the transition table", () => {
+test("demo shows the allowed-events listing: every state's events match the hand-pinned table, cross-checked against the transition table", async () => {
   const { allowedEventsByState, mainEscrowAllowedEvents, escrow, lines } =
-    runDemo();
+    await runDemo();
   const text = lines.join("\n");
 
   // Hand-pinned expectations — written out here from TRANSITIONS in
@@ -1055,15 +1142,15 @@ test("demo shows the allowed-events listing: every state's events match the hand
   );
 });
 
-test("demo allowed-events segment is deterministic: two runs print byte-identical listing lines", () => {
+test("demo allowed-events segment is deterministic: two runs print byte-identical listing lines", async () => {
   const segment = (ls: string[]) => {
     const start = ls.indexOf(
       "Allowed events by state (allowedEvents over all 8 states):",
     );
     return ls.slice(start, start + 10);
   };
-  const a = runDemo();
-  const b = runDemo();
+  const a = await runDemo();
+  const b = await runDemo();
   const segA = segment(a.lines);
   // Header + 8 state lines + the main-escrow line; every value is
   // derived from the transition table alone, so no normalization
@@ -1074,9 +1161,9 @@ test("demo allowed-events segment is deterministic: two runs print byte-identica
   assert.deepEqual(a.mainEscrowAllowedEvents, b.mainEscrowAllowedEvents);
 });
 
-test("demo shows deposit provenance: traced amount matches the hand-pinned golden deposit and a no-FUND copy fails explicitly", () => {
+test("demo shows deposit provenance: traced amount matches the hand-pinned golden deposit and a no-FUND copy fails explicitly", async () => {
   const { escrow, report, tracedDepositAmount, noFundDepositError, lines } =
-    runDemo();
+    await runDemo();
   const text = lines.join("\n");
 
   // Hand-pinned expectations — written out here from the main
@@ -1136,15 +1223,15 @@ test("demo shows deposit provenance: traced amount matches the hand-pinned golde
   );
 });
 
-test("demo deposit-provenance segment is deterministic: two runs print byte-identical provenance lines", () => {
+test("demo deposit-provenance segment is deterministic: two runs print byte-identical provenance lines", async () => {
   const segment = (ls: string[]) => {
     const start = ls.indexOf(
       "Deposit provenance (depositAmountFromHistory on the main escrow history):",
     );
     return ls.slice(start, start + 3);
   };
-  const a = runDemo();
-  const b = runDemo();
+  const a = await runDemo();
+  const b = await runDemo();
   const segA = segment(a.lines);
   // Header + the traced-amount line + the FAILED line; every value
   // is derived from the fixed main history alone, so no
@@ -1155,8 +1242,8 @@ test("demo deposit-provenance segment is deterministic: two runs print byte-iden
   assert.equal(a.noFundDepositError, b.noFundDepositError);
 });
 
-test("demo shows settlement split: settleRelease on the golden deposit conserves every part and matches the report", () => {
-  const { report, releaseSettlement, lines } = runDemo();
+test("demo shows settlement split: settleRelease on the golden deposit conserves every part and matches the report", async () => {
+  const { report, releaseSettlement, lines } = await runDemo();
   const text = lines.join("\n");
 
   // Hand-pinned expectations — written out here from settlement.ts's
@@ -1233,15 +1320,15 @@ test("demo shows settlement split: settleRelease on the golden deposit conserves
   );
 });
 
-test("demo settlement-split segment is deterministic: two runs print byte-identical split lines", () => {
+test("demo settlement-split segment is deterministic: two runs print byte-identical split lines", async () => {
   const segment = (ls: string[]) => {
     const start = ls.indexOf(
       "Settlement split (settleRelease on the main escrow deposit):",
     );
     return ls.slice(start, start + 4);
   };
-  const a = runDemo();
-  const b = runDemo();
+  const a = await runDemo();
+  const b = await runDemo();
   const segA = segment(a.lines);
   // Header + the split line + the conservation line + the
   // cross-check line; every value is derived from the fixed golden
@@ -1251,7 +1338,7 @@ test("demo settlement-split segment is deterministic: two runs print byte-identi
   assert.deepEqual(a.releaseSettlement, b.releaseSettlement);
 });
 
-test("demo shows history NDJSON round-trip: exported lines read back verbatim with a continuous seq chain", () => {
+test("demo shows history NDJSON round-trip: exported lines read back verbatim with a continuous seq chain", async () => {
   const {
     escrow,
     historyNdjson,
@@ -1259,7 +1346,7 @@ test("demo shows history NDJSON round-trip: exported lines read back verbatim wi
     historyNdjsonFirstLine,
     historyNdjsonRoundTripped,
     lines,
-  } = runDemo();
+  } = await runDemo();
   const text = lines.join("\n");
 
   // Hand-pinned expectations — written out here from the main
@@ -1342,7 +1429,7 @@ test("demo shows history NDJSON round-trip: exported lines read back verbatim wi
   );
 });
 
-test("demo history NDJSON segment is deterministic: two runs print byte-identical NDJSON lines", () => {
+test("demo history NDJSON segment is deterministic: two runs print byte-identical NDJSON lines", async () => {
   const segment = (ls: string[]) =>
     ls.slice(
       ls.indexOf(
@@ -1352,8 +1439,8 @@ test("demo history NDJSON segment is deterministic: two runs print byte-identica
         "Overdue judgement (isOverdue on a funded escrow at three fixed instants):",
       ),
     );
-  const a = runDemo();
-  const b = runDemo();
+  const a = await runDemo();
+  const b = await runDemo();
   const segA = segment(a.lines);
   // Header + the export line + the first-line line + the round-trip
   // line + the re-export line + the blank separator before the
@@ -1365,8 +1452,8 @@ test("demo history NDJSON segment is deterministic: two runs print byte-identica
   assert.deepEqual(a.historyNdjsonRoundTripped, b.historyNdjsonRoundTripped);
 });
 
-test("demo shows overdue judgement: isOverdue false before, true at and after the deadline", () => {
-  const { overdueCheckEscrow, overdueChecks, lines } = runDemo();
+test("demo shows overdue judgement: isOverdue false before, true at and after the deadline", async () => {
+  const { overdueCheckEscrow, overdueChecks, lines } = await runDemo();
   const text = lines.join("\n");
 
   // Hand-pinned expectations — written out here from
@@ -1433,7 +1520,7 @@ test("demo shows overdue judgement: isOverdue false before, true at and after th
   );
 });
 
-test("demo overdue-judgement segment is deterministic: two runs print byte-identical judgement lines", () => {
+test("demo overdue-judgement segment is deterministic: two runs print byte-identical judgement lines", async () => {
   const segment = (ls: string[]) =>
     ls.slice(
       ls.indexOf(
@@ -1443,8 +1530,8 @@ test("demo overdue-judgement segment is deterministic: two runs print byte-ident
         "State diagram generation (stateDiagram from the transition table):",
       ) - 1,
     );
-  const a = runDemo();
-  const b = runDemo();
+  const a = await runDemo();
+  const b = await runDemo();
   const segA = segment(a.lines);
   // Header + the escrow line + the three judgement lines + the
   // unchanged line; every value is derived from the fixed
@@ -1455,11 +1542,11 @@ test("demo overdue-judgement segment is deterministic: two runs print byte-ident
   assert.deepEqual(a.overdueChecks, b.overdueChecks);
 });
 
-test("demo is deterministic: two runs produce identical lines", () => {
-  assert.deepEqual(runDemo().lines, runDemo().lines);
+test("demo is deterministic: two runs produce identical lines", async () => {
+  assert.deepEqual((await runDemo()).lines, (await runDemo()).lines);
 });
 
-test("compiled demo script exits 0 and prints the chain, history, report, and webhook", () => {
+test("compiled demo script exits 0 and prints the chain, history, report, and webhook", async () => {
   const out = execFileSync("node", [path.join(repoRoot, "dist", "src", "demo.js")], {
     encoding: "utf8",
   });
@@ -1540,6 +1627,22 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
     ),
   );
   assert.match(out, /batch webhooks: 2 webhooks, 1 error — eventIds distinct/);
+  // Fan-out tail: the main report is delivered to the three fixed
+  // endpoints through the fake fetch — all delivered, none failed.
+  assert.match(
+    out,
+    /Settlement webhook fan-out \(deliverSettlementWebhookToMany via fake fetch, zero network\):/,
+  );
+  assert.ok(
+    out.includes(
+      `  ${DEMO_FANOUT_ENDPOINTS[0].url}: ok true — attempts 1, status 200`,
+    ),
+  );
+  assert.ok(
+    out.includes(
+      `  fan-out: 3 endpoints, 3 delivered, 0 failed — every endpoint received byte-identical body bytes, each signature verifies under its own endpoint's secret only`,
+    ),
+  );
   // Watchdog tail: the closing screening prints both axes' subsets
   // over the same batch and the stale disposition result. (The
   // seq-row count above stays 8: the watchdog section prints no
@@ -1710,8 +1813,8 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
   assert.ok(out.trimEnd().endsWith("  last line: ```"));
 });
 
-test("demo shows the state diagram generation segment in-process: the generated block matches the hand-written diagram line by line", () => {
-  const { stateDiagramText, stateDiagramEdgeCount, lines } = runDemo();
+test("demo shows the state diagram generation segment in-process: the generated block matches the hand-written diagram line by line", async () => {
+  const { stateDiagramText, stateDiagramEdgeCount, lines } = await runDemo();
   const text = lines.join("\n");
 
   // Hand-written expectations — the full 21-line Mermaid block
@@ -1780,15 +1883,15 @@ test("demo shows the state diagram generation segment in-process: the generated 
   assert.equal(lines[lines.length - 1], "  last line: ```");
 });
 
-test("demo state diagram generation segment is deterministic: two runs print byte-identical diagram lines", () => {
+test("demo state diagram generation segment is deterministic: two runs print byte-identical diagram lines", async () => {
   const segment = (ls: string[]) =>
     ls.slice(
       ls.indexOf(
         "State diagram generation (stateDiagram from the transition table):",
       ),
     );
-  const a = runDemo();
-  const b = runDemo();
+  const a = await runDemo();
+  const b = await runDemo();
   const segA = segment(a.lines);
   // Header + total / first / second / initial / first-edge /
   // last-edge / terminal / last lines; every value is derived

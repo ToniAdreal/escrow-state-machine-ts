@@ -35,7 +35,21 @@
  * report from that same batch result — each with its own
  * factory-generated `eventId`, the failed entry forwarded as
  * `{escrowId, error}` — with a receiver-side re-verification of a
- * built webhook printed per successful item. The demo closes with a
+ * built webhook printed per successful item. The main report is
+ * then delivered for real in a fan-out segment:
+ * `deliverSettlementWebhookToMany` sends that one logical
+ * settlement event to three fixed endpoints through an injected
+ * deterministic fake `fetch` (zero network — the library's
+ * delivery layer calls the global `fetch`, so the fake is
+ * installed on `globalThis` for this segment only and the
+ * original is restored afterwards): every endpoint answers 200
+ * on the first attempt, so the aggregate reads 3 delivered /
+ * 0 failed; the captured calls are asserted, outside the
+ * printing, to carry byte-identical bodies (one shared
+ * `eventId`, one shared `at`), each signed with its own
+ * endpoint's secret and verifiable only under that secret.
+ * Because delivery is asynchronous, `runDemo` is async.
+ * The demo closes with a
  * watchdog screening over three further escrows on one fixed `now`:
  * `staleEscrows` selects by dwell in the current state (the last
  * history entry's `at` against a per-state budget, deadline ignored)
@@ -123,6 +137,7 @@ import {
   buildSettlementWebhooks,
   calculateDeposit,
   createQuorum,
+  deliverSettlementWebhookToMany,
   depositAmountFromHistory,
   dispatchArbitration,
   expiredEscrows,
@@ -141,6 +156,7 @@ import {
   verifyHistoryChain,
   verifySettlementWebhook,
   type BuildSettlementWebhooksResult,
+  type DeliverSettlementWebhookToManyResult,
   type EscrowEvent,
   type EscrowHistoryEntry,
   type EscrowState,
@@ -153,6 +169,7 @@ import {
   type SettlementReportResult,
   type SettlementReportsSummary,
   type SettlementWebhook,
+  type SettlementWebhookEndpoint,
   type StaleEscrowActionResult,
 } from "./index.js";
 
@@ -234,6 +251,43 @@ export const DEMO_BATCH_WEBHOOK_EVENT_IDS = [
   "evt_demo_batch_001",
   "evt_demo_batch_002",
 ] as const;
+
+/**
+ * Fan-out fixtures for the delivery segment after the batch
+ * section: the main escrow's settlement report is delivered as
+ * ONE logical event (one shared `eventId`, one shared `at` — an
+ * hour after the batch webhook timestamp) to three fixed
+ * endpoints, each with its OWN demo-only signing secret (the
+ * same placeholder status as {@link DEMO_WEBHOOK_SECRET}: printed
+ * in the source, NOT real credentials). Hand-pinned expectations
+ * — written from src/webhooks.ts's documented fan-out semantics
+ * and cross-checked against test/webhookFanout.test.ts (shared
+ * body, per-endpoint signatures, input-order results) and the
+ * bench fan-out fixture (4 endpoints, fake fetch, all 200):
+ * - 3 endpoints, each answering 200 on the first attempt via the
+ *   injected fake fetch -> delivered 3, failed 0, every result
+ *   `{ok: true, attempts: 1, status: 200}` in endpoint order
+ * - every captured call carries the SAME body bytes (the shared
+ *   eventId / `at` below), signed independently per endpoint:
+ *   each signature verifies under its own endpoint's secret and
+ *   under no other endpoint's secret
+ */
+export const DEMO_FANOUT_AT = "2026-03-08T10:00:00.000Z";
+export const DEMO_FANOUT_EVENT_ID = "evt_demo_fanout_001";
+export const DEMO_FANOUT_ENDPOINTS: readonly SettlementWebhookEndpoint[] = [
+  {
+    url: "https://billing.example.com/hooks/settlement",
+    secret: "whsec_demo_fanout_billing_not_a_real_secret",
+  },
+  {
+    url: "https://notifications.example.com/hooks/settlement",
+    secret: "whsec_demo_fanout_notifications_not_a_real_secret",
+  },
+  {
+    url: "https://ledger.example.com/hooks/settlement",
+    secret: "whsec_demo_fanout_ledger_not_a_real_secret",
+  },
+];
 
 /**
  * Watchdog fixtures for the closing section: three further escrows
@@ -487,6 +541,21 @@ export interface DemoResult {
    */
   batchWebhooksVerified: boolean;
   /**
+   * Aggregate fan-out outcome of delivering the main report via
+   * `deliverSettlementWebhookToMany` to
+   * {@link DEMO_FANOUT_ENDPOINTS}: 3 results in endpoint order,
+   * delivered 3 / failed 0 — every endpoint answered 200 on its
+   * first attempt through the injected fake fetch.
+   */
+  fanoutResult: DeliverSettlementWebhookToManyResult;
+  /**
+   * The requests the injected fake fetch captured during the
+   * fan-out, in call order: every `body` byte-identical (the one
+   * shared logical event), each `signature` made with that
+   * endpoint's own secret.
+   */
+  fanoutCalls: Array<{ url: string; body: string; signature: string }>;
+  /**
    * The three watchdog escrows, in screening order (stale-only,
    * expired-only, neither), AFTER the stale action ran: the stale
    * escrow is EXPIRED, the other two are untouched.
@@ -620,7 +689,7 @@ export interface DemoResult {
  * escrow, its settlement report, and the exact lines `main()` prints —
  * so tests can assert on the demo itself, not just on the library.
  */
-export function runDemo(): DemoResult {
+export async function runDemo(): Promise<DemoResult> {
   const fees = calculateDeposit({
     creatorPool: 10000,
     baseFee: 600,
@@ -1035,6 +1104,102 @@ export function runDemo(): DemoResult {
   }
   lines.push(
     `  batch webhooks: ${builtCount} webhooks, ${batchWebhooks.length - builtCount} error — eventIds distinct (${DEMO_BATCH_WEBHOOK_EVENT_IDS.join(", ")}), factory-generated per report, never reused`,
+  );
+
+  // --- Fan-out delivery: deliverSettlementWebhookToMany (after batch) ---
+  // Building a webhook is not delivering it: the sections above
+  // sign webhooks and verify them in-process, but no delivery
+  // ever runs — yet fan-out to the accounting / notifications /
+  // ledger endpoints is how a settlement actually lands. The main
+  // escrow's report is delivered as ONE logical event to the
+  // three fixed endpoints above. This library's delivery layer
+  // calls the global `fetch` (there is no fetchImpl option), so
+  // a deterministic fake is installed on `globalThis` for this
+  // segment only and the original is restored in the `finally`
+  // — zero network, and no later code can observe the fake. The
+  // fake records each call and answers 200 immediately, so no
+  // retry / backoff path is ever reached. Hand-pinned
+  // expectations — written out in the fixture comment above from
+  // src/webhooks.ts's documented semantics, never derived by
+  // calling the fan-out itself (test/webhookFanout.test.ts and
+  // the bench fan-out fixture pin the same shape independently):
+  //   3 endpoints -> delivered 3, failed 0
+  //   every result {ok: true, attempts: 1, status: 200}, in order
+  //   every captured body byte-identical, eventId / at shared
+  //   each signature verifies under its own endpoint's secret
+  // Asserted HERE, outside the printing — a mismatch throws
+  // instead of printing a false verdict.
+  const fanoutCalls: Array<{ url: string; body: string; signature: string }> =
+    [];
+  const fanoutFetch: typeof fetch = async (input, init) => {
+    fanoutCalls.push({
+      url: String(input),
+      body: String(init?.body ?? ""),
+      signature: String(
+        new Headers(init?.headers).get("x-signature") ?? "",
+      ),
+    });
+    return new Response("{}", {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  const originalFetch = globalThis.fetch;
+  let fanoutResult: DeliverSettlementWebhookToManyResult;
+  globalThis.fetch = fanoutFetch;
+  try {
+    fanoutResult = await deliverSettlementWebhookToMany(
+      report,
+      DEMO_FANOUT_ENDPOINTS.map((endpoint) => ({ ...endpoint })),
+      { now: DEMO_FANOUT_AT, eventId: DEMO_FANOUT_EVENT_ID },
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  if (
+    fanoutResult.results.length !== 3 ||
+    fanoutResult.delivered !== 3 ||
+    fanoutResult.failed !== 0 ||
+    fanoutResult.results.some(
+      (result, i) =>
+        !result.ok ||
+        result.attempts !== 1 ||
+        result.status !== 200 ||
+        result.url !== DEMO_FANOUT_ENDPOINTS[i].url,
+    ) ||
+    fanoutCalls.length !== 3 ||
+    fanoutCalls.some((call) => call.body !== fanoutCalls[0].body) ||
+    JSON.parse(fanoutCalls[0].body).eventId !== "evt_demo_fanout_001" ||
+    JSON.parse(fanoutCalls[0].body).at !== "2026-03-08T10:00:00.000Z" ||
+    DEMO_FANOUT_ENDPOINTS.some((endpoint, i) => {
+      const call = fanoutCalls.find((c) => c.url === endpoint.url);
+      if (!call) return true;
+      if (!verifySettlementWebhook(call.body, call.signature, endpoint.secret)) {
+        return true;
+      }
+      return DEMO_FANOUT_ENDPOINTS.some(
+        (other, j) =>
+          j !== i &&
+          verifySettlementWebhook(call.body, call.signature, other.secret),
+      );
+    })
+  ) {
+    throw new Error(
+      "demo fixture broken: deliverSettlementWebhookToMany fan-out does not have the pinned shape (3 endpoints, 3 delivered / 0 failed, one attempt each at status 200, byte-identical shared bodies, per-endpoint signatures verifiable only under their own secret)",
+    );
+  }
+  lines.push(
+    "",
+    "Settlement webhook fan-out (deliverSettlementWebhookToMany via fake fetch, zero network):",
+    `  one logical event: eventId ${DEMO_FANOUT_EVENT_ID}, at ${DEMO_FANOUT_AT} — the payload body is built once and shared by every endpoint, signed per endpoint with its own secret`,
+  );
+  for (const result of fanoutResult.results) {
+    lines.push(
+      `  ${result.url}: ok ${result.ok} — attempts ${result.attempts}, status ${result.status}`,
+    );
+  }
+  lines.push(
+    `  fan-out: ${fanoutResult.results.length} endpoints, ${fanoutResult.delivered} delivered, ${fanoutResult.failed} failed — every endpoint received byte-identical body bytes, each signature verifies under its own endpoint's secret only`,
   );
 
   // --- Watchdog screening: staleEscrows (dwell) vs expiredEscrows ---
@@ -1568,6 +1733,8 @@ export function runDemo(): DemoResult {
     batchSummary,
     batchWebhooks,
     batchWebhooksVerified,
+    fanoutResult,
+    fanoutCalls,
     watchdogEscrows,
     staleSelected,
     expiredSelected,
@@ -1593,12 +1760,12 @@ export function runDemo(): DemoResult {
   };
 }
 
-function main(): void {
-  console.log(runDemo().lines.join("\n"));
+async function main(): Promise<void> {
+  console.log((await runDemo()).lines.join("\n"));
 }
 
 // Run only when executed directly (`node dist/src/demo.js`), not when
 // imported by tests.
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  main();
+  void main();
 }
