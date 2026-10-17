@@ -107,13 +107,24 @@
  * advisory boolean a watchdog reads before it dispatches EXPIRE
  * explicitly; the judgement itself dispatches nothing and the
  * escrow stays FUNDED.
- * The demo finally closes with a state-diagram generation
+ * The demo then shows a state-diagram generation
  * segment: `stateDiagram()` renders the transition table as the
  * Mermaid stateDiagram-v2 block the README embeds verbatim —
  * 21 lines, 14 of them edge lines, one per transition-table
  * edge — and the segment asserts, outside the printing, that
  * the edge count equals `transitionTable()`'s edge count, so a
  * diagram whose shape broke would fail the demo itself.
+ * The demo finally closes with a standalone history-parsing
+ * segment: the main escrow's history is serialized to JSON and
+ * parsed back on its own with `parseEscrowHistory()` — no
+ * `Escrow` instance involved — the recovery / reconciliation
+ * pre-flight that validates an untrusted audit history (entry
+ * shapes, chain continuity, hash-chain re-verification) before
+ * anything rebuilds from it; the parsed entries are asserted,
+ * outside the printing, to match the original history verbatim,
+ * and a detached copy whose middle entry's note is rewritten is
+ * shown failing with the explicit hash-chain-broken error,
+ * while the escrow's own history stays untouched.
  *
  * Usage: `npm run demo` (builds with tsc, then runs node on the compiled
  * output). Zero runtime dependencies: this file only imports the library
@@ -145,6 +156,7 @@ import {
   historyFromNdjson,
   historyToNdjson,
   isOverdue,
+  parseEscrowHistory,
   parseRetryAfter,
   renderReport,
   restoreQuorum,
@@ -386,6 +398,37 @@ export const DEMO_OVERDUE_CHECK_DEADLINE = "2026-03-10T09:00:00.000Z";
 export const DEMO_OVERDUE_CHECK_BEFORE_AT = "2026-03-09T09:00:00.000Z";
 export const DEMO_OVERDUE_CHECK_AT_DEADLINE = "2026-03-10T09:00:00.000Z";
 export const DEMO_OVERDUE_CHECK_AFTER_AT = "2026-03-11T09:00:00.000Z";
+
+/**
+ * Standalone history-parsing fixtures for the closing segment:
+ * the main escrow's history is serialized to JSON and parsed
+ * back with `parseEscrowHistory()` alone. Hand-pinned
+ * expectations — written from src/stateMachine.ts's documented
+ * `parseEscrowHistory` semantics (the exact `parseEscrowSnapshot`
+ * code path: seq from 1 with no gaps, from/to chain continuous
+ * from CREATED, every edge legal, canonical non-decreasing
+ * timestamps, and a fully chained history's hash chain
+ * re-verified), never derived by calling the parser itself, and
+ * cross-checked against test/historyParserFuzz.test.ts:
+ * - the intact serialized history parses to the same 4 entries
+ *   verbatim, the final entry landing in RELEASED
+ * - a detached copy whose middle entry (seq 2,
+ *   SUBMIT_MILESTONE) carries {@link DEMO_PARSED_HISTORY_TAMPERED_NOTE}
+ *   instead of its original note is structurally well-formed but
+ *   no longer recomputes its stored hash, so the parse throws
+ *   `invalid snapshot: history hash chain is broken (an entry
+ *   was tampered with, deleted, or reordered)` — the
+ *   `invalid snapshot:` tag is the parser's own, because
+ *   `parseEscrowHistory` validates through the snapshot parser
+ *   (see its doc comment in src/stateMachine.ts)
+ * The tamper touches only the detached copy: the escrow's own
+ * history keeps its original note and still parses afterwards.
+ */
+export const DEMO_PARSED_HISTORY_TAMPERED_SEQ = 2;
+export const DEMO_PARSED_HISTORY_TAMPERED_NOTE =
+  "REWRITTEN after the fact — milestone note altered";
+export const DEMO_PARSED_HISTORY_TAMPER_ERROR =
+  "invalid snapshot: history hash chain is broken (an entry was tampered with, deleted, or reordered)";
 
 const steps: Array<{
   event: EscrowEvent;
@@ -681,6 +724,24 @@ export interface DemoResult {
    * 14 transition edges, equal to `transitionTable().length`.
    */
   stateDiagramEdgeCount: number;
+  /**
+   * Entries `parseEscrowHistory()` returns for the main escrow's
+   * JSON-serialized history, parsed standalone (no `Escrow`
+   * instance involved): identical to the main escrow's history
+   * verbatim — 4 entries, seq 1 -> 4 continuous, the final entry
+   * landing in RELEASED.
+   */
+  parsedHistoryEntries: EscrowHistoryEntry[];
+  /**
+   * Error message of `parseEscrowHistory()` on a detached copy
+   * of that serialized history whose middle entry (seq
+   * {@link DEMO_PARSED_HISTORY_TAMPERED_SEQ}) carries the
+   * rewritten note {@link DEMO_PARSED_HISTORY_TAMPERED_NOTE}:
+   * exactly {@link DEMO_PARSED_HISTORY_TAMPER_ERROR} — the
+   * tampered entry's stored hash no longer recomputes. The
+   * escrow's own history is untouched by the copy.
+   */
+  parsedHistoryTamperError: string;
   lines: string[];
 }
 
@@ -1647,7 +1708,7 @@ export async function runDemo(): Promise<DemoResult> {
     `  escrow unchanged after the three judgements: still ${overdueCheckEscrow.state} (${overdueCheckEscrow.history.length} history entry) — a watchdog dispatches EXPIRE explicitly`,
   );
 
-  // --- State diagram generation: stateDiagram (closing) ---
+  // --- State diagram generation: stateDiagram ---
   // Every section above walks the transition table one dispatch
   // at a time, so a reader never sees the table rendered the way
   // the README presents it — `stateDiagram()` generates the
@@ -1711,6 +1772,106 @@ export async function runDemo(): Promise<DemoResult> {
     `  last line: ${stateDiagramLines.at(-1)}`,
   );
 
+  // --- Standalone history parsing: parseEscrowHistory (closing) ---
+  // Every segment above either drives an Escrow or reads its
+  // history back through one (the NDJSON segment's
+  // historyFromNdjson feeds a transport parser; fromHistory /
+  // fromJSON rebuild an instance). A recovery or reconciliation
+  // tool often holds only a bare history value — JSON text from
+  // a log shipper or another store — and needs it validated on
+  // its own, with no Escrow instance at all, before anything
+  // rebuilds from it. That is `parseEscrowHistory(history)`: the
+  // exact parseEscrowSnapshot validation (seq from 1 with no
+  // gaps, from/to chain continuous from CREATED, every edge
+  // legal, canonical non-decreasing timestamps, amount only on
+  // FUND, evidence only on VERIFY_PASS, unknown fields rejected,
+  // and a fully chained history's hash chain re-verified),
+  // returning sanitized detached copies in canonical field
+  // order. The corpus here is the main escrow's own history,
+  // serialized with JSON.stringify and parsed back from plain
+  // JSON values (no network, no randomness, no wall clock).
+  // Hand-pinned expectations — written out in the fixture
+  // comment above from src/stateMachine.ts, never derived by
+  // calling parseEscrowHistory itself (test/historyParserFuzz
+  // pins the same parser independently):
+  //   4 entries -> seq 1 FUND / 2 SUBMIT_MILESTONE /
+  //   3 VERIFY_PASS / 4 RELEASE, final entry lands in RELEASED,
+  //   every entry identical to the original history verbatim
+  // The success parse is asserted HERE, outside the printing.
+  // The tamper check then runs on a detached copy whose middle
+  // entry (seq 2) carries a rewritten note: structurally
+  // well-formed, but its stored hash no longer recomputes from
+  // the altered canonical content, so the parse must throw
+  // DEMO_PARSED_HISTORY_TAMPER_ERROR exactly — and the escrow's
+  // own history (original note intact) still parses afterwards.
+  const parsedHistoryEntries = parseEscrowHistory(
+    JSON.parse(JSON.stringify(escrow.history)) as unknown,
+  );
+  if (
+    parsedHistoryEntries.length !== escrow.history.length ||
+    JSON.stringify(parsedHistoryEntries) !==
+      JSON.stringify([...escrow.history])
+  ) {
+    throw new Error(
+      "demo fixture broken: parseEscrowHistory round-trip entries differ from the original history",
+    );
+  }
+  const parsedHistoryLast = parsedHistoryEntries.at(-1)!;
+  if (
+    parsedHistoryLast.seq !== 4 ||
+    parsedHistoryLast.event !== "RELEASE" ||
+    parsedHistoryLast.to !== escrow.state
+  ) {
+    throw new Error(
+      "demo fixture broken: parseEscrowHistory final entry does not land in the main escrow state",
+    );
+  }
+  const tamperedParsedHistory = (
+    JSON.parse(JSON.stringify(escrow.history)) as Array<
+      Record<string, unknown>
+    >
+  ).map((entry) => ({ ...entry }));
+  const tamperedParsedEntry = tamperedParsedHistory.find(
+    (entry) => entry.seq === DEMO_PARSED_HISTORY_TAMPERED_SEQ,
+  );
+  if (tamperedParsedEntry === undefined) {
+    throw new Error(
+      "demo fixture broken: serialized history has no entry at the tamper seq",
+    );
+  }
+  tamperedParsedEntry.note = DEMO_PARSED_HISTORY_TAMPERED_NOTE;
+  let parsedHistoryTamperError = "";
+  try {
+    parseEscrowHistory(tamperedParsedHistory);
+  } catch (err) {
+    parsedHistoryTamperError =
+      err instanceof Error ? err.message : String(err);
+  }
+  if (parsedHistoryTamperError !== DEMO_PARSED_HISTORY_TAMPER_ERROR) {
+    throw new Error(
+      `demo fixture broken: tampered history parse error is ${JSON.stringify(parsedHistoryTamperError)}, expected ${JSON.stringify(DEMO_PARSED_HISTORY_TAMPER_ERROR)}`,
+    );
+  }
+  if (
+    parseEscrowHistory(
+      JSON.parse(JSON.stringify(escrow.history)) as unknown,
+    ).length !== escrow.history.length ||
+    escrow.history[DEMO_PARSED_HISTORY_TAMPERED_SEQ - 1].note ===
+      DEMO_PARSED_HISTORY_TAMPERED_NOTE
+  ) {
+    throw new Error(
+      "demo fixture broken: the tamper check touched the escrow's own history",
+    );
+  }
+  lines.push(
+    "",
+    "Standalone history parsing (parseEscrowHistory on the main escrow history):",
+    `  main escrow ${escrow.id}: history serialized to JSON, parsed standalone (no Escrow instance) -> ${parsedHistoryEntries.length} entries, final entry lands in ${parsedHistoryLast.to} (seq ${parsedHistoryLast.seq} ${parsedHistoryLast.event} ${parsedHistoryLast.from} -> ${parsedHistoryLast.to})`,
+    `  parsed entries match the original history verbatim: every entry identical (seq chain 1 -> ${parsedHistoryLast.seq} continuous, hash chain re-verified)`,
+    `  tampered copy: entry seq ${DEMO_PARSED_HISTORY_TAMPERED_SEQ} (SUBMIT_MILESTONE) note rewritten — parseEscrowHistory FAILED — ${parsedHistoryTamperError}`,
+    `  original history after the tamper check: parseEscrowHistory still returns ${parsedHistoryEntries.length} entries (detached copy — the escrow's own history is untouched)`,
+  );
+
   return {
     escrow,
     report,
@@ -1756,6 +1917,8 @@ export async function runDemo(): Promise<DemoResult> {
     overdueChecks,
     stateDiagramText,
     stateDiagramEdgeCount,
+    parsedHistoryEntries,
+    parsedHistoryTamperError,
     lines,
   };
 }

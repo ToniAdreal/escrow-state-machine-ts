@@ -18,6 +18,21 @@ version changes.
 
 ### Added
 
+- A standalone history-parsing segment closing the CLI demo:
+  the main escrow's history is serialized to JSON and parsed
+  back on its own with `parseEscrowHistory()` (no `Escrow`
+  instance involved) — 4 entries identical to the original
+  history verbatim, the final entry landing in RELEASED —
+  and a detached copy whose middle entry (seq 2,
+  SUBMIT_MILESTONE) carries a rewritten note is rejected with
+  the exact hash-chain-broken error, while the escrow's own
+  history stays untouched and still parses, all asserted
+  outside the printing against hand-pinned expectations
+  cross-checked against the history-parser fuzz tests.
+  `DemoResult` exposes the parsed entries and the tamper
+  error; the demo tests pin the entries, the exact error, the
+  printed lines, and the segment's closing position. Demo and
+  tests only; no library behavior change.
 - Benchmark coverage for the dispatch subscription
   notification path: `subscribe()` with one fixed collecting
   listener on a fresh escrow driven through the full

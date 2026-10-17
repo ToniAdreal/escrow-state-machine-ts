@@ -30,6 +30,9 @@ import {
   DEMO_OVERDUE_ONLY_DEADLINE,
   DEMO_OVERDUE_ONLY_ESCROW_ID,
   DEMO_OVERDUE_ONLY_SUBMIT_AT,
+  DEMO_PARSED_HISTORY_TAMPER_ERROR,
+  DEMO_PARSED_HISTORY_TAMPERED_NOTE,
+  DEMO_PARSED_HISTORY_TAMPERED_SEQ,
   DEMO_PENDING_ESCROW_ID,
   DEMO_PRO_FEE_BPS,
   DEMO_QUORUM_APPROVAL_ATS,
@@ -55,6 +58,7 @@ import {
   historyFromNdjson,
   historyToNdjson,
   isOverdue,
+  parseEscrowHistory,
   parseRetryAfter,
   restoreQuorum,
   settleRelease,
@@ -1395,8 +1399,8 @@ test("demo shows history NDJSON round-trip: exported lines read back verbatim wi
   assert.equal(historyToNdjson(historyNdjsonRoundTripped), historyNdjson);
   // The segment follows the settlement-split segment and prints
   // its lines verbatim; the overdue-judgement segment follows it
-  // and the state-diagram segment now closes the demo after that
-  // (their own tests pin the closing position).
+  // and the state-diagram and standalone-parsing segments follow
+  // after that (their own tests pin the closing position).
   const ndjsonAt = text.indexOf(
     "Audit history NDJSON round-trip (historyToNdjson / historyFromNdjson on the main escrow history):",
   );
@@ -1476,8 +1480,9 @@ test("demo shows overdue judgement: isOverdue false before, true at and after th
     assert.equal(isOverdue(overdueCheckEscrow, new Date(at)), overdue);
   }
   // The segment follows the NDJSON segment and prints its lines
-  // verbatim; the state-diagram segment now closes the demo
-  // after it (its own tests pin the closing position).
+  // verbatim; the state-diagram segment follows it and the
+  // standalone-parsing segment now closes the demo after that
+  // (its own tests pin the closing position).
   const overdueAt = text.indexOf(
     "Overdue judgement (isOverdue on a funded escrow at three fixed instants):",
   );
@@ -1789,9 +1794,9 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
       "escrow unchanged after the three judgements: still FUNDED (1 history entry) — a watchdog dispatches EXPIRE explicitly",
     ),
   );
-  // State-diagram tail: the closing segment renders the
+  // State-diagram tail: that segment renders the
   // transition table as the README's Mermaid block and prints
-  // its summary — the demo ends on the closing-fence line.
+  // its summary, ending on the closing-fence line.
   assert.match(
     out,
     /State diagram generation \(stateDiagram from the transition table\):/,
@@ -1810,7 +1815,30 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
       "  last edge (line 17): DISPUTED --> REFUNDED : ARBITRATE_REFUND",
     ),
   );
-  assert.ok(out.trimEnd().endsWith("  last line: ```"));
+  assert.ok(out.includes("  last line: ```"));
+  // Standalone history-parsing tail: the closing segment parses
+  // the main history back on its own — the intact parse lands in
+  // RELEASED, the tampered copy is rejected with the explicit
+  // hash-chain error, and the demo ends on the untouched line.
+  assert.match(
+    out,
+    /Standalone history parsing \(parseEscrowHistory on the main escrow history\):/,
+  );
+  assert.ok(
+    out.includes(
+      `  main escrow ${DEMO_ESCROW_ID}: history serialized to JSON, parsed standalone (no Escrow instance) -> 4 entries, final entry lands in RELEASED (seq 4 RELEASE VERIFIED -> RELEASED)`,
+    ),
+  );
+  assert.ok(
+    out.includes(
+      `  tampered copy: entry seq ${DEMO_PARSED_HISTORY_TAMPERED_SEQ} (SUBMIT_MILESTONE) note rewritten — parseEscrowHistory FAILED — ${DEMO_PARSED_HISTORY_TAMPER_ERROR}`,
+    ),
+  );
+  assert.ok(
+    out.trimEnd().endsWith(
+      "  original history after the tamper check: parseEscrowHistory still returns 4 entries (detached copy — the escrow's own history is untouched)",
+    ),
+  );
 });
 
 test("demo shows the state diagram generation segment in-process: the generated block matches the hand-written diagram line by line", async () => {
@@ -1856,9 +1884,10 @@ test("demo shows the state diagram generation segment in-process: the generated 
   // Cross-check against the library generator itself — the demo
   // segment is not self-certifying.
   assert.equal(stateDiagramText, stateDiagram());
-  // The segment closes the demo: it follows the
-  // overdue-judgement segment, prints its summary lines
-  // verbatim, and its last-line line is the demo's last line.
+  // The segment follows the overdue-judgement segment and
+  // prints its summary lines verbatim; the standalone
+  // history-parsing segment now closes the demo after it
+  // (its own tests pin the closing position).
   const diagramAt = text.indexOf(
     "State diagram generation (stateDiagram from the transition table):",
   );
@@ -1880,7 +1909,16 @@ test("demo shows the state diagram generation segment in-process: the generated 
   ]) {
     assert.ok(text.includes(line), `missing diagram line: ${line}`);
   }
-  assert.equal(lines[lines.length - 1], "  last line: ```");
+  assert.ok(text.includes("  last line: ```"));
+  assert.ok(
+    lines.indexOf(
+      "Standalone history parsing (parseEscrowHistory on the main escrow history):",
+    ) >
+      lines.indexOf(
+        "State diagram generation (stateDiagram from the transition table):",
+      ),
+    "standalone history-parsing segment must follow the state-diagram segment",
+  );
 });
 
 test("demo state diagram generation segment is deterministic: two runs print byte-identical diagram lines", async () => {
@@ -1889,6 +1927,9 @@ test("demo state diagram generation segment is deterministic: two runs print byt
       ls.indexOf(
         "State diagram generation (stateDiagram from the transition table):",
       ),
+      ls.indexOf(
+        "Standalone history parsing (parseEscrowHistory on the main escrow history):",
+      ) - 1,
     );
   const a = await runDemo();
   const b = await runDemo();
@@ -1901,4 +1942,110 @@ test("demo state diagram generation segment is deterministic: two runs print byt
   assert.deepEqual(segA, segment(b.lines));
   assert.equal(a.stateDiagramText, b.stateDiagramText);
   assert.equal(a.stateDiagramEdgeCount, b.stateDiagramEdgeCount);
+});
+
+test("demo shows standalone history parsing: serialized history parses back verbatim and a tampered middle entry is rejected", async () => {
+  const { escrow, parsedHistoryEntries, parsedHistoryTamperError, lines } =
+    await runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned expectations — written out here from the main
+  // escrow's fixed steps (4 dispatches: FUND / SUBMIT_MILESTONE /
+  // VERIFY_PASS / RELEASE), never derived by calling
+  // parseEscrowHistory to produce them. The same parser is
+  // pinned independently by test/historyParserFuzz.test.ts.
+  assert.equal(parsedHistoryEntries.length, 4);
+  assert.deepEqual(
+    parsedHistoryEntries.map((e) => e.seq),
+    [1, 2, 3, 4],
+  );
+  assert.deepEqual(
+    parsedHistoryEntries.map((e) => e.event),
+    ["FUND", "SUBMIT_MILESTONE", "VERIFY_PASS", "RELEASE"],
+  );
+  assert.equal(parsedHistoryEntries.at(-1)?.to, "RELEASED");
+  assert.deepEqual(parsedHistoryEntries, [...escrow.history]);
+  // The tamper target is the middle entry, seq 2, and the error
+  // is the parser's exact hash-chain-broken message.
+  assert.equal(DEMO_PARSED_HISTORY_TAMPERED_SEQ, 2);
+  assert.equal(parsedHistoryTamperError, DEMO_PARSED_HISTORY_TAMPER_ERROR);
+  assert.equal(
+    DEMO_PARSED_HISTORY_TAMPER_ERROR,
+    "invalid snapshot: history hash chain is broken (an entry was tampered with, deleted, or reordered)",
+  );
+  // Independent cross-checks: a fresh standalone parse of the
+  // serialized history reproduces the demo's entries, the same
+  // tamper (rewritten note on seq 2) throws the same error, and
+  // the escrow's own history keeps its original note.
+  assert.deepEqual(
+    parseEscrowHistory(JSON.parse(JSON.stringify(escrow.history))),
+    parsedHistoryEntries,
+  );
+  const tampered = (
+    JSON.parse(JSON.stringify(escrow.history)) as Array<
+      Record<string, unknown>
+    >
+  ).map((entry) => ({ ...entry }));
+  tampered[DEMO_PARSED_HISTORY_TAMPERED_SEQ - 1] = {
+    ...tampered[DEMO_PARSED_HISTORY_TAMPERED_SEQ - 1],
+    note: DEMO_PARSED_HISTORY_TAMPERED_NOTE,
+  };
+  assert.throws(() => parseEscrowHistory(tampered), {
+    message: DEMO_PARSED_HISTORY_TAMPER_ERROR,
+  });
+  assert.notEqual(
+    escrow.history[DEMO_PARSED_HISTORY_TAMPERED_SEQ - 1].note,
+    DEMO_PARSED_HISTORY_TAMPERED_NOTE,
+  );
+  // The segment closes the demo: it follows the state-diagram
+  // segment, prints its lines verbatim, and its untouched line
+  // is the demo's last line.
+  const parseAt = text.indexOf(
+    "Standalone history parsing (parseEscrowHistory on the main escrow history):",
+  );
+  assert.ok(
+    parseAt >
+      text.indexOf(
+        "State diagram generation (stateDiagram from the transition table):",
+      ),
+    "standalone history-parsing segment must follow the state-diagram segment",
+  );
+  assert.ok(
+    text.includes(
+      `  main escrow ${DEMO_ESCROW_ID}: history serialized to JSON, parsed standalone (no Escrow instance) -> 4 entries, final entry lands in RELEASED (seq 4 RELEASE VERIFIED -> RELEASED)`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  parsed entries match the original history verbatim: every entry identical (seq chain 1 -> 4 continuous, hash chain re-verified)",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  tampered copy: entry seq ${DEMO_PARSED_HISTORY_TAMPERED_SEQ} (SUBMIT_MILESTONE) note rewritten — parseEscrowHistory FAILED — ${DEMO_PARSED_HISTORY_TAMPER_ERROR}`,
+    ),
+  );
+  assert.equal(
+    lines[lines.length - 1],
+    "  original history after the tamper check: parseEscrowHistory still returns 4 entries (detached copy — the escrow's own history is untouched)",
+  );
+});
+
+test("demo standalone history parsing segment is deterministic: two runs print byte-identical parsing lines", async () => {
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf(
+        "Standalone history parsing (parseEscrowHistory on the main escrow history):",
+      ),
+    );
+  const a = await runDemo();
+  const b = await runDemo();
+  const segA = segment(a.lines);
+  // Header + the parse line + the verbatim line + the tamper
+  // line + the untouched line; every value is derived from the
+  // fixed main history alone, so no normalization is needed.
+  assert.equal(segA.length, 5);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(a.parsedHistoryEntries, b.parsedHistoryEntries);
+  assert.equal(a.parsedHistoryTamperError, b.parsedHistoryTamperError);
 });
