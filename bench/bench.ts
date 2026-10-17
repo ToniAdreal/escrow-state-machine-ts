@@ -297,6 +297,25 @@
  *      passes), never derived by reading the README in the bench
  *      itself.
  *
+ *  29. dispatch subscription notification — `subscribe()` with
+ *      one fixed collecting listener on a fresh escrow, driven
+ *      through the same fixed full CREATED -> RELEASED lifecycle
+ *      as group 1 (see the subscribe fixture below). This is the
+ *      in-process fan-out every successful dispatch pays after
+ *      its audit entry is appended: listeners run in
+ *      subscription order, and a throwing listener is isolated
+ *      (the dispatch still succeeds and its peers still run).
+ *      One timed pass is one full subscribed lifecycle of 4
+ *      dispatches + 4 notifications; its per-iteration
+ *      self-check pins the notification sequence to the
+ *      hand-written (event, from, to) expectations and to the
+ *      escrow's own history, entry for entry. Outside the timed
+ *      loop, an unsubscribe check pins that a further dispatch
+ *      notifies nobody, and an isolation check pins that a
+ *      throwing listener neither breaks a dispatch nor starves
+ *      its peer. No network, no randomness, and no wall
+ *      clock: every dispatch timestamp is fixed.
+ *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
  * dispatch timestamps (a fixed base instant plus per-step offsets),
@@ -1941,6 +1960,159 @@ function checkReadmeDiagramInSync(): void {
 checkReadmeDiagramInSync();
 
 // ---------------------------------------------------------------------
+// Subscribe fixture: one fixed collecting listener subscribed to a
+// fresh escrow BEFORE any dispatch, then the escrow is driven through
+// the same fixed full lifecycle as `runLifecycle()` (the LIFECYCLE
+// table above: same events, amounts, and per-step timestamp offsets
+// from BASE_MS).
+// Hand-written expectations — written out here from the transition
+// table in src/stateMachine.ts and cross-checked against
+// test/subscribe.test.ts, never derived by calling subscribe itself:
+//   - exactly 4 notifications, one per successful dispatch, in
+//     dispatch order, with these (event, from, to) triples:
+//       FUND             CREATED            -> FUNDED
+//       SUBMIT_MILESTONE FUNDED             -> MILESTONE_SUBMITTED
+//       VERIFY_PASS      MILESTONE_SUBMITTED -> VERIFIED
+//       RELEASE          VERIFIED           -> RELEASED
+//   - notification i carries the audit entry appended by dispatch i:
+//     its seq is i + 1 and every recorded field (event, from, to,
+//     at, actor, note, amount, evidence, hash-chain links) equals
+//     history[i] field for field;
+//   - the escrow has exactly 1 listener while subscribed.
+// ---------------------------------------------------------------------
+const SUBSCRIBE_EXPECTED: Array<{
+  event: EscrowEvent;
+  from: EscrowState;
+  to: EscrowState;
+}> = [
+  { event: "FUND", from: "CREATED", to: "FUNDED" },
+  { event: "SUBMIT_MILESTONE", from: "FUNDED", to: "MILESTONE_SUBMITTED" },
+  { event: "VERIFY_PASS", from: "MILESTONE_SUBMITTED", to: "VERIFIED" },
+  { event: "RELEASE", from: "VERIFIED", to: "RELEASED" },
+];
+type SubscribeNotification = {
+  event: EscrowEvent;
+  from: EscrowState;
+  to: EscrowState;
+  entry: EscrowHistoryEntry;
+};
+function runSubscribedLifecycle(): {
+  escrow: Escrow;
+  notifications: SubscribeNotification[];
+} {
+  const escrow = new Escrow("BENCH-SUB-001");
+  const notifications: SubscribeNotification[] = [];
+  escrow.subscribe((event, from, to, entry) => {
+    notifications.push({ event, from, to, entry });
+  });
+  LIFECYCLE.forEach(({ event, amount }, i) => {
+    escrow.dispatch(event, undefined, amount, {
+      at: new Date(BASE_MS + i * 1000).toISOString(),
+    });
+  });
+  return { escrow, notifications };
+}
+function checkSubscribe(
+  escrow: Escrow,
+  notifications: SubscribeNotification[],
+  where: string,
+): void {
+  if (
+    escrow.state !== "RELEASED" ||
+    escrow.listenerCount !== 1 ||
+    escrow.history.length !== SUBSCRIBE_EXPECTED.length ||
+    notifications.length !== SUBSCRIBE_EXPECTED.length
+  ) {
+    throw new Error(`benchmark self-check failed: ${where}`);
+  }
+  for (let i = 0; i < SUBSCRIBE_EXPECTED.length; i++) {
+    const n = notifications[i];
+    const expected = SUBSCRIBE_EXPECTED[i];
+    const entry = escrow.history[i];
+    if (
+      n.event !== expected.event ||
+      n.from !== expected.from ||
+      n.to !== expected.to ||
+      n.entry.seq !== i + 1 ||
+      n.entry.event !== entry.event ||
+      n.entry.from !== entry.from ||
+      n.entry.to !== entry.to ||
+      n.entry.at !== entry.at ||
+      n.entry.actor !== entry.actor ||
+      n.entry.note !== entry.note ||
+      n.entry.amount !== entry.amount ||
+      n.entry.evidence !== entry.evidence ||
+      n.entry.prevHash !== entry.prevHash ||
+      n.entry.hash !== entry.hash
+    ) {
+      throw new Error(`benchmark self-check failed: ${where}`);
+    }
+  }
+}
+// One-time validation (outside the timed loop): a subscribed
+// lifecycle produces exactly the hand-written notification
+// sequence, entry for entry against the escrow's history.
+{
+  const { escrow, notifications } = runSubscribedLifecycle();
+  checkSubscribe(escrow, notifications, "subscribe fixture");
+}
+// One-time unsubscribe validation (outside the timed loop): after
+// unsubscribe, a further successful dispatch notifies nobody —
+// the count stays at the 1 notification collected before it,
+// while the escrow itself still moves (hand-written expectations
+// from test/subscribe.test.ts: unsubscribe stops delivery and is
+// idempotent).
+{
+  const escrow = new Escrow("BENCH-SUB-002");
+  let count = 0;
+  const unsubscribe = escrow.subscribe(() => {
+    count++;
+  });
+  escrow.dispatch("FUND", undefined, DEPOSIT_AMOUNT, {
+    at: new Date(BASE_MS).toISOString(),
+  });
+  unsubscribe();
+  unsubscribe();
+  escrow.dispatch("SUBMIT_MILESTONE", undefined, undefined, {
+    at: new Date(BASE_MS + 1000).toISOString(),
+  });
+  if (
+    count !== 1 ||
+    escrow.listenerCount !== 0 ||
+    escrow.state !== "MILESTONE_SUBMITTED" ||
+    escrow.history.length !== 2
+  ) {
+    throw new Error("benchmark self-check failed: subscribe unsubscribe");
+  }
+}
+// One-time isolation validation (outside the timed loop): a
+// throwing listener neither breaks the dispatch nor starves its
+// peer — the dispatch returns the new state, the audit entry is
+// appended, and the peer still receives the notification
+// (hand-written expectations from test/subscribe.test.ts).
+{
+  const escrow = new Escrow("BENCH-SUB-003");
+  const seen: string[] = [];
+  escrow.subscribe(() => {
+    throw new Error("bench: bad fan-out consumer");
+  });
+  escrow.subscribe(() => {
+    seen.push("peer");
+  });
+  const to = escrow.dispatch("FUND", undefined, DEPOSIT_AMOUNT, {
+    at: new Date(BASE_MS).toISOString(),
+  });
+  if (
+    to !== "FUNDED" ||
+    escrow.history.length !== 1 ||
+    escrow.history[0].event !== "FUND" ||
+    seen.length !== 1
+  ) {
+    throw new Error("benchmark self-check failed: subscribe isolation");
+  }
+}
+
+// ---------------------------------------------------------------------
 // Scenarios (each with a self-check so a broken path cannot report a
 // plausible-looking number).
 // ---------------------------------------------------------------------
@@ -2348,11 +2520,24 @@ function benchReadmeDiagramInSync(): number {
   }, ITERATIONS);
 }
 
+function benchSubscribe(): number {
+  return measure(() => {
+    // Fresh escrow per iteration: dispatch mutates the escrow, so no
+    // subscribed lifecycle can be reused across calls. The
+    // fixture rebuild cost is inside the timed region.
+    // Per-iteration self-check: the notification sequence matches
+    // the hand-written expectations and the escrow's own history,
+    // entry for entry (see the fixture above).
+    const { escrow, notifications } = runSubscribedLifecycle();
+    checkSubscribe(escrow, notifications, "subscribe");
+  }, ITERATIONS);
+}
+
 console.log("escrow-state-machine-ts benchmark");
 console.log(`Node: ${process.version} on ${process.platform}/${process.arch}`);
 console.log(`CPU: ${cpus()[0]?.model ?? "unknown"}`);
 console.log(
-  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); settlement batch summary over that batch's 4 pre-built results (3 reports + 1 error); settlement batch webhooks over that same batch (3 signed webhooks with distinct deterministic eventIds bench-batch-event-1..3 plus the 1 forwarded per-item error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release); quorum of 9 signers with threshold 5 on a fixed injected clock, approved one vote at a time to the threshold; settlement webhook fan-out to 4 endpoints through a fake global fetch (immediate 200, no network); settlement event dedupe duplicate hits cycling over 1,000 pre-recorded eventIds under a fixed injected clock; settlement event dedupe restore from a 1,000-entry JSON-round-tripped snapshot under a fixed injected clock (all entries live at load, default TTL and capacity, observability counters restarting at zero); Escrow.fromHistory replay over the same detached 4-entry history; watchdog screening over a fixed mixed batch of 100 escrows (40 hand-counted expired, 70 hand-counted stale under FUNDED 7d / MILESTONE_SUBMITTED 30d budgets) at a fixed screening instant; watchdog execution (expireOverdueEscrows / actOnStaleEscrows with an EXPIRE-dispatch action) over fresh rebuilds of that same 100-escrow batch on every iteration because the executors mutate their inputs (40 of 40 expire attempts and 70 of 70 stale actions succeed — both selected states carry an EXPIRE edge); quorum snapshot restore from a persisted (JSON round-tripped) snapshot of the 9-signer / threshold-5 quorum carrying 7 recorded approvals; settleRelease netting over 4 fixed representative inputs (golden 10630 at 500 bps, 1000 at 500 bps with 100 credits, large gross 1000000 at 250 bps with 1250.25 credits, rounding edge 10 at 125 bps) checked against hand-computed proFee/net on every iteration; parseRetryAfter over a fixed 11-value corpus (delay-seconds, fractional and whitespace-padded values, zero, future and past HTTP-dates, signed numbers, a garbage string, null and undefined) against one injected fixed now, every result checked against hand-pinned expectations on every iteration; depositAmountFromHistory over a fixed 4-shape corpus (a single FUND of the golden 10630, a two-FUND top-up sequence summing to 12630, a FUND recorded without an amount, and an empty no-FUND history) checked against hand-pinned totals and exact fail-fast error messages on every iteration; renderReport rendering of the fixed golden released report (deposit 10630, released via VERIFY_PASS -> RELEASE, 4 party rows) checked against hand-written expected lines (header/outcome, deposit formula, creator net row) on every iteration; allowedEvents over all 8 states of the transition table (one pass = every state queried once in declaration order — CREATED, FUNDED, MILESTONE_SUBMITTED, VERIFIED, DISPUTED, RELEASED, REFUNDED, EXPIRED — with each result checked against its hand-pinned expected event list in declaration order, the three terminal states expecting the empty list) on every iteration; calculateDeposit over a fixed 3-shape corpus (the golden vector pool 10000 / base 600 / complexity 1.0 / loyalty 30 / oracle 60 -> deposit 10630, a complexity 1.5 case -> deposit 6190, and a large-pool 1000000 case -> deposit 1005375) checked against hand-computed adjustedBaseFee and deposit expectations on every iteration; arbitration dispatch (dispatchArbitration with outcome \"refund\", rebuilding a DISPUTED escrow from its fixed 2-entry history prefix via Escrow.fromHistory and a threshold-reached 5/9 quorum via createQuorum on every iteration — rebuild cost inside the timed region — pinned to a fixed audit timestamp, checked for the REFUNDED terminal state, exactly one appended ARBITRATE_REFUND entry, and its \"quorum 5/5\" note on every iteration; isOverdue over a fixed 4-case corpus (past-deadline FUNDED, future-deadline FUNDED, deadline-less FUNDED, and past-deadline terminal RELEASED escrows) checked against hand-pinned booleans (true/false/false/false) against one injected fixed now on every iteration; assertNonNegativeMoney over a fixed legal corpus (0, 0.01, the golden 10630, and 1000000.25) checked to pass without throwing on every iteration, with the illegal corpus (negative, NaN, Infinity, -Infinity, a numeric string, undefined, and null — each throwing the exact message \"amount must be a finite non-negative number\") asserted once outside the timed loop and never timed); transitionTableJson (fixed no-arg transition-table JSON export, parsed back and checked against hand-pinned expectations — 14 edges, first CREATED/FUND/FUNDED, release edge VERIFIED/RELEASE/RELEASED at index 10, last DISPUTED/ARBITRATE_REFUND/REFUNDED, per-edge key order from,event,to, and a single trailing newline — on every iteration); stateDiagram (fixed no-arg Mermaid rendering, checked against hand-pinned expectations — 21 lines, all 14 edge lines written out in full in declaration order, the start line pinning CREATED, the 3 terminal lines RELEASED/REFUNDED/EXPIRED, and all 8 states present — on every iteration); readmeDiagramInSync (fixed no-arg README diagram sync check — reads only this repo's README.md, regenerates the diagram, and checks the exact block is embedded, checked against the hand-pinned expectation true on every iteration)",
+  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); settlement batch summary over that batch's 4 pre-built results (3 reports + 1 error); settlement batch webhooks over that same batch (3 signed webhooks with distinct deterministic eventIds bench-batch-event-1..3 plus the 1 forwarded per-item error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release); quorum of 9 signers with threshold 5 on a fixed injected clock, approved one vote at a time to the threshold; settlement webhook fan-out to 4 endpoints through a fake global fetch (immediate 200, no network); settlement event dedupe duplicate hits cycling over 1,000 pre-recorded eventIds under a fixed injected clock; settlement event dedupe restore from a 1,000-entry JSON-round-tripped snapshot under a fixed injected clock (all entries live at load, default TTL and capacity, observability counters restarting at zero); Escrow.fromHistory replay over the same detached 4-entry history; watchdog screening over a fixed mixed batch of 100 escrows (40 hand-counted expired, 70 hand-counted stale under FUNDED 7d / MILESTONE_SUBMITTED 30d budgets) at a fixed screening instant; watchdog execution (expireOverdueEscrows / actOnStaleEscrows with an EXPIRE-dispatch action) over fresh rebuilds of that same 100-escrow batch on every iteration because the executors mutate their inputs (40 of 40 expire attempts and 70 of 70 stale actions succeed — both selected states carry an EXPIRE edge); quorum snapshot restore from a persisted (JSON round-tripped) snapshot of the 9-signer / threshold-5 quorum carrying 7 recorded approvals; settleRelease netting over 4 fixed representative inputs (golden 10630 at 500 bps, 1000 at 500 bps with 100 credits, large gross 1000000 at 250 bps with 1250.25 credits, rounding edge 10 at 125 bps) checked against hand-computed proFee/net on every iteration; parseRetryAfter over a fixed 11-value corpus (delay-seconds, fractional and whitespace-padded values, zero, future and past HTTP-dates, signed numbers, a garbage string, null and undefined) against one injected fixed now, every result checked against hand-pinned expectations on every iteration; depositAmountFromHistory over a fixed 4-shape corpus (a single FUND of the golden 10630, a two-FUND top-up sequence summing to 12630, a FUND recorded without an amount, and an empty no-FUND history) checked against hand-pinned totals and exact fail-fast error messages on every iteration; renderReport rendering of the fixed golden released report (deposit 10630, released via VERIFY_PASS -> RELEASE, 4 party rows) checked against hand-written expected lines (header/outcome, deposit formula, creator net row) on every iteration; allowedEvents over all 8 states of the transition table (one pass = every state queried once in declaration order — CREATED, FUNDED, MILESTONE_SUBMITTED, VERIFIED, DISPUTED, RELEASED, REFUNDED, EXPIRED — with each result checked against its hand-pinned expected event list in declaration order, the three terminal states expecting the empty list) on every iteration; calculateDeposit over a fixed 3-shape corpus (the golden vector pool 10000 / base 600 / complexity 1.0 / loyalty 30 / oracle 60 -> deposit 10630, a complexity 1.5 case -> deposit 6190, and a large-pool 1000000 case -> deposit 1005375) checked against hand-computed adjustedBaseFee and deposit expectations on every iteration; arbitration dispatch (dispatchArbitration with outcome \"refund\", rebuilding a DISPUTED escrow from its fixed 2-entry history prefix via Escrow.fromHistory and a threshold-reached 5/9 quorum via createQuorum on every iteration — rebuild cost inside the timed region — pinned to a fixed audit timestamp, checked for the REFUNDED terminal state, exactly one appended ARBITRATE_REFUND entry, and its \"quorum 5/5\" note on every iteration; isOverdue over a fixed 4-case corpus (past-deadline FUNDED, future-deadline FUNDED, deadline-less FUNDED, and past-deadline terminal RELEASED escrows) checked against hand-pinned booleans (true/false/false/false) against one injected fixed now on every iteration; assertNonNegativeMoney over a fixed legal corpus (0, 0.01, the golden 10630, and 1000000.25) checked to pass without throwing on every iteration, with the illegal corpus (negative, NaN, Infinity, -Infinity, a numeric string, undefined, and null — each throwing the exact message \"amount must be a finite non-negative number\") asserted once outside the timed loop and never timed); transitionTableJson (fixed no-arg transition-table JSON export, parsed back and checked against hand-pinned expectations — 14 edges, first CREATED/FUND/FUNDED, release edge VERIFIED/RELEASE/RELEASED at index 10, last DISPUTED/ARBITRATE_REFUND/REFUNDED, per-edge key order from,event,to, and a single trailing newline — on every iteration); stateDiagram (fixed no-arg Mermaid rendering, checked against hand-pinned expectations — 21 lines, all 14 edge lines written out in full in declaration order, the start line pinning CREATED, the 3 terminal lines RELEASED/REFUNDED/EXPIRED, and all 8 states present — on every iteration); readmeDiagramInSync (fixed no-arg README diagram sync check — reads only this repo's README.md, regenerates the diagram, and checks the exact block is embedded, checked against the hand-pinned expectation true on every iteration); subscribe (full lifecycle, 1 collecting listener) over the same full 4-dispatch lifecycle on a fresh escrow per iteration, self-checked per iteration against the hand-written (event, from, to) sequence and the escrow's own history entry for entry, with unsubscribe and throwing-listener isolation checks outside the timed loop",
 );
 console.log(`Iterations per op: ${ITERATIONS} (after ${WARMUP} warmup)`);
 console.log("");
@@ -2390,6 +2575,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "transitionTableJson (14 edges)", ops: benchTransitionTableJson() },
   { path: "stateDiagram (14 edges, 21 lines)", ops: benchStateDiagram() },
   { path: "readmeDiagramInSync (README sync check)", ops: benchReadmeDiagramInSync() },
+  { path: "subscribe (full lifecycle, 1 collecting listener)", ops: benchSubscribe() },
 ];
 
 console.log("path                                              throughput");

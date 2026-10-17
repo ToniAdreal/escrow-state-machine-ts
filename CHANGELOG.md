@@ -18,6 +18,17 @@ version changes.
 
 ### Added
 
+- Benchmark coverage for the dispatch subscription
+  notification path: `subscribe()` with one fixed collecting
+  listener on a fresh escrow driven through the full
+  CREATED → RELEASED lifecycle (4 dispatches + 4 notifications
+  per pass), checked on every iteration against hand-written
+  (event, from, to) expectations and the escrow's own history,
+  entry for entry; unsubscribe (idempotent — a further dispatch
+  notifies nobody) and throwing-listener isolation (the dispatch
+  still succeeds and its peer still runs) are pinned once,
+  outside the timed loop. Bench only; no library behavior
+  change.
 - A settlement webhook fan-out delivery segment in the CLI
   demo (after the batch webhooks section):
   `deliverSettlementWebhookToMany` delivers the main escrow's
