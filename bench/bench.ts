@@ -345,6 +345,29 @@
  *      serialized text is additionally restored after a
  *      JSON.parse/stringify round-trip and checked to come
  *      back unchanged.
+ *  31. standalone history parsing — `parseEscrowHistory()` over
+ *      the JSON-serialized text of the same fixed RELEASED
+ *      history fixture (see the parseEscrowHistory fixture
+ *      below). This is the validation a recovery or
+ *      reconciliation tool holding only a bare history value —
+ *      JSON text from a log shipper or another store, with no
+ *      Escrow instance at all — pays before anything rebuilds
+ *      from it: structural validation (seq chain, legal edges,
+ *      canonical timestamps) plus full hash-chain
+ *      re-verification, returning sanitized detached copies.
+ *      The demo gained this as an independent segment in #359
+ *      and the NDJSON / fromHistory paths exercise the same
+ *      parser internally, but the standalone parse itself had
+ *      no measured baseline. The serialized text is fixed
+ *      once, outside the timed loop; every timed iteration
+ *      parses the text back and runs the standalone parser,
+ *      then checks the parsed entries against the original
+ *      history entry for entry (hash / prevHash chain
+ *      included, compared field-wise and through the canonical
+ *      NDJSON serializer). Outside the timed loop, a detached
+ *      tampered text (the middle entry's note rewritten, then
+ *      re-serialized) is rejected with the exact hash-chain
+ *      error, and the original text still parses afterwards.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -378,6 +401,7 @@ import {
   historyFromNdjson,
   historyToNdjson,
   isOverdue,
+  parseEscrowHistory,
   parseRetryAfter,
   renderReport,
   restoreQuorum,
@@ -2259,6 +2283,137 @@ checkSnapshotRoundTrip(
 }
 
 // ---------------------------------------------------------------------
+// parseEscrowHistory fixture: the module-scope `historyFixture`
+// above — the same detached 4-entry chained RELEASED history the
+// dispatch / replay paths use — serialized ONCE with
+// JSON.stringify into the plain JSON text a log shipper or another
+// store would hand a recovery tool. The timed path starts from
+// that text on every iteration: JSON.parse back to plain values,
+// then `parseEscrowHistory()` standalone (no Escrow instance).
+// Hand-written expectations — written out here from the documented
+// `parseEscrowHistory` semantics in src/stateMachine.ts (the exact
+// parseEscrowSnapshot validation: seq from 1 with no gaps, from/to
+// chain continuous from CREATED, every edge legal, canonical
+// non-decreasing timestamps, amount only on FUND, unknown fields
+// rejected, and a fully chained history's hash chain
+// re-verified), cross-checked against the demo's standalone
+// history-parsing segment (#359) and test/historyParserFuzz's
+// independent pinning of the same parser, never derived by calling
+// parseEscrowHistory itself:
+//   - the intact text parses to the same 4 entries verbatim —
+//     seq 1 FUND / 2 SUBMIT_MILESTONE / 3 VERIFY_PASS /
+//     4 RELEASE, the final entry landing in RELEASED — every
+//     entry equal to the original history field for field
+//     (seq / event / from / to / at / actor / note / amount /
+//     evidence / prevHash / hash), so its canonical NDJSON form
+//     is the fixture's own (the parser returns entries in
+//     canonical field order, so the comparison is field-wise and
+//     through the canonical serializer, never raw JSON text of
+//     the fixture objects);
+//   - a detached copy whose middle entry (seq 2,
+//     SUBMIT_MILESTONE) carries a rewritten note — the same
+//     tampered note the demo pins — is structurally well-formed
+//     but no longer recomputes its stored hash, so the parse
+//     must throw exactly the demo-pinned error
+//     "invalid snapshot: history hash chain is broken (an entry
+//     was tampered with, deleted, or reordered)" — checked once,
+//     outside the timed loop, and the original text must still
+//     parse afterwards, proving the tamper copy was detached.
+// ---------------------------------------------------------------------
+const PARSE_HISTORY_TAMPERED_SEQ = 2;
+const PARSE_HISTORY_TAMPERED_NOTE =
+  "REWRITTEN after the fact — milestone note altered";
+const PARSE_HISTORY_TAMPER_ERROR =
+  "invalid snapshot: history hash chain is broken (an entry was tampered with, deleted, or reordered)";
+const parseHistoryText = JSON.stringify(historyFixture);
+function checkParsedHistory(
+  parsed: EscrowHistoryEntry[],
+  where: string,
+): void {
+  if (
+    parsed.length !== historyFixture.length ||
+    historyToNdjson(parsed) !== historyToNdjson(historyFixture)
+  ) {
+    throw new Error(`benchmark self-check failed: ${where}`);
+  }
+  for (let i = 0; i < historyFixture.length; i++) {
+    const a = parsed[i];
+    const b = historyFixture[i];
+    if (
+      a.seq !== b.seq ||
+      a.event !== b.event ||
+      a.from !== b.from ||
+      a.to !== b.to ||
+      a.at !== b.at ||
+      a.actor !== b.actor ||
+      a.note !== b.note ||
+      a.amount !== b.amount ||
+      a.evidence !== b.evidence ||
+      a.prevHash !== b.prevHash ||
+      a.hash !== b.hash
+    ) {
+      throw new Error(`benchmark self-check failed: ${where}`);
+    }
+  }
+  const last = parsed[parsed.length - 1];
+  if (last.seq !== 4 || last.event !== "RELEASE" || last.to !== "RELEASED") {
+    throw new Error(`benchmark self-check failed: ${where}`);
+  }
+}
+// One-time validation (outside the timed loop): the intact text
+// parses to exactly the hand-written expectations.
+checkParsedHistory(
+  parseEscrowHistory(JSON.parse(parseHistoryText) as unknown),
+  "parseEscrowHistory fixture",
+);
+// Tamper rejection (outside the timed loop): the re-serialized
+// tampered text must be rejected with the exact hash-chain error —
+// and the original text must still parse afterwards, proving the
+// tamper copy was detached.
+{
+  const tamperedHistory = (
+    JSON.parse(parseHistoryText) as Array<Record<string, unknown>>
+  ).map((entry) => ({ ...entry }));
+  const tamperedEntry = tamperedHistory.find(
+    (entry) => entry.seq === PARSE_HISTORY_TAMPERED_SEQ,
+  );
+  if (tamperedEntry === undefined) {
+    throw new Error(
+      "benchmark fixture failed: serialized history has no entry at the tamper seq",
+    );
+  }
+  tamperedEntry.note = PARSE_HISTORY_TAMPERED_NOTE;
+  let tamperError = "";
+  try {
+    parseEscrowHistory(JSON.parse(JSON.stringify(tamperedHistory)) as unknown);
+  } catch (err) {
+    tamperError = err instanceof Error ? err.message : String(err);
+  }
+  if (tamperError !== PARSE_HISTORY_TAMPER_ERROR) {
+    throw new Error(
+      "benchmark fixture failed: parseEscrowHistory tamper rejection mismatch",
+    );
+  }
+}
+checkParsedHistory(
+  parseEscrowHistory(JSON.parse(parseHistoryText) as unknown),
+  "parseEscrowHistory fixture after tamper check",
+);
+
+function benchParseEscrowHistory(): number {
+  return measure(() => {
+    // Per-iteration self-check: the entries parsed standalone from
+    // the serialized text match the original history entry for
+    // entry, hash chain included (see the parseEscrowHistory
+    // fixture above).
+    checkParsedHistory(
+      parseEscrowHistory(JSON.parse(parseHistoryText) as unknown),
+      "parseEscrowHistory",
+    );
+  }, ITERATIONS);
+}
+
+// ---------------------------------------------------------------------
 // Scenarios (each with a self-check so a broken path cannot report a
 // plausible-looking number).
 // ---------------------------------------------------------------------
@@ -2847,7 +3002,7 @@ console.log("escrow-state-machine-ts benchmark");
 console.log(`Node: ${process.version} on ${process.platform}/${process.arch}`);
 console.log(`CPU: ${cpus()[0]?.model ?? "unknown"}`);
 console.log(
-  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); settlement batch summary over that batch's 4 pre-built results (3 reports + 1 error); settlement batch webhooks over that same batch (3 signed webhooks with distinct deterministic eventIds bench-batch-event-1..3 plus the 1 forwarded per-item error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release); quorum of 9 signers with threshold 5 on a fixed injected clock, approved one vote at a time to the threshold; settlement webhook fan-out to 4 endpoints through a fake global fetch (immediate 200, no network); settlement event dedupe duplicate hits cycling over 1,000 pre-recorded eventIds under a fixed injected clock; settlement event dedupe restore from a 1,000-entry JSON-round-tripped snapshot under a fixed injected clock (all entries live at load, default TTL and capacity, observability counters restarting at zero); Escrow.fromHistory replay over the same detached 4-entry history, self-checked per iteration for the rebuilt id and state and the full history entry for entry (hashes included, compared field-wise and through the canonical NDJSON serializer, because rehydration normalizes entry key order), with a detached tampered copy (FUND amount altered from 10630 to 10631) rejected with the hash-chain error outside the timed loop; watchdog screening over a fixed mixed batch of 100 escrows (40 hand-counted expired, 70 hand-counted stale under FUNDED 7d / MILESTONE_SUBMITTED 30d budgets) at a fixed screening instant; watchdog execution (expireOverdueEscrows / actOnStaleEscrows with an EXPIRE-dispatch action) over fresh rebuilds of that same 100-escrow batch on every iteration because the executors mutate their inputs (40 of 40 expire attempts and 70 of 70 stale actions succeed — both selected states carry an EXPIRE edge); quorum snapshot restore from a persisted (JSON round-tripped) snapshot of the 9-signer / threshold-5 quorum carrying 7 recorded approvals; settleRelease netting over 4 fixed representative inputs (golden 10630 at 500 bps, 1000 at 500 bps with 100 credits, large gross 1000000 at 250 bps with 1250.25 credits, rounding edge 10 at 125 bps) checked against hand-computed proFee/net on every iteration; parseRetryAfter over a fixed 11-value corpus (delay-seconds, fractional and whitespace-padded values, zero, future and past HTTP-dates, signed numbers, a garbage string, null and undefined) against one injected fixed now, every result checked against hand-pinned expectations on every iteration; depositAmountFromHistory over a fixed 4-shape corpus (a single FUND of the golden 10630, a two-FUND top-up sequence summing to 12630, a FUND recorded without an amount, and an empty no-FUND history) checked against hand-pinned totals and exact fail-fast error messages on every iteration; renderReport rendering of the fixed golden released report (deposit 10630, released via VERIFY_PASS -> RELEASE, 4 party rows) checked against hand-written expected lines (header/outcome, deposit formula, creator net row) on every iteration; allowedEvents over all 8 states of the transition table (one pass = every state queried once in declaration order — CREATED, FUNDED, MILESTONE_SUBMITTED, VERIFIED, DISPUTED, RELEASED, REFUNDED, EXPIRED — with each result checked against its hand-pinned expected event list in declaration order, the three terminal states expecting the empty list) on every iteration; calculateDeposit over a fixed 3-shape corpus (the golden vector pool 10000 / base 600 / complexity 1.0 / loyalty 30 / oracle 60 -> deposit 10630, a complexity 1.5 case -> deposit 6190, and a large-pool 1000000 case -> deposit 1005375) checked against hand-computed adjustedBaseFee and deposit expectations on every iteration; arbitration dispatch (dispatchArbitration with outcome \"refund\", rebuilding a DISPUTED escrow from its fixed 2-entry history prefix via Escrow.fromHistory and a threshold-reached 5/9 quorum via createQuorum on every iteration — rebuild cost inside the timed region — pinned to a fixed audit timestamp, checked for the REFUNDED terminal state, exactly one appended ARBITRATE_REFUND entry, and its \"quorum 5/5\" note on every iteration; isOverdue over a fixed 4-case corpus (past-deadline FUNDED, future-deadline FUNDED, deadline-less FUNDED, and past-deadline terminal RELEASED escrows) checked against hand-pinned booleans (true/false/false/false) against one injected fixed now on every iteration; assertNonNegativeMoney over a fixed legal corpus (0, 0.01, the golden 10630, and 1000000.25) checked to pass without throwing on every iteration, with the illegal corpus (negative, NaN, Infinity, -Infinity, a numeric string, undefined, and null — each throwing the exact message \"amount must be a finite non-negative number\") asserted once outside the timed loop and never timed); transitionTableJson (fixed no-arg transition-table JSON export, parsed back and checked against hand-pinned expectations — 14 edges, first CREATED/FUND/FUNDED, release edge VERIFIED/RELEASE/RELEASED at index 10, last DISPUTED/ARBITRATE_REFUND/REFUNDED, per-edge key order from,event,to, and a single trailing newline — on every iteration); stateDiagram (fixed no-arg Mermaid rendering, checked against hand-pinned expectations — 21 lines, all 14 edge lines written out in full in declaration order, the start line pinning CREATED, the 3 terminal lines RELEASED/REFUNDED/EXPIRED, and all 8 states present — on every iteration); readmeDiagramInSync (fixed no-arg README diagram sync check — reads only this repo's README.md, regenerates the diagram, and checks the exact block is embedded, checked against the hand-pinned expectation true on every iteration); subscribe (full lifecycle, 1 collecting listener) over the same full 4-dispatch lifecycle on a fresh escrow per iteration, self-checked per iteration against the hand-written (event, from, to) sequence and the escrow's own history entry for entry, with unsubscribe and throwing-listener isolation checks outside the timed loop; hash-chain verification (verifyHistoryChain) over the same fixed 4-entry history, self-checked per iteration for the genesis link (the first entry's prevHash is GENESIS_PREV_HASH) and every successor link (each entry's prevHash equals its predecessor's hash), with a detached tampered copy (the middle SUBMIT_MILESTONE entry gaining a note it never carried) returning false outside the timed loop; snapshot round-trip (Escrow.fromJSON restoring the fixed toJSON snapshot of the same full lifecycle escrow carrying the fixed deadline 2026-01-31T00:00:00.000Z, checked on every iteration for the restored id, state, and deadline and the full history entry for entry — hash chain included — and for a re-export identical to the source snapshot, with the serialized snapshot text additionally restored unchanged after a JSON.parse/stringify round-trip once outside the timed loop)",
+  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); settlement batch summary over that batch's 4 pre-built results (3 reports + 1 error); settlement batch webhooks over that same batch (3 signed webhooks with distinct deterministic eventIds bench-batch-event-1..3 plus the 1 forwarded per-item error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release); quorum of 9 signers with threshold 5 on a fixed injected clock, approved one vote at a time to the threshold; settlement webhook fan-out to 4 endpoints through a fake global fetch (immediate 200, no network); settlement event dedupe duplicate hits cycling over 1,000 pre-recorded eventIds under a fixed injected clock; settlement event dedupe restore from a 1,000-entry JSON-round-tripped snapshot under a fixed injected clock (all entries live at load, default TTL and capacity, observability counters restarting at zero); Escrow.fromHistory replay over the same detached 4-entry history, self-checked per iteration for the rebuilt id and state and the full history entry for entry (hashes included, compared field-wise and through the canonical NDJSON serializer, because rehydration normalizes entry key order), with a detached tampered copy (FUND amount altered from 10630 to 10631) rejected with the hash-chain error outside the timed loop; watchdog screening over a fixed mixed batch of 100 escrows (40 hand-counted expired, 70 hand-counted stale under FUNDED 7d / MILESTONE_SUBMITTED 30d budgets) at a fixed screening instant; watchdog execution (expireOverdueEscrows / actOnStaleEscrows with an EXPIRE-dispatch action) over fresh rebuilds of that same 100-escrow batch on every iteration because the executors mutate their inputs (40 of 40 expire attempts and 70 of 70 stale actions succeed — both selected states carry an EXPIRE edge); quorum snapshot restore from a persisted (JSON round-tripped) snapshot of the 9-signer / threshold-5 quorum carrying 7 recorded approvals; settleRelease netting over 4 fixed representative inputs (golden 10630 at 500 bps, 1000 at 500 bps with 100 credits, large gross 1000000 at 250 bps with 1250.25 credits, rounding edge 10 at 125 bps) checked against hand-computed proFee/net on every iteration; parseRetryAfter over a fixed 11-value corpus (delay-seconds, fractional and whitespace-padded values, zero, future and past HTTP-dates, signed numbers, a garbage string, null and undefined) against one injected fixed now, every result checked against hand-pinned expectations on every iteration; depositAmountFromHistory over a fixed 4-shape corpus (a single FUND of the golden 10630, a two-FUND top-up sequence summing to 12630, a FUND recorded without an amount, and an empty no-FUND history) checked against hand-pinned totals and exact fail-fast error messages on every iteration; renderReport rendering of the fixed golden released report (deposit 10630, released via VERIFY_PASS -> RELEASE, 4 party rows) checked against hand-written expected lines (header/outcome, deposit formula, creator net row) on every iteration; allowedEvents over all 8 states of the transition table (one pass = every state queried once in declaration order — CREATED, FUNDED, MILESTONE_SUBMITTED, VERIFIED, DISPUTED, RELEASED, REFUNDED, EXPIRED — with each result checked against its hand-pinned expected event list in declaration order, the three terminal states expecting the empty list) on every iteration; calculateDeposit over a fixed 3-shape corpus (the golden vector pool 10000 / base 600 / complexity 1.0 / loyalty 30 / oracle 60 -> deposit 10630, a complexity 1.5 case -> deposit 6190, and a large-pool 1000000 case -> deposit 1005375) checked against hand-computed adjustedBaseFee and deposit expectations on every iteration; arbitration dispatch (dispatchArbitration with outcome \"refund\", rebuilding a DISPUTED escrow from its fixed 2-entry history prefix via Escrow.fromHistory and a threshold-reached 5/9 quorum via createQuorum on every iteration — rebuild cost inside the timed region — pinned to a fixed audit timestamp, checked for the REFUNDED terminal state, exactly one appended ARBITRATE_REFUND entry, and its \"quorum 5/5\" note on every iteration; isOverdue over a fixed 4-case corpus (past-deadline FUNDED, future-deadline FUNDED, deadline-less FUNDED, and past-deadline terminal RELEASED escrows) checked against hand-pinned booleans (true/false/false/false) against one injected fixed now on every iteration; assertNonNegativeMoney over a fixed legal corpus (0, 0.01, the golden 10630, and 1000000.25) checked to pass without throwing on every iteration, with the illegal corpus (negative, NaN, Infinity, -Infinity, a numeric string, undefined, and null — each throwing the exact message \"amount must be a finite non-negative number\") asserted once outside the timed loop and never timed); transitionTableJson (fixed no-arg transition-table JSON export, parsed back and checked against hand-pinned expectations — 14 edges, first CREATED/FUND/FUNDED, release edge VERIFIED/RELEASE/RELEASED at index 10, last DISPUTED/ARBITRATE_REFUND/REFUNDED, per-edge key order from,event,to, and a single trailing newline — on every iteration); stateDiagram (fixed no-arg Mermaid rendering, checked against hand-pinned expectations — 21 lines, all 14 edge lines written out in full in declaration order, the start line pinning CREATED, the 3 terminal lines RELEASED/REFUNDED/EXPIRED, and all 8 states present — on every iteration); readmeDiagramInSync (fixed no-arg README diagram sync check — reads only this repo's README.md, regenerates the diagram, and checks the exact block is embedded, checked against the hand-pinned expectation true on every iteration); subscribe (full lifecycle, 1 collecting listener) over the same full 4-dispatch lifecycle on a fresh escrow per iteration, self-checked per iteration against the hand-written (event, from, to) sequence and the escrow's own history entry for entry, with unsubscribe and throwing-listener isolation checks outside the timed loop; hash-chain verification (verifyHistoryChain) over the same fixed 4-entry history, self-checked per iteration for the genesis link (the first entry's prevHash is GENESIS_PREV_HASH) and every successor link (each entry's prevHash equals its predecessor's hash), with a detached tampered copy (the middle SUBMIT_MILESTONE entry gaining a note it never carried) returning false outside the timed loop; snapshot round-trip (Escrow.fromJSON restoring the fixed toJSON snapshot of the same full lifecycle escrow carrying the fixed deadline 2026-01-31T00:00:00.000Z, checked on every iteration for the restored id, state, and deadline and the full history entry for entry — hash chain included — and for a re-export identical to the source snapshot, with the serialized snapshot text additionally restored unchanged after a JSON.parse/stringify round-trip once outside the timed loop); standalone history parsing (parseEscrowHistory over the JSON-serialized text of that same fixed 4-entry RELEASED history, parsed back from the text and validated standalone — no Escrow instance — on every iteration, checked entry for entry against the original history, hash / prevHash chain included, field-wise and through the canonical NDJSON serializer, with a detached tampered text — the middle SUBMIT_MILESTONE entry's note rewritten and re-serialized — rejected with the exact hash-chain error once outside the timed loop and the original text still parsing afterwards)",
 );
 console.log(`Iterations per op: ${ITERATIONS} (after ${WARMUP} warmup)`);
 console.log("");
@@ -2887,6 +3042,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "readmeDiagramInSync (README sync check)", ops: benchReadmeDiagramInSync() },
   { path: "subscribe (full lifecycle, 1 collecting listener)", ops: benchSubscribe() },
   { path: "Escrow.fromJSON (snapshot round-trip, 4 entries)", ops: benchSnapshotRoundTrip() },
+  { path: "parseEscrowHistory (4 entries, JSON text)", ops: benchParseEscrowHistory() },
 ];
 
 console.log("path                                              throughput");

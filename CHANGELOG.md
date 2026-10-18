@@ -18,6 +18,20 @@ version changes.
 
 ### Added
 
+- A standalone history-parsing path in the benchmark:
+  `parseEscrowHistory()` over the JSON-serialized text of
+  the fixed 4-entry RELEASED history, parsed back from the
+  text and validated standalone (no Escrow instance) on
+  every timed iteration, with the parsed entries checked
+  entry for entry against the original history (`hash` /
+  `prevHash` chain included, field-wise and through the
+  canonical NDJSON serializer) — and a detached tampered
+  text (the middle `SUBMIT_MILESTONE` entry's note
+  rewritten and re-serialized) rejected with the exact
+  hash-chain error once, outside the timed loop, the
+  original text still parsing afterwards. Bench only; no
+  library behavior change. The README Benchmarks table is
+  refreshed from one real run.
 - A snapshot round-trip path in the benchmark:
   `Escrow.fromJSON()` restoring the fixed `toJSON()` snapshot
   of the full-lifecycle escrow carrying a fixed deadline
