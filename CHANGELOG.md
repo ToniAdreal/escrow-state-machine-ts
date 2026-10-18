@@ -18,6 +18,22 @@ version changes.
 
 ### Added
 
+- Benchmark coverage for the transition-table pure object
+  construction path: `transitionTable()` with no arguments,
+  checked on every iteration against hand-pinned
+  expectations (all 14 edges written out in full in
+  declaration order; every edge's keys in from / event / to
+  order; spot-checked against the `transitionTableJson`
+  edge set through the shared pinned first / release
+  (index 10) / last edges), with an exhaustive check
+  outside the timed loop comparing the full edge set to
+  the parsed JSON edge set edge for edge and confirming a
+  hand-pinned non-existent edge (CREATED / RELEASE /
+  RELEASED) is absent from both. This separates the pure
+  construction cost from the JSON row's construction-plus-
+  serialization cost. The README Benchmarks table was
+  refreshed from one real run and gained the
+  `transitionTable (14 edges)` row.
 - A quorum approval-log segment closing the CLI demo:
   `approvalLog()` on the dispute quorum prints the full
   approval audit trail in record order (each arbitrator
