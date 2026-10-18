@@ -18,7 +18,22 @@ version changes.
 
 ### Added
 
-- A subscription segment closing the CLI demo: a branch
+- A deadline-clearing segment closing the CLI demo: a
+  funded escrow (DEMO-ESC-012) carrying a fixed past
+  deadline reads overdue at a fixed later instant, then
+  `clearDeadline()` removes the deadline so
+  `getDeadline()` reads back `undefined` and the overdue
+  judgement at the same instant turns false, while a
+  second funded escrow (DEMO-ESC-013) that never carried
+  a deadline shows the same call as a harmless no-op,
+  all asserted outside the printing against hand-pinned
+  expectations cross-checked against the deadline tests.
+  `DemoResult` exposes both escrows and the before/after
+  deadline reads and overdue verdicts; the demo tests
+  pin the clearing sequence, the printed lines, and the
+  segment's closing position. Demo and tests only; no
+  library behavior change.
+- A subscription segment in the CLI demo: a branch
   escrow (DEMO-ESC-011) carries one fixed collecting
   listener subscribed via `Escrow.subscribe()`, which
   receives `(event, from, to, entry)` after two fixed

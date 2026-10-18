@@ -9,6 +9,12 @@ import {
   DEMO_DEDUPE_TTL_MS,
   DEMO_BATCH_WEBHOOK_AT,
   DEMO_BATCH_WEBHOOK_EVENT_IDS,
+  DEMO_CLEAR_DEADLINE_CHECK_AT,
+  DEMO_CLEAR_DEADLINE_DEADLINE,
+  DEMO_CLEAR_DEADLINE_ESCROW_ID,
+  DEMO_CLEAR_DEADLINE_FUND_AT,
+  DEMO_CLEAR_DEADLINE_NO_DEADLINE_ESCROW_ID,
+  DEMO_CLEAR_DEADLINE_NO_DEADLINE_FUND_AT,
   DEMO_DEADLINE_STALE_DEADLINE,
   DEMO_DEADLINE_STALE_ESCROW_ID,
   DEMO_DEADLINE_STALE_FUND_AT,
@@ -1948,10 +1954,10 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
       '  rejected: NaN -> "amount must be a finite non-negative number"',
     ),
   );
-  // Subscription tail: the closing segment fans two fixed
+  // Subscription tail: that segment fans two fixed
   // dispatches out to a collecting listener, unsubscribes
-  // it, and ends the demo on the zero-new-notifications
-  // line after one further dispatch.
+  // it, and prints the zero-new-notifications line after
+  // one further dispatch.
   assert.match(
     out,
     /Subscription notifications \(Escrow\.subscribe on a branch escrow\):/,
@@ -1965,10 +1971,30 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
     ),
   );
   assert.ok(
+    out.includes(
+      "  listener received after unsubscribe: 2 notification(s) (unchanged — VERIFY_PASS produced no new notification)",
+    ),
+  );
+  // Deadline-clearing tail: the closing segment clears a
+  // fixed past deadline (overdue true -> false, deadline
+  // read back undefined) and shows the no-deadline clear
+  // as a no-op; the demo ends on that no-op line.
+  assert.match(out, /Deadline clearing \(clearDeadline on funded escrows\):/);
+  assert.ok(
+    out.includes(
+      `  escrow ${DEMO_CLEAR_DEADLINE_ESCROW_ID}: state FUNDED, deadline ${DEMO_CLEAR_DEADLINE_DEADLINE} — at ${DEMO_CLEAR_DEADLINE_CHECK_AT} isOverdue -> true (past the deadline, non-terminal)`,
+    ),
+  );
+  assert.ok(
+    out.includes(
+      `  after clearDeadline(): getDeadline() -> undefined, isOverdue at ${DEMO_CLEAR_DEADLINE_CHECK_AT} -> false (deadline removed — clearing dispatches nothing, escrow still FUNDED)`,
+    ),
+  );
+  assert.ok(
     out
       .trimEnd()
       .endsWith(
-        "  listener received after unsubscribe: 2 notification(s) (unchanged — VERIFY_PASS produced no new notification)",
+        `  escrow ${DEMO_CLEAR_DEADLINE_NO_DEADLINE_ESCROW_ID} (no deadline set): clearDeadline() is a no-op — getDeadline() -> undefined, isOverdue at ${DEMO_CLEAR_DEADLINE_CHECK_AT} -> false, state still FUNDED (1 history entry)`,
       ),
   );
 });
@@ -2721,9 +2747,9 @@ test("demo shows subscription notifications: listener receives the first two dis
   });
   assert.deepEqual(probeSeen, ["FUND:CREATED->FUNDED:1"]);
   assert.equal(probe.listenerCount, 0);
-  // The segment closes the demo: it follows the money-guard
-  // segment, prints its lines verbatim, and its
-  // after-unsubscribe line is the demo's last line.
+  // The segment follows the money-guard segment and
+  // precedes the closing deadline-clearing segment; it
+  // prints its lines verbatim.
   const subscribeAt = text.indexOf(
     "Subscription notifications (Escrow.subscribe on a branch escrow):",
   );
@@ -2733,6 +2759,11 @@ test("demo shows subscription notifications: listener receives the first two dis
         "Money guard (assertNonNegativeMoney on the shared amount boundary):",
       ),
     "subscription segment must follow the money-guard segment",
+  );
+  assert.ok(
+    subscribeAt <
+      text.indexOf("Deadline clearing (clearDeadline on funded escrows):"),
+    "subscription segment must precede the deadline-clearing segment",
   );
   for (const line of [
     `  escrow ${DEMO_SUBSCRIBE_ESCROW_ID}: subscribed 1 collecting listener (notified after each audit append, in subscription order)`,
@@ -2748,10 +2779,6 @@ test("demo shows subscription notifications: listener receives the first two dis
     text,
     / {2}VERIFY_PASS +MILESTONE_SUBMITTED +-> VERIFIED +\(oracle\)/,
   );
-  assert.equal(
-    lines[lines.length - 1],
-    "  listener received after unsubscribe: 2 notification(s) (unchanged — VERIFY_PASS produced no new notification)",
-  );
 });
 
 test("demo subscription segment is deterministic: two runs print byte-identical notification lines", async () => {
@@ -2760,6 +2787,7 @@ test("demo subscription segment is deterministic: two runs print byte-identical 
       ls.indexOf(
         "Subscription notifications (Escrow.subscribe on a branch escrow):",
       ),
+      ls.indexOf("Deadline clearing (clearDeadline on funded escrows):") - 1,
     );
   const a = await runDemo();
   const b = await runDemo();
@@ -2775,5 +2803,122 @@ test("demo subscription segment is deterministic: two runs print byte-identical 
   assert.equal(
     a.subscribeCountAfterUnsubscribe,
     b.subscribeCountAfterUnsubscribe,
+  );
+});
+
+test("demo shows deadline clearing: clearDeadline removes the deadline and turns the overdue judgement false, and is a no-op without one", async () => {
+  const {
+    deadlineClearEscrow,
+    deadlineClearDeadlineBefore,
+    deadlineClearOverdueBefore,
+    deadlineClearDeadlineAfter,
+    deadlineClearOverdueAfter,
+    deadlineClearNoDeadlineEscrow,
+    deadlineClearNoDeadlineOverdue,
+    lines,
+  } = await runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned expectations — written out here from the
+  // documented deadline semantics in src/stateMachine.ts,
+  // never derived by calling clearDeadline() to produce
+  // them. test/deadline.test.ts pins the same semantics
+  // independently (clear removes, no-op when none, and
+  // isOverdue false with no deadline).
+  assert.equal(deadlineClearEscrow.id, DEMO_CLEAR_DEADLINE_ESCROW_ID);
+  assert.equal(deadlineClearDeadlineBefore, DEMO_CLEAR_DEADLINE_DEADLINE);
+  assert.equal(deadlineClearOverdueBefore, true);
+  assert.equal(deadlineClearDeadlineAfter, undefined);
+  assert.equal(deadlineClearOverdueAfter, false);
+  assert.equal(deadlineClearEscrow.getDeadline(), undefined);
+  assert.equal(deadlineClearEscrow.state, "FUNDED");
+  assert.equal(deadlineClearEscrow.history.length, 1);
+  assert.equal(
+    deadlineClearEscrow.history[0].at,
+    DEMO_CLEAR_DEADLINE_FUND_AT,
+  );
+  assert.equal(
+    deadlineClearNoDeadlineEscrow.id,
+    DEMO_CLEAR_DEADLINE_NO_DEADLINE_ESCROW_ID,
+  );
+  assert.equal(deadlineClearNoDeadlineEscrow.getDeadline(), undefined);
+  assert.equal(deadlineClearNoDeadlineOverdue, false);
+  assert.equal(deadlineClearNoDeadlineEscrow.state, "FUNDED");
+  assert.equal(deadlineClearNoDeadlineEscrow.history.length, 1);
+  assert.equal(
+    deadlineClearNoDeadlineEscrow.history[0].at,
+    DEMO_CLEAR_DEADLINE_NO_DEADLINE_FUND_AT,
+  );
+  // Independent cross-checks: fresh escrows reproduce the
+  // same clear shape — the demo segment is not
+  // self-certifying.
+  const probe = new Escrow("clear-demo-probe");
+  probe.dispatch("FUND", undefined, 100, {
+    at: DEMO_CLEAR_DEADLINE_FUND_AT,
+  });
+  probe.setDeadline(DEMO_CLEAR_DEADLINE_DEADLINE);
+  assert.equal(
+    isOverdue(probe, new Date(DEMO_CLEAR_DEADLINE_CHECK_AT)),
+    true,
+  );
+  probe.clearDeadline();
+  assert.equal(probe.getDeadline(), undefined);
+  assert.equal(
+    isOverdue(probe, new Date(DEMO_CLEAR_DEADLINE_CHECK_AT)),
+    false,
+  );
+  const probeNoDeadline = new Escrow("clear-demo-probe-none");
+  probeNoDeadline.dispatch("FUND", undefined, 100, {
+    at: DEMO_CLEAR_DEADLINE_NO_DEADLINE_FUND_AT,
+  });
+  probeNoDeadline.clearDeadline();
+  assert.equal(probeNoDeadline.getDeadline(), undefined);
+  assert.equal(probeNoDeadline.state, "FUNDED");
+  // The segment closes the demo: it follows the
+  // subscription segment, prints its lines verbatim, and
+  // its no-op line is the demo's last line.
+  const clearAt = text.indexOf(
+    "Deadline clearing (clearDeadline on funded escrows):",
+  );
+  assert.ok(
+    clearAt >
+      text.indexOf(
+        "Subscription notifications (Escrow.subscribe on a branch escrow):",
+      ),
+    "deadline-clearing segment must follow the subscription segment",
+  );
+  for (const line of [
+    `  escrow ${DEMO_CLEAR_DEADLINE_ESCROW_ID}: state FUNDED, deadline ${DEMO_CLEAR_DEADLINE_DEADLINE} — at ${DEMO_CLEAR_DEADLINE_CHECK_AT} isOverdue -> true (past the deadline, non-terminal)`,
+    `  after clearDeadline(): getDeadline() -> undefined, isOverdue at ${DEMO_CLEAR_DEADLINE_CHECK_AT} -> false (deadline removed — clearing dispatches nothing, escrow still FUNDED)`,
+    `  escrow ${DEMO_CLEAR_DEADLINE_NO_DEADLINE_ESCROW_ID} (no deadline set): clearDeadline() is a no-op — getDeadline() -> undefined, isOverdue at ${DEMO_CLEAR_DEADLINE_CHECK_AT} -> false, state still FUNDED (1 history entry)`,
+  ]) {
+    assert.ok(text.includes(line), `missing deadline-clearing line: ${line}`);
+  }
+  assert.equal(
+    lines[lines.length - 1],
+    `  escrow ${DEMO_CLEAR_DEADLINE_NO_DEADLINE_ESCROW_ID} (no deadline set): clearDeadline() is a no-op — getDeadline() -> undefined, isOverdue at ${DEMO_CLEAR_DEADLINE_CHECK_AT} -> false, state still FUNDED (1 history entry)`,
+  );
+});
+
+test("demo deadline-clearing segment is deterministic: two runs print byte-identical clearing lines", async () => {
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf("Deadline clearing (clearDeadline on funded escrows):"),
+    );
+  const a = await runDemo();
+  const b = await runDemo();
+  const segA = segment(a.lines);
+  // Header + the escrow line + the after-clear line + the
+  // no-op line; every value is derived from the fixed
+  // fixtures alone, so no normalization is needed.
+  assert.equal(segA.length, 4);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.equal(a.deadlineClearDeadlineBefore, b.deadlineClearDeadlineBefore);
+  assert.equal(a.deadlineClearOverdueBefore, b.deadlineClearOverdueBefore);
+  assert.equal(a.deadlineClearDeadlineAfter, b.deadlineClearDeadlineAfter);
+  assert.equal(a.deadlineClearOverdueAfter, b.deadlineClearOverdueAfter);
+  assert.equal(
+    a.deadlineClearNoDeadlineOverdue,
+    b.deadlineClearNoDeadlineOverdue,
   );
 });

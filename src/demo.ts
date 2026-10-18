@@ -172,7 +172,7 @@
  * illegal money stopped at the boundary, before any
  * accounting sees it; both sides are asserted outside the
  * printing against hand-pinned expectations.
- * The demo finally closes with a subscription segment:
+ * The demo then shows a subscription segment:
  * a branch escrow carries one fixed collecting listener
  * subscribed via `Escrow.subscribe()` — the fan-out seam
  * a reconciliation / notification side wires into — which
@@ -183,6 +183,16 @@
  * third fixed dispatch moves the escrow while producing
  * zero new notifications; both sides are asserted outside
  * the printing against hand-pinned expectations.
+ * The demo finally closes with a deadline-clearing
+ * segment: a further funded escrow carries a fixed past
+ * deadline and reads overdue at a fixed later instant,
+ * then `clearDeadline()` — the entry point for a deadline
+ * cancelled by an extension agreement — removes it, so
+ * `getDeadline()` reads back `undefined` and the overdue
+ * judgement at the same instant turns false; a second
+ * funded escrow that never carried a deadline shows the
+ * same call as a harmless no-op; both sides are asserted
+ * outside the printing against hand-pinned expectations.
  *
  * Usage: `npm run demo` (builds with tsc, then runs node on the compiled
  * output). Zero runtime dependencies: this file only imports the library
@@ -626,6 +636,39 @@ export const DEMO_SUBSCRIBE_SUBMIT_AT = "2026-03-12T10:00:00.000Z";
 export const DEMO_SUBSCRIBE_VERIFY_AT = "2026-03-12T11:00:00.000Z";
 export const DEMO_SUBSCRIBE_VERIFY_EVIDENCE = "demo-oracle-attestation-011";
 
+/**
+ * Deadline-clearing fixtures for the closing segment: one
+ * further funded escrow carrying a fixed deadline, plus a
+ * second funded escrow that never carries one. Hand-pinned
+ * expectations — written from the documented deadline
+ * semantics in src/stateMachine.ts (`clearDeadline()`
+ * removes the attached deadline and is a no-op when none
+ * is set; `isOverdue()` is false when no deadline is set
+ * and, for a non-terminal escrow, is `now >= deadline`
+ * otherwise), never derived by calling `clearDeadline()`
+ * itself, and cross-checked against test/deadline.test.ts:
+ * - DEMO-ESC-012 is FUNDED with deadline
+ *   {@link DEMO_CLEAR_DEADLINE_DEADLINE} (2026-03-14), so
+ *   at {@link DEMO_CLEAR_DEADLINE_CHECK_AT} (2026-03-15)
+ *   it reads overdue true; after `clearDeadline()` its
+ *   `getDeadline()` is `undefined` and the same judgement
+ *   reads false, while the escrow stays FUNDED with its
+ *   single FUND history entry (clearing dispatches
+ *   nothing)
+ * - DEMO-ESC-013 is FUNDED with no deadline at all;
+ *   `clearDeadline()` leaves it untouched: deadline still
+ *   `undefined`, overdue still false, state still FUNDED
+ * Every timestamp is a fixed literal: no network, no
+ * randomness, no wall clock.
+ */
+export const DEMO_CLEAR_DEADLINE_ESCROW_ID = "DEMO-ESC-012";
+export const DEMO_CLEAR_DEADLINE_FUND_AT = "2026-03-13T09:00:00.000Z";
+export const DEMO_CLEAR_DEADLINE_DEADLINE = "2026-03-14T09:00:00.000Z";
+export const DEMO_CLEAR_DEADLINE_CHECK_AT = "2026-03-15T09:00:00.000Z";
+export const DEMO_CLEAR_DEADLINE_NO_DEADLINE_ESCROW_ID = "DEMO-ESC-013";
+export const DEMO_CLEAR_DEADLINE_NO_DEADLINE_FUND_AT =
+  "2026-03-13T10:00:00.000Z";
+
 const steps: Array<{
   event: EscrowEvent;
   actor: string;
@@ -1060,6 +1103,51 @@ export interface DemoResult {
    * produced zero new notifications.
    */
   subscribeCountAfterUnsubscribe: number;
+  /**
+   * The closing segment's funded escrow
+   * ({@link DEMO_CLEAR_DEADLINE_ESCROW_ID}), after its
+   * fixed deadline was cleared: still FUNDED with 1
+   * history entry and no deadline — clearing dispatches
+   * nothing.
+   */
+  deadlineClearEscrow: Escrow;
+  /**
+   * Deadline of {@link DemoResult.deadlineClearEscrow}
+   * before `clearDeadline()` ran:
+   * {@link DEMO_CLEAR_DEADLINE_DEADLINE}.
+   */
+  deadlineClearDeadlineBefore: string | undefined;
+  /**
+   * `isOverdue(deadlineClearEscrow, CHECK_AT)` before
+   * clearing: `true` — the fixed check instant is past
+   * the fixed deadline and the escrow is non-terminal.
+   */
+  deadlineClearOverdueBefore: boolean;
+  /**
+   * Deadline of {@link DemoResult.deadlineClearEscrow}
+   * after `clearDeadline()` ran: `undefined`.
+   */
+  deadlineClearDeadlineAfter: string | undefined;
+  /**
+   * `isOverdue(deadlineClearEscrow, CHECK_AT)` after
+   * clearing, at the same fixed instant: `false` — with
+   * no deadline set an escrow is never overdue.
+   */
+  deadlineClearOverdueAfter: boolean;
+  /**
+   * The closing segment's second funded escrow
+   * ({@link DEMO_CLEAR_DEADLINE_NO_DEADLINE_ESCROW_ID}),
+   * which never carried a deadline, after
+   * `clearDeadline()` ran on it: still FUNDED with 1
+   * history entry and no deadline — the call was a
+   * harmless no-op.
+   */
+  deadlineClearNoDeadlineEscrow: Escrow;
+  /**
+   * `isOverdue(deadlineClearNoDeadlineEscrow, CHECK_AT)`:
+   * `false`, unchanged by the no-op clear.
+   */
+  deadlineClearNoDeadlineOverdue: boolean;
   lines: string[];
 }
 
@@ -2584,6 +2672,82 @@ export async function runDemo(): Promise<DemoResult> {
     `  listener received after unsubscribe: ${subscribeCountAfterUnsubscribe} notification(s) (unchanged — VERIFY_PASS produced no new notification)`,
   );
 
+  // --- Deadline clearing: clearDeadline (closing) ---
+  // A deadline is advisory only, and clearDeadline() is the
+  // sole entry point that removes one — the shape a deadline
+  // cancelled by an extension agreement takes. A funded
+  // escrow carries a fixed deadline already past at the
+  // fixed check instant, so it reads overdue; clearing
+  // removes the deadline, getDeadline() reads back
+  // undefined, and the same judgement at the same instant
+  // turns false. A second funded escrow never carried a
+  // deadline, so the same call is a harmless no-op there.
+  // Hand-pinned expectations (see the fixture comment
+  // above), asserted HERE, outside the printing: the
+  // before/after deadline reads and overdue verdicts match
+  // the pinned values exactly, and both escrows stay FUNDED
+  // with their single FUND entry — clearing dispatches
+  // nothing, so a clear that moved state, appended history,
+  // or left the deadline behind would fail the demo itself,
+  // not just a test. Zero network, zero randomness, fixed
+  // timestamps throughout.
+  const deadlineClearEscrow = new Escrow(DEMO_CLEAR_DEADLINE_ESCROW_ID);
+  deadlineClearEscrow.dispatch(
+    "FUND",
+    "Deposit locked (wire received)",
+    10630,
+    { actor: "sponsor", at: DEMO_CLEAR_DEADLINE_FUND_AT },
+  );
+  deadlineClearEscrow.setDeadline(DEMO_CLEAR_DEADLINE_DEADLINE);
+  const deadlineClearDeadlineBefore = deadlineClearEscrow.getDeadline();
+  const deadlineClearOverdueBefore = isOverdue(
+    deadlineClearEscrow,
+    new Date(DEMO_CLEAR_DEADLINE_CHECK_AT),
+  );
+  deadlineClearEscrow.clearDeadline();
+  const deadlineClearDeadlineAfter = deadlineClearEscrow.getDeadline();
+  const deadlineClearOverdueAfter = isOverdue(
+    deadlineClearEscrow,
+    new Date(DEMO_CLEAR_DEADLINE_CHECK_AT),
+  );
+  const deadlineClearNoDeadlineEscrow = new Escrow(
+    DEMO_CLEAR_DEADLINE_NO_DEADLINE_ESCROW_ID,
+  );
+  deadlineClearNoDeadlineEscrow.dispatch(
+    "FUND",
+    "Deposit locked (wire received)",
+    10630,
+    { actor: "sponsor", at: DEMO_CLEAR_DEADLINE_NO_DEADLINE_FUND_AT },
+  );
+  deadlineClearNoDeadlineEscrow.clearDeadline();
+  const deadlineClearNoDeadlineOverdue = isOverdue(
+    deadlineClearNoDeadlineEscrow,
+    new Date(DEMO_CLEAR_DEADLINE_CHECK_AT),
+  );
+  if (
+    deadlineClearDeadlineBefore !== DEMO_CLEAR_DEADLINE_DEADLINE ||
+    deadlineClearOverdueBefore !== true ||
+    deadlineClearDeadlineAfter !== undefined ||
+    deadlineClearOverdueAfter !== false ||
+    deadlineClearEscrow.state !== "FUNDED" ||
+    deadlineClearEscrow.history.length !== 1 ||
+    deadlineClearNoDeadlineEscrow.getDeadline() !== undefined ||
+    deadlineClearNoDeadlineOverdue !== false ||
+    deadlineClearNoDeadlineEscrow.state !== "FUNDED" ||
+    deadlineClearNoDeadlineEscrow.history.length !== 1
+  ) {
+    throw new Error(
+      "demo fixture broken: clearDeadline does not match the pinned shape (deadline read back, overdue true before and false after at the fixed check instant, no-deadline clear a no-op, both escrows FUNDED with 1 entry)",
+    );
+  }
+  lines.push(
+    "",
+    "Deadline clearing (clearDeadline on funded escrows):",
+    `  escrow ${deadlineClearEscrow.id}: state ${deadlineClearEscrow.state}, deadline ${deadlineClearDeadlineBefore} — at ${DEMO_CLEAR_DEADLINE_CHECK_AT} isOverdue -> ${deadlineClearOverdueBefore} (past the deadline, non-terminal)`,
+    `  after clearDeadline(): getDeadline() -> ${String(deadlineClearDeadlineAfter)}, isOverdue at ${DEMO_CLEAR_DEADLINE_CHECK_AT} -> ${deadlineClearOverdueAfter} (deadline removed — clearing dispatches nothing, escrow still ${deadlineClearEscrow.state})`,
+    `  escrow ${deadlineClearNoDeadlineEscrow.id} (no deadline set): clearDeadline() is a no-op — getDeadline() -> ${String(deadlineClearNoDeadlineEscrow.getDeadline())}, isOverdue at ${DEMO_CLEAR_DEADLINE_CHECK_AT} -> ${deadlineClearNoDeadlineOverdue}, state still ${deadlineClearNoDeadlineEscrow.state} (${deadlineClearNoDeadlineEscrow.history.length} history entry)`,
+  );
+
   return {
     escrow,
     report,
@@ -2647,6 +2811,13 @@ export async function runDemo(): Promise<DemoResult> {
     subscribeNotifications,
     subscribeMatchesHistory,
     subscribeCountAfterUnsubscribe,
+    deadlineClearEscrow,
+    deadlineClearDeadlineBefore,
+    deadlineClearOverdueBefore,
+    deadlineClearDeadlineAfter,
+    deadlineClearOverdueAfter,
+    deadlineClearNoDeadlineEscrow,
+    deadlineClearNoDeadlineOverdue,
     lines,
   };
 }
