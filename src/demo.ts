@@ -161,7 +161,7 @@
  * edge for edge (every `from` / `event` / `to` triple), with
  * the edge total hand-pinned at the same 14 the committed
  * snapshot and the diagram tests pin.
- * The demo finally closes with a money-guard segment:
+ * The demo then shows a money-guard segment:
  * `assertNonNegativeMoney()` — the boundary check every
  * amount entry point shares — is run over a fixed legal
  * corpus (0, a cent, the golden deposit, a large amount
@@ -172,6 +172,17 @@
  * illegal money stopped at the boundary, before any
  * accounting sees it; both sides are asserted outside the
  * printing against hand-pinned expectations.
+ * The demo finally closes with a subscription segment:
+ * a branch escrow carries one fixed collecting listener
+ * subscribed via `Escrow.subscribe()` — the fan-out seam
+ * a reconciliation / notification side wires into — which
+ * receives `(event, from, to, entry)` after each of two
+ * fixed dispatches, in order and matching that escrow's
+ * audit history entry for entry; the listener is then
+ * unsubscribed (twice — unsubscribe is idempotent) and a
+ * third fixed dispatch moves the escrow while producing
+ * zero new notifications; both sides are asserted outside
+ * the printing against hand-pinned expectations.
  *
  * Usage: `npm run demo` (builds with tsc, then runs node on the compiled
  * output). Zero runtime dependencies: this file only imports the library
@@ -589,6 +600,32 @@ export const DEMO_MONEY_GUARD_LEGAL_AMOUNTS: readonly number[] = [
 ];
 export const DEMO_MONEY_GUARD_ILLEGAL_AMOUNTS: readonly number[] = [-1, NaN];
 
+/**
+ * Subscription fixtures for the closing segment: one further
+ * branch escrow carrying a single collecting listener.
+ * Hand-pinned expectations — written from the documented
+ * `subscribe()` semantics in src/stateMachine.ts (listeners
+ * run after the audit append, in subscription order, with
+ * `(event, from, to, entry)`; unsubscribe is idempotent and
+ * stops all further notifications), never derived by calling
+ * `subscribe()` itself, and cross-checked against
+ * test/subscribe.test.ts:
+ * - FUND (CREATED -> FUNDED, seq 1) and SUBMIT_MILESTONE
+ *   (FUNDED -> MILESTONE_SUBMITTED, seq 2) are notified, in
+ *   order, each matching the audit entry with the same seq
+ * - after unsubscribe (called twice), VERIFY_PASS still
+ *   moves the escrow to VERIFIED (history 3 entries) but
+ *   produces zero new notifications — the count stays 2
+ *   and `listenerCount` reads 0
+ * Every timestamp is a fixed literal: no network, no
+ * randomness, no wall clock.
+ */
+export const DEMO_SUBSCRIBE_ESCROW_ID = "DEMO-ESC-011";
+export const DEMO_SUBSCRIBE_FUND_AT = "2026-03-12T09:00:00.000Z";
+export const DEMO_SUBSCRIBE_SUBMIT_AT = "2026-03-12T10:00:00.000Z";
+export const DEMO_SUBSCRIBE_VERIFY_AT = "2026-03-12T11:00:00.000Z";
+export const DEMO_SUBSCRIBE_VERIFY_EVIDENCE = "demo-oracle-attestation-011";
+
 const steps: Array<{
   event: EscrowEvent;
   actor: string;
@@ -991,6 +1028,38 @@ export interface DemoResult {
    * ({@link DEMO_MONEY_GUARD_ERROR}).
    */
   moneyGuardRejections: Array<{ value: number; message: string }>;
+  /**
+   * The closing segment's branch escrow
+   * ({@link DEMO_SUBSCRIBE_ESCROW_ID}), after all three fixed
+   * dispatches ran: VERIFIED with 3 history entries — the
+   * third dispatch landed after unsubscribe.
+   */
+  subscribeEscrow: Escrow;
+  /**
+   * Notifications the collecting listener received, in
+   * dispatch order: exactly the first two dispatches
+   * (FUND seq 1, SUBMIT_MILESTONE seq 2), each matching the
+   * audit entry with the same seq.
+   */
+  subscribeNotifications: Array<{
+    event: EscrowEvent;
+    from: EscrowState;
+    to: EscrowState;
+    seq: number;
+  }>;
+  /**
+   * True when every notification in
+   * {@link DemoResult.subscribeNotifications} equals the
+   * branch escrow's audit entry with the same seq
+   * (event / from / to all equal).
+   */
+  subscribeMatchesHistory: boolean;
+  /**
+   * Notification count after unsubscribe + one further
+   * dispatch: still 2 — the post-unsubscribe dispatch
+   * produced zero new notifications.
+   */
+  subscribeCountAfterUnsubscribe: number;
   lines: string[];
 }
 
@@ -2417,6 +2486,104 @@ export async function runDemo(): Promise<DemoResult> {
     ),
   );
 
+  // --- Subscription notifications: Escrow.subscribe (closing) ---
+  // dispatch() appends to the audit history and then fans out to
+  // subscribers: the seam a reconciliation or notification side
+  // wires into. A branch escrow carries one fixed collecting
+  // listener, subscribed before any dispatch, so it receives
+  // (event, from, to, entry) after each of the first two fixed
+  // dispatches, in order. The listener is then unsubscribed —
+  // twice, because unsubscribe is idempotent — and a third
+  // fixed dispatch still moves the escrow while producing zero
+  // new notifications. Hand-pinned expectations (see the fixture
+  // comment above), asserted HERE, outside the printing: the
+  // two notifications match the escrow's first two audit
+  // entries seq for seq, the count stays 2 after the third
+  // dispatch, and listenerCount reads 0 — a fan-out that
+  // dropped, reordered, or kept firing after unsubscribe
+  // would fail the demo itself, not just a test. Zero
+  // network, zero randomness, fixed timestamps throughout.
+  const subscribeEscrow = new Escrow(DEMO_SUBSCRIBE_ESCROW_ID);
+  const subscribeNotifications: Array<{
+    event: EscrowEvent;
+    from: EscrowState;
+    to: EscrowState;
+    seq: number;
+  }> = [];
+  const unsubscribeSubscribe = subscribeEscrow.subscribe(
+    (event, from, to, entry) => {
+      subscribeNotifications.push({ event, from, to, seq: entry.seq });
+    },
+  );
+  subscribeEscrow.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "sponsor",
+    at: DEMO_SUBSCRIBE_FUND_AT,
+  });
+  subscribeEscrow.dispatch(
+    "SUBMIT_MILESTONE",
+    "Deliverable URLs + IPFS metadata hash",
+    undefined,
+    { actor: "creator", at: DEMO_SUBSCRIBE_SUBMIT_AT },
+  );
+  const subscribeMatchesHistory =
+    subscribeNotifications.length === 2 &&
+    subscribeNotifications.every((n) => {
+      const entry = subscribeEscrow.history[n.seq - 1];
+      return (
+        entry !== undefined &&
+        entry.seq === n.seq &&
+        entry.event === n.event &&
+        entry.from === n.from &&
+        entry.to === n.to
+      );
+    });
+  unsubscribeSubscribe();
+  unsubscribeSubscribe(); // idempotent: second call is a no-op
+  const subscribeFrom = subscribeEscrow.state;
+  const subscribeTo = subscribeEscrow.dispatch(
+    "VERIFY_PASS",
+    "KPIs validated by oracle",
+    undefined,
+    {
+      actor: "oracle",
+      at: DEMO_SUBSCRIBE_VERIFY_AT,
+      evidence: DEMO_SUBSCRIBE_VERIFY_EVIDENCE,
+    },
+  );
+  const subscribeCountAfterUnsubscribe = subscribeNotifications.length;
+  if (
+    !subscribeMatchesHistory ||
+    subscribeNotifications[0]?.event !== "FUND" ||
+    subscribeNotifications[0]?.from !== "CREATED" ||
+    subscribeNotifications[0]?.to !== "FUNDED" ||
+    subscribeNotifications[0]?.seq !== 1 ||
+    subscribeNotifications[1]?.event !== "SUBMIT_MILESTONE" ||
+    subscribeNotifications[1]?.from !== "FUNDED" ||
+    subscribeNotifications[1]?.to !== "MILESTONE_SUBMITTED" ||
+    subscribeNotifications[1]?.seq !== 2 ||
+    subscribeCountAfterUnsubscribe !== 2 ||
+    subscribeEscrow.listenerCount !== 0 ||
+    subscribeEscrow.state !== "VERIFIED" ||
+    subscribeEscrow.history.length !== 3
+  ) {
+    throw new Error(
+      "demo fixture broken: Escrow.subscribe notifications do not match the pinned shape (FUND seq 1 + SUBMIT_MILESTONE seq 2 matching history, zero new notifications after idempotent unsubscribe, escrow VERIFIED with 3 entries)",
+    );
+  }
+  lines.push(
+    "",
+    "Subscription notifications (Escrow.subscribe on a branch escrow):",
+    `  escrow ${subscribeEscrow.id}: subscribed 1 collecting listener (notified after each audit append, in subscription order)`,
+    ...subscribeNotifications.map(
+      (n, i) =>
+        `  notification ${i + 1}: ${n.event} ${n.from} -> ${n.to} (entry seq ${n.seq})`,
+    ),
+    `  notifications match history: ${subscribeMatchesHistory} (each (event, from, to) equals the history entry with the same seq)`,
+    `  unsubscribed: listenerCount ${subscribeEscrow.listenerCount} (second unsubscribe call is a no-op — idempotent)`,
+    `  ${"VERIFY_PASS".padEnd(18)} ${subscribeFrom.padEnd(19)} -> ${subscribeTo}  (oracle)`,
+    `  listener received after unsubscribe: ${subscribeCountAfterUnsubscribe} notification(s) (unchanged — VERIFY_PASS produced no new notification)`,
+  );
+
   return {
     escrow,
     report,
@@ -2476,6 +2643,10 @@ export async function runDemo(): Promise<DemoResult> {
     transitionTableEdgeCount,
     moneyGuardLegalAmounts,
     moneyGuardRejections,
+    subscribeEscrow,
+    subscribeNotifications,
+    subscribeMatchesHistory,
+    subscribeCountAfterUnsubscribe,
     lines,
   };
 }

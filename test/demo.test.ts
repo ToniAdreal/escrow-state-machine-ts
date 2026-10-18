@@ -50,6 +50,11 @@ import {
   DEMO_STALE_FUND_AT,
   DEMO_STALE_MAX_AGE_MS,
   DEMO_STALE_NOW,
+  DEMO_SUBSCRIBE_ESCROW_ID,
+  DEMO_SUBSCRIBE_FUND_AT,
+  DEMO_SUBSCRIBE_SUBMIT_AT,
+  DEMO_SUBSCRIBE_VERIFY_AT,
+  DEMO_SUBSCRIBE_VERIFY_EVIDENCE,
   DEMO_TRANSITION_TABLE_EDGE_COUNT,
   DEMO_TRANSITION_TABLE_JSON_BYTES,
   DEMO_UNEXPIRABLE_DEADLINE,
@@ -1921,10 +1926,9 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
   );
   assert.ok(out.includes("  first edge: CREATED --FUND--> FUNDED"));
   assert.ok(out.includes("  last edge: DISPUTED --ARBITRATE_REFUND--> REFUNDED"));
-  // Money-guard tail: the closing segment runs the shared
-  // amount boundary check over its fixed legal corpus and
-  // its illegal pair, and ends the demo on the NaN
-  // rejection line.
+  // Money-guard tail: the segment runs the shared amount
+  // boundary check over its fixed legal corpus and its
+  // illegal pair.
   assert.match(
     out,
     /Money guard \(assertNonNegativeMoney on the shared amount boundary\):/,
@@ -1940,10 +1944,31 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
     ),
   );
   assert.ok(
+    out.includes(
+      '  rejected: NaN -> "amount must be a finite non-negative number"',
+    ),
+  );
+  // Subscription tail: the closing segment fans two fixed
+  // dispatches out to a collecting listener, unsubscribes
+  // it, and ends the demo on the zero-new-notifications
+  // line after one further dispatch.
+  assert.match(
+    out,
+    /Subscription notifications \(Escrow\.subscribe on a branch escrow\):/,
+  );
+  assert.ok(
+    out.includes("  notification 1: FUND CREATED -> FUNDED (entry seq 1)"),
+  );
+  assert.ok(
+    out.includes(
+      "  notification 2: SUBMIT_MILESTONE FUNDED -> MILESTONE_SUBMITTED (entry seq 2)",
+    ),
+  );
+  assert.ok(
     out
       .trimEnd()
       .endsWith(
-        '  rejected: NaN -> "amount must be a finite non-negative number"',
+        "  listener received after unsubscribe: 2 notification(s) (unchanged — VERIFY_PASS produced no new notification)",
       ),
   );
 });
@@ -2568,10 +2593,9 @@ test("demo shows the money guard: assertNonNegativeMoney accepts the legal corpu
         err.message === "amount must be a finite non-negative number",
     );
   }
-  // The segment closes the demo: it follows the
-  // machine-readable transition-table segment, prints its
-  // lines verbatim, and its NaN rejection line is the
-  // demo's last line.
+  // The segment follows the machine-readable
+  // transition-table segment and precedes the closing
+  // subscription segment; it prints its lines verbatim.
   const guardAt = text.indexOf(
     "Money guard (assertNonNegativeMoney on the shared amount boundary):",
   );
@@ -2582,16 +2606,20 @@ test("demo shows the money guard: assertNonNegativeMoney accepts the legal corpu
       ),
     "money-guard segment must follow the machine-readable transition-table segment",
   );
+  assert.ok(
+    guardAt <
+      text.indexOf(
+        "Subscription notifications (Escrow.subscribe on a branch escrow):",
+      ),
+    "money-guard segment must precede the subscription segment",
+  );
   for (const line of [
     "  accepted: 0, 0.01, 10630, 1000000.25 — every legal amount passes without throwing (zero, a cent, the golden deposit, a large amount with cents)",
     '  rejected: -1 -> "amount must be a finite non-negative number"',
+    '  rejected: NaN -> "amount must be a finite non-negative number"',
   ]) {
     assert.ok(text.includes(line), `missing money-guard line: ${line}`);
   }
-  assert.equal(
-    lines[lines.length - 1],
-    '  rejected: NaN -> "amount must be a finite non-negative number"',
-  );
 });
 
 test("demo money guard segment is deterministic: two runs print byte-identical guard lines", async () => {
@@ -2600,6 +2628,9 @@ test("demo money guard segment is deterministic: two runs print byte-identical g
       ls.indexOf(
         "Money guard (assertNonNegativeMoney on the shared amount boundary):",
       ),
+      ls.indexOf(
+        "Subscription notifications (Escrow.subscribe on a branch escrow):",
+      ) - 1,
     );
   const a = await runDemo();
   const b = await runDemo();
@@ -2620,4 +2651,129 @@ test("demo money guard segment is deterministic: two runs print byte-identical g
       b.moneyGuardRejections[i].message,
     );
   }
+});
+
+test("demo shows subscription notifications: listener receives the first two dispatches matching history, then nothing after idempotent unsubscribe", async () => {
+  const {
+    subscribeEscrow,
+    subscribeNotifications,
+    subscribeMatchesHistory,
+    subscribeCountAfterUnsubscribe,
+    lines,
+  } = await runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned expectations — written out here from the
+  // documented subscribe() semantics in src/stateMachine.ts,
+  // never derived by calling subscribe() to produce them.
+  // test/subscribe.test.ts pins the same semantics
+  // independently (order, entry identity, idempotent
+  // unsubscribe).
+  assert.equal(subscribeEscrow.id, DEMO_SUBSCRIBE_ESCROW_ID);
+  assert.deepEqual(subscribeNotifications, [
+    { event: "FUND", from: "CREATED", to: "FUNDED", seq: 1 },
+    {
+      event: "SUBMIT_MILESTONE",
+      from: "FUNDED",
+      to: "MILESTONE_SUBMITTED",
+      seq: 2,
+    },
+  ]);
+  assert.equal(subscribeMatchesHistory, true);
+  // Each notification equals the audit entry with the same seq.
+  for (const n of subscribeNotifications) {
+    const entry = subscribeEscrow.history[n.seq - 1];
+    assert.equal(entry.event, n.event);
+    assert.equal(entry.from, n.from);
+    assert.equal(entry.to, n.to);
+  }
+  // The post-unsubscribe dispatch landed (VERIFIED, 3 entries,
+  // fixed timestamps + evidence) but produced no notification.
+  assert.equal(subscribeCountAfterUnsubscribe, 2);
+  assert.equal(subscribeEscrow.listenerCount, 0);
+  assert.equal(subscribeEscrow.state, "VERIFIED");
+  assert.equal(subscribeEscrow.history.length, 3);
+  assert.deepEqual(
+    subscribeEscrow.history.map((h) => h.at),
+    [
+      DEMO_SUBSCRIBE_FUND_AT,
+      DEMO_SUBSCRIBE_SUBMIT_AT,
+      DEMO_SUBSCRIBE_VERIFY_AT,
+    ],
+  );
+  assert.equal(
+    subscribeEscrow.history[2].evidence,
+    DEMO_SUBSCRIBE_VERIFY_EVIDENCE,
+  );
+  // Independent cross-check: a fresh escrow with a fresh
+  // listener reproduces the same fan-out shape — the demo
+  // segment is not self-certifying.
+  const probe = new Escrow("sub-demo-probe");
+  const probeSeen: string[] = [];
+  const probeUnsub = probe.subscribe((event, from, to, entry) => {
+    probeSeen.push(`${event}:${from}->${to}:${entry.seq}`);
+  });
+  probe.dispatch("FUND", undefined, 100, { at: DEMO_SUBSCRIBE_FUND_AT });
+  probeUnsub();
+  probeUnsub();
+  probe.dispatch("SUBMIT_MILESTONE", undefined, undefined, {
+    at: DEMO_SUBSCRIBE_SUBMIT_AT,
+  });
+  assert.deepEqual(probeSeen, ["FUND:CREATED->FUNDED:1"]);
+  assert.equal(probe.listenerCount, 0);
+  // The segment closes the demo: it follows the money-guard
+  // segment, prints its lines verbatim, and its
+  // after-unsubscribe line is the demo's last line.
+  const subscribeAt = text.indexOf(
+    "Subscription notifications (Escrow.subscribe on a branch escrow):",
+  );
+  assert.ok(
+    subscribeAt >
+      text.indexOf(
+        "Money guard (assertNonNegativeMoney on the shared amount boundary):",
+      ),
+    "subscription segment must follow the money-guard segment",
+  );
+  for (const line of [
+    `  escrow ${DEMO_SUBSCRIBE_ESCROW_ID}: subscribed 1 collecting listener (notified after each audit append, in subscription order)`,
+    "  notification 1: FUND CREATED -> FUNDED (entry seq 1)",
+    "  notification 2: SUBMIT_MILESTONE FUNDED -> MILESTONE_SUBMITTED (entry seq 2)",
+    "  notifications match history: true (each (event, from, to) equals the history entry with the same seq)",
+    "  unsubscribed: listenerCount 0 (second unsubscribe call is a no-op — idempotent)",
+    "  listener received after unsubscribe: 2 notification(s) (unchanged — VERIFY_PASS produced no new notification)",
+  ]) {
+    assert.ok(text.includes(line), `missing subscription line: ${line}`);
+  }
+  assert.match(
+    text,
+    / {2}VERIFY_PASS +MILESTONE_SUBMITTED +-> VERIFIED +\(oracle\)/,
+  );
+  assert.equal(
+    lines[lines.length - 1],
+    "  listener received after unsubscribe: 2 notification(s) (unchanged — VERIFY_PASS produced no new notification)",
+  );
+});
+
+test("demo subscription segment is deterministic: two runs print byte-identical notification lines", async () => {
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf(
+        "Subscription notifications (Escrow.subscribe on a branch escrow):",
+      ),
+    );
+  const a = await runDemo();
+  const b = await runDemo();
+  const segA = segment(a.lines);
+  // Header + escrow line + 2 notification lines + match line +
+  // unsubscribed line + VERIFY_PASS line + after-unsubscribe
+  // line; every value is derived from the fixed fixtures
+  // alone, so no normalization is needed.
+  assert.equal(segA.length, 8);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(a.subscribeNotifications, b.subscribeNotifications);
+  assert.equal(a.subscribeMatchesHistory, b.subscribeMatchesHistory);
+  assert.equal(
+    a.subscribeCountAfterUnsubscribe,
+    b.subscribeCountAfterUnsubscribe,
+  );
 });

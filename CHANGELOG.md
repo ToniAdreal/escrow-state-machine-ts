@@ -18,6 +18,23 @@ version changes.
 
 ### Added
 
+- A subscription segment closing the CLI demo: a branch
+  escrow (DEMO-ESC-011) carries one fixed collecting
+  listener subscribed via `Escrow.subscribe()`, which
+  receives `(event, from, to, entry)` after two fixed
+  dispatches (FUND seq 1, SUBMIT_MILESTONE seq 2), in
+  order and matching the audit history entry for entry;
+  the listener is then unsubscribed twice (idempotent)
+  and a third fixed dispatch (VERIFY_PASS) moves the
+  escrow to VERIFIED while producing zero new
+  notifications, all asserted outside the printing
+  against hand-pinned expectations cross-checked against
+  the subscribe tests. `DemoResult` exposes the branch
+  escrow, the notifications, the history-match verdict,
+  and the post-unsubscribe count; the demo tests pin the
+  notification sequence, the printed lines, and the
+  segment's closing position. Demo and tests only; no
+  library behavior change.
 - A standalone history-parsing path in the benchmark:
   `parseEscrowHistory()` over the JSON-serialized text of
   the fixed 4-entry RELEASED history, parsed back from the
