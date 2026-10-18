@@ -18,7 +18,25 @@ version changes.
 
 ### Added
 
-- A deadline-clearing segment closing the CLI demo: a
+- A quorum approval-log segment closing the CLI demo:
+  `approvalLog()` on the dispute quorum prints the full
+  approval audit trail in record order (each arbitrator
+  with the fixed timestamp of their vote — the
+  pre-restart vote kept its original timestamp through
+  the snapshot round-trip), and a separate quorum with
+  a fixed `maxApprovalAgeMs` window shows the expiry
+  contrast on a fixed clock: past the window the oldest
+  vote stops counting (approvalCount 2 → 1, quorum lost)
+  while `approvalLog()` still retains the expired entry,
+  all asserted outside the printing against hand-pinned
+  expectations cross-checked against the approval-log
+  and quorum-expiry tests. `DemoResult` exposes the
+  dispute trail, the expiring quorum, and its
+  before/after counts, quorum verdicts, and retained
+  trail; the demo tests pin the trail, the printed
+  lines, and the segment's closing position. Demo and
+  tests only; no library behavior change.
+- A deadline-clearing segment in the CLI demo: a
   funded escrow (DEMO-ESC-012) carrying a fixed past
   deadline reads overdue at a fixed later instant, then
   `clearDeadline()` removes the deadline so
@@ -31,7 +49,7 @@ version changes.
   `DemoResult` exposes both escrows and the before/after
   deadline reads and overdue verdicts; the demo tests
   pin the clearing sequence, the printed lines, and the
-  segment's closing position. Demo and tests only; no
+  segment's position. Demo and tests only; no
   library behavior change.
 - A subscription segment in the CLI demo: a branch
   escrow (DEMO-ESC-011) carries one fixed collecting

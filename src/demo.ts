@@ -183,7 +183,7 @@
  * third fixed dispatch moves the escrow while producing
  * zero new notifications; both sides are asserted outside
  * the printing against hand-pinned expectations.
- * The demo finally closes with a deadline-clearing
+ * The demo then shows a deadline-clearing
  * segment: a further funded escrow carries a fixed past
  * deadline and reads overdue at a fixed later instant,
  * then `clearDeadline()` — the entry point for a deadline
@@ -192,6 +192,21 @@
  * judgement at the same instant turns false; a second
  * funded escrow that never carried a deadline shows the
  * same call as a harmless no-op; both sides are asserted
+ * outside the printing against hand-pinned expectations.
+ * The demo finally closes with a quorum approval-log
+ * segment: `approvalLog()` on the dispute quorum prints
+ * the full approval audit trail — each arbitrator with
+ * the fixed timestamp of their vote, including the vote
+ * cast before the simulated restart, which kept its
+ * original timestamp through the snapshot round-trip —
+ * and a separate quorum carrying a fixed
+ * `maxApprovalAgeMs` window shows the expiry contrast
+ * on a fixed clock: once the clock advances past the
+ * window for the oldest vote, that approval stops
+ * counting (the count drops and quorum is lost) while
+ * `approvalLog()` still retains the expired entry —
+ * expiry never deletes the audit trail; only `revoke()`
+ * removes a signer's entries. Both sides are asserted
  * outside the printing against hand-pinned expectations.
  *
  * Usage: `npm run demo` (builds with tsc, then runs node on the compiled
@@ -237,6 +252,7 @@ import {
   transitionTableJson,
   verifyHistoryChain,
   verifySettlementWebhook,
+  type ApprovalLogEntry,
   type BuildSettlementWebhooksResult,
   type DeliverSettlementWebhookToManyResult,
   type EscrowEvent,
@@ -668,6 +684,54 @@ export const DEMO_CLEAR_DEADLINE_CHECK_AT = "2026-03-15T09:00:00.000Z";
 export const DEMO_CLEAR_DEADLINE_NO_DEADLINE_ESCROW_ID = "DEMO-ESC-013";
 export const DEMO_CLEAR_DEADLINE_NO_DEADLINE_FUND_AT =
   "2026-03-13T10:00:00.000Z";
+
+/**
+ * Approval-log fixtures for the final closing segment: the
+ * dispute quorum's own trail, plus a separate expiring
+ * quorum on a fixed clock. Hand-pinned expectations —
+ * written from the documented `approvalLog()` semantics
+ * in src/quorum.ts (the log is the full audit trail in
+ * record order, each entry `{signerId, at}` with a
+ * canonical ISO timestamp; the `maxApprovalAgeMs` expiry
+ * window only affects the counting views — `approvalCount`
+ * / `hasQuorum` / `approvals` — and never deletes log
+ * entries; only `revoke()` removes a signer's entries),
+ * never derived by calling `approvalLog()` itself, and
+ * cross-checked against test/approvalLog.test.ts and
+ * test/quorumExpiry.test.ts:
+ * - the dispute quorum's trail is exactly two entries, in
+ *   record order: arb-1 at {@link DEMO_QUORUM_APPROVAL_ATS}[0]
+ *   (cast before the simulated restart) and arb-2 at
+ *   {@link DEMO_QUORUM_APPROVAL_ATS}[1] (cast on the
+ *   restored quorum) — the snapshot round-trip neither
+ *   drops nor re-stamps a vote
+ * - the expiring quorum (2-of-3, same signer ids, window
+ *   {@link DEMO_APPROVAL_LOG_WINDOW_MS}) collects arb-1 at
+ *   {@link DEMO_APPROVAL_LOG_FIRST_AT} and arb-2 30 s
+ *   later: approvalCount 2, hasQuorum true; after the
+ *   fixed clock advances to
+ *   {@link DEMO_APPROVAL_LOG_CHECK_AT} (60,001 ms after
+ *   the first vote — past the window — and 30,001 ms
+ *   after the second), arb-1's vote no longer counts:
+ *   approvalCount 1, hasQuorum false, `approvals()` is
+ *   exactly [arb-2] — yet the trail still holds both
+ *   entries with their original timestamps
+ * Every timestamp is a fixed literal: no network, no
+ * randomness, no wall clock (the expiring quorum's clock
+ * is a variable the segment sets to fixed instants only).
+ */
+export const DEMO_DISPUTE_APPROVAL_LOG_ENTRIES: readonly ApprovalLogEntry[] = [
+  { signerId: "arb-1", at: "2026-03-07T12:00:00.000Z" },
+  { signerId: "arb-2", at: "2026-03-07T13:00:00.000Z" },
+];
+export const DEMO_APPROVAL_LOG_WINDOW_MS = 60_000;
+export const DEMO_APPROVAL_LOG_FIRST_AT = "2026-03-16T09:00:00.000Z";
+export const DEMO_APPROVAL_LOG_SECOND_AT = "2026-03-16T09:00:30.000Z";
+export const DEMO_APPROVAL_LOG_CHECK_AT = "2026-03-16T09:01:00.001Z";
+export const DEMO_APPROVAL_LOG_ENTRIES: readonly ApprovalLogEntry[] = [
+  { signerId: "arb-1", at: "2026-03-16T09:00:00.000Z" },
+  { signerId: "arb-2", at: "2026-03-16T09:00:30.000Z" },
+];
 
 const steps: Array<{
   event: EscrowEvent;
@@ -1148,6 +1212,53 @@ export interface DemoResult {
    * `false`, unchanged by the no-op clear.
    */
   deadlineClearNoDeadlineOverdue: boolean;
+  /**
+   * Full approval audit trail of the dispute quorum
+   * ({@link DemoResult.disputeQuorum}) as `approvalLog()`
+   * returns it after the refund: exactly the two fixed
+   * votes in record order
+   * ({@link DEMO_DISPUTE_APPROVAL_LOG_ENTRIES}) — the
+   * pre-restart vote kept its original timestamp through
+   * the snapshot round-trip.
+   */
+  approvalLogEntries: ReadonlyArray<ApprovalLogEntry>;
+  /**
+   * The final closing segment's expiring quorum (2-of-3,
+   * same signer ids, window
+   * {@link DEMO_APPROVAL_LOG_WINDOW_MS}), after the fixed
+   * clock advanced past the window for its first vote:
+   * approvalCount 1, hasQuorum false, trail intact.
+   */
+  approvalLogExpiryQuorum: Quorum;
+  /**
+   * Counted approvals of the expiring quorum before the
+   * fixed clock advance: 2 (both votes inside the window).
+   */
+  approvalLogExpiryCountBefore: number;
+  /**
+   * `hasQuorum()` of the expiring quorum before the
+   * advance: `true` — threshold 2 reached.
+   */
+  approvalLogExpiryHasQuorumBefore: boolean;
+  /**
+   * Counted approvals of the expiring quorum after the
+   * advance to {@link DEMO_APPROVAL_LOG_CHECK_AT}: 1 —
+   * the first vote is past the window and no longer
+   * counts; `approvals()` is exactly [arb-2].
+   */
+  approvalLogExpiryCountAfter: number;
+  /**
+   * `hasQuorum()` of the expiring quorum after the
+   * advance: `false` — quorum lost to expiry alone.
+   */
+  approvalLogExpiryHasQuorumAfter: boolean;
+  /**
+   * `approvalLog()` of the expiring quorum after the
+   * advance: both entries retained with their original
+   * timestamps ({@link DEMO_APPROVAL_LOG_ENTRIES}) —
+   * expiry never deletes the audit trail.
+   */
+  approvalLogExpiryLogAfter: ReadonlyArray<ApprovalLogEntry>;
   lines: string[];
 }
 
@@ -2748,6 +2859,85 @@ export async function runDemo(): Promise<DemoResult> {
     `  escrow ${deadlineClearNoDeadlineEscrow.id} (no deadline set): clearDeadline() is a no-op — getDeadline() -> ${String(deadlineClearNoDeadlineEscrow.getDeadline())}, isOverdue at ${DEMO_CLEAR_DEADLINE_CHECK_AT} -> ${deadlineClearNoDeadlineOverdue}, state still ${deadlineClearNoDeadlineEscrow.state} (${deadlineClearNoDeadlineEscrow.history.length} history entry)`,
   );
 
+  // --- Quorum approval log: approvalLog (final closing) ---
+  // The dispute branch above printed only the quorum's
+  // counting views (approvalCount / hasQuorum); the audit
+  // face of the same quorum is its approvalLog(): who
+  // approved and when, in record order. The dispute
+  // quorum's trail must be exactly the two fixed votes —
+  // the pre-restart vote kept its original timestamp
+  // through the snapshot -> JSON -> restoreQuorum
+  // round-trip, and the post-restore vote follows it.
+  // A separate expiring quorum (same signer ids and
+  // threshold, fixed maxApprovalAgeMs window) then shows
+  // the expiry contrast on a fixed clock: two votes land
+  // inside the window (count 2, quorum reached); the
+  // clock advances past the window for the first vote
+  // only, so that vote stops counting (count 1, quorum
+  // lost, approvals() exactly [arb-2]) — yet approvalLog()
+  // still returns both entries with their original
+  // timestamps, because expiry never deletes the audit
+  // trail (only revoke() removes a signer's entries).
+  // Hand-pinned expectations (see the fixture comment
+  // above), asserted HERE, outside the printing: a trail
+  // that dropped, reordered, or re-stamped a vote, or an
+  // expiry that deleted the expired entry, would fail
+  // the demo itself, not just a test. Zero network, zero
+  // randomness; the expiring quorum's clock is set to
+  // fixed instants only.
+  const approvalLogEntries = disputeQuorum.approvalLog();
+  let approvalLogNowMs = Date.parse(DEMO_APPROVAL_LOG_FIRST_AT);
+  const approvalLogExpiryQuorum = createQuorum({
+    threshold: DEMO_QUORUM_THRESHOLD,
+    signers: [...DEMO_QUORUM_SIGNERS],
+    now: () => approvalLogNowMs,
+    maxApprovalAgeMs: DEMO_APPROVAL_LOG_WINDOW_MS,
+  });
+  approvalLogExpiryQuorum.approve(DEMO_QUORUM_SIGNERS[0]);
+  approvalLogNowMs = Date.parse(DEMO_APPROVAL_LOG_SECOND_AT);
+  approvalLogExpiryQuorum.approve(DEMO_QUORUM_SIGNERS[1]);
+  const approvalLogExpiryCountBefore = approvalLogExpiryQuorum.approvalCount();
+  const approvalLogExpiryHasQuorumBefore =
+    approvalLogExpiryQuorum.hasQuorum();
+  approvalLogNowMs = Date.parse(DEMO_APPROVAL_LOG_CHECK_AT);
+  const approvalLogExpiryCountAfter = approvalLogExpiryQuorum.approvalCount();
+  const approvalLogExpiryHasQuorumAfter = approvalLogExpiryQuorum.hasQuorum();
+  const approvalLogExpiryLogAfter = approvalLogExpiryQuorum.approvalLog();
+  const sameApprovalEntries = (
+    actual: ReadonlyArray<ApprovalLogEntry>,
+    expected: readonly ApprovalLogEntry[],
+  ): boolean =>
+    actual.length === expected.length &&
+    actual.every(
+      (e, i) => e.signerId === expected[i].signerId && e.at === expected[i].at,
+    );
+  if (
+    !sameApprovalEntries(approvalLogEntries, DEMO_DISPUTE_APPROVAL_LOG_ENTRIES) ||
+    approvalLogExpiryCountBefore !== 2 ||
+    approvalLogExpiryHasQuorumBefore !== true ||
+    approvalLogExpiryCountAfter !== 1 ||
+    approvalLogExpiryHasQuorumAfter !== false ||
+    approvalLogExpiryQuorum.approvals().length !== 1 ||
+    approvalLogExpiryQuorum.approvals()[0] !== DEMO_QUORUM_SIGNERS[1] ||
+    !sameApprovalEntries(approvalLogExpiryLogAfter, DEMO_APPROVAL_LOG_ENTRIES)
+  ) {
+    throw new Error(
+      "demo fixture broken: approvalLog does not match the pinned shape (dispute trail exactly the two fixed votes in record order, expiring quorum 2 counted / quorum before and 1 counted / no quorum after the fixed advance, expired entry retained in the trail)",
+    );
+  }
+  lines.push(
+    "",
+    "Quorum approval log (approvalLog audit trail):",
+    `  dispute quorum (${DEMO_QUORUM_THRESHOLD}-of-${DEMO_QUORUM_SIGNERS.length}): approvalLog() — the full audit trail in record order, one line per vote`,
+    ...approvalLogEntries.map(
+      (e, i) => `  approval ${i + 1}: ${e.signerId} at ${e.at}`,
+    ),
+    `  trail survives the restart: the pre-restart vote (${DEMO_QUORUM_SIGNERS[0]}) kept its original timestamp ${DEMO_QUORUM_APPROVAL_ATS[0]} through the snapshot round-trip`,
+    `  expiring quorum (maxApprovalAgeMs ${DEMO_APPROVAL_LOG_WINDOW_MS}): approvals at ${DEMO_APPROVAL_LOG_FIRST_AT} and ${DEMO_APPROVAL_LOG_SECOND_AT} — approvalCount ${approvalLogExpiryCountBefore}, hasQuorum: ${approvalLogExpiryHasQuorumBefore}`,
+    `  at ${DEMO_APPROVAL_LOG_CHECK_AT} the first vote is ${Date.parse(DEMO_APPROVAL_LOG_CHECK_AT) - Date.parse(DEMO_APPROVAL_LOG_FIRST_AT)} ms old — past the window: approvalCount ${approvalLogExpiryCountAfter}, hasQuorum: ${approvalLogExpiryHasQuorumAfter}`,
+    `  approvalLog() after expiry: ${approvalLogExpiryLogAfter.length} entries retained (${approvalLogExpiryLogAfter.map((e) => e.signerId).join(", ")}) — expiry never deletes the audit trail; only revoke() removes a signer's entries`,
+  );
+
   return {
     escrow,
     report,
@@ -2818,6 +3008,13 @@ export async function runDemo(): Promise<DemoResult> {
     deadlineClearOverdueAfter,
     deadlineClearNoDeadlineEscrow,
     deadlineClearNoDeadlineOverdue,
+    approvalLogEntries,
+    approvalLogExpiryQuorum,
+    approvalLogExpiryCountBefore,
+    approvalLogExpiryHasQuorumBefore,
+    approvalLogExpiryCountAfter,
+    approvalLogExpiryHasQuorumAfter,
+    approvalLogExpiryLogAfter,
     lines,
   };
 }

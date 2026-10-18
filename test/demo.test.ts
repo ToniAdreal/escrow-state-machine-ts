@@ -5,8 +5,14 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import {
   runDemo,
+  DEMO_APPROVAL_LOG_CHECK_AT,
+  DEMO_APPROVAL_LOG_ENTRIES,
+  DEMO_APPROVAL_LOG_FIRST_AT,
+  DEMO_APPROVAL_LOG_SECOND_AT,
+  DEMO_APPROVAL_LOG_WINDOW_MS,
   DEMO_ARBITRATION_AT,
   DEMO_DEDUPE_TTL_MS,
+  DEMO_DISPUTE_APPROVAL_LOG_ENTRIES,
   DEMO_BATCH_WEBHOOK_AT,
   DEMO_BATCH_WEBHOOK_EVENT_IDS,
   DEMO_CLEAR_DEADLINE_CHECK_AT,
@@ -74,6 +80,7 @@ import {
   Escrow,
   allowedEvents,
   assertNonNegativeMoney,
+  createQuorum,
   depositAmountFromHistory,
   historyFromNdjson,
   historyToNdjson,
@@ -1975,10 +1982,10 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
       "  listener received after unsubscribe: 2 notification(s) (unchanged — VERIFY_PASS produced no new notification)",
     ),
   );
-  // Deadline-clearing tail: the closing segment clears a
-  // fixed past deadline (overdue true -> false, deadline
-  // read back undefined) and shows the no-deadline clear
-  // as a no-op; the demo ends on that no-op line.
+  // Deadline-clearing tail: that segment clears a fixed
+  // past deadline (overdue true -> false, deadline read
+  // back undefined) and shows the no-deadline clear as a
+  // no-op.
   assert.match(out, /Deadline clearing \(clearDeadline on funded escrows\):/);
   assert.ok(
     out.includes(
@@ -1991,10 +1998,35 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
     ),
   );
   assert.ok(
+    out.includes(
+      `  escrow ${DEMO_CLEAR_DEADLINE_NO_DEADLINE_ESCROW_ID} (no deadline set): clearDeadline() is a no-op — getDeadline() -> undefined, isOverdue at ${DEMO_CLEAR_DEADLINE_CHECK_AT} -> false, state still FUNDED (1 history entry)`,
+    ),
+  );
+  // Approval-log tail: the closing segment prints the
+  // dispute quorum's full audit trail in record order and
+  // the expiry contrast (count drops, trail retained);
+  // the demo ends on the retained-entries line.
+  assert.match(out, /Quorum approval log \(approvalLog audit trail\):/);
+  assert.ok(
+    out.includes(
+      `  approval 1: ${DEMO_DISPUTE_APPROVAL_LOG_ENTRIES[0].signerId} at ${DEMO_DISPUTE_APPROVAL_LOG_ENTRIES[0].at}`,
+    ),
+  );
+  assert.ok(
+    out.includes(
+      `  approval 2: ${DEMO_DISPUTE_APPROVAL_LOG_ENTRIES[1].signerId} at ${DEMO_DISPUTE_APPROVAL_LOG_ENTRIES[1].at}`,
+    ),
+  );
+  assert.ok(
+    out.includes(
+      `  at ${DEMO_APPROVAL_LOG_CHECK_AT} the first vote is 60001 ms old — past the window: approvalCount 1, hasQuorum: false`,
+    ),
+  );
+  assert.ok(
     out
       .trimEnd()
       .endsWith(
-        `  escrow ${DEMO_CLEAR_DEADLINE_NO_DEADLINE_ESCROW_ID} (no deadline set): clearDeadline() is a no-op — getDeadline() -> undefined, isOverdue at ${DEMO_CLEAR_DEADLINE_CHECK_AT} -> false, state still FUNDED (1 history entry)`,
+        "  approvalLog() after expiry: 2 entries retained (arb-1, arb-2) — expiry never deletes the audit trail; only revoke() removes a signer's entries",
       ),
   );
 });
@@ -2874,9 +2906,9 @@ test("demo shows deadline clearing: clearDeadline removes the deadline and turns
   probeNoDeadline.clearDeadline();
   assert.equal(probeNoDeadline.getDeadline(), undefined);
   assert.equal(probeNoDeadline.state, "FUNDED");
-  // The segment closes the demo: it follows the
-  // subscription segment, prints its lines verbatim, and
-  // its no-op line is the demo's last line.
+  // The segment follows the subscription segment and
+  // precedes the closing approval-log segment; it prints
+  // its lines verbatim.
   const clearAt = text.indexOf(
     "Deadline clearing (clearDeadline on funded escrows):",
   );
@@ -2887,6 +2919,10 @@ test("demo shows deadline clearing: clearDeadline removes the deadline and turns
       ),
     "deadline-clearing segment must follow the subscription segment",
   );
+  assert.ok(
+    clearAt < text.indexOf("Quorum approval log (approvalLog audit trail):"),
+    "deadline-clearing segment must precede the approval-log segment",
+  );
   for (const line of [
     `  escrow ${DEMO_CLEAR_DEADLINE_ESCROW_ID}: state FUNDED, deadline ${DEMO_CLEAR_DEADLINE_DEADLINE} — at ${DEMO_CLEAR_DEADLINE_CHECK_AT} isOverdue -> true (past the deadline, non-terminal)`,
     `  after clearDeadline(): getDeadline() -> undefined, isOverdue at ${DEMO_CLEAR_DEADLINE_CHECK_AT} -> false (deadline removed — clearing dispatches nothing, escrow still FUNDED)`,
@@ -2894,16 +2930,13 @@ test("demo shows deadline clearing: clearDeadline removes the deadline and turns
   ]) {
     assert.ok(text.includes(line), `missing deadline-clearing line: ${line}`);
   }
-  assert.equal(
-    lines[lines.length - 1],
-    `  escrow ${DEMO_CLEAR_DEADLINE_NO_DEADLINE_ESCROW_ID} (no deadline set): clearDeadline() is a no-op — getDeadline() -> undefined, isOverdue at ${DEMO_CLEAR_DEADLINE_CHECK_AT} -> false, state still FUNDED (1 history entry)`,
-  );
 });
 
 test("demo deadline-clearing segment is deterministic: two runs print byte-identical clearing lines", async () => {
   const segment = (ls: string[]) =>
     ls.slice(
       ls.indexOf("Deadline clearing (clearDeadline on funded escrows):"),
+      ls.indexOf("Quorum approval log (approvalLog audit trail):") - 1,
     );
   const a = await runDemo();
   const b = await runDemo();
@@ -2920,5 +2953,134 @@ test("demo deadline-clearing segment is deterministic: two runs print byte-ident
   assert.equal(
     a.deadlineClearNoDeadlineOverdue,
     b.deadlineClearNoDeadlineOverdue,
+  );
+});
+
+test("demo shows the quorum approval log: full trail in record order, and expired entries retained after the count drops", async () => {
+  const {
+    disputeQuorum,
+    approvalLogEntries,
+    approvalLogExpiryQuorum,
+    approvalLogExpiryCountBefore,
+    approvalLogExpiryHasQuorumBefore,
+    approvalLogExpiryCountAfter,
+    approvalLogExpiryHasQuorumAfter,
+    approvalLogExpiryLogAfter,
+    lines,
+  } = await runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned expectations — written out here from the
+  // documented approvalLog() semantics in src/quorum.ts,
+  // never derived by calling approvalLog() to produce
+  // them. test/approvalLog.test.ts and
+  // test/quorumExpiry.test.ts pin the same semantics
+  // independently (record order with canonical ISO
+  // timestamps, expiry counts out but never deletes,
+  // only revoke removes entries). The dispute trail's
+  // timestamps are the demo's fixed approval sequence:
+  // arb-1 before the restart, arb-2 on the restored
+  // quorum, neither re-stamped.
+  assert.deepEqual(approvalLogEntries, DEMO_DISPUTE_APPROVAL_LOG_ENTRIES);
+  assert.deepEqual(
+    approvalLogEntries.map((e) => e.at),
+    [...DEMO_QUORUM_APPROVAL_ATS],
+  );
+  assert.deepEqual(disputeQuorum.approvalLog(), approvalLogEntries);
+  assert.equal(approvalLogExpiryCountBefore, 2);
+  assert.equal(approvalLogExpiryHasQuorumBefore, true);
+  assert.equal(approvalLogExpiryCountAfter, 1);
+  assert.equal(approvalLogExpiryHasQuorumAfter, false);
+  assert.deepEqual(approvalLogExpiryQuorum.approvals(), [
+    DEMO_QUORUM_SIGNERS[1],
+  ]);
+  assert.deepEqual(approvalLogExpiryLogAfter, DEMO_APPROVAL_LOG_ENTRIES);
+  assert.equal(approvalLogExpiryQuorum.threshold, DEMO_QUORUM_THRESHOLD);
+  // Independent cross-checks: fresh quorums reproduce
+  // both shapes — the demo segment is not
+  // self-certifying.
+  let probeTick = 0;
+  const probeDispute = createQuorum({
+    threshold: DEMO_QUORUM_THRESHOLD,
+    signers: [...DEMO_QUORUM_SIGNERS],
+    now: () =>
+      Date.parse(
+        DEMO_QUORUM_APPROVAL_ATS[
+          Math.min(probeTick++, DEMO_QUORUM_APPROVAL_ATS.length - 1)
+        ],
+      ),
+  });
+  probeDispute.approve(DEMO_QUORUM_SIGNERS[0]);
+  probeDispute.approve(DEMO_QUORUM_SIGNERS[1]);
+  assert.deepEqual(
+    probeDispute.approvalLog(),
+    DEMO_DISPUTE_APPROVAL_LOG_ENTRIES,
+  );
+  let probeNow = Date.parse(DEMO_APPROVAL_LOG_FIRST_AT);
+  const probeExpiry = createQuorum({
+    threshold: DEMO_QUORUM_THRESHOLD,
+    signers: [...DEMO_QUORUM_SIGNERS],
+    now: () => probeNow,
+    maxApprovalAgeMs: DEMO_APPROVAL_LOG_WINDOW_MS,
+  });
+  probeExpiry.approve(DEMO_QUORUM_SIGNERS[0]);
+  probeNow = Date.parse(DEMO_APPROVAL_LOG_SECOND_AT);
+  probeExpiry.approve(DEMO_QUORUM_SIGNERS[1]);
+  assert.equal(probeExpiry.approvalCount(), 2);
+  assert.equal(probeExpiry.hasQuorum(), true);
+  probeNow = Date.parse(DEMO_APPROVAL_LOG_CHECK_AT);
+  assert.equal(probeExpiry.approvalCount(), 1);
+  assert.equal(probeExpiry.hasQuorum(), false);
+  assert.deepEqual(probeExpiry.approvalLog(), DEMO_APPROVAL_LOG_ENTRIES);
+  // The segment closes the demo: it follows the
+  // deadline-clearing segment, prints its lines verbatim,
+  // and its retained-entries line is the demo's last line.
+  const logAt = text.indexOf("Quorum approval log (approvalLog audit trail):");
+  assert.ok(
+    logAt >
+      text.indexOf("Deadline clearing (clearDeadline on funded escrows):"),
+    "approval-log segment must follow the deadline-clearing segment",
+  );
+  for (const line of [
+    `  dispute quorum (${DEMO_QUORUM_THRESHOLD}-of-${DEMO_QUORUM_SIGNERS.length}): approvalLog() — the full audit trail in record order, one line per vote`,
+    `  approval 1: ${DEMO_DISPUTE_APPROVAL_LOG_ENTRIES[0].signerId} at ${DEMO_DISPUTE_APPROVAL_LOG_ENTRIES[0].at}`,
+    `  approval 2: ${DEMO_DISPUTE_APPROVAL_LOG_ENTRIES[1].signerId} at ${DEMO_DISPUTE_APPROVAL_LOG_ENTRIES[1].at}`,
+    `  trail survives the restart: the pre-restart vote (${DEMO_QUORUM_SIGNERS[0]}) kept its original timestamp ${DEMO_QUORUM_APPROVAL_ATS[0]} through the snapshot round-trip`,
+    `  expiring quorum (maxApprovalAgeMs ${DEMO_APPROVAL_LOG_WINDOW_MS}): approvals at ${DEMO_APPROVAL_LOG_FIRST_AT} and ${DEMO_APPROVAL_LOG_SECOND_AT} — approvalCount 2, hasQuorum: true`,
+    `  at ${DEMO_APPROVAL_LOG_CHECK_AT} the first vote is 60001 ms old — past the window: approvalCount 1, hasQuorum: false`,
+    "  approvalLog() after expiry: 2 entries retained (arb-1, arb-2) — expiry never deletes the audit trail; only revoke() removes a signer's entries",
+  ]) {
+    assert.ok(text.includes(line), `missing approval-log line: ${line}`);
+  }
+  assert.equal(
+    lines[lines.length - 1],
+    "  approvalLog() after expiry: 2 entries retained (arb-1, arb-2) — expiry never deletes the audit trail; only revoke() removes a signer's entries",
+  );
+});
+
+test("demo quorum approval-log segment is deterministic: two runs print byte-identical approval-log lines", async () => {
+  const segment = (ls: string[]) =>
+    ls.slice(ls.indexOf("Quorum approval log (approvalLog audit trail):"));
+  const a = await runDemo();
+  const b = await runDemo();
+  const segA = segment(a.lines);
+  // Header + the dispute-quorum line + 2 approval lines +
+  // the restart line + the expiring-quorum line + the
+  // past-window line + the retained-entries line; every
+  // value is derived from the fixed fixtures alone, so no
+  // normalization is needed.
+  assert.equal(segA.length, 8);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(a.approvalLogEntries, b.approvalLogEntries);
+  assert.deepEqual(a.approvalLogExpiryLogAfter, b.approvalLogExpiryLogAfter);
+  assert.equal(a.approvalLogExpiryCountBefore, b.approvalLogExpiryCountBefore);
+  assert.equal(a.approvalLogExpiryCountAfter, b.approvalLogExpiryCountAfter);
+  assert.equal(
+    a.approvalLogExpiryHasQuorumBefore,
+    b.approvalLogExpiryHasQuorumBefore,
+  );
+  assert.equal(
+    a.approvalLogExpiryHasQuorumAfter,
+    b.approvalLogExpiryHasQuorumAfter,
   );
 });
