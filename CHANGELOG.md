@@ -18,6 +18,18 @@ version changes.
 
 ### Added
 
+- A snapshot round-trip path in the benchmark:
+  `Escrow.fromJSON()` restoring the fixed `toJSON()` snapshot
+  of the full-lifecycle escrow carrying a fixed deadline
+  (2026-01-31T00:00:00.000Z), checked on every timed
+  iteration for the restored id, state, and deadline and
+  the full history entry for entry (`hash` / `prevHash`
+  chain included), and for a re-export identical to the
+  source snapshot — with the serialized snapshot text
+  additionally restored unchanged after a
+  JSON.parse/stringify round-trip once, outside the timed
+  loop. Bench only; no library behavior change. The README
+  Benchmarks table is refreshed from one real run.
 - A strengthened self-check for the benchmark's hash-chain
   verification path: `verifyHistoryChain` is now checked on
   every timed iteration for the linkage its verdict rests

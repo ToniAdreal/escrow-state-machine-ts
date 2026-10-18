@@ -330,6 +330,21 @@
  *      throwing listener neither breaks a dispatch nor starves
  *      its peer. No network, no randomness, and no wall
  *      clock: every dispatch timestamp is fixed.
+ *  30. snapshot round-trip — `Escrow.fromJSON(snapshot)` over
+ *      the fixed `toJSON()` snapshot of the same full lifecycle
+ *      escrow, carrying a fixed deadline (see the snapshot
+ *      fixture below). This is the persistence rehydration a
+ *      service pays per escrow at restart: strict envelope
+ *      validation plus hash-chain re-verification on the way
+ *      in, previously visible only inside the demo. Every
+ *      timed iteration checks the restored escrow's id, state,
+ *      deadline, and history entry for entry (hash / prevHash
+ *      chain included) against the source snapshot, and that
+ *      re-exporting the restored escrow reproduces the source
+ *      snapshot exactly. Outside the timed loop, the snapshot's
+ *      serialized text is additionally restored after a
+ *      JSON.parse/stringify round-trip and checked to come
+ *      back unchanged.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -357,6 +372,7 @@ import {
   dispatchArbitration,
   Escrow,
   GENESIS_PREV_HASH,
+  SNAPSHOT_VERSION,
   expiredEscrows,
   expireOverdueEscrows,
   historyFromNdjson,
@@ -375,6 +391,7 @@ import {
   verifySettlementWebhook,
   type EscrowEvent,
   type EscrowHistoryEntry,
+  type EscrowSnapshot,
   type EscrowState,
   type Quorum,
   type QuorumSnapshot,
@@ -2129,6 +2146,119 @@ function checkSubscribe(
 }
 
 // ---------------------------------------------------------------------
+// Snapshot round-trip fixture: the same fixed full lifecycle as
+// `runLifecycle()` (the LIFECYCLE table above: same events, amounts,
+// and per-step timestamp offsets from BASE_MS, ending RELEASED with
+// 4 hash-chained entries), plus one fixed deadline — BASE + 30 days,
+// 2026-01-31T00:00:00.000Z — attached after the lifecycle, so the
+// snapshot envelope carries the one field a bare history cannot (the
+// deadline lives only in the envelope; see the demo's snapshot
+// segment). The snapshot itself is exported ONCE, outside the timed
+// loop; the timed path restores it with `Escrow.fromJSON()`.
+// Hand-written expectations — written out here from the snapshot
+// contract in src/stateMachine.ts and cross-checked against
+// test/serialization.test.ts ("toJSON: snapshot shape is plain JSON
+// and survives a stringify round-trip" / "fromJSON: full round-trip
+// restores state, history, and FUND amount" / "fromJSON: valid
+// snapshot survives the strict parser byte-for-byte"), never derived
+// by calling fromJSON itself:
+//   - the envelope is exactly { v: SNAPSHOT_VERSION (1), id
+//     BENCH-001, state RELEASED, 4 history entries, deadline
+//     2026-01-31T00:00:00.000Z } — no `idempotencyKeys` and no
+//     `rolePolicy` field, because the fixture consumed no key and
+//     carries no policy, so both stay absent by contract;
+//   - a restored escrow carries that id and state, its deadline is
+//     the fixture deadline, and every history entry equals the
+//     snapshot's entry field for field (seq / event / from / to /
+//     at / actor / note / amount / evidence / prevHash / hash);
+//   - re-exporting a restored escrow reproduces the source snapshot
+//     exactly (canonical JSON text identical);
+//   - the snapshot's serialized text, parsed back after a
+//     JSON.parse/stringify round-trip, restores an escrow whose
+//     re-export is byte-identical to the original text — checked
+//     once, outside the timed loop.
+// ---------------------------------------------------------------------
+const SNAPSHOT_DEADLINE = "2026-01-31T00:00:00.000Z";
+const snapshotEscrow = runLifecycle();
+snapshotEscrow.setDeadline(new Date(BASE_MS + 30 * DAY_MS));
+if (snapshotEscrow.getDeadline() !== SNAPSHOT_DEADLINE) {
+  throw new Error("benchmark fixture failed: snapshot deadline shape");
+}
+const snapshotFixture: EscrowSnapshot = snapshotEscrow.toJSON();
+if (
+  snapshotFixture.v !== SNAPSHOT_VERSION ||
+  snapshotFixture.id !== snapshotEscrow.id ||
+  snapshotFixture.state !== "RELEASED" ||
+  snapshotFixture.history.length !== historyFixture.length ||
+  snapshotFixture.deadline !== SNAPSHOT_DEADLINE ||
+  snapshotFixture.idempotencyKeys !== undefined ||
+  snapshotFixture.rolePolicy !== undefined
+) {
+  throw new Error("benchmark fixture failed: snapshot envelope shape");
+}
+function checkSnapshotRoundTrip(restored: Escrow, where: string): void {
+  if (
+    restored.id !== snapshotFixture.id ||
+    restored.state !== snapshotFixture.state ||
+    restored.getDeadline() !== SNAPSHOT_DEADLINE ||
+    restored.history.length !== snapshotFixture.history.length
+  ) {
+    throw new Error(`benchmark self-check failed: ${where}`);
+  }
+  for (let i = 0; i < snapshotFixture.history.length; i++) {
+    const a = restored.history[i];
+    const b = snapshotFixture.history[i];
+    if (
+      a.seq !== b.seq ||
+      a.event !== b.event ||
+      a.from !== b.from ||
+      a.to !== b.to ||
+      a.at !== b.at ||
+      a.actor !== b.actor ||
+      a.note !== b.note ||
+      a.amount !== b.amount ||
+      a.evidence !== b.evidence ||
+      a.prevHash !== b.prevHash ||
+      a.hash !== b.hash
+    ) {
+      throw new Error(`benchmark self-check failed: ${where}`);
+    }
+  }
+  if (JSON.stringify(restored.toJSON()) !== JSON.stringify(snapshotFixture)) {
+    throw new Error(`benchmark self-check failed: ${where}`);
+  }
+}
+// One-time validation (outside the timed loop): the intact snapshot
+// restores to exactly the hand-written expectations.
+checkSnapshotRoundTrip(
+  Escrow.fromJSON(snapshotFixture),
+  "snapshot round-trip fixture",
+);
+// Serialized-text validation (outside the timed loop): the snapshot
+// text a document store would keep parses back and restores an
+// escrow whose re-export is byte-identical to that text, and the
+// source escrow is untouched by the whole round-trip.
+{
+  const snapshotText = JSON.stringify(snapshotFixture);
+  const restoredFromText = Escrow.fromJSON(
+    JSON.parse(snapshotText) as unknown,
+  );
+  checkSnapshotRoundTrip(restoredFromText, "snapshot text round-trip");
+  if (JSON.stringify(restoredFromText.toJSON()) !== snapshotText) {
+    throw new Error(
+      "benchmark fixture failed: snapshot text round-trip mismatch",
+    );
+  }
+  if (
+    snapshotEscrow.state !== "RELEASED" ||
+    snapshotEscrow.getDeadline() !== SNAPSHOT_DEADLINE ||
+    snapshotEscrow.history.length !== historyFixture.length
+  ) {
+    throw new Error("benchmark fixture failed: snapshot source escrow changed");
+  }
+}
+
+// ---------------------------------------------------------------------
 // Scenarios (each with a self-check so a broken path cannot report a
 // plausible-looking number).
 // ---------------------------------------------------------------------
@@ -2698,11 +2828,26 @@ function benchSubscribe(): number {
   }, ITERATIONS);
 }
 
+function benchSnapshotRoundTrip(): number {
+  return measure(() => {
+    // The snapshot is exported once, outside the timed loop (see
+    // the snapshot fixture above); the timed path is the strict
+    // restore. Per-iteration self-check: the restored escrow's id,
+    // state, deadline, and full history match the source snapshot
+    // entry for entry, and its re-export reproduces the source
+    // snapshot exactly.
+    checkSnapshotRoundTrip(
+      Escrow.fromJSON(snapshotFixture),
+      "Escrow.fromJSON snapshot round-trip",
+    );
+  }, ITERATIONS);
+}
+
 console.log("escrow-state-machine-ts benchmark");
 console.log(`Node: ${process.version} on ${process.platform}/${process.arch}`);
 console.log(`CPU: ${cpus()[0]?.model ?? "unknown"}`);
 console.log(
-  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); settlement batch summary over that batch's 4 pre-built results (3 reports + 1 error); settlement batch webhooks over that same batch (3 signed webhooks with distinct deterministic eventIds bench-batch-event-1..3 plus the 1 forwarded per-item error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release); quorum of 9 signers with threshold 5 on a fixed injected clock, approved one vote at a time to the threshold; settlement webhook fan-out to 4 endpoints through a fake global fetch (immediate 200, no network); settlement event dedupe duplicate hits cycling over 1,000 pre-recorded eventIds under a fixed injected clock; settlement event dedupe restore from a 1,000-entry JSON-round-tripped snapshot under a fixed injected clock (all entries live at load, default TTL and capacity, observability counters restarting at zero); Escrow.fromHistory replay over the same detached 4-entry history, self-checked per iteration for the rebuilt id and state and the full history entry for entry (hashes included, compared field-wise and through the canonical NDJSON serializer, because rehydration normalizes entry key order), with a detached tampered copy (FUND amount altered from 10630 to 10631) rejected with the hash-chain error outside the timed loop; watchdog screening over a fixed mixed batch of 100 escrows (40 hand-counted expired, 70 hand-counted stale under FUNDED 7d / MILESTONE_SUBMITTED 30d budgets) at a fixed screening instant; watchdog execution (expireOverdueEscrows / actOnStaleEscrows with an EXPIRE-dispatch action) over fresh rebuilds of that same 100-escrow batch on every iteration because the executors mutate their inputs (40 of 40 expire attempts and 70 of 70 stale actions succeed — both selected states carry an EXPIRE edge); quorum snapshot restore from a persisted (JSON round-tripped) snapshot of the 9-signer / threshold-5 quorum carrying 7 recorded approvals; settleRelease netting over 4 fixed representative inputs (golden 10630 at 500 bps, 1000 at 500 bps with 100 credits, large gross 1000000 at 250 bps with 1250.25 credits, rounding edge 10 at 125 bps) checked against hand-computed proFee/net on every iteration; parseRetryAfter over a fixed 11-value corpus (delay-seconds, fractional and whitespace-padded values, zero, future and past HTTP-dates, signed numbers, a garbage string, null and undefined) against one injected fixed now, every result checked against hand-pinned expectations on every iteration; depositAmountFromHistory over a fixed 4-shape corpus (a single FUND of the golden 10630, a two-FUND top-up sequence summing to 12630, a FUND recorded without an amount, and an empty no-FUND history) checked against hand-pinned totals and exact fail-fast error messages on every iteration; renderReport rendering of the fixed golden released report (deposit 10630, released via VERIFY_PASS -> RELEASE, 4 party rows) checked against hand-written expected lines (header/outcome, deposit formula, creator net row) on every iteration; allowedEvents over all 8 states of the transition table (one pass = every state queried once in declaration order — CREATED, FUNDED, MILESTONE_SUBMITTED, VERIFIED, DISPUTED, RELEASED, REFUNDED, EXPIRED — with each result checked against its hand-pinned expected event list in declaration order, the three terminal states expecting the empty list) on every iteration; calculateDeposit over a fixed 3-shape corpus (the golden vector pool 10000 / base 600 / complexity 1.0 / loyalty 30 / oracle 60 -> deposit 10630, a complexity 1.5 case -> deposit 6190, and a large-pool 1000000 case -> deposit 1005375) checked against hand-computed adjustedBaseFee and deposit expectations on every iteration; arbitration dispatch (dispatchArbitration with outcome \"refund\", rebuilding a DISPUTED escrow from its fixed 2-entry history prefix via Escrow.fromHistory and a threshold-reached 5/9 quorum via createQuorum on every iteration — rebuild cost inside the timed region — pinned to a fixed audit timestamp, checked for the REFUNDED terminal state, exactly one appended ARBITRATE_REFUND entry, and its \"quorum 5/5\" note on every iteration; isOverdue over a fixed 4-case corpus (past-deadline FUNDED, future-deadline FUNDED, deadline-less FUNDED, and past-deadline terminal RELEASED escrows) checked against hand-pinned booleans (true/false/false/false) against one injected fixed now on every iteration; assertNonNegativeMoney over a fixed legal corpus (0, 0.01, the golden 10630, and 1000000.25) checked to pass without throwing on every iteration, with the illegal corpus (negative, NaN, Infinity, -Infinity, a numeric string, undefined, and null — each throwing the exact message \"amount must be a finite non-negative number\") asserted once outside the timed loop and never timed); transitionTableJson (fixed no-arg transition-table JSON export, parsed back and checked against hand-pinned expectations — 14 edges, first CREATED/FUND/FUNDED, release edge VERIFIED/RELEASE/RELEASED at index 10, last DISPUTED/ARBITRATE_REFUND/REFUNDED, per-edge key order from,event,to, and a single trailing newline — on every iteration); stateDiagram (fixed no-arg Mermaid rendering, checked against hand-pinned expectations — 21 lines, all 14 edge lines written out in full in declaration order, the start line pinning CREATED, the 3 terminal lines RELEASED/REFUNDED/EXPIRED, and all 8 states present — on every iteration); readmeDiagramInSync (fixed no-arg README diagram sync check — reads only this repo's README.md, regenerates the diagram, and checks the exact block is embedded, checked against the hand-pinned expectation true on every iteration); subscribe (full lifecycle, 1 collecting listener) over the same full 4-dispatch lifecycle on a fresh escrow per iteration, self-checked per iteration against the hand-written (event, from, to) sequence and the escrow's own history entry for entry, with unsubscribe and throwing-listener isolation checks outside the timed loop; hash-chain verification (verifyHistoryChain) over the same fixed 4-entry history, self-checked per iteration for the genesis link (the first entry's prevHash is GENESIS_PREV_HASH) and every successor link (each entry's prevHash equals its predecessor's hash), with a detached tampered copy (the middle SUBMIT_MILESTONE entry gaining a note it never carried) returning false outside the timed loop",
+  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); settlement batch summary over that batch's 4 pre-built results (3 reports + 1 error); settlement batch webhooks over that same batch (3 signed webhooks with distinct deterministic eventIds bench-batch-event-1..3 plus the 1 forwarded per-item error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release); quorum of 9 signers with threshold 5 on a fixed injected clock, approved one vote at a time to the threshold; settlement webhook fan-out to 4 endpoints through a fake global fetch (immediate 200, no network); settlement event dedupe duplicate hits cycling over 1,000 pre-recorded eventIds under a fixed injected clock; settlement event dedupe restore from a 1,000-entry JSON-round-tripped snapshot under a fixed injected clock (all entries live at load, default TTL and capacity, observability counters restarting at zero); Escrow.fromHistory replay over the same detached 4-entry history, self-checked per iteration for the rebuilt id and state and the full history entry for entry (hashes included, compared field-wise and through the canonical NDJSON serializer, because rehydration normalizes entry key order), with a detached tampered copy (FUND amount altered from 10630 to 10631) rejected with the hash-chain error outside the timed loop; watchdog screening over a fixed mixed batch of 100 escrows (40 hand-counted expired, 70 hand-counted stale under FUNDED 7d / MILESTONE_SUBMITTED 30d budgets) at a fixed screening instant; watchdog execution (expireOverdueEscrows / actOnStaleEscrows with an EXPIRE-dispatch action) over fresh rebuilds of that same 100-escrow batch on every iteration because the executors mutate their inputs (40 of 40 expire attempts and 70 of 70 stale actions succeed — both selected states carry an EXPIRE edge); quorum snapshot restore from a persisted (JSON round-tripped) snapshot of the 9-signer / threshold-5 quorum carrying 7 recorded approvals; settleRelease netting over 4 fixed representative inputs (golden 10630 at 500 bps, 1000 at 500 bps with 100 credits, large gross 1000000 at 250 bps with 1250.25 credits, rounding edge 10 at 125 bps) checked against hand-computed proFee/net on every iteration; parseRetryAfter over a fixed 11-value corpus (delay-seconds, fractional and whitespace-padded values, zero, future and past HTTP-dates, signed numbers, a garbage string, null and undefined) against one injected fixed now, every result checked against hand-pinned expectations on every iteration; depositAmountFromHistory over a fixed 4-shape corpus (a single FUND of the golden 10630, a two-FUND top-up sequence summing to 12630, a FUND recorded without an amount, and an empty no-FUND history) checked against hand-pinned totals and exact fail-fast error messages on every iteration; renderReport rendering of the fixed golden released report (deposit 10630, released via VERIFY_PASS -> RELEASE, 4 party rows) checked against hand-written expected lines (header/outcome, deposit formula, creator net row) on every iteration; allowedEvents over all 8 states of the transition table (one pass = every state queried once in declaration order — CREATED, FUNDED, MILESTONE_SUBMITTED, VERIFIED, DISPUTED, RELEASED, REFUNDED, EXPIRED — with each result checked against its hand-pinned expected event list in declaration order, the three terminal states expecting the empty list) on every iteration; calculateDeposit over a fixed 3-shape corpus (the golden vector pool 10000 / base 600 / complexity 1.0 / loyalty 30 / oracle 60 -> deposit 10630, a complexity 1.5 case -> deposit 6190, and a large-pool 1000000 case -> deposit 1005375) checked against hand-computed adjustedBaseFee and deposit expectations on every iteration; arbitration dispatch (dispatchArbitration with outcome \"refund\", rebuilding a DISPUTED escrow from its fixed 2-entry history prefix via Escrow.fromHistory and a threshold-reached 5/9 quorum via createQuorum on every iteration — rebuild cost inside the timed region — pinned to a fixed audit timestamp, checked for the REFUNDED terminal state, exactly one appended ARBITRATE_REFUND entry, and its \"quorum 5/5\" note on every iteration; isOverdue over a fixed 4-case corpus (past-deadline FUNDED, future-deadline FUNDED, deadline-less FUNDED, and past-deadline terminal RELEASED escrows) checked against hand-pinned booleans (true/false/false/false) against one injected fixed now on every iteration; assertNonNegativeMoney over a fixed legal corpus (0, 0.01, the golden 10630, and 1000000.25) checked to pass without throwing on every iteration, with the illegal corpus (negative, NaN, Infinity, -Infinity, a numeric string, undefined, and null — each throwing the exact message \"amount must be a finite non-negative number\") asserted once outside the timed loop and never timed); transitionTableJson (fixed no-arg transition-table JSON export, parsed back and checked against hand-pinned expectations — 14 edges, first CREATED/FUND/FUNDED, release edge VERIFIED/RELEASE/RELEASED at index 10, last DISPUTED/ARBITRATE_REFUND/REFUNDED, per-edge key order from,event,to, and a single trailing newline — on every iteration); stateDiagram (fixed no-arg Mermaid rendering, checked against hand-pinned expectations — 21 lines, all 14 edge lines written out in full in declaration order, the start line pinning CREATED, the 3 terminal lines RELEASED/REFUNDED/EXPIRED, and all 8 states present — on every iteration); readmeDiagramInSync (fixed no-arg README diagram sync check — reads only this repo's README.md, regenerates the diagram, and checks the exact block is embedded, checked against the hand-pinned expectation true on every iteration); subscribe (full lifecycle, 1 collecting listener) over the same full 4-dispatch lifecycle on a fresh escrow per iteration, self-checked per iteration against the hand-written (event, from, to) sequence and the escrow's own history entry for entry, with unsubscribe and throwing-listener isolation checks outside the timed loop; hash-chain verification (verifyHistoryChain) over the same fixed 4-entry history, self-checked per iteration for the genesis link (the first entry's prevHash is GENESIS_PREV_HASH) and every successor link (each entry's prevHash equals its predecessor's hash), with a detached tampered copy (the middle SUBMIT_MILESTONE entry gaining a note it never carried) returning false outside the timed loop; snapshot round-trip (Escrow.fromJSON restoring the fixed toJSON snapshot of the same full lifecycle escrow carrying the fixed deadline 2026-01-31T00:00:00.000Z, checked on every iteration for the restored id, state, and deadline and the full history entry for entry — hash chain included — and for a re-export identical to the source snapshot, with the serialized snapshot text additionally restored unchanged after a JSON.parse/stringify round-trip once outside the timed loop)",
 );
 console.log(`Iterations per op: ${ITERATIONS} (after ${WARMUP} warmup)`);
 console.log("");
@@ -2741,6 +2886,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "stateDiagram (14 edges, 21 lines)", ops: benchStateDiagram() },
   { path: "readmeDiagramInSync (README sync check)", ops: benchReadmeDiagramInSync() },
   { path: "subscribe (full lifecycle, 1 collecting listener)", ops: benchSubscribe() },
+  { path: "Escrow.fromJSON (snapshot round-trip, 4 entries)", ops: benchSnapshotRoundTrip() },
 ];
 
 console.log("path                                              throughput");
