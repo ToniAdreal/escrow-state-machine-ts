@@ -18,6 +18,17 @@ version changes.
 
 ### Added
 
+- A strengthened self-check for the benchmark's hash-chain
+  verification path: `verifyHistoryChain` is now checked on
+  every timed iteration for the linkage its verdict rests
+  on — the first entry's `prevHash` is
+  `GENESIS_PREV_HASH` and every later entry's `prevHash`
+  equals its predecessor's `hash` — and a detached tampered
+  copy (the middle `SUBMIT_MILESTONE` entry gaining a note
+  it never carried) returns `false` once, outside the timed
+  loop, with the intact fixture still verifying afterwards.
+  Bench only; no library behavior change. The README
+  Benchmarks table is refreshed from one real run.
 - A strengthened self-check for the benchmark's
   event-sourced replay path: `Escrow.fromHistory` is now
   checked on every timed iteration for rebuild fidelity —
