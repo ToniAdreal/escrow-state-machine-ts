@@ -18,6 +18,26 @@ version changes.
 
 ### Added
 
+- Benchmark coverage for the subscribe `onError` error
+  routing path: `subscribe()` with one pinned throwing
+  listener and a collecting `onError` on a fresh escrow,
+  driven through a fixed short chain (FUND,
+  SUBMIT_MILESTONE, VERIFY_PASS to VERIFIED), checked on
+  every iteration against hand-pinned expectations
+  (every dispatch succeeds, the history holds exactly 3
+  entries, and `onError` receives exactly 3 reports —
+  one per dispatch — each carrying the pinned listener
+  error message with its dispatch context, the first
+  report's context included), with an `onError` that
+  itself throws pinned to being swallowed and a
+  non-function `onError` pinned to its exact
+  invalid-subscribe rejection message once outside the
+  timed loop. This separates the error-routing cost from
+  the collecting-listener subscribe row, which never
+  throws. The README Benchmarks table was refreshed
+  from one real run and gained the
+  `subscribe onError (short chain, 1 throwing listener)`
+  row (3,474 ops/sec in that run).
 - CLI demo coverage for the subscribe `onError` error
   routing path: a branch escrow subscribes one pinned
   throwing listener with a collecting `onError` and runs
