@@ -18,6 +18,26 @@ version changes.
 
 ### Added
 
+- Benchmark coverage for the quorum revoke path:
+  `revoke()` on a fresh 5/9 quorum (fixed injected clock),
+  checked on every iteration against hand-pinned
+  expectations (approve dao-1..dao-5 to the threshold,
+  revoke dao-3 to drop to 4/5 below the threshold, then
+  re-approve dao-3 to return to 5/5, with
+  `approvalCount()` / `hasQuorum()` / `approvals()`
+  checked at every stage and the re-approved signer
+  returning last in `approvals()` order), with the
+  unknown-signer and not-approved revoke rejections
+  (`unknown quorum signer: "mallory"` and
+  `cannot revoke: signer "dao-6" has not approved`)
+  pinned once outside the timed loop to their exact
+  messages and to leaving the quorum unchanged. This
+  separates the change-of-vote cost from the
+  approve-to-threshold and snapshot-restore rows, which
+  never revoke. The README Benchmarks table was
+  refreshed from one real run and gained the
+  `quorum revoke cycle (5 of 9, revoke + re-approve)`
+  row.
 - Benchmark coverage for the deadline write-cycle path:
   `setDeadline` + `clearDeadline` on one shared FUNDED
   escrow, checked on every iteration against hand-pinned
