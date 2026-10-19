@@ -18,6 +18,21 @@ version changes.
 
 ### Added
 
+- CLI demo coverage for the subscribe `onError` error
+  routing path: a branch escrow subscribes one pinned
+  throwing listener with a collecting `onError` and runs
+  a fixed-timestamp chain (FUND, SUBMIT_MILESTONE,
+  VERIFY_PASS) to VERIFIED — every dispatch succeeds and
+  the audit history stays complete while `onError`
+  receives one report per dispatch, the caught error
+  travelling with its dispatch context (event / from /
+  to); a probe escrow whose `onError` itself throws
+  still dispatches successfully, and a non-function
+  `onError` is rejected at subscribe time with the exact
+  invalid-subscribe error. Expectations are hand-pinned
+  and asserted outside the printing, so a routing that
+  dropped or mislabelled a report, or a throw that broke
+  a dispatch, fails the demo itself.
 - CLI demo coverage for the settlement-event dedupe
   snapshot persistence path: a fresh
   `SettlementEventDedupe` on a fixed clock records two

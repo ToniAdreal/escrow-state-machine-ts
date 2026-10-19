@@ -223,7 +223,7 @@
  * verifies under the demo secret with
  * `verifySettlementWebhook()`; both sides are asserted
  * outside the printing against hand-pinned expectations.
- * The demo finally closes with a dedupe snapshot
+ * The demo then shows a dedupe snapshot
  * persistence segment: a fresh `SettlementEventDedupe`
  * on a fixed clock records two fixed eventIds (each new
  * on first sight, a duplicate on immediate redelivery),
@@ -241,6 +241,20 @@
  * loudly at startup instead of silently disabling
  * deduplication; all sides are asserted outside the
  * printing against hand-pinned expectations.
+ * The demo finally closes with a subscribe `onError`
+ * error-routing segment: a branch escrow subscribes one
+ * pinned throwing listener with a collecting `onError`,
+ * and a short fixed-timestamp chain (FUND,
+ * SUBMIT_MILESTONE, VERIFY_PASS) runs to VERIFIED — every
+ * dispatch succeeds and the audit history stays complete
+ * while `onError` receives one report per dispatch, the
+ * caught error travelling with its `ListenerErrorContext`
+ * (event / from / to); a probe escrow whose `onError`
+ * itself throws still dispatches successfully (the broken
+ * hook is swallowed too), and a non-function `onError` is
+ * rejected at subscribe time with the exact
+ * invalid-subscribe error; all sides are asserted outside
+ * the printing against hand-pinned expectations.
  *
  * Usage: `npm run demo` (builds with tsc, then runs node on the compiled
  * output). Zero runtime dependencies: this file only imports the library
@@ -865,6 +879,75 @@ export const DEMO_DEDUPE_SNAPSHOT_ENTRIES: ReadonlyArray<
 export const DEMO_DEDUPE_SNAPSHOT_TAMPERED_ERROR =
   "SettlementEventDedupe: invalid snapshot: unsupported snapshot version 2 (expected 1)";
 
+/**
+ * Subscribe onError fixtures for the final closing segment:
+ * one branch escrow carrying a single pinned throwing
+ * listener with a collecting `onError`, plus a probe escrow
+ * whose `onError` itself throws. Hand-pinned expectations —
+ * written from the documented `subscribe()` semantics in
+ * src/stateMachine.ts (a listener's throw is caught and
+ * swallowed so dispatch and the audit trail are never
+ * broken; `subscribe(listener, { onError })` routes each
+ * caught error to `onError` with the dispatch context
+ * `{event, from, to}`; a throwing `onError` is swallowed
+ * as well; a non-function `onError` is rejected at
+ * subscribe time), never derived by calling `subscribe()`
+ * itself, and cross-checked against test/subscribe.test.ts,
+ * whose onError case pins the same shapes (the caught error
+ * object reaches `onError` with context
+ * `{event: "FUND", from: "CREATED", to: "FUNDED"}`, a
+ * throwing `onError` still lets dispatch complete, and
+ * `onError: "x"` throws the invalid-subscribe error):
+ * - the three fixed dispatches FUND (CREATED -> FUNDED),
+ *   SUBMIT_MILESTONE (FUNDED -> MILESTONE_SUBMITTED) and
+ *   VERIFY_PASS (MILESTONE_SUBMITTED -> VERIFIED) all
+ *   succeed — the escrow ends VERIFIED with 3 history
+ *   entries — and `onError` receives exactly 3 reports,
+ *   each carrying the pinned listener error message and
+ *   the context of its dispatch, in dispatch order
+ * - the probe escrow's FUND dispatch still returns FUNDED
+ *   (1 history entry) even though its `onError` throws
+ * - subscribing with `onError: "x"` on the branch escrow
+ *   throws exactly {@link DEMO_ONERROR_INVALID_ERROR} and
+ *   registers nothing (`listenerCount` stays 1)
+ * Every timestamp is a fixed literal: no network, no
+ * randomness, no wall clock.
+ */
+export const DEMO_ONERROR_ESCROW_ID = "DEMO-ESC-014";
+export const DEMO_ONERROR_PROBE_ESCROW_ID = "DEMO-ESC-015";
+export const DEMO_ONERROR_FUND_AT = "2026-03-13T09:00:00.000Z";
+export const DEMO_ONERROR_SUBMIT_AT = "2026-03-13T10:00:00.000Z";
+export const DEMO_ONERROR_VERIFY_AT = "2026-03-13T11:00:00.000Z";
+export const DEMO_ONERROR_VERIFY_EVIDENCE = "demo-oracle-attestation-014";
+export const DEMO_ONERROR_LISTENER_ERROR = "demo fan-out consumer blew up";
+export const DEMO_ONERROR_EXPECTED_REPORTS: ReadonlyArray<{
+  message: string;
+  event: EscrowEvent;
+  from: EscrowState;
+  to: EscrowState;
+}> = [
+  {
+    message: DEMO_ONERROR_LISTENER_ERROR,
+    event: "FUND",
+    from: "CREATED",
+    to: "FUNDED",
+  },
+  {
+    message: DEMO_ONERROR_LISTENER_ERROR,
+    event: "SUBMIT_MILESTONE",
+    from: "FUNDED",
+    to: "MILESTONE_SUBMITTED",
+  },
+  {
+    message: DEMO_ONERROR_LISTENER_ERROR,
+    event: "VERIFY_PASS",
+    from: "MILESTONE_SUBMITTED",
+    to: "VERIFIED",
+  },
+];
+export const DEMO_ONERROR_INVALID_ERROR =
+  "invalid subscribe: onError must be a function, got string";
+
 const steps: Array<{
   event: EscrowEvent;
   actor: string;
@@ -1483,6 +1566,45 @@ export interface DemoResult {
    * exported snapshot object itself still reads `v: 1`.
    */
   dedupeSnapshotTamperedError: string;
+  /**
+   * The final closing segment's branch escrow
+   * ({@link DEMO_ONERROR_ESCROW_ID}), after its three
+   * fixed dispatches ran under a throwing listener:
+   * VERIFIED with 3 history entries — no dispatch failed.
+   */
+  onErrorEscrow: Escrow;
+  /**
+   * Reports the collecting `onError` received, in dispatch
+   * order: exactly {@link DEMO_ONERROR_EXPECTED_REPORTS} —
+   * one per dispatch, each carrying the pinned listener
+   * error message and that dispatch's context.
+   */
+  onErrorReports: Array<{
+    message: string;
+    event: EscrowEvent;
+    from: EscrowState;
+    to: EscrowState;
+  }>;
+  /**
+   * The final closing segment's probe escrow
+   * ({@link DEMO_ONERROR_PROBE_ESCROW_ID}), whose
+   * `onError` itself throws: still FUNDED with 1 history
+   * entry after its single fixed dispatch.
+   */
+  onErrorProbeEscrow: Escrow;
+  /**
+   * State returned by the probe escrow's FUND dispatch:
+   * `"FUNDED"` — a throwing `onError` is swallowed too.
+   */
+  onErrorProbeState: EscrowState;
+  /**
+   * Error message of subscribing with a non-function
+   * `onError` on the branch escrow: exactly
+   * {@link DEMO_ONERROR_INVALID_ERROR}. Nothing was
+   * registered — the branch escrow's `listenerCount`
+   * still reads 1.
+   */
+  onErrorInvalidError: string;
   lines: string[];
 }
 
@@ -3260,7 +3382,7 @@ export async function runDemo(): Promise<DemoResult> {
     `  wire check: ${singleDeliveryCalls.length} captured POSTs, bodies byte-identical across attempts and equal to the signed payload body; the X-Signature the endpoint received verifies over the captured body: verifySettlementWebhook: ${singleDeliverySignatureVerified ? "ok" : "FAILED"}`,
   );
 
-  // --- Dedupe snapshot persistence: exportSnapshot / restore (final closing) ---
+  // --- Dedupe snapshot persistence: exportSnapshot / restore (closing) ---
   // The receiver-dedupe segment above ran entirely in
   // memory: a receiver restart would forget every id
   // inside its TTL and reopen exactly the
@@ -3362,6 +3484,142 @@ export async function runDemo(): Promise<DemoResult> {
     `  tampered snapshot rejected: a detached copy with v changed to 2 throws "${dedupeSnapshotTamperedError}" — a corrupt snapshot fails loudly at startup instead of silently disabling deduplication`,
   );
 
+  // --- Subscribe onError routing: subscribe(listener, { onError }) (final closing) ---
+  // The subscription segment above used a well-behaved
+  // collecting listener; the error path never ran. Here a
+  // branch escrow subscribes ONE pinned throwing listener
+  // with a collecting onError and runs a short fixed-
+  // timestamp chain — FUND, SUBMIT_MILESTONE, VERIFY_PASS:
+  // every dispatch succeeds (the throw is caught and
+  // swallowed, so dispatch and the audit trail are never
+  // broken) and onError receives exactly one report per
+  // dispatch, the caught error travelling with its
+  // ListenerErrorContext (event / from / to). A probe
+  // escrow whose onError ITSELF throws still dispatches
+  // successfully — a broken error hook is isolated the
+  // same way — and a non-function onError is rejected at
+  // subscribe time with the exact invalid-subscribe error,
+  // registering nothing. Hand-pinned expectations (see the
+  // fixture comment above), asserted HERE, outside the
+  // printing: the three reports equal the pinned contexts
+  // in order and match the escrow's audit entries seq for
+  // seq — a routing that dropped, reordered, or mislabelled
+  // a report, or a throw that broke a dispatch, would fail
+  // the demo itself, not just a test. Zero network, zero
+  // randomness, fixed timestamps throughout.
+  const onErrorEscrow = new Escrow(DEMO_ONERROR_ESCROW_ID);
+  const onErrorReports: Array<{
+    message: string;
+    event: EscrowEvent;
+    from: EscrowState;
+    to: EscrowState;
+  }> = [];
+  onErrorEscrow.subscribe(
+    () => {
+      throw new Error(DEMO_ONERROR_LISTENER_ERROR);
+    },
+    {
+      onError: (err, ctx) => {
+        onErrorReports.push({
+          message: err instanceof Error ? err.message : String(err),
+          event: ctx.event,
+          from: ctx.from,
+          to: ctx.to,
+        });
+      },
+    },
+  );
+  const onErrorStates: EscrowState[] = [];
+  onErrorStates.push(
+    onErrorEscrow.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+      actor: "sponsor",
+      at: DEMO_ONERROR_FUND_AT,
+    }),
+  );
+  onErrorStates.push(
+    onErrorEscrow.dispatch(
+      "SUBMIT_MILESTONE",
+      "Deliverable URLs + IPFS metadata hash",
+      undefined,
+      { actor: "creator", at: DEMO_ONERROR_SUBMIT_AT },
+    ),
+  );
+  onErrorStates.push(
+    onErrorEscrow.dispatch(
+      "VERIFY_PASS",
+      "KPIs validated by oracle",
+      undefined,
+      {
+        actor: "oracle",
+        at: DEMO_ONERROR_VERIFY_AT,
+        evidence: DEMO_ONERROR_VERIFY_EVIDENCE,
+      },
+    ),
+  );
+  const onErrorProbeEscrow = new Escrow(DEMO_ONERROR_PROBE_ESCROW_ID);
+  onErrorProbeEscrow.subscribe(
+    () => {
+      throw new Error(DEMO_ONERROR_LISTENER_ERROR);
+    },
+    {
+      onError: () => {
+        throw new Error("demo error hook blew up");
+      },
+    },
+  );
+  const onErrorProbeState = onErrorProbeEscrow.dispatch(
+    "FUND",
+    "Deposit locked (wire received)",
+    500,
+    { actor: "sponsor", at: DEMO_ONERROR_FUND_AT },
+  );
+  let onErrorInvalidError = "";
+  try {
+    onErrorEscrow.subscribe(() => {}, {
+      onError: "x" as never,
+    });
+  } catch (err) {
+    onErrorInvalidError = err instanceof Error ? err.message : String(err);
+  }
+  if (
+    onErrorStates.join(",") !== "FUNDED,MILESTONE_SUBMITTED,VERIFIED" ||
+    onErrorReports.length !== DEMO_ONERROR_EXPECTED_REPORTS.length ||
+    onErrorReports.some((report, i) => {
+      const expected = DEMO_ONERROR_EXPECTED_REPORTS[i];
+      const entry = onErrorEscrow.history[i];
+      return (
+        report.message !== expected.message ||
+        report.event !== expected.event ||
+        report.from !== expected.from ||
+        report.to !== expected.to ||
+        entry === undefined ||
+        entry.event !== report.event ||
+        entry.from !== report.from ||
+        entry.to !== report.to
+      );
+    }) ||
+    onErrorEscrow.state !== "VERIFIED" ||
+    onErrorEscrow.history.length !== 3 ||
+    onErrorProbeState !== "FUNDED" ||
+    onErrorProbeEscrow.state !== "FUNDED" ||
+    onErrorProbeEscrow.history.length !== 1 ||
+    onErrorInvalidError !== DEMO_ONERROR_INVALID_ERROR ||
+    onErrorEscrow.listenerCount !== 1
+  ) {
+    throw new Error(
+      "demo fixture broken: Escrow.subscribe onError routing does not match the pinned shape (three successful dispatches to VERIFIED with 3 history entries, one report per dispatch with the pinned message and context matching history, throwing onError swallowed on the probe escrow, non-function onError rejected with the pinned error and nothing registered)",
+    );
+  }
+  lines.push(
+    "",
+    "Subscribe onError error routing (Escrow.subscribe(listener, { onError }) on a branch escrow):",
+    `  escrow ${onErrorEscrow.id}: 1 throwing listener + 1 collecting onError — 3 fixed dispatches (FUND, SUBMIT_MILESTONE, VERIFY_PASS) all succeeded: state ${onErrorEscrow.state}, ${onErrorEscrow.history.length} history entries (a throwing listener never breaks dispatch or the audit trail)`,
+    `  onError received: ${onErrorReports.length} report(s) — first: "${onErrorReports[0].message}" on ${onErrorReports[0].event} ${onErrorReports[0].from} -> ${onErrorReports[0].to} (the error travels with its dispatch context)`,
+    `  all contexts: ${onErrorReports.map((r) => `${r.event} ${r.from} -> ${r.to}`).join("; ")}`,
+    `  probe escrow ${onErrorProbeEscrow.id}: an onError that itself throws is swallowed too — dispatch FUND still returned ${onErrorProbeState} (${onErrorProbeEscrow.history.length} history entry)`,
+    `  non-function onError rejected at subscribe time: "${onErrorInvalidError}" — nothing was registered (listenerCount still ${onErrorEscrow.listenerCount})`,
+  );
+
   return {
     escrow,
     report,
@@ -3451,6 +3709,11 @@ export async function runDemo(): Promise<DemoResult> {
     dedupeSnapshotRestoredSeen,
     dedupeSnapshotRestoredUnseen,
     dedupeSnapshotTamperedError,
+    onErrorEscrow,
+    onErrorReports,
+    onErrorProbeEscrow,
+    onErrorProbeState,
+    onErrorInvalidError,
     lines,
   };
 }

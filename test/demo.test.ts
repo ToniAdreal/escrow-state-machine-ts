@@ -42,6 +42,15 @@ import {
   DEMO_MONEY_GUARD_ERROR,
   DEMO_MONEY_GUARD_ILLEGAL_AMOUNTS,
   DEMO_MONEY_GUARD_LEGAL_AMOUNTS,
+  DEMO_ONERROR_ESCROW_ID,
+  DEMO_ONERROR_EXPECTED_REPORTS,
+  DEMO_ONERROR_FUND_AT,
+  DEMO_ONERROR_INVALID_ERROR,
+  DEMO_ONERROR_LISTENER_ERROR,
+  DEMO_ONERROR_PROBE_ESCROW_ID,
+  DEMO_ONERROR_SUBMIT_AT,
+  DEMO_ONERROR_VERIFY_AT,
+  DEMO_ONERROR_VERIFY_EVIDENCE,
   DEMO_OVERDUE_CHECK_AFTER_AT,
   DEMO_OVERDUE_CHECK_AT_DEADLINE,
   DEMO_OVERDUE_CHECK_BEFORE_AT,
@@ -2059,12 +2068,11 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
       "  wire check: 2 captured POSTs, bodies byte-identical across attempts and equal to the signed payload body; the X-Signature the endpoint received verifies over the captured body: verifySettlementWebhook: ok",
     ),
   );
-  // Dedupe snapshot tail: the closing segment persists a
+  // Dedupe snapshot tail: that segment persists a
   // fresh dedupe across a simulated restart — two ids new
   // then duplicate, snapshot exported (version + count
   // only), restored counters at zero with both ids still
-  // duplicates, and the v:2 copy rejected; the demo ends
-  // on the tampered-snapshot line.
+  // duplicates, and the v:2 copy rejected.
   assert.match(
     out,
     /Dedupe snapshot persistence \(SettlementEventDedupe exportSnapshot \/ restore across a restart\):/,
@@ -2080,10 +2088,34 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
     ),
   );
   assert.ok(
+    out.includes(
+      `  tampered snapshot rejected: a detached copy with v changed to 2 throws "${DEMO_DEDUPE_SNAPSHOT_TAMPERED_ERROR}" — a corrupt snapshot fails loudly at startup instead of silently disabling deduplication`,
+    ),
+  );
+  // Subscribe onError tail: the closing segment routes a
+  // throwing listener's errors to onError — 3 reports with
+  // dispatch contexts, a throwing onError swallowed on the
+  // probe escrow, and a non-function onError rejected; the
+  // demo ends on the rejection line.
+  assert.match(
+    out,
+    /Subscribe onError error routing \(Escrow\.subscribe\(listener, \{ onError \}\) on a branch escrow\):/,
+  );
+  assert.ok(
+    out.includes(
+      `  onError received: 3 report(s) — first: "${DEMO_ONERROR_LISTENER_ERROR}" on FUND CREATED -> FUNDED (the error travels with its dispatch context)`,
+    ),
+  );
+  assert.ok(
+    out.includes(
+      "  all contexts: FUND CREATED -> FUNDED; SUBMIT_MILESTONE FUNDED -> MILESTONE_SUBMITTED; VERIFY_PASS MILESTONE_SUBMITTED -> VERIFIED",
+    ),
+  );
+  assert.ok(
     out
       .trimEnd()
       .endsWith(
-        `  tampered snapshot rejected: a detached copy with v changed to 2 throws "${DEMO_DEDUPE_SNAPSHOT_TAMPERED_ERROR}" — a corrupt snapshot fails loudly at startup instead of silently disabling deduplication`,
+        `  non-function onError rejected at subscribe time: "${DEMO_ONERROR_INVALID_ERROR}" — nothing was registered (listenerCount still 1)`,
       ),
   );
 });
@@ -3378,11 +3410,11 @@ test("demo shows dedupe snapshot persistence: recorded ids survive a JSON round-
       ),
     ),
   );
-  // The segment closes the demo: it follows the
-  // single-target delivery segment, prints its lines
-  // verbatim (only the snapshot version and entry count —
-  // never a full entry line), and its tampered-snapshot
-  // line is the demo's last line.
+  // The segment follows the single-target delivery
+  // segment and precedes the closing onError segment; it
+  // prints its lines verbatim (only the snapshot version
+  // and entry count — never a full entry line), and its
+  // tampered-snapshot line is the segment's last line.
   const snapshotAt = text.indexOf(
     "Dedupe snapshot persistence (SettlementEventDedupe exportSnapshot / restore across a restart):",
   );
@@ -3402,8 +3434,16 @@ test("demo shows dedupe snapshot persistence: recorded ids survive a JSON round-
   ]) {
     assert.ok(text.includes(line), `missing dedupe snapshot line: ${line}`);
   }
+  const snapshotSegment = lines.slice(
+    lines.indexOf(
+      "Dedupe snapshot persistence (SettlementEventDedupe exportSnapshot / restore across a restart):",
+    ),
+    lines.indexOf(
+      "Subscribe onError error routing (Escrow.subscribe(listener, { onError }) on a branch escrow):",
+    ) - 1,
+  );
   assert.equal(
-    lines[lines.length - 1],
+    snapshotSegment[snapshotSegment.length - 1],
     `  tampered snapshot rejected: a detached copy with v changed to 2 throws "${DEMO_DEDUPE_SNAPSHOT_TAMPERED_ERROR}" — a corrupt snapshot fails loudly at startup instead of silently disabling deduplication`,
   );
 });
@@ -3414,6 +3454,9 @@ test("demo dedupe snapshot persistence segment is deterministic: two runs print 
       ls.indexOf(
         "Dedupe snapshot persistence (SettlementEventDedupe exportSnapshot / restore across a restart):",
       ),
+      ls.indexOf(
+        "Subscribe onError error routing (Escrow.subscribe(listener, { onError }) on a branch escrow):",
+      ) - 1,
     );
   const a = await runDemo();
   const b = await runDemo();
@@ -3434,4 +3477,168 @@ test("demo dedupe snapshot persistence segment is deterministic: two runs print 
   assert.deepEqual(a.dedupeSnapshotRestoredSeen, b.dedupeSnapshotRestoredSeen);
   assert.equal(a.dedupeSnapshotRestoredUnseen, b.dedupeSnapshotRestoredUnseen);
   assert.equal(a.dedupeSnapshotTamperedError, b.dedupeSnapshotTamperedError);
+});
+
+test("demo shows subscribe onError routing: a throwing listener's errors reach onError with dispatch context, a throwing onError is swallowed, and a non-function onError is rejected", async () => {
+  const {
+    onErrorEscrow,
+    onErrorReports,
+    onErrorProbeEscrow,
+    onErrorProbeState,
+    onErrorInvalidError,
+    lines,
+  } = await runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned expectations — written out here from the
+  // documented subscribe() semantics in src/stateMachine.ts,
+  // never derived by calling subscribe() to produce them.
+  // test/subscribe.test.ts pins the same shapes
+  // independently (the caught error reaches onError with
+  // context {event: "FUND", from: "CREATED", to: "FUNDED"},
+  // a throwing onError still lets dispatch complete, and
+  // onError: "x" throws /invalid subscribe: onError/).
+  assert.equal(onErrorEscrow.id, DEMO_ONERROR_ESCROW_ID);
+  assert.equal(onErrorEscrow.state, "VERIFIED");
+  assert.equal(onErrorEscrow.history.length, 3);
+  assert.deepEqual(
+    onErrorReports,
+    DEMO_ONERROR_EXPECTED_REPORTS.map((r) => ({ ...r })),
+  );
+  assert.deepEqual(DEMO_ONERROR_EXPECTED_REPORTS, [
+    {
+      message: DEMO_ONERROR_LISTENER_ERROR,
+      event: "FUND",
+      from: "CREATED",
+      to: "FUNDED",
+    },
+    {
+      message: DEMO_ONERROR_LISTENER_ERROR,
+      event: "SUBMIT_MILESTONE",
+      from: "FUNDED",
+      to: "MILESTONE_SUBMITTED",
+    },
+    {
+      message: DEMO_ONERROR_LISTENER_ERROR,
+      event: "VERIFY_PASS",
+      from: "MILESTONE_SUBMITTED",
+      to: "VERIFIED",
+    },
+  ]);
+  // Every report's context equals the audit entry with the
+  // same position: the routing never mislabels a dispatch.
+  for (const [i, report] of onErrorReports.entries()) {
+    const entry = onErrorEscrow.history[i];
+    assert.equal(report.event, entry.event);
+    assert.equal(report.from, entry.from);
+    assert.equal(report.to, entry.to);
+  }
+  assert.equal(onErrorProbeEscrow.id, DEMO_ONERROR_PROBE_ESCROW_ID);
+  assert.equal(onErrorProbeState, "FUNDED");
+  assert.equal(onErrorProbeEscrow.state, "FUNDED");
+  assert.equal(onErrorProbeEscrow.history.length, 1);
+  assert.equal(onErrorInvalidError, DEMO_ONERROR_INVALID_ERROR);
+  assert.equal(
+    DEMO_ONERROR_INVALID_ERROR,
+    "invalid subscribe: onError must be a function, got string",
+  );
+  assert.equal(onErrorEscrow.listenerCount, 1);
+  // Independent cross-check: a fresh escrow through the
+  // library entry points reproduces the same shape — the
+  // demo segment is not self-certifying.
+  const probe = new Escrow("demo-onerror-probe");
+  const probeReports: Array<{
+    message: string;
+    event: string;
+    from: string;
+    to: string;
+  }> = [];
+  const boom = new Error(DEMO_ONERROR_LISTENER_ERROR);
+  probe.subscribe(
+    () => {
+      throw boom;
+    },
+    {
+      onError: (err, ctx) => {
+        assert.equal(err, boom);
+        probeReports.push({
+          message: err instanceof Error ? err.message : String(err),
+          event: ctx.event,
+          from: ctx.from,
+          to: ctx.to,
+        });
+      },
+    },
+  );
+  probe.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "sponsor",
+    at: DEMO_ONERROR_FUND_AT,
+  });
+  probe.dispatch(
+    "SUBMIT_MILESTONE",
+    "Deliverable URLs + IPFS metadata hash",
+    undefined,
+    { actor: "creator", at: DEMO_ONERROR_SUBMIT_AT },
+  );
+  probe.dispatch("VERIFY_PASS", "KPIs validated by oracle", undefined, {
+    actor: "oracle",
+    at: DEMO_ONERROR_VERIFY_AT,
+    evidence: DEMO_ONERROR_VERIFY_EVIDENCE,
+  });
+  assert.deepEqual(probeReports, onErrorReports);
+  assert.equal(probe.state, "VERIFIED");
+  assert.throws(
+    () => probe.subscribe(() => {}, { onError: "x" as never }),
+    new RegExp(
+      DEMO_ONERROR_INVALID_ERROR.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+    ),
+  );
+  assert.equal(probe.listenerCount, 1);
+  // The segment closes the demo: it follows the dedupe
+  // snapshot segment, prints its lines verbatim, and its
+  // rejection line is the demo's last line.
+  const onErrorAt = text.indexOf(
+    "Subscribe onError error routing (Escrow.subscribe(listener, { onError }) on a branch escrow):",
+  );
+  assert.ok(
+    onErrorAt >
+      text.indexOf(
+        "Dedupe snapshot persistence (SettlementEventDedupe exportSnapshot / restore across a restart):",
+      ),
+    "onError segment must follow the dedupe snapshot segment",
+  );
+  for (const line of [
+    `  escrow ${DEMO_ONERROR_ESCROW_ID}: 1 throwing listener + 1 collecting onError — 3 fixed dispatches (FUND, SUBMIT_MILESTONE, VERIFY_PASS) all succeeded: state VERIFIED, 3 history entries (a throwing listener never breaks dispatch or the audit trail)`,
+    `  onError received: 3 report(s) — first: "${DEMO_ONERROR_LISTENER_ERROR}" on FUND CREATED -> FUNDED (the error travels with its dispatch context)`,
+    "  all contexts: FUND CREATED -> FUNDED; SUBMIT_MILESTONE FUNDED -> MILESTONE_SUBMITTED; VERIFY_PASS MILESTONE_SUBMITTED -> VERIFIED",
+    `  probe escrow ${DEMO_ONERROR_PROBE_ESCROW_ID}: an onError that itself throws is swallowed too — dispatch FUND still returned FUNDED (1 history entry)`,
+    `  non-function onError rejected at subscribe time: "${DEMO_ONERROR_INVALID_ERROR}" — nothing was registered (listenerCount still 1)`,
+  ]) {
+    assert.ok(text.includes(line), `missing onError line: ${line}`);
+  }
+  assert.equal(
+    lines[lines.length - 1],
+    `  non-function onError rejected at subscribe time: "${DEMO_ONERROR_INVALID_ERROR}" — nothing was registered (listenerCount still 1)`,
+  );
+});
+
+test("demo subscribe onError segment is deterministic: two runs print byte-identical routing lines", async () => {
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf(
+        "Subscribe onError error routing (Escrow.subscribe(listener, { onError }) on a branch escrow):",
+      ),
+    );
+  const a = await runDemo();
+  const b = await runDemo();
+  const segA = segment(a.lines);
+  // Header + the escrow line + the received line + the
+  // all-contexts line + the probe line + the rejection
+  // line; every value is derived from the fixed fixtures
+  // alone, so no normalization is needed.
+  assert.equal(segA.length, 6);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(a.onErrorReports, b.onErrorReports);
+  assert.equal(a.onErrorProbeState, b.onErrorProbeState);
+  assert.equal(a.onErrorInvalidError, b.onErrorInvalidError);
 });
