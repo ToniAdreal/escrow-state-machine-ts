@@ -18,6 +18,24 @@ version changes.
 
 ### Added
 
+- Benchmark coverage for the single-target settlement
+  webhook delivery path: `deliverSettlementWebhook()` to
+  one fixed endpoint through a fake global `fetch`
+  answering 200 immediately (zero network, `backoffMs` 0),
+  checked on every iteration against hand-pinned
+  expectations (result `{ status: 200, attempts: 1 }`,
+  exactly one captured call to the pinned URL, and the
+  captured `X-Signature` equal to the
+  `buildSettlementWebhook` signature and verifiable over
+  the captured body), with a persistent-500
+  retry-exhaustion check outside the timed loop pinning
+  the exact `failed after 3 attempts` error at retries 2.
+  This separates the single-target delivery cost from
+  the 4-endpoint fan-out row that previously subsumed it.
+  The README Benchmarks table was refreshed from one
+  real run and gained the
+  `deliverSettlementWebhook (single endpoint, fake fetch)`
+  row.
 - A single-target delivery segment closing the CLI demo:
   the main escrow's signed settlement webhook is delivered
   alone with `deliverSettlementWebhook()` — the
