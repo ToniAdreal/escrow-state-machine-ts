@@ -18,6 +18,28 @@ version changes.
 
 ### Added
 
+- Benchmark coverage for the deadline write-cycle path:
+  `setDeadline` + `clearDeadline` on one shared FUNDED
+  escrow, checked on every iteration against hand-pinned
+  expectations (set via a `Date` to
+  2026-01-31T00:00:00.000Z and read back pinned, overwritten
+  via a string to 2026-05-01T00:00:00.000Z and read back
+  pinned, then cleared to `undefined` so the escrow returns
+  to its initial deadline-less state for the next iteration,
+  with state and history unchanged — a deadline write is
+  configuration, not a dispatch), with illegal-input
+  rejection (`invalid deadline: not-a-date` and
+  `invalid deadline: Invalid Date`, leaving any stored value
+  untouched), non-canonical normalization, and terminal
+  behaviour (a RELEASED probe stores a past deadline yet
+  never judges overdue) pinned once outside the timed loop.
+  This separates the deadline write cost from the
+  `isOverdue` judgement row, whose escrows previously only
+  ever had deadlines set once in fixture construction. The
+  README Benchmarks table was refreshed from one real run
+  and gained the
+  `setDeadline + clearDeadline (FUNDED escrow write cycle)`
+  row.
 - Benchmark coverage for the single-target settlement
   webhook delivery path: `deliverSettlementWebhook()` to
   one fixed endpoint through a fake global `fetch`
