@@ -18,6 +18,24 @@ version changes.
 
 ### Added
 
+- CLI demo coverage for the settlement-event dedupe
+  snapshot persistence path: a fresh
+  `SettlementEventDedupe` on a fixed clock records two
+  fixed eventIds (each new on first sight, a duplicate
+  on immediate redelivery), exports them with
+  `exportSnapshot()` (only the snapshot version and
+  entry count are printed, never the full entries), and
+  restores them through a JSON text round-trip with
+  `SettlementEventDedupe.restore()` — the restored
+  store starts its observability counters at zero yet
+  still reports both ids as duplicates, while a
+  never-seen id counts as new; a detached copy of the
+  snapshot with its version rewritten to 2 is rejected
+  with the exact invalid-snapshot error. Expectations
+  are hand-pinned and asserted outside the printing, so
+  a snapshot that dropped or re-stamped an entry, or a
+  restore that reopened the dedupe window, fails the
+  demo itself.
 - Benchmark coverage for the quorum revoke path:
   `revoke()` on a fresh 5/9 quorum (fixed injected clock),
   checked on every iteration against hand-pinned

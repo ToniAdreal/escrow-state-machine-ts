@@ -208,7 +208,7 @@
  * expiry never deletes the audit trail; only `revoke()`
  * removes a signer's entries. Both sides are asserted
  * outside the printing against hand-pinned expectations.
- * The demo finally closes with a single-target delivery
+ * The demo then shows a single-target delivery
  * segment: the main escrow's signed settlement webhook
  * is delivered with `deliverSettlementWebhook()` alone —
  * the single-endpoint entry point most integrators start
@@ -223,6 +223,24 @@
  * verifies under the demo secret with
  * `verifySettlementWebhook()`; both sides are asserted
  * outside the printing against hand-pinned expectations.
+ * The demo finally closes with a dedupe snapshot
+ * persistence segment: a fresh `SettlementEventDedupe`
+ * on a fixed clock records two fixed eventIds (each new
+ * on first sight, a duplicate on immediate redelivery),
+ * is exported with `exportSnapshot()` — only the
+ * snapshot's version and entry count are printed, never
+ * the full entries — and, after a JSON text round-trip,
+ * is read back with `SettlementEventDedupe.restore()`:
+ * the restored store starts its observability counters
+ * at zero yet still reports both recorded ids as
+ * duplicates (the restart did not reopen the dedupe
+ * window) while a never-seen id counts as new; a
+ * detached copy of the snapshot with its version
+ * rewritten to 2 is rejected with the exact
+ * invalid-snapshot error — a corrupt snapshot fails
+ * loudly at startup instead of silently disabling
+ * deduplication; all sides are asserted outside the
+ * printing against hand-pinned expectations.
  *
  * Usage: `npm run demo` (builds with tsc, then runs node on the compiled
  * output). Zero runtime dependencies: this file only imports the library
@@ -280,6 +298,8 @@ import {
   type QuorumConfig,
   type QuorumSnapshot,
   type Settlement,
+  type SettlementEventDedupeSnapshot,
+  type SettlementEventDedupeStats,
   type SettlementReport,
   type SettlementReportResult,
   type SettlementReportsSummary,
@@ -790,6 +810,60 @@ export const DEMO_SINGLE_DELIVERY_URL =
 export const DEMO_SINGLE_DELIVERY_SCRIPTED_STATUSES: readonly number[] = [
   500, 200,
 ];
+
+/**
+ * Dedupe snapshot-persistence fixtures for the final
+ * closing segment: a fresh `SettlementEventDedupe` on a
+ * fixed clock (starting at {@link DEMO_DEDUPE_START_MS},
+ * the webhook's own `at`, under the same 1-hour TTL the
+ * receiver-dedupe segment above uses) records two fixed
+ * eventIds, is snapshotted, and is restored after a JSON
+ * text round-trip — the receiver-restart path.
+ * Hand-pinned expectations — written from the documented
+ * `exportSnapshot()` / `restore()` semantics in
+ * src/webhooks.ts (the snapshot is `{v: 1, entries}` with
+ * only the entries still live at export time, in record
+ * order, carrying their original first-seen timestamps;
+ * a restored store starts its observability counters at
+ * zero; an unsupported version is rejected instead of
+ * guessed), never derived by calling the snapshot pair
+ * itself, and cross-checked against
+ * test/settlementEventDedupeSnapshot.test.ts, whose cases
+ * pin the same shapes (exported entries verbatim, ids
+ * still duplicate after restore, counters zeroed, the
+ * `unsupported snapshot version 2` rejection):
+ * - each fixed id's first `checkAndRecord` is `false`
+ *   (new event) and its immediate second is `true`
+ *   (duplicate)
+ * - `exportSnapshot()` is exactly
+ *   `{v: 1, entries: [[id1, START], [id2, START]]}`
+ * - the restored store's `stats()` read immediately
+ *   after restore is exactly
+ *   `{size: 2, hits: 0, misses: 0, evictions: 0}`
+ * - on the restored store both fixed ids read `true`
+ *   (duplicate) and the unseen id reads `false` (new)
+ * - a detached copy of the snapshot with `v` rewritten
+ *   to 2 throws exactly
+ *   {@link DEMO_DEDUPE_SNAPSHOT_TAMPERED_ERROR}, and the
+ *   original snapshot object still reads `v: 1`
+ * The clock never advances inside the segment, so every
+ * recorded id stays inside its TTL for the whole segment
+ * and no wall clock, randomness, or network enters it.
+ */
+export const DEMO_DEDUPE_SNAPSHOT_EVENT_IDS = [
+  "evt_demo_dedupe_001",
+  "evt_demo_dedupe_002",
+] as const;
+export const DEMO_DEDUPE_SNAPSHOT_UNSEEN_EVENT_ID = "evt_demo_dedupe_003";
+export const DEMO_DEDUPE_SNAPSHOT_START_MS = DEMO_DEDUPE_START_MS;
+export const DEMO_DEDUPE_SNAPSHOT_ENTRIES: ReadonlyArray<
+  readonly [string, number]
+> = [
+  [DEMO_DEDUPE_SNAPSHOT_EVENT_IDS[0], DEMO_DEDUPE_SNAPSHOT_START_MS],
+  [DEMO_DEDUPE_SNAPSHOT_EVENT_IDS[1], DEMO_DEDUPE_SNAPSHOT_START_MS],
+];
+export const DEMO_DEDUPE_SNAPSHOT_TAMPERED_ERROR =
+  "SettlementEventDedupe: invalid snapshot: unsupported snapshot version 2 (expected 1)";
 
 const steps: Array<{
   event: EscrowEvent;
@@ -1347,6 +1421,68 @@ export interface DemoResult {
    * over the wire bytes.
    */
   singleDeliverySignatureVerified: boolean;
+  /**
+   * The final closing segment's source dedupe, after both
+   * fixed ids were recorded twice (new, then duplicate):
+   * 2 live entries on the fixed clock.
+   */
+  dedupeSnapshotSource: SettlementEventDedupe;
+  /**
+   * `checkAndRecord` verdicts of the source dedupe's
+   * first sighting of each fixed id, in fixture order:
+   * `[false, false]` — both new events.
+   */
+  dedupeSnapshotFirst: boolean[];
+  /**
+   * `checkAndRecord` verdicts of the source dedupe's
+   * immediate redelivery of each fixed id, in fixture
+   * order: `[true, true]` — both duplicates.
+   */
+  dedupeSnapshotDuplicate: boolean[];
+  /**
+   * Snapshot exported from the source dedupe by
+   * `exportSnapshot()`: exactly `{v: 1, entries}` with
+   * the two fixed ids at their original first-seen
+   * timestamp ({@link DEMO_DEDUPE_SNAPSHOT_ENTRIES}).
+   */
+  dedupeSnapshot: SettlementEventDedupeSnapshot;
+  /**
+   * The dedupe rebuilt by `SettlementEventDedupe.restore()`
+   * from the JSON round-trip of
+   * {@link DemoResult.dedupeSnapshot}, after the segment's
+   * three probe checks ran on it: both fixed ids read as
+   * duplicates and the unseen id was recorded — 3 live
+   * entries.
+   */
+  dedupeSnapshotRestored: SettlementEventDedupe;
+  /**
+   * `stats()` of the restored dedupe captured immediately
+   * after the restore, before any probe check ran on it:
+   * exactly `{size: 2, hits: 0, misses: 0, evictions: 0}`
+   * — the counters restart at zero even though the
+   * recorded ids survive.
+   */
+  dedupeSnapshotStatsAfterRestore: SettlementEventDedupeStats;
+  /**
+   * `checkAndRecord` verdicts of the restored dedupe for
+   * each fixed id, in fixture order: `[true, true]` —
+   * the restart did not reopen the dedupe window.
+   */
+  dedupeSnapshotRestoredSeen: boolean[];
+  /**
+   * `checkAndRecord` verdict of the restored dedupe for
+   * the never-seen id: `false` — a genuinely new event,
+   * recorded by the probe.
+   */
+  dedupeSnapshotRestoredUnseen: boolean;
+  /**
+   * Error message of `SettlementEventDedupe.restore()` on
+   * a detached copy of the snapshot whose `v` was
+   * rewritten to 2: exactly
+   * {@link DEMO_DEDUPE_SNAPSHOT_TAMPERED_ERROR}. The
+   * exported snapshot object itself still reads `v: 1`.
+   */
+  dedupeSnapshotTamperedError: string;
   lines: string[];
 }
 
@@ -3124,6 +3260,108 @@ export async function runDemo(): Promise<DemoResult> {
     `  wire check: ${singleDeliveryCalls.length} captured POSTs, bodies byte-identical across attempts and equal to the signed payload body; the X-Signature the endpoint received verifies over the captured body: verifySettlementWebhook: ${singleDeliverySignatureVerified ? "ok" : "FAILED"}`,
   );
 
+  // --- Dedupe snapshot persistence: exportSnapshot / restore (final closing) ---
+  // The receiver-dedupe segment above ran entirely in
+  // memory: a receiver restart would forget every id
+  // inside its TTL and reopen exactly the
+  // double-settlement window the store exists to close —
+  // at deploy time. Here a FRESH dedupe on the same
+  // fixed clock records two fixed ids (each new on first
+  // sight, a duplicate on immediate redelivery), exports
+  // them with exportSnapshot(), round-trips the snapshot
+  // through JSON text — the persistence channel a real
+  // receiver writes before shutdown — and restores it
+  // with SettlementEventDedupe.restore(): the restored
+  // store's counters start at zero (captured before any
+  // probe runs), yet both ids still read as duplicates,
+  // while a never-seen id reads as new. A detached copy
+  // of the snapshot with its version rewritten to 2 is
+  // then rejected with the exact invalid-snapshot error.
+  // Hand-pinned expectations (see the fixture comment
+  // above), asserted HERE, outside the printing: a
+  // snapshot that dropped or re-stamped an entry, a
+  // restore that reopened the window or carried the
+  // counters across, or a tampered version that slipped
+  // through would fail the demo itself, not just a test.
+  // Only the snapshot's version and entry count are
+  // printed — never the full entries. The clock never
+  // advances, so zero network, zero randomness, and no
+  // wall clock enter the segment.
+  const dedupeSnapshotSource = new SettlementEventDedupe({
+    ttlMs: DEMO_DEDUPE_TTL_MS,
+    now: () => DEMO_DEDUPE_SNAPSHOT_START_MS,
+  });
+  const dedupeSnapshotFirst = DEMO_DEDUPE_SNAPSHOT_EVENT_IDS.map((eventId) =>
+    dedupeSnapshotSource.checkAndRecord(eventId),
+  );
+  const dedupeSnapshotDuplicate = DEMO_DEDUPE_SNAPSHOT_EVENT_IDS.map(
+    (eventId) => dedupeSnapshotSource.checkAndRecord(eventId),
+  );
+  const dedupeSnapshot = dedupeSnapshotSource.exportSnapshot();
+  const dedupeSnapshotRestored = SettlementEventDedupe.restore(
+    JSON.parse(JSON.stringify(dedupeSnapshot)) as unknown,
+    {
+      ttlMs: DEMO_DEDUPE_TTL_MS,
+      now: () => DEMO_DEDUPE_SNAPSHOT_START_MS,
+    },
+  );
+  const dedupeSnapshotStatsAfterRestore = dedupeSnapshotRestored.stats();
+  const dedupeSnapshotRestoredSeen = DEMO_DEDUPE_SNAPSHOT_EVENT_IDS.map(
+    (eventId) => dedupeSnapshotRestored.checkAndRecord(eventId),
+  );
+  const dedupeSnapshotRestoredUnseen = dedupeSnapshotRestored.checkAndRecord(
+    DEMO_DEDUPE_SNAPSHOT_UNSEEN_EVENT_ID,
+  );
+  let dedupeSnapshotTamperedError = "";
+  try {
+    SettlementEventDedupe.restore(
+      { ...dedupeSnapshot, v: 2 },
+      {
+        ttlMs: DEMO_DEDUPE_TTL_MS,
+        now: () => DEMO_DEDUPE_SNAPSHOT_START_MS,
+      },
+    );
+  } catch (err) {
+    dedupeSnapshotTamperedError =
+      err instanceof Error ? err.message : String(err);
+  }
+  if (
+    dedupeSnapshotFirst.length !== 2 ||
+    dedupeSnapshotFirst.some((seen) => seen !== false) ||
+    dedupeSnapshotDuplicate.length !== 2 ||
+    dedupeSnapshotDuplicate.some((seen) => seen !== true) ||
+    dedupeSnapshot.v !== 1 ||
+    dedupeSnapshot.entries.length !==
+      DEMO_DEDUPE_SNAPSHOT_ENTRIES.length ||
+    dedupeSnapshot.entries.some(
+      (entry, i) =>
+        entry[0] !== DEMO_DEDUPE_SNAPSHOT_ENTRIES[i][0] ||
+        entry[1] !== DEMO_DEDUPE_SNAPSHOT_ENTRIES[i][1],
+    ) ||
+    dedupeSnapshotStatsAfterRestore.size !== 2 ||
+    dedupeSnapshotStatsAfterRestore.hits !== 0 ||
+    dedupeSnapshotStatsAfterRestore.misses !== 0 ||
+    dedupeSnapshotStatsAfterRestore.evictions !== 0 ||
+    dedupeSnapshotRestoredSeen.length !== 2 ||
+    dedupeSnapshotRestoredSeen.some((seen) => seen !== true) ||
+    dedupeSnapshotRestoredUnseen !== false ||
+    dedupeSnapshotRestored.size !== 3 ||
+    dedupeSnapshotTamperedError !== DEMO_DEDUPE_SNAPSHOT_TAMPERED_ERROR
+  ) {
+    throw new Error(
+      "demo fixture broken: SettlementEventDedupe snapshot persistence does not match the pinned shape (two ids new then duplicate, snapshot exactly the pinned v1 entries, restored counters at zero, both ids still duplicates and the unseen id new after restore, the v:2 copy rejected with the pinned error)",
+    );
+  }
+  lines.push(
+    "",
+    "Dedupe snapshot persistence (SettlementEventDedupe exportSnapshot / restore across a restart):",
+    `  source dedupe (fixed clock ${DEMO_WEBHOOK_AT}, TTL ${DEMO_DEDUPE_TTL_MS} ms): eventId ${DEMO_DEDUPE_SNAPSHOT_EVENT_IDS[0]} — checkAndRecord: ${dedupeSnapshotFirst[0]} (new event), again: ${dedupeSnapshotDuplicate[0]} (duplicate); eventId ${DEMO_DEDUPE_SNAPSHOT_EVENT_IDS[1]} — checkAndRecord: ${dedupeSnapshotFirst[1]} (new event), again: ${dedupeSnapshotDuplicate[1]} (duplicate)`,
+    `  exportSnapshot(): v ${dedupeSnapshot.v}, ${dedupeSnapshot.entries.length} entries — only the version and entry count are printed, never the full entries (persist the JSON before shutdown)`,
+    `  after JSON round-trip + SettlementEventDedupe.restore(): stats size ${dedupeSnapshotStatsAfterRestore.size}, hits ${dedupeSnapshotStatsAfterRestore.hits}, misses ${dedupeSnapshotStatsAfterRestore.misses}, evictions ${dedupeSnapshotStatsAfterRestore.evictions} — counters restart at zero, the recorded ids do not`,
+    `  restored dedupe: eventId ${DEMO_DEDUPE_SNAPSHOT_EVENT_IDS[0]} — checkAndRecord: ${dedupeSnapshotRestoredSeen[0]} (duplicate — the restart did not reopen the dedupe window); eventId ${DEMO_DEDUPE_SNAPSHOT_EVENT_IDS[1]} — checkAndRecord: ${dedupeSnapshotRestoredSeen[1]} (duplicate); eventId ${DEMO_DEDUPE_SNAPSHOT_UNSEEN_EVENT_ID} — checkAndRecord: ${dedupeSnapshotRestoredUnseen} (new event, recorded)`,
+    `  tampered snapshot rejected: a detached copy with v changed to 2 throws "${dedupeSnapshotTamperedError}" — a corrupt snapshot fails loudly at startup instead of silently disabling deduplication`,
+  );
+
   return {
     escrow,
     report,
@@ -3204,6 +3442,15 @@ export async function runDemo(): Promise<DemoResult> {
     singleDeliveryResult,
     singleDeliveryCalls,
     singleDeliverySignatureVerified,
+    dedupeSnapshotSource,
+    dedupeSnapshotFirst,
+    dedupeSnapshotDuplicate,
+    dedupeSnapshot,
+    dedupeSnapshotRestored,
+    dedupeSnapshotStatsAfterRestore,
+    dedupeSnapshotRestoredSeen,
+    dedupeSnapshotRestoredUnseen,
+    dedupeSnapshotTamperedError,
     lines,
   };
 }

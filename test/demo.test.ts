@@ -11,6 +11,11 @@ import {
   DEMO_APPROVAL_LOG_SECOND_AT,
   DEMO_APPROVAL_LOG_WINDOW_MS,
   DEMO_ARBITRATION_AT,
+  DEMO_DEDUPE_SNAPSHOT_ENTRIES,
+  DEMO_DEDUPE_SNAPSHOT_EVENT_IDS,
+  DEMO_DEDUPE_SNAPSHOT_START_MS,
+  DEMO_DEDUPE_SNAPSHOT_TAMPERED_ERROR,
+  DEMO_DEDUPE_SNAPSHOT_UNSEEN_EVENT_ID,
   DEMO_DEDUPE_TTL_MS,
   DEMO_DISPUTE_APPROVAL_LOG_ENTRIES,
   DEMO_BATCH_WEBHOOK_AT,
@@ -80,6 +85,7 @@ import {
 } from "../src/demo.js";
 import {
   Escrow,
+  SettlementEventDedupe,
   allowedEvents,
   assertNonNegativeMoney,
   createQuorum,
@@ -2030,11 +2036,10 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
       "  approvalLog() after expiry: 2 entries retained (arb-1, arb-2) — expiry never deletes the audit trail; only revoke() removes a signer's entries",
     ),
   );
-  // Single-target delivery tail: the closing segment delivers
+  // Single-target delivery tail: that segment delivers
   // the main webhook alone through a scripted fake fetch —
   // 500 then 200, success after exactly one retry, the
-  // captured signature verified over the wire body; the demo
-  // ends on the wire-check line.
+  // captured signature verified over the wire body.
   assert.match(
     out,
     /Single-target webhook delivery \(deliverSettlementWebhook via scripted fake fetch, zero network\):/,
@@ -2050,10 +2055,35 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
     ),
   );
   assert.ok(
+    out.includes(
+      "  wire check: 2 captured POSTs, bodies byte-identical across attempts and equal to the signed payload body; the X-Signature the endpoint received verifies over the captured body: verifySettlementWebhook: ok",
+    ),
+  );
+  // Dedupe snapshot tail: the closing segment persists a
+  // fresh dedupe across a simulated restart — two ids new
+  // then duplicate, snapshot exported (version + count
+  // only), restored counters at zero with both ids still
+  // duplicates, and the v:2 copy rejected; the demo ends
+  // on the tampered-snapshot line.
+  assert.match(
+    out,
+    /Dedupe snapshot persistence \(SettlementEventDedupe exportSnapshot \/ restore across a restart\):/,
+  );
+  assert.ok(
+    out.includes(
+      `  exportSnapshot(): v 1, ${DEMO_DEDUPE_SNAPSHOT_ENTRIES.length} entries — only the version and entry count are printed, never the full entries (persist the JSON before shutdown)`,
+    ),
+  );
+  assert.ok(
+    out.includes(
+      "  after JSON round-trip + SettlementEventDedupe.restore(): stats size 2, hits 0, misses 0, evictions 0 — counters restart at zero, the recorded ids do not",
+    ),
+  );
+  assert.ok(
     out
       .trimEnd()
       .endsWith(
-        "  wire check: 2 captured POSTs, bodies byte-identical across attempts and equal to the signed payload body; the X-Signature the endpoint received verifies over the captured body: verifySettlementWebhook: ok",
+        `  tampered snapshot rejected: a detached copy with v changed to 2 throws "${DEMO_DEDUPE_SNAPSHOT_TAMPERED_ERROR}" — a corrupt snapshot fails loudly at startup instead of silently disabling deduplication`,
       ),
   );
 });
@@ -3201,9 +3231,10 @@ test("demo shows single-target delivery: deliverSettlementWebhook retries a scri
   // Global fetch restored by both the probe and the demo:
   // no later code can observe either fake.
   assert.equal(globalThis.fetch, originalFetch);
-  // The segment closes the demo: it follows the approval-log
-  // segment, prints its lines verbatim, and its wire-check
-  // line is the demo's last line.
+  // The segment follows the approval-log segment and
+  // precedes the closing dedupe-snapshot segment; it
+  // prints its lines verbatim, and its wire-check line is
+  // the segment's last line.
   const deliveryAt = text.indexOf(
     "Single-target webhook delivery (deliverSettlementWebhook via scripted fake fetch, zero network):",
   );
@@ -3218,8 +3249,16 @@ test("demo shows single-target delivery: deliverSettlementWebhook retries a scri
   ]) {
     assert.ok(text.includes(line), `missing single-delivery line: ${line}`);
   }
+  const deliverySegment = lines.slice(
+    lines.indexOf(
+      "Single-target webhook delivery (deliverSettlementWebhook via scripted fake fetch, zero network):",
+    ),
+    lines.indexOf(
+      "Dedupe snapshot persistence (SettlementEventDedupe exportSnapshot / restore across a restart):",
+    ) - 1,
+  );
   assert.equal(
-    lines[lines.length - 1],
+    deliverySegment[deliverySegment.length - 1],
     "  wire check: 2 captured POSTs, bodies byte-identical across attempts and equal to the signed payload body; the X-Signature the endpoint received verifies over the captured body: verifySettlementWebhook: ok",
   );
 });
@@ -3230,6 +3269,9 @@ test("demo single-target delivery segment is deterministic: two runs print byte-
       ls.indexOf(
         "Single-target webhook delivery (deliverSettlementWebhook via scripted fake fetch, zero network):",
       ),
+      ls.indexOf(
+        "Dedupe snapshot persistence (SettlementEventDedupe exportSnapshot / restore across a restart):",
+      ) - 1,
     );
   const a = await runDemo();
   const b = await runDemo();
@@ -3246,4 +3288,150 @@ test("demo single-target delivery segment is deterministic: two runs print byte-
     a.singleDeliverySignatureVerified,
     b.singleDeliverySignatureVerified,
   );
+});
+
+test("demo shows dedupe snapshot persistence: recorded ids survive a JSON round-trip restore, counters restart at zero, and a v:2 copy is rejected", async () => {
+  const {
+    dedupeSnapshotSource,
+    dedupeSnapshotFirst,
+    dedupeSnapshotDuplicate,
+    dedupeSnapshot,
+    dedupeSnapshotRestored,
+    dedupeSnapshotStatsAfterRestore,
+    dedupeSnapshotRestoredSeen,
+    dedupeSnapshotRestoredUnseen,
+    dedupeSnapshotTamperedError,
+    lines,
+  } = await runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned expectations — written out here from the
+  // documented exportSnapshot() / restore() semantics in
+  // src/webhooks.ts, never derived by calling the snapshot
+  // pair to produce them. test/settlementEventDedupeSnapshot
+  // .test.ts pins the same shapes independently (exported
+  // entries verbatim, ids still duplicate after restore,
+  // counters zeroed, the v:2 rejection message).
+  assert.equal(DEMO_DEDUPE_SNAPSHOT_START_MS, Date.parse(DEMO_WEBHOOK_AT));
+  assert.deepEqual(dedupeSnapshotFirst, [false, false]);
+  assert.deepEqual(dedupeSnapshotDuplicate, [true, true]);
+  assert.deepEqual(dedupeSnapshot, {
+    v: 1,
+    entries: DEMO_DEDUPE_SNAPSHOT_ENTRIES.map(([id, at]) => [id, at]),
+  });
+  assert.equal(dedupeSnapshotSource.size, 2);
+  assert.deepEqual(dedupeSnapshotStatsAfterRestore, {
+    size: 2,
+    hits: 0,
+    misses: 0,
+    evictions: 0,
+  });
+  assert.deepEqual(dedupeSnapshotRestoredSeen, [true, true]);
+  assert.equal(dedupeSnapshotRestoredUnseen, false);
+  assert.equal(dedupeSnapshotRestored.size, 3);
+  assert.equal(
+    dedupeSnapshotTamperedError,
+    DEMO_DEDUPE_SNAPSHOT_TAMPERED_ERROR,
+  );
+  assert.equal(
+    DEMO_DEDUPE_SNAPSHOT_TAMPERED_ERROR,
+    "SettlementEventDedupe: invalid snapshot: unsupported snapshot version 2 (expected 1)",
+  );
+  // The tamper ran on a detached copy: the exported
+  // snapshot object itself is untouched.
+  assert.equal(dedupeSnapshot.v, 1);
+  // Independent cross-check: a fresh dedupe through the
+  // library entry points reproduces the same shape — the
+  // demo segment is not self-certifying.
+  const probe = new SettlementEventDedupe({
+    ttlMs: DEMO_DEDUPE_TTL_MS,
+    now: () => DEMO_DEDUPE_SNAPSHOT_START_MS,
+  });
+  for (const eventId of DEMO_DEDUPE_SNAPSHOT_EVENT_IDS) {
+    assert.equal(probe.checkAndRecord(eventId), false);
+    assert.equal(probe.checkAndRecord(eventId), true);
+  }
+  const probeSnapshot = probe.exportSnapshot();
+  assert.deepEqual(probeSnapshot, dedupeSnapshot);
+  const probeRestored = SettlementEventDedupe.restore(
+    JSON.parse(JSON.stringify(probeSnapshot)) as unknown,
+    { ttlMs: DEMO_DEDUPE_TTL_MS, now: () => DEMO_DEDUPE_SNAPSHOT_START_MS },
+  );
+  assert.deepEqual(probeRestored.stats(), dedupeSnapshotStatsAfterRestore);
+  for (const eventId of DEMO_DEDUPE_SNAPSHOT_EVENT_IDS) {
+    assert.equal(probeRestored.checkAndRecord(eventId), true);
+  }
+  assert.equal(
+    probeRestored.checkAndRecord(DEMO_DEDUPE_SNAPSHOT_UNSEEN_EVENT_ID),
+    false,
+  );
+  assert.throws(
+    () =>
+      SettlementEventDedupe.restore(
+        { ...probeSnapshot, v: 2 },
+        { ttlMs: DEMO_DEDUPE_TTL_MS, now: () => DEMO_DEDUPE_SNAPSHOT_START_MS },
+      ),
+    new RegExp(
+      DEMO_DEDUPE_SNAPSHOT_TAMPERED_ERROR.replace(
+        /[.*+?^${}()|[\]\\]/g,
+        "\\$&",
+      ),
+    ),
+  );
+  // The segment closes the demo: it follows the
+  // single-target delivery segment, prints its lines
+  // verbatim (only the snapshot version and entry count —
+  // never a full entry line), and its tampered-snapshot
+  // line is the demo's last line.
+  const snapshotAt = text.indexOf(
+    "Dedupe snapshot persistence (SettlementEventDedupe exportSnapshot / restore across a restart):",
+  );
+  assert.ok(
+    snapshotAt >
+      text.indexOf(
+        "Single-target webhook delivery (deliverSettlementWebhook via scripted fake fetch, zero network):",
+      ),
+    "dedupe snapshot segment must follow the single-target delivery segment",
+  );
+  for (const line of [
+    `  source dedupe (fixed clock ${DEMO_WEBHOOK_AT}, TTL ${DEMO_DEDUPE_TTL_MS} ms): eventId ${DEMO_DEDUPE_SNAPSHOT_EVENT_IDS[0]} — checkAndRecord: false (new event), again: true (duplicate); eventId ${DEMO_DEDUPE_SNAPSHOT_EVENT_IDS[1]} — checkAndRecord: false (new event), again: true (duplicate)`,
+    `  exportSnapshot(): v 1, ${DEMO_DEDUPE_SNAPSHOT_ENTRIES.length} entries — only the version and entry count are printed, never the full entries (persist the JSON before shutdown)`,
+    "  after JSON round-trip + SettlementEventDedupe.restore(): stats size 2, hits 0, misses 0, evictions 0 — counters restart at zero, the recorded ids do not",
+    `  restored dedupe: eventId ${DEMO_DEDUPE_SNAPSHOT_EVENT_IDS[0]} — checkAndRecord: true (duplicate — the restart did not reopen the dedupe window); eventId ${DEMO_DEDUPE_SNAPSHOT_EVENT_IDS[1]} — checkAndRecord: true (duplicate); eventId ${DEMO_DEDUPE_SNAPSHOT_UNSEEN_EVENT_ID} — checkAndRecord: false (new event, recorded)`,
+    `  tampered snapshot rejected: a detached copy with v changed to 2 throws "${DEMO_DEDUPE_SNAPSHOT_TAMPERED_ERROR}" — a corrupt snapshot fails loudly at startup instead of silently disabling deduplication`,
+  ]) {
+    assert.ok(text.includes(line), `missing dedupe snapshot line: ${line}`);
+  }
+  assert.equal(
+    lines[lines.length - 1],
+    `  tampered snapshot rejected: a detached copy with v changed to 2 throws "${DEMO_DEDUPE_SNAPSHOT_TAMPERED_ERROR}" — a corrupt snapshot fails loudly at startup instead of silently disabling deduplication`,
+  );
+});
+
+test("demo dedupe snapshot persistence segment is deterministic: two runs print byte-identical snapshot lines", async () => {
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf(
+        "Dedupe snapshot persistence (SettlementEventDedupe exportSnapshot / restore across a restart):",
+      ),
+    );
+  const a = await runDemo();
+  const b = await runDemo();
+  const segA = segment(a.lines);
+  // Header + the source line + the export line + the
+  // restore-stats line + the restored-checks line + the
+  // tampered line; every value is derived from the fixed
+  // fixtures alone, so no normalization is needed.
+  assert.equal(segA.length, 6);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(a.dedupeSnapshot, b.dedupeSnapshot);
+  assert.deepEqual(a.dedupeSnapshotFirst, b.dedupeSnapshotFirst);
+  assert.deepEqual(a.dedupeSnapshotDuplicate, b.dedupeSnapshotDuplicate);
+  assert.deepEqual(
+    a.dedupeSnapshotStatsAfterRestore,
+    b.dedupeSnapshotStatsAfterRestore,
+  );
+  assert.deepEqual(a.dedupeSnapshotRestoredSeen, b.dedupeSnapshotRestoredSeen);
+  assert.equal(a.dedupeSnapshotRestoredUnseen, b.dedupeSnapshotRestoredUnseen);
+  assert.equal(a.dedupeSnapshotTamperedError, b.dedupeSnapshotTamperedError);
 });
