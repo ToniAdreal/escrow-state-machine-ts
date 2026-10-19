@@ -55,6 +55,8 @@ import {
   DEMO_QUORUM_THRESHOLD,
   DEMO_REBUILT_DEADLINE,
   DEMO_RETRY_AFTER_NOW_MS,
+  DEMO_SINGLE_DELIVERY_SCRIPTED_STATUSES,
+  DEMO_SINGLE_DELIVERY_URL,
   DEMO_SNAPSHOT_SERIALIZED_BYTES,
   DEMO_STALE_DAY_MS,
   DEMO_STALE_DEADLINE,
@@ -81,6 +83,7 @@ import {
   allowedEvents,
   assertNonNegativeMoney,
   createQuorum,
+  deliverSettlementWebhook,
   depositAmountFromHistory,
   historyFromNdjson,
   historyToNdjson,
@@ -2002,10 +2005,10 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
       `  escrow ${DEMO_CLEAR_DEADLINE_NO_DEADLINE_ESCROW_ID} (no deadline set): clearDeadline() is a no-op — getDeadline() -> undefined, isOverdue at ${DEMO_CLEAR_DEADLINE_CHECK_AT} -> false, state still FUNDED (1 history entry)`,
     ),
   );
-  // Approval-log tail: the closing segment prints the
+  // Approval-log tail: that segment prints the
   // dispute quorum's full audit trail in record order and
   // the expiry contrast (count drops, trail retained);
-  // the demo ends on the retained-entries line.
+  // the single-target delivery segment then closes the demo.
   assert.match(out, /Quorum approval log \(approvalLog audit trail\):/);
   assert.ok(
     out.includes(
@@ -2023,10 +2026,34 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
     ),
   );
   assert.ok(
+    out.includes(
+      "  approvalLog() after expiry: 2 entries retained (arb-1, arb-2) — expiry never deletes the audit trail; only revoke() removes a signer's entries",
+    ),
+  );
+  // Single-target delivery tail: the closing segment delivers
+  // the main webhook alone through a scripted fake fetch —
+  // 500 then 200, success after exactly one retry, the
+  // captured signature verified over the wire body; the demo
+  // ends on the wire-check line.
+  assert.match(
+    out,
+    /Single-target webhook delivery \(deliverSettlementWebhook via scripted fake fetch, zero network\):/,
+  );
+  assert.ok(
+    out.includes(
+      `  endpoint: ${DEMO_SINGLE_DELIVERY_URL} — the main escrow's signed webhook (eventId ${DEMO_WEBHOOK_EVENT_ID}) delivered alone, the single-endpoint entry point under the fan-out wrapper`,
+    ),
+  );
+  assert.ok(
+    out.includes(
+      "  attempt 1: scripted 500 (retryable 5xx) — attempt 2: scripted 200; result: status 200, attempts 2 (succeeded after exactly one retry, backoffMs 0 — no real waiting)",
+    ),
+  );
+  assert.ok(
     out
       .trimEnd()
       .endsWith(
-        "  approvalLog() after expiry: 2 entries retained (arb-1, arb-2) — expiry never deletes the audit trail; only revoke() removes a signer's entries",
+        "  wire check: 2 captured POSTs, bodies byte-identical across attempts and equal to the signed payload body; the X-Signature the endpoint received verifies over the captured body: verifySettlementWebhook: ok",
       ),
   );
 });
@@ -3032,9 +3059,10 @@ test("demo shows the quorum approval log: full trail in record order, and expire
   assert.equal(probeExpiry.approvalCount(), 1);
   assert.equal(probeExpiry.hasQuorum(), false);
   assert.deepEqual(probeExpiry.approvalLog(), DEMO_APPROVAL_LOG_ENTRIES);
-  // The segment closes the demo: it follows the
-  // deadline-clearing segment, prints its lines verbatim,
-  // and its retained-entries line is the demo's last line.
+  // The segment follows the deadline-clearing segment and
+  // precedes the closing single-target delivery segment;
+  // it prints its lines verbatim, and its retained-entries
+  // line is the segment's last line.
   const logAt = text.indexOf("Quorum approval log (approvalLog audit trail):");
   assert.ok(
     logAt >
@@ -3052,15 +3080,26 @@ test("demo shows the quorum approval log: full trail in record order, and expire
   ]) {
     assert.ok(text.includes(line), `missing approval-log line: ${line}`);
   }
+  const logSegment = lines.slice(
+    lines.indexOf("Quorum approval log (approvalLog audit trail):"),
+    lines.indexOf(
+      "Single-target webhook delivery (deliverSettlementWebhook via scripted fake fetch, zero network):",
+    ) - 1,
+  );
   assert.equal(
-    lines[lines.length - 1],
+    logSegment[logSegment.length - 1],
     "  approvalLog() after expiry: 2 entries retained (arb-1, arb-2) — expiry never deletes the audit trail; only revoke() removes a signer's entries",
   );
 });
 
 test("demo quorum approval-log segment is deterministic: two runs print byte-identical approval-log lines", async () => {
   const segment = (ls: string[]) =>
-    ls.slice(ls.indexOf("Quorum approval log (approvalLog audit trail):"));
+    ls.slice(
+      ls.indexOf("Quorum approval log (approvalLog audit trail):"),
+      ls.indexOf(
+        "Single-target webhook delivery (deliverSettlementWebhook via scripted fake fetch, zero network):",
+      ) - 1,
+    );
   const a = await runDemo();
   const b = await runDemo();
   const segA = segment(a.lines);
@@ -3082,5 +3121,129 @@ test("demo quorum approval-log segment is deterministic: two runs print byte-ide
   assert.equal(
     a.approvalLogExpiryHasQuorumAfter,
     b.approvalLogExpiryHasQuorumAfter,
+  );
+});
+
+test("demo shows single-target delivery: deliverSettlementWebhook retries a scripted 500 and succeeds, the captured signature verifying over the wire body", async () => {
+  const {
+    webhook,
+    singleDeliveryResult,
+    singleDeliveryCalls,
+    singleDeliverySignatureVerified,
+    lines,
+  } = await runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned expectations — written out here from the
+  // documented deliverSettlementWebhook() semantics in
+  // src/webhooks.ts, never derived by calling the delivery
+  // to produce them. test/webhookDelivery.test.ts pins the
+  // same semantics independently (a 500-then-200 endpoint
+  // succeeds on the next attempt; every attempt carries the
+  // same signature over the same body; the receiver verifies
+  // over the raw bytes).
+  assert.deepEqual(DEMO_SINGLE_DELIVERY_SCRIPTED_STATUSES, [500, 200]);
+  assert.deepEqual(singleDeliveryResult, { status: 200, attempts: 2 });
+  assert.equal(singleDeliveryCalls.length, 2);
+  for (const call of singleDeliveryCalls) {
+    assert.equal(call.url, DEMO_SINGLE_DELIVERY_URL);
+    assert.equal(call.method, "POST");
+    assert.equal(call.body, JSON.stringify(webhook.payload));
+    assert.equal(call.signature, webhook.signature);
+  }
+  assert.equal(singleDeliverySignatureVerified, true);
+  assert.equal(
+    verifySettlementWebhook(
+      singleDeliveryCalls[1].body,
+      singleDeliveryCalls[1].signature,
+      DEMO_WEBHOOK_SECRET,
+    ),
+    true,
+  );
+  // Independent cross-check: a fresh scripted fetch through
+  // the library entry point reproduces the same shape — the
+  // demo segment is not self-certifying. The probe restores
+  // the global fetch in the finally, exactly like the demo.
+  const probeCalls: Array<{ body: string; signature: string }> = [];
+  const probeFetch: typeof fetch = async (_input, init) => {
+    probeCalls.push({
+      body: String(init?.body ?? ""),
+      signature: String(
+        new Headers(init?.headers).get("x-signature") ?? "",
+      ),
+    });
+    const status = probeCalls.length === 1 ? 500 : 200;
+    return new Response(status === 200 ? "{}" : "boom", { status });
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = probeFetch;
+  let probeResult;
+  try {
+    probeResult = await deliverSettlementWebhook(
+      DEMO_SINGLE_DELIVERY_URL,
+      webhook,
+      { backoffMs: 0 },
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.deepEqual(probeResult, { status: 200, attempts: 2 });
+  assert.equal(probeCalls.length, 2);
+  assert.equal(probeCalls[0].body, probeCalls[1].body);
+  assert.equal(
+    verifySettlementWebhook(
+      probeCalls[1].body,
+      probeCalls[1].signature,
+      DEMO_WEBHOOK_SECRET,
+    ),
+    true,
+  );
+  // Global fetch restored by both the probe and the demo:
+  // no later code can observe either fake.
+  assert.equal(globalThis.fetch, originalFetch);
+  // The segment closes the demo: it follows the approval-log
+  // segment, prints its lines verbatim, and its wire-check
+  // line is the demo's last line.
+  const deliveryAt = text.indexOf(
+    "Single-target webhook delivery (deliverSettlementWebhook via scripted fake fetch, zero network):",
+  );
+  assert.ok(
+    deliveryAt > text.indexOf("Quorum approval log (approvalLog audit trail):"),
+    "single-target delivery segment must follow the approval-log segment",
+  );
+  for (const line of [
+    `  endpoint: ${DEMO_SINGLE_DELIVERY_URL} — the main escrow's signed webhook (eventId ${DEMO_WEBHOOK_EVENT_ID}) delivered alone, the single-endpoint entry point under the fan-out wrapper`,
+    "  attempt 1: scripted 500 (retryable 5xx) — attempt 2: scripted 200; result: status 200, attempts 2 (succeeded after exactly one retry, backoffMs 0 — no real waiting)",
+    "  wire check: 2 captured POSTs, bodies byte-identical across attempts and equal to the signed payload body; the X-Signature the endpoint received verifies over the captured body: verifySettlementWebhook: ok",
+  ]) {
+    assert.ok(text.includes(line), `missing single-delivery line: ${line}`);
+  }
+  assert.equal(
+    lines[lines.length - 1],
+    "  wire check: 2 captured POSTs, bodies byte-identical across attempts and equal to the signed payload body; the X-Signature the endpoint received verifies over the captured body: verifySettlementWebhook: ok",
+  );
+});
+
+test("demo single-target delivery segment is deterministic: two runs print byte-identical delivery lines", async () => {
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf(
+        "Single-target webhook delivery (deliverSettlementWebhook via scripted fake fetch, zero network):",
+      ),
+    );
+  const a = await runDemo();
+  const b = await runDemo();
+  const segA = segment(a.lines);
+  // Header + the endpoint line + the attempt line + the
+  // wire-check line; every value is derived from the fixed
+  // fixtures and the scripted statuses alone, so no
+  // normalization is needed.
+  assert.equal(segA.length, 4);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(a.singleDeliveryResult, b.singleDeliveryResult);
+  assert.deepEqual(a.singleDeliveryCalls, b.singleDeliveryCalls);
+  assert.equal(
+    a.singleDeliverySignatureVerified,
+    b.singleDeliverySignatureVerified,
   );
 });

@@ -193,7 +193,7 @@
  * funded escrow that never carried a deadline shows the
  * same call as a harmless no-op; both sides are asserted
  * outside the printing against hand-pinned expectations.
- * The demo finally closes with a quorum approval-log
+ * The demo then shows a quorum approval-log
  * segment: `approvalLog()` on the dispute quorum prints
  * the full approval audit trail — each arbitrator with
  * the fixed timestamp of their vote, including the vote
@@ -207,6 +207,21 @@
  * `approvalLog()` still retains the expired entry —
  * expiry never deletes the audit trail; only `revoke()`
  * removes a signer's entries. Both sides are asserted
+ * outside the printing against hand-pinned expectations.
+ * The demo finally closes with a single-target delivery
+ * segment: the main escrow's signed settlement webhook
+ * is delivered with `deliverSettlementWebhook()` alone —
+ * the single-endpoint entry point most integrators start
+ * from, which the fan-out segment above only ever runs
+ * wrapped — to one fixed endpoint through a scripted fake
+ * `fetch` (zero network) that answers 500 on the first
+ * attempt and 200 on the second, so the delivery succeeds
+ * after exactly one retry (a path no earlier demo delivery
+ * took: the fan-out fake answers 200 immediately); every
+ * captured request carries the same signed body bytes,
+ * and the `X-Signature` header the endpoint received
+ * verifies under the demo secret with
+ * `verifySettlementWebhook()`; both sides are asserted
  * outside the printing against hand-pinned expectations.
  *
  * Usage: `npm run demo` (builds with tsc, then runs node on the compiled
@@ -232,6 +247,7 @@ import {
   buildSettlementWebhooks,
   calculateDeposit,
   createQuorum,
+  deliverSettlementWebhook,
   deliverSettlementWebhookToMany,
   depositAmountFromHistory,
   dispatchArbitration,
@@ -271,6 +287,7 @@ import {
   type SettlementWebhookEndpoint,
   type StaleEscrowActionResult,
   type TransitionEdge,
+  type WebhookDeliveryResult,
 } from "./index.js";
 
 /** Fixed demo fixture: the portfolio golden fee vector (deposit 10,630). */
@@ -731,6 +748,47 @@ export const DEMO_APPROVAL_LOG_CHECK_AT = "2026-03-16T09:01:00.001Z";
 export const DEMO_APPROVAL_LOG_ENTRIES: readonly ApprovalLogEntry[] = [
   { signerId: "arb-1", at: "2026-03-16T09:00:00.000Z" },
   { signerId: "arb-2", at: "2026-03-16T09:00:30.000Z" },
+];
+
+/**
+ * Single-target delivery fixtures for the final closing
+ * segment: the main escrow's already-built signed webhook
+ * ({@link DEMO_WEBHOOK_EVENT_ID} / {@link DEMO_WEBHOOK_AT},
+ * signed under {@link DEMO_WEBHOOK_SECRET} in the webhook
+ * segment above) is delivered alone to ONE fixed endpoint.
+ * Hand-pinned expectations — written from the documented
+ * `deliverSettlementWebhook()` semantics in
+ * src/webhooks.ts (2xx succeeds as `{status, attempts}`;
+ * 5xx is retried with exponential backoff; the request
+ * body is the canonical JSON of the signed payload,
+ * byte-identical on every attempt, with the signature in
+ * the `X-Signature` header), never derived by calling the
+ * delivery itself, and cross-checked against
+ * test/webhookDelivery.test.ts, whose scripted-server
+ * cases pin the same retry shape (500s then a 200 succeed
+ * on the next attempt, same signature and body on every
+ * attempt):
+ * - the scripted fake answers 500 on attempt 1 and 200
+ *   on attempt 2 -> the result is exactly
+ *   `{status: 200, attempts: 2}`
+ * - exactly 2 requests are captured, both POSTs to
+ *   {@link DEMO_SINGLE_DELIVERY_URL}, bodies byte-identical
+ *   to each other and to the canonical body of the demo
+ *   webhook, and the captured `X-Signature` equals the
+ *   webhook's signature and verifies over the captured
+ *   body under {@link DEMO_WEBHOOK_SECRET}
+ * The endpoint is an example.com URL that is never really
+ * fetched: the library's delivery layer calls the global
+ * `fetch`, so a scripted fake is installed on `globalThis`
+ * for this segment only and the original is restored
+ * afterwards (the same seam the fan-out segment uses).
+ * `backoffMs: 0` keeps the single retry wait at zero, so
+ * no real waiting and no wall clock enter the segment.
+ */
+export const DEMO_SINGLE_DELIVERY_URL =
+  "https://hooks.example.com/settlement-single";
+export const DEMO_SINGLE_DELIVERY_SCRIPTED_STATUSES: readonly number[] = [
+  500, 200,
 ];
 
 const steps: Array<{
@@ -1259,6 +1317,36 @@ export interface DemoResult {
    * expiry never deletes the audit trail.
    */
   approvalLogExpiryLogAfter: ReadonlyArray<ApprovalLogEntry>;
+  /**
+   * Result of delivering the main escrow's signed webhook
+   * alone to {@link DEMO_SINGLE_DELIVERY_URL} with
+   * `deliverSettlementWebhook()`: exactly
+   * `{status: 200, attempts: 2}` — the scripted endpoint
+   * answered 500 first, so the delivery succeeded only
+   * after one retry.
+   */
+  singleDeliveryResult: WebhookDeliveryResult;
+  /**
+   * The requests the scripted fake fetch captured during
+   * the single-target delivery, in call order: exactly 2,
+   * both POSTs to {@link DEMO_SINGLE_DELIVERY_URL} with
+   * byte-identical bodies (the canonical body of the demo
+   * webhook) and the webhook's signature in `x-signature`.
+   */
+  singleDeliveryCalls: Array<{
+    url: string;
+    method: string;
+    body: string;
+    signature: string;
+  }>;
+  /**
+   * True when the `X-Signature` header captured on the
+   * final (successful) attempt verifies over that
+   * attempt's captured raw body under the demo secret —
+   * the receiver-side check, run the transport-safe way
+   * over the wire bytes.
+   */
+  singleDeliverySignatureVerified: boolean;
   lines: string[];
 }
 
@@ -2938,6 +3026,104 @@ export async function runDemo(): Promise<DemoResult> {
     `  approvalLog() after expiry: ${approvalLogExpiryLogAfter.length} entries retained (${approvalLogExpiryLogAfter.map((e) => e.signerId).join(", ")}) — expiry never deletes the audit trail; only revoke() removes a signer's entries`,
   );
 
+  // --- Single-target delivery: deliverSettlementWebhook (final closing) ---
+  // Every delivery shown so far went through the fan-out
+  // wrapper; the single-endpoint entry point underneath it
+  // — the one most integrators call first — never ran on
+  // its own, and no demo delivery ever took the retry path
+  // (the fan-out fake answers 200 immediately). Here the
+  // main escrow's signed webhook (built in the webhook
+  // segment above) is delivered alone to one fixed
+  // endpoint through a scripted fake fetch installed on
+  // `globalThis` for this segment only (the library calls
+  // the global `fetch`; the original is restored in the
+  // `finally`): attempt 1 answers 500 — a retryable 5xx —
+  // and attempt 2 answers 200, so the delivery resolves
+  // {status: 200, attempts: 2}. backoffMs 0 keeps the one
+  // retry wait at zero. Hand-pinned expectations (see the
+  // fixture comment above), asserted HERE, outside the
+  // printing: both captured requests are POSTs to the
+  // pinned URL carrying byte-identical bodies equal to
+  // the canonical body of the demo webhook, and the
+  // captured X-Signature equals the webhook's signature
+  // and verifies over the captured body under the demo
+  // secret — a delivery that dropped the retry, altered
+  // the body between attempts, or sent an unverifiable
+  // signature would fail the demo itself. Zero network,
+  // zero real waiting, no wall clock.
+  const singleDeliveryCalls: Array<{
+    url: string;
+    method: string;
+    body: string;
+    signature: string;
+  }> = [];
+  const singleDeliveryFetch: typeof fetch = async (input, init) => {
+    singleDeliveryCalls.push({
+      url: String(input),
+      method: String(init?.method ?? ""),
+      body: String(init?.body ?? ""),
+      signature: String(
+        new Headers(init?.headers).get("x-signature") ?? "",
+      ),
+    });
+    const status =
+      DEMO_SINGLE_DELIVERY_SCRIPTED_STATUSES[
+        Math.min(
+          singleDeliveryCalls.length - 1,
+          DEMO_SINGLE_DELIVERY_SCRIPTED_STATUSES.length - 1,
+        )
+      ];
+    return new Response(status === 200 ? "{}" : "boom", {
+      status,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  const originalFetchForSingle = globalThis.fetch;
+  let singleDeliveryResult: WebhookDeliveryResult;
+  globalThis.fetch = singleDeliveryFetch;
+  try {
+    singleDeliveryResult = await deliverSettlementWebhook(
+      DEMO_SINGLE_DELIVERY_URL,
+      webhook,
+      { backoffMs: 0 },
+    );
+  } finally {
+    globalThis.fetch = originalFetchForSingle;
+  }
+  const singleDeliveryFinalCall =
+    singleDeliveryCalls[singleDeliveryCalls.length - 1];
+  const singleDeliverySignatureVerified =
+    singleDeliveryFinalCall !== undefined &&
+    verifySettlementWebhook(
+      singleDeliveryFinalCall.body,
+      singleDeliveryFinalCall.signature,
+      DEMO_WEBHOOK_SECRET,
+    );
+  if (
+    singleDeliveryResult.status !== 200 ||
+    singleDeliveryResult.attempts !== 2 ||
+    singleDeliveryCalls.length !== 2 ||
+    singleDeliveryCalls.some(
+      (call) =>
+        call.url !== DEMO_SINGLE_DELIVERY_URL ||
+        call.method !== "POST" ||
+        call.body !== JSON.stringify(webhook.payload) ||
+        call.signature !== webhook.signature,
+    ) ||
+    !singleDeliverySignatureVerified
+  ) {
+    throw new Error(
+      "demo fixture broken: deliverSettlementWebhook single-target delivery does not match the pinned shape (scripted 500 then 200, result {status: 200, attempts: 2}, two POSTs with byte-identical signed bodies, captured X-Signature verifiable under the demo secret)",
+    );
+  }
+  lines.push(
+    "",
+    "Single-target webhook delivery (deliverSettlementWebhook via scripted fake fetch, zero network):",
+    `  endpoint: ${DEMO_SINGLE_DELIVERY_URL} — the main escrow's signed webhook (eventId ${webhook.payload.eventId}) delivered alone, the single-endpoint entry point under the fan-out wrapper`,
+    `  attempt 1: scripted 500 (retryable 5xx) — attempt 2: scripted 200; result: status ${singleDeliveryResult.status}, attempts ${singleDeliveryResult.attempts} (succeeded after exactly one retry, backoffMs 0 — no real waiting)`,
+    `  wire check: ${singleDeliveryCalls.length} captured POSTs, bodies byte-identical across attempts and equal to the signed payload body; the X-Signature the endpoint received verifies over the captured body: verifySettlementWebhook: ${singleDeliverySignatureVerified ? "ok" : "FAILED"}`,
+  );
+
   return {
     escrow,
     report,
@@ -3015,6 +3201,9 @@ export async function runDemo(): Promise<DemoResult> {
     approvalLogExpiryCountAfter,
     approvalLogExpiryHasQuorumAfter,
     approvalLogExpiryLogAfter,
+    singleDeliveryResult,
+    singleDeliveryCalls,
+    singleDeliverySignatureVerified,
     lines,
   };
 }

@@ -18,6 +18,25 @@ version changes.
 
 ### Added
 
+- A single-target delivery segment closing the CLI demo:
+  the main escrow's signed settlement webhook is delivered
+  alone with `deliverSettlementWebhook()` — the
+  single-endpoint entry point the fan-out segment only
+  ever runs wrapped — to one fixed endpoint through a
+  scripted fake `fetch` (zero network) that answers 500
+  on the first attempt and 200 on the second, so the
+  delivery succeeds after exactly one retry with
+  `backoffMs: 0` (no real waiting); every captured request
+  is asserted, outside the printing, to be a POST to the
+  pinned endpoint carrying the byte-identical signed body,
+  and the captured `X-Signature` verifies over the wire
+  body under the demo secret, all pinned against
+  hand-written expectations cross-checked against the
+  webhook-delivery tests. `DemoResult` exposes the
+  delivery result, the captured calls, and the
+  signature-verified verdict; the demo tests pin the
+  segment, the printed lines, and its closing position.
+  Demo and tests only; no library behavior change.
 - Benchmark coverage for the transition-table pure object
   construction path: `transitionTable()` with no arguments,
   checked on every iteration against hand-pinned
