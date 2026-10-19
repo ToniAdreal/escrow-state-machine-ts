@@ -18,6 +18,23 @@ version changes.
 
 ### Added
 
+- Benchmark coverage for the settlement-event dedupe
+  snapshot export path: `SettlementEventDedupe.exportSnapshot()`
+  over a dedupe holding 1,001 recorded ids (1,000 live ids
+  plus one entry aged exactly to its TTL boundary, so it is
+  excluded) under a stepped fixed injected clock, checked on
+  every iteration against hand-pinned expectations (the
+  `{ v: 1, entries }` envelope, exactly the 1,000 live entries
+  in record order with their pinned first-seen timestamps,
+  the expired entry absent), with a detached-copy mutation
+  pinned to leave a re-export unchanged and an empty dedupe
+  pinned to export exactly `{ v: 1, entries: [] }` once
+  outside the timed loop. This separates the export cost
+  from the snapshot-restore row, which measures only the
+  rebuild direction. The README Benchmarks table was
+  refreshed from one real run and gained the
+  `SettlementEventDedupe.exportSnapshot (1,000-entry snapshot)`
+  row (18,885 ops/sec in that run).
 - Benchmark coverage for the subscribe `onError` error
   routing path: `subscribe()` with one pinned throwing
   listener and a collecting `onError` on a fresh escrow,
