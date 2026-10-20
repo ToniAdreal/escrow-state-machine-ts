@@ -73,6 +73,10 @@ import {
   DEMO_REVOKE_LOG_AFTER_REVOKE,
   DEMO_REVOKE_LOG_FINAL,
   DEMO_REVOKE_NOT_APPROVED_ERROR,
+  DEMO_ABORT_BACKOFF_MS,
+  DEMO_ABORT_BACKOFF_URL,
+  DEMO_ABORT_ERROR,
+  DEMO_ABORT_PRE_URL,
   DEMO_REVOKE_REAPPROVE_AT,
   DEMO_REVOKE_SECOND_AT,
   DEMO_REVOKE_UNKNOWN_ERROR,
@@ -2287,22 +2291,25 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
       `  non-function onError rejected at subscribe time: "${DEMO_ONERROR_INVALID_ERROR}" — nothing was registered (listenerCount still 1)`,
     ),
   );
-  // Quorum revoke tail: the closing segment revokes one
+  // Quorum revoke tail: the segment revokes one
   // vote (count drops below threshold), re-approves it
   // (threshold restored, re-voter last), and rejects an
-  // unknown signer and a never-approved signer; the demo
-  // ends on the failed-revokes line.
+  // unknown signer and a never-approved signer.
   assert.match(out, /Quorum revoke \(Quorum\.revoke\(\) — a signer changes their vote\):/);
   assert.ok(
     out.includes(
       `  revoke ${DEMO_QUORUM_SIGNERS[0]}: approvalCount 1, hasQuorum: false — approvals now [${DEMO_QUORUM_SIGNERS[1]}], approvalLog keeps 1 entry (revoke removes the signer's entries; expiry never does)`,
     ),
   );
+  // AbortSignal tail: the closing segment aborts one
+  // delivery before it starts and another during its
+  // backoff sleep; the demo ends on the abort summary line.
+  assert.match(out, /Webhook delivery abort \(deliverSettlementWebhook with an AbortSignal, scripted fake fetch, zero network\):/);
   assert.ok(
     out
       .trimEnd()
       .endsWith(
-        `  revoke ${DEMO_QUORUM_SIGNERS[2]} (never approved) rejected: "${DEMO_REVOKE_NOT_APPROVED_ERROR}" — both failed revokes leave the quorum untouched (approvalCount still 2, hasQuorum: true)`,
+        "  an abort is a caller request to stop, never a retryable failure: neither shape retries, sleeps it off, or reports success",
       ),
   );
 });
@@ -4276,9 +4283,9 @@ test("demo shows quorum revoke: a revoked vote drops below threshold and a re-ap
     new Error(DEMO_REVOKE_NOT_APPROVED_ERROR),
   );
   assert.equal(probe.approvalCount(), 2);
-  // The segment closes the demo: it follows the onError
-  // segment, prints its lines verbatim, and its
-  // failed-revokes line is the demo's last line.
+  // The segment follows the onError segment and prints
+  // its lines verbatim; the AbortSignal segment closes
+  // the demo after it.
   const revokeAt = text.indexOf(
     "Quorum revoke (Quorum.revoke() — a signer changes their vote):",
   );
@@ -4298,10 +4305,10 @@ test("demo shows quorum revoke: a revoked vote drops below threshold and a re-ap
   ]) {
     assert.ok(text.includes(line), `missing quorum revoke line: ${line}`);
   }
-  assert.equal(
-    lines[lines.length - 1],
-    `  revoke ${DEMO_QUORUM_SIGNERS[2]} (never approved) rejected: "${DEMO_REVOKE_NOT_APPROVED_ERROR}" — both failed revokes leave the quorum untouched (approvalCount still 2, hasQuorum: true)`,
+  const abortAt = text.indexOf(
+    "Webhook delivery abort (deliverSettlementWebhook with an AbortSignal, scripted fake fetch, zero network):",
   );
+  assert.ok(abortAt > revokeAt, "abort segment must follow the quorum revoke segment");
 });
 
 test("demo quorum revoke segment is deterministic: two runs print byte-identical revoke lines", async () => {
@@ -4310,6 +4317,9 @@ test("demo quorum revoke segment is deterministic: two runs print byte-identical
       ls.indexOf(
         "Quorum revoke (Quorum.revoke() — a signer changes their vote):",
       ),
+      ls.indexOf(
+        "Webhook delivery abort (deliverSettlementWebhook with an AbortSignal, scripted fake fetch, zero network):",
+      ) - 1,
     );
   const a = await runDemo();
   const b = await runDemo();
@@ -4332,4 +4342,94 @@ test("demo quorum revoke segment is deterministic: two runs print byte-identical
     a.quorumRevokeNotApprovedError,
     b.quorumRevokeNotApprovedError,
   );
+});
+
+test("demo shows webhook delivery abort: a pre-aborted signal fetches zero times and an abort during backoff stops the retry", async () => {
+  const {
+    webhook,
+    abortPreAbortedError,
+    abortPreAbortedFetchCalls,
+    abortDuringBackoffError,
+    abortDuringBackoffFetchCalls,
+    lines,
+  } = await runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned expectations — written from the documented
+  // deliverSettlementWebhook abort semantics in
+  // src/webhooks.ts, never derived by calling the delivery
+  // itself. test/webhookAbortSignal.test.ts pins the same
+  // two shapes against the library directly.
+  assert.equal(abortPreAbortedError, DEMO_ABORT_ERROR);
+  assert.equal(abortPreAbortedFetchCalls, 0);
+  assert.equal(abortDuringBackoffError, DEMO_ABORT_ERROR);
+  assert.equal(abortDuringBackoffFetchCalls, 1);
+  // Independent library-side probe: a pre-aborted signal
+  // against a counting fetch rejects with the pinned error
+  // and never fetches (the demo's own signed webhook is
+  // the payload).
+  let probeCalls = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    probeCalls += 1;
+    return new Response("{}", { status: 200 });
+  };
+  try {
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(
+      deliverSettlementWebhook(DEMO_ABORT_PRE_URL, webhook, {
+        signal: controller.signal,
+      }),
+      new Error(DEMO_ABORT_ERROR),
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(probeCalls, 0);
+  // The segment closes the demo: it follows the quorum
+  // revoke segment, prints its lines verbatim, and its
+  // summary line is the demo's last line.
+  const abortAt = text.indexOf(
+    "Webhook delivery abort (deliverSettlementWebhook with an AbortSignal, scripted fake fetch, zero network):",
+  );
+  assert.ok(
+    abortAt >
+      text.indexOf(
+        "Quorum revoke (Quorum.revoke() — a signer changes their vote):",
+      ),
+    "abort segment must follow the quorum revoke segment",
+  );
+  for (const line of [
+    `  pre-aborted signal: endpoint ${DEMO_ABORT_PRE_URL} — delivery throws "${DEMO_ABORT_ERROR}" before any request: fake fetch called 0 time(s), zero attempts made`,
+    `  abort during backoff: endpoint ${DEMO_ABORT_BACKOFF_URL} — attempt 1 answered scripted 500, the caller aborts during the pinned ${DEMO_ABORT_BACKOFF_MS} ms backoff sleep: delivery rejects "${DEMO_ABORT_ERROR}", fake fetch called 1 time(s) — no retry fires and the wait never elapses`,
+    "  an abort is a caller request to stop, never a retryable failure: neither shape retries, sleeps it off, or reports success",
+  ]) {
+    assert.ok(text.includes(line), `missing abort line: ${line}`);
+  }
+  assert.equal(
+    lines[lines.length - 1],
+    "  an abort is a caller request to stop, never a retryable failure: neither shape retries, sleeps it off, or reports success",
+  );
+});
+
+test("demo webhook abort segment is deterministic: two runs print byte-identical abort lines", async () => {
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf(
+        "Webhook delivery abort (deliverSettlementWebhook with an AbortSignal, scripted fake fetch, zero network):",
+      ),
+    );
+  const a = await runDemo();
+  const b = await runDemo();
+  const segA = segment(a.lines);
+  // Header + the pre-aborted line + the backoff line + the
+  // summary line; every value is derived from the fixed
+  // fixtures alone, so no normalization is needed.
+  assert.equal(segA.length, 4);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.equal(a.abortPreAbortedError, b.abortPreAbortedError);
+  assert.equal(a.abortPreAbortedFetchCalls, b.abortPreAbortedFetchCalls);
+  assert.equal(a.abortDuringBackoffError, b.abortDuringBackoffError);
+  assert.equal(a.abortDuringBackoffFetchCalls, b.abortDuringBackoffFetchCalls);
 });

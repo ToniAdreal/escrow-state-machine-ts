@@ -18,6 +18,16 @@ version changes.
 
 ### Added
 
+- CLI demo coverage for `deliverSettlementWebhook`
+  caller cancellation: the main escrow's signed webhook is
+  delivered with an `AbortSignal` in two shapes — a
+  pre-aborted signal throws `webhook delivery aborted`
+  with the counting fake fetch called zero times, and an
+  abort landing during the pinned 60-second backoff sleep
+  after a scripted 500 rejects with the same error after
+  exactly one fetch and no retry. Both shapes are asserted
+  outside the printing against hand-pinned expectations
+  (fake fetch only, zero network, zero real waiting).
 - CLI demo coverage for the settlement-webhook freshness
   window: the main escrow's signed webhook is re-verified
   under the opt-in `maxAgeMs` bound (1 hour) at three

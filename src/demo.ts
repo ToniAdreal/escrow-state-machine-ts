@@ -1159,6 +1159,49 @@ export const DEMO_REVOKE_LOG_FINAL: readonly ApprovalLogEntry[] = [
   { signerId: "arb-1", at: "2026-03-17T09:02:00.000Z" },
 ];
 
+/**
+ * Webhook AbortSignal fixtures for the final closing
+ * segment: the main escrow's signed webhook is delivered
+ * twice more against scripted fake `fetch` seams, each
+ * time with a caller-owned `AbortSignal` (the
+ * `DeliverWebhookOptions.signal` of feat #112). Hand-pinned
+ * expectations — written from the documented
+ * `deliverSettlementWebhook()` abort semantics in
+ * src/webhooks.ts (a pre-aborted signal throws
+ * `webhook delivery aborted` before any request; an abort
+ * during the backoff sleep rejects the pending sleep with
+ * the same error and no further attempt fires), never
+ * derived by calling the delivery itself, and
+ * cross-checked against test/webhookAbortSignal.test.ts,
+ * which pins the same two shapes:
+ * - pre-aborted: the delivery throws exactly
+ *   {@link DEMO_ABORT_ERROR} and the counting fake fetch
+ *   is called exactly 0 times (zero attempts)
+ * - abort during backoff: the fake answers 500 on the
+ *   first attempt and schedules the abort for the next
+ *   macrotask; the delivery rejects with exactly
+ *   {@link DEMO_ABORT_ERROR} and the fake fetch is called
+ *   exactly 1 time — the pinned
+ *   {@link DEMO_ABORT_BACKOFF_MS} wait never elapses and
+ *   no second attempt fires
+ * Both endpoints are example.com URLs that are never
+ * really fetched (scripted fakes on `globalThis` for this
+ * segment only, the original restored afterwards). The
+ * abort in the second shape is scheduled with a zero-ms
+ * timer from inside the fake fetch: the delivery registers
+ * its abort listener on the backoff sleep synchronously
+ * after the response settles (microtasks run before
+ * timers), so the abort lands inside the pending sleep
+ * deterministically — zero real waiting, zero network,
+ * zero randomness, no wall clock.
+ */
+export const DEMO_ABORT_PRE_URL =
+  "https://hooks.example.com/settlement-abort-pre";
+export const DEMO_ABORT_BACKOFF_URL =
+  "https://hooks.example.com/settlement-abort-backoff";
+export const DEMO_ABORT_ERROR = "webhook delivery aborted";
+export const DEMO_ABORT_BACKOFF_MS = 60_000;
+
 const steps: Array<{
   event: EscrowEvent;
   actor: string;
@@ -1986,6 +2029,27 @@ export interface DemoResult {
    * approved: exactly {@link DEMO_REVOKE_NOT_APPROVED_ERROR}.
    */
   quorumRevokeNotApprovedError: string;
+  /**
+   * Error message of delivering with an already-aborted
+   * signal: exactly {@link DEMO_ABORT_ERROR}.
+   */
+  abortPreAbortedError: string;
+  /**
+   * Fake-fetch call count of the pre-aborted delivery:
+   * exactly 0 — the abort lands before any attempt.
+   */
+  abortPreAbortedFetchCalls: number;
+  /**
+   * Error message of the delivery aborted during its
+   * backoff sleep: exactly {@link DEMO_ABORT_ERROR}.
+   */
+  abortDuringBackoffError: string;
+  /**
+   * Fake-fetch call count of the backoff-aborted
+   * delivery: exactly 1 — the first (500) attempt stands
+   * and no retry fires after the abort.
+   */
+  abortDuringBackoffFetchCalls: number;
   lines: string[];
 }
 
@@ -4381,6 +4445,92 @@ export async function runDemo(): Promise<DemoResult> {
     `  revoke ${DEMO_QUORUM_SIGNERS[2]} (never approved) rejected: "${quorumRevokeNotApprovedError}" — both failed revokes leave the quorum untouched (approvalCount still ${quorumRevokeQuorum.approvalCount()}, hasQuorum: ${quorumRevokeQuorum.hasQuorum()})`,
   );
 
+  // --- Webhook AbortSignal: deliverSettlementWebhook(signal) (final closing) ---
+  // Every delivery segment above ran to completion (or
+  // retried to completion): the caller's power to CANCEL a
+  // delivery lived only in the unit tests. Here the main
+  // escrow's signed webhook is delivered twice more, each
+  // time with a caller-owned AbortSignal wired into both
+  // the in-flight request and the backoff sleep. Shape one
+  // is pre-aborted: the controller aborts BEFORE the call,
+  // and the delivery throws the pinned abort error with
+  // the counting fake fetch never called — zero attempts,
+  // exactly the shape a caller cancelling a queued webhook
+  // needs. Shape two aborts DURING the backoff sleep: the
+  // fake answers 500 on attempt 1 and schedules the abort
+  // for the next macrotask from inside the fetch itself;
+  // the pending 60-second sleep is rejected the moment the
+  // abort lands, the delivery rejects with the same pinned
+  // error, and no second fetch ever fires (the timer is
+  // cleared, so the demo does not actually wait).
+  // Hand-pinned expectations (see the fixture comment
+  // above), asserted HERE, outside the printing: a delivery
+  // that fetched despite a pre-abort, retried after a
+  // backoff abort, or surfaced a different error would fail
+  // the demo itself, not just a test. Scripted fakes on
+  // `globalThis` only, restored afterwards: zero network,
+  // zero real waiting, zero randomness, no wall clock.
+  const abortPreController = new AbortController();
+  abortPreController.abort();
+  let abortPreAbortedFetchCalls = 0;
+  const abortPreFetch: typeof fetch = async () => {
+    abortPreAbortedFetchCalls += 1;
+    return new Response("{}", {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  const originalFetchForAbortPre = globalThis.fetch;
+  let abortPreAbortedError = "";
+  globalThis.fetch = abortPreFetch;
+  try {
+    await deliverSettlementWebhook(DEMO_ABORT_PRE_URL, webhook, {
+      signal: abortPreController.signal,
+    });
+  } catch (err) {
+    abortPreAbortedError = err instanceof Error ? err.message : String(err);
+  } finally {
+    globalThis.fetch = originalFetchForAbortPre;
+  }
+  const abortBackoffController = new AbortController();
+  let abortDuringBackoffFetchCalls = 0;
+  const abortBackoffFetch: typeof fetch = async () => {
+    abortDuringBackoffFetchCalls += 1;
+    setTimeout(() => abortBackoffController.abort(), 0);
+    return new Response("boom", { status: 500 });
+  };
+  const originalFetchForAbortBackoff = globalThis.fetch;
+  let abortDuringBackoffError = "";
+  globalThis.fetch = abortBackoffFetch;
+  try {
+    await deliverSettlementWebhook(DEMO_ABORT_BACKOFF_URL, webhook, {
+      signal: abortBackoffController.signal,
+      backoffMs: DEMO_ABORT_BACKOFF_MS,
+    });
+  } catch (err) {
+    abortDuringBackoffError =
+      err instanceof Error ? err.message : String(err);
+  } finally {
+    globalThis.fetch = originalFetchForAbortBackoff;
+  }
+  if (
+    abortPreAbortedError !== DEMO_ABORT_ERROR ||
+    abortPreAbortedFetchCalls !== 0 ||
+    abortDuringBackoffError !== DEMO_ABORT_ERROR ||
+    abortDuringBackoffFetchCalls !== 1
+  ) {
+    throw new Error(
+      "demo fixture broken: deliverSettlementWebhook AbortSignal does not match the pinned shape (pre-aborted signal throws the pinned abort error with zero fetch calls; abort during the pinned backoff rejects with the same error after exactly one fetch and no retry)",
+    );
+  }
+  lines.push(
+    "",
+    "Webhook delivery abort (deliverSettlementWebhook with an AbortSignal, scripted fake fetch, zero network):",
+    `  pre-aborted signal: endpoint ${DEMO_ABORT_PRE_URL} — delivery throws "${abortPreAbortedError}" before any request: fake fetch called ${abortPreAbortedFetchCalls} time(s), zero attempts made`,
+    `  abort during backoff: endpoint ${DEMO_ABORT_BACKOFF_URL} — attempt 1 answered scripted 500, the caller aborts during the pinned ${DEMO_ABORT_BACKOFF_MS} ms backoff sleep: delivery rejects "${abortDuringBackoffError}", fake fetch called ${abortDuringBackoffFetchCalls} time(s) — no retry fires and the wait never elapses`,
+    "  an abort is a caller request to stop, never a retryable failure: neither shape retries, sleeps it off, or reports success",
+  );
+
   return {
     escrow,
     report,
@@ -4506,6 +4656,10 @@ export async function runDemo(): Promise<DemoResult> {
     quorumRevokeLogFinal,
     quorumRevokeUnknownError,
     quorumRevokeNotApprovedError,
+    abortPreAbortedError,
+    abortPreAbortedFetchCalls,
+    abortDuringBackoffError,
+    abortDuringBackoffFetchCalls,
     lines,
   };
 }
