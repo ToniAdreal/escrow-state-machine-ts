@@ -18,6 +18,19 @@ version changes.
 
 ### Added
 
+- CLI demo coverage for the README diagram sync check:
+  `readmeDiagramInSync()` (imported directly from
+  `src/diagram.ts`, as the benchmark does) reads this
+  repo's README and the demo prints its verdict — `true`,
+  the README embeds the exact `stateDiagram()` block
+  generated in the preceding segment, with no diagram
+  drift — alongside the checked file and the
+  `node dist/src/diagram.js --check` CLI equivalent.
+  The verdict is asserted outside the printing against
+  the hand-pinned `true` expectation the diagram tests
+  pin, and the failure message says how to repair drift
+  (regenerate with `npm run diagram` and paste the
+  generated block into README.md).
 - CLI demo coverage for the settlement-event dedupe
   clear reset path: a fresh `SettlementEventDedupe` on a
   fixed clock records one fixed eventId (new on first

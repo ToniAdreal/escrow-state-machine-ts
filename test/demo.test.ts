@@ -115,6 +115,7 @@ import {
   verifyHistoryChain,
   verifySettlementWebhook,
 } from "../src/index.js";
+import { readmeDiagramInSync } from "../src/diagram.js";
 
 const repoRoot = path.dirname(
   path.dirname(path.dirname(fileURLToPath(import.meta.url))),
@@ -1865,6 +1866,24 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
     ),
   );
   assert.ok(out.includes("  last line: ```"));
+  // README diagram sync check tail: the segment after the
+  // state-diagram segment reports the readmeDiagramInSync()
+  // verdict — true, with the checked file and the CLI
+  // equivalent printed.
+  assert.match(
+    out,
+    /README diagram sync check \(readmeDiagramInSync on this repo's README\):/,
+  );
+  assert.ok(
+    out.includes(
+      "  readmeDiagramInSync(): true (README.md embeds the exact stateDiagram() block generated above — no diagram drift)",
+    ),
+  );
+  assert.ok(
+    out.includes(
+      "  CLI equivalent: node dist/src/diagram.js --check (exit 0 in sync, exit 1 on drift — the same check test/diagram.test.ts runs)",
+    ),
+  );
   // Standalone history-parsing tail: the closing segment parses
   // the main history back on its own — the intact parse lands in
   // RELEASED and the tampered copy is rejected with the explicit
@@ -2228,7 +2247,7 @@ test("demo state diagram generation segment is deterministic: two runs print byt
         "State diagram generation (stateDiagram from the transition table):",
       ),
       ls.indexOf(
-        "Standalone history parsing (parseEscrowHistory on the main escrow history):",
+        "README diagram sync check (readmeDiagramInSync on this repo's README):",
       ) - 1,
     );
   const a = await runDemo();
@@ -2242,6 +2261,73 @@ test("demo state diagram generation segment is deterministic: two runs print byt
   assert.deepEqual(segA, segment(b.lines));
   assert.equal(a.stateDiagramText, b.stateDiagramText);
   assert.equal(a.stateDiagramEdgeCount, b.stateDiagramEdgeCount);
+});
+
+test("demo shows README diagram sync check: readmeDiagramInSync reports true for this repo's README", async () => {
+  const result = await runDemo();
+  const text = result.lines.join("\n");
+
+  // Hand-pinned expectation — written out here from the state
+  // test/diagram.test.ts pins independently (the README embeds
+  // the exact generated diagram; the CLI --check form of the
+  // same function requires the in-sync outcome), never derived
+  // by calling readmeDiagramInSync to produce it.
+  assert.equal(result.readmeDiagramInSync, true);
+  // Independent cross-check: calling the library function
+  // directly reproduces the same verdict — the demo segment
+  // is not self-certifying.
+  assert.equal(readmeDiagramInSync(), true);
+  // The segment follows the state-diagram segment and precedes
+  // the standalone history-parsing segment; it prints its
+  // lines verbatim, and its CLI-equivalent line is the
+  // segment's last line.
+  const syncAt = text.indexOf(
+    "README diagram sync check (readmeDiagramInSync on this repo's README):",
+  );
+  assert.ok(
+    syncAt >
+      text.indexOf(
+        "State diagram generation (stateDiagram from the transition table):",
+      ),
+    "README sync segment must follow the state-diagram segment",
+  );
+  assert.equal(
+    result.lines.indexOf(
+      "Standalone history parsing (parseEscrowHistory on the main escrow history):",
+    ),
+    result.lines.indexOf(
+      "  CLI equivalent: node dist/src/diagram.js --check (exit 0 in sync, exit 1 on drift — the same check test/diagram.test.ts runs)",
+    ) + 2,
+  );
+  for (const line of [
+    "  readmeDiagramInSync(): true (README.md embeds the exact stateDiagram() block generated above — no diagram drift)",
+    "  checked file: README.md (this repo only — the sole file read by the check; no network, no wall clock)",
+    "  if drifted: run `npm run diagram`, paste the generated block into README.md, and re-run — the demo fails here until the README matches the code again",
+    "  CLI equivalent: node dist/src/diagram.js --check (exit 0 in sync, exit 1 on drift — the same check test/diagram.test.ts runs)",
+  ]) {
+    assert.ok(text.includes(line), `missing README sync line: ${line}`);
+  }
+});
+
+test("demo README diagram sync check segment is deterministic: two runs print byte-identical sync lines", async () => {
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf(
+        "README diagram sync check (readmeDiagramInSync on this repo's README):",
+      ),
+      ls.indexOf(
+        "Standalone history parsing (parseEscrowHistory on the main escrow history):",
+      ) - 1,
+    );
+  const a = await runDemo();
+  const b = await runDemo();
+  const segA = segment(a.lines);
+  // Header + verdict / checked-file / if-drifted / CLI lines;
+  // the verdict is read from this repo's committed README
+  // alone, so no normalization is needed.
+  assert.equal(segA.length, 5);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.equal(a.readmeDiagramInSync, b.readmeDiagramInSync);
 });
 
 test("demo shows standalone history parsing: serialized history parses back verbatim and a tampered middle entry is rejected", async () => {

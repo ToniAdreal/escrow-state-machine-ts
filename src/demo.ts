@@ -114,6 +114,18 @@
  * edge — and the segment asserts, outside the printing, that
  * the edge count equals `transitionTable()`'s edge count, so a
  * diagram whose shape broke would fail the demo itself.
+ * The demo then shows a README diagram sync check
+ * segment: `readmeDiagramInSync()` (imported directly
+ * from `src/diagram.ts`, as the benchmark does — it is not
+ * re-exported from the package entry) reads this repo's
+ * README and reports whether it embeds the exact
+ * generated block, and the demo prints that verdict
+ * (hand-pinned to `true` and cross-checked against the
+ * diagram tests) — the sync conclusion itself, shown
+ * instead of only asserted by the test suite; on drift
+ * the segment's failure message says how to repair it
+ * (regenerate with `npm run diagram` and paste the
+ * generated block into README.md).
  * The demo then shows a standalone history-parsing
  * segment: the main escrow's history is serialized to JSON and
  * parsed back on its own with `parseEscrowHistory()` — no
@@ -280,6 +292,7 @@
  */
 
 import { fileURLToPath } from "node:url";
+import { readmeDiagramInSync } from "./diagram.js";
 import {
   Escrow,
   SettlementEventDedupe,
@@ -1288,6 +1301,14 @@ export interface DemoResult {
    * 14 transition edges, equal to `transitionTable().length`.
    */
   stateDiagramEdgeCount: number;
+  /**
+   * `readmeDiagramInSync()` verdict on this repo's README:
+   * `true` — README.md embeds the exact `stateDiagram()`
+   * block generated in the segment above (no diagram drift).
+   * Hand-pinned in the segment comment and cross-checked
+   * against test/diagram.test.ts.
+   */
+  readmeDiagramInSync: boolean;
   /**
    * Entries `parseEscrowHistory()` returns for the main escrow's
    * JSON-serialized history, parsed standalone (no `Escrow`
@@ -2731,6 +2752,42 @@ export async function runDemo(): Promise<DemoResult> {
     `  last line: ${stateDiagramLines.at(-1)}`,
   );
 
+  // --- README diagram sync check: readmeDiagramInSync ---
+  // The segment above generates the diagram block; this one
+  // reports the conclusion the whole docs-drift guard exists
+  // for — `readmeDiagramInSync()` (imported directly from
+  // src/diagram.ts, as the benchmark does — it is not
+  // re-exported from the package entry) reads this repo's
+  // README.md and returns true iff it embeds the exact
+  // generated block. Hand-pinned expectation — written out
+  // here from the state the test suite pins, never derived
+  // by calling readmeDiagramInSync itself:
+  //   - the return value is exactly true: test/diagram.test.ts
+  //     asserts the README embeds the exact generated diagram
+  //     and runs the CLI `--check` form of this same function
+  //     requiring the in-sync outcome. A drifted README would
+  //     fail the test suite before it could fail here, so true
+  //     is the only expectation consistent with a green suite.
+  // The segment asserts that here, outside the printed
+  // verdict: a drifted README would fail the demo itself, not
+  // just a test, and the failure message says how to repair
+  // the drift. The only file read is this repo's README.md;
+  // no network, no randomness, no wall clock.
+  const readmeDiagramInSyncValue = readmeDiagramInSync();
+  if (readmeDiagramInSyncValue !== true) {
+    throw new Error(
+      "demo fixture broken: readmeDiagramInSync() returned false — README.md diagram drifted from stateDiagram(); regenerate with `npm run diagram` and paste the generated block into README.md",
+    );
+  }
+  lines.push(
+    "",
+    "README diagram sync check (readmeDiagramInSync on this repo's README):",
+    `  readmeDiagramInSync(): ${readmeDiagramInSyncValue} (README.md embeds the exact stateDiagram() block generated above — no diagram drift)`,
+    "  checked file: README.md (this repo only — the sole file read by the check; no network, no wall clock)",
+    "  if drifted: run `npm run diagram`, paste the generated block into README.md, and re-run — the demo fails here until the README matches the code again",
+    "  CLI equivalent: node dist/src/diagram.js --check (exit 0 in sync, exit 1 on drift — the same check test/diagram.test.ts runs)",
+  );
+
   // --- Standalone history parsing: parseEscrowHistory (closing) ---
   // Every segment above either drives an Escrow or reads its
   // history back through one (the NDJSON segment's
@@ -3830,6 +3887,7 @@ export async function runDemo(): Promise<DemoResult> {
     overdueChecks,
     stateDiagramText,
     stateDiagramEdgeCount,
+    readmeDiagramInSync: readmeDiagramInSyncValue,
     parsedHistoryEntries,
     parsedHistoryTamperError,
     historyRebuiltEscrow,
