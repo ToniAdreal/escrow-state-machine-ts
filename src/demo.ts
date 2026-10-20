@@ -241,6 +241,19 @@
  * loudly at startup instead of silently disabling
  * deduplication; all sides are asserted outside the
  * printing against hand-pinned expectations.
+ * The demo then shows a dedupe clear segment: a fresh
+ * `SettlementEventDedupe` on a fixed clock records one
+ * fixed eventId (new on first sight, a duplicate on
+ * immediate redelivery, its stats pinned), is reset with
+ * `clear()` — the printed size and stats read all zero —
+ * and the same eventId then counts as new again and is
+ * re-recorded, its stats counting up from zero; the
+ * explicit reset a receiver uses at key rotation, in
+ * test isolation, or at a window reset, shown as the
+ * deliberate opposite of the snapshot segment above
+ * (there the recorded ids survive, here they are dropped
+ * on purpose); all sides are asserted outside the
+ * printing against hand-pinned expectations.
  * The demo finally closes with a subscribe `onError`
  * error-routing segment: a branch escrow subscribes one
  * pinned throwing listener with a collecting `onError`,
@@ -878,6 +891,39 @@ export const DEMO_DEDUPE_SNAPSHOT_ENTRIES: ReadonlyArray<
 ];
 export const DEMO_DEDUPE_SNAPSHOT_TAMPERED_ERROR =
   "SettlementEventDedupe: invalid snapshot: unsupported snapshot version 2 (expected 1)";
+
+/**
+ * Dedupe clear fixtures for the segment after the dedupe
+ * snapshot segment: a fresh `SettlementEventDedupe` on a
+ * fixed clock (starting at {@link DEMO_DEDUPE_START_MS},
+ * the webhook's own `at`, under the same 1-hour TTL the
+ * receiver-dedupe segment above uses) records one fixed
+ * eventId twice, is reset with `clear()`, and records the
+ * same id once more — the explicit window-reset path a
+ * receiver uses at key rotation, in test isolation, or at
+ * a window reset.
+ * Hand-pinned expectations — written from the documented
+ * `clear()` semantics in src/webhooks.ts (drop all tracked
+ * ids and reset the observability counters to zero),
+ * never derived by calling `clear()` itself, and
+ * cross-checked against test/settlementEventDedupe.test.ts,
+ * whose clear case pins the same shape (record, duplicate,
+ * clear to size 0 with zeroed stats, the same id new again):
+ * - the fixed id's first `checkAndRecord` is `false`
+ *   (new event) and its immediate second is `true`
+ *   (duplicate); stats before the clear are exactly
+ *   `{size: 1, hits: 1, misses: 1, evictions: 0}`
+ * - immediately after `clear()` the size is 0 and stats
+ *   are exactly `{size: 0, hits: 0, misses: 0, evictions: 0}`
+ * - the same id's `checkAndRecord` after the clear is
+ *   `false` (new event again, re-recorded) and stats after
+ *   it are exactly `{size: 1, hits: 0, misses: 1, evictions: 0}`
+ * The clock never advances inside the segment, so the
+ * recorded id stays inside its TTL for the whole segment
+ * and no wall clock, randomness, or network enters it.
+ */
+export const DEMO_DEDUPE_CLEAR_EVENT_ID = "evt_demo_dedupe_clear_001";
+export const DEMO_DEDUPE_CLEAR_START_MS = DEMO_DEDUPE_START_MS;
 
 /**
  * Subscribe onError fixtures for the final closing segment:
@@ -1566,6 +1612,56 @@ export interface DemoResult {
    * exported snapshot object itself still reads `v: 1`.
    */
   dedupeSnapshotTamperedError: string;
+  /**
+   * The dedupe-clear segment's dedupe, after its final
+   * probe ran: the fixed id was re-recorded after the
+   * clear — 1 live entry on the fixed clock.
+   */
+  dedupeClearDedupe: SettlementEventDedupe;
+  /**
+   * `checkAndRecord` verdict of the clear segment's first
+   * sighting of the fixed id: `false` — a new event.
+   */
+  dedupeClearFirst: boolean;
+  /**
+   * `checkAndRecord` verdict of the clear segment's
+   * immediate redelivery of the fixed id: `true` — a
+   * duplicate.
+   */
+  dedupeClearDuplicate: boolean;
+  /**
+   * `stats()` of the clear segment's dedupe captured
+   * immediately before `clear()`: exactly
+   * `{size: 1, hits: 1, misses: 1, evictions: 0}`.
+   */
+  dedupeClearStatsBefore: SettlementEventDedupeStats;
+  /**
+   * `stats()` of the clear segment's dedupe captured
+   * immediately after `clear()`, before the re-record
+   * probe ran: exactly
+   * `{size: 0, hits: 0, misses: 0, evictions: 0}` — every
+   * recorded id dropped, every counter reset to zero.
+   */
+  dedupeClearStatsAfterClear: SettlementEventDedupeStats;
+  /**
+   * `size` of the clear segment's dedupe captured
+   * immediately after `clear()`: 0.
+   */
+  dedupeClearSizeAfterClear: number;
+  /**
+   * `checkAndRecord` verdict of the clear segment's dedupe
+   * for the same fixed id after `clear()`: `false` — the
+   * reset made it a new event again, and the probe
+   * re-recorded it.
+   */
+  dedupeClearRerecord: boolean;
+  /**
+   * `stats()` of the clear segment's dedupe captured after
+   * the re-record probe: exactly
+   * `{size: 1, hits: 0, misses: 1, evictions: 0}` —
+   * counting restarted from zero after the clear.
+   */
+  dedupeClearStatsAfterRerecord: SettlementEventDedupeStats;
   /**
    * The final closing segment's branch escrow
    * ({@link DEMO_ONERROR_ESCROW_ID}), after its three
@@ -3484,6 +3580,75 @@ export async function runDemo(): Promise<DemoResult> {
     `  tampered snapshot rejected: a detached copy with v changed to 2 throws "${dedupeSnapshotTamperedError}" — a corrupt snapshot fails loudly at startup instead of silently disabling deduplication`,
   );
 
+  // --- Dedupe clear: clear() (explicit window reset) ---
+  // The snapshot segment above carries the recorded ids
+  // across a restart on purpose; this segment shows the
+  // deliberate opposite. A FRESH dedupe on the same
+  // fixed clock records one fixed id (new on first
+  // sight, a duplicate on immediate redelivery, stats
+  // captured), then clear() drops every recorded id and
+  // resets every observability counter to zero (size and
+  // stats captured immediately after, before any probe),
+  // and the same id then counts as new again and is
+  // re-recorded, its stats counting up from zero. That
+  // is the explicit reset a receiver reaches for at key
+  // rotation, in test isolation, or at a window reset.
+  // Hand-pinned expectations (see the fixture comment
+  // above), asserted HERE, outside the printing: a clear
+  // that kept an id, left a counter standing, or a
+  // re-record that still read as a duplicate would fail
+  // the demo itself, not just a test. The clock never
+  // advances, so zero network, zero randomness, and no
+  // wall clock enter the segment.
+  const dedupeClearDedupe = new SettlementEventDedupe({
+    ttlMs: DEMO_DEDUPE_TTL_MS,
+    now: () => DEMO_DEDUPE_CLEAR_START_MS,
+  });
+  const dedupeClearFirst = dedupeClearDedupe.checkAndRecord(
+    DEMO_DEDUPE_CLEAR_EVENT_ID,
+  );
+  const dedupeClearDuplicate = dedupeClearDedupe.checkAndRecord(
+    DEMO_DEDUPE_CLEAR_EVENT_ID,
+  );
+  const dedupeClearStatsBefore = dedupeClearDedupe.stats();
+  dedupeClearDedupe.clear();
+  const dedupeClearSizeAfterClear = dedupeClearDedupe.size;
+  const dedupeClearStatsAfterClear = dedupeClearDedupe.stats();
+  const dedupeClearRerecord = dedupeClearDedupe.checkAndRecord(
+    DEMO_DEDUPE_CLEAR_EVENT_ID,
+  );
+  const dedupeClearStatsAfterRerecord = dedupeClearDedupe.stats();
+  if (
+    dedupeClearFirst !== false ||
+    dedupeClearDuplicate !== true ||
+    dedupeClearStatsBefore.size !== 1 ||
+    dedupeClearStatsBefore.hits !== 1 ||
+    dedupeClearStatsBefore.misses !== 1 ||
+    dedupeClearStatsBefore.evictions !== 0 ||
+    dedupeClearSizeAfterClear !== 0 ||
+    dedupeClearStatsAfterClear.size !== 0 ||
+    dedupeClearStatsAfterClear.hits !== 0 ||
+    dedupeClearStatsAfterClear.misses !== 0 ||
+    dedupeClearStatsAfterClear.evictions !== 0 ||
+    dedupeClearRerecord !== false ||
+    dedupeClearStatsAfterRerecord.size !== 1 ||
+    dedupeClearStatsAfterRerecord.hits !== 0 ||
+    dedupeClearStatsAfterRerecord.misses !== 1 ||
+    dedupeClearStatsAfterRerecord.evictions !== 0 ||
+    dedupeClearDedupe.size !== 1
+  ) {
+    throw new Error(
+      "demo fixture broken: SettlementEventDedupe clear reset does not match the pinned shape (one id new then duplicate with stats 1/1/1/0, clear to size 0 with stats all zero, the same id new again after the clear with stats counting from zero)",
+    );
+  }
+  lines.push(
+    "",
+    "Dedupe clear reset (SettlementEventDedupe.clear() — explicit window reset):",
+    `  dedupe (fixed clock ${DEMO_WEBHOOK_AT}, TTL ${DEMO_DEDUPE_TTL_MS} ms): eventId ${DEMO_DEDUPE_CLEAR_EVENT_ID} — checkAndRecord: ${dedupeClearFirst} (new event), again: ${dedupeClearDuplicate} (duplicate); stats before clear: size ${dedupeClearStatsBefore.size}, hits ${dedupeClearStatsBefore.hits}, misses ${dedupeClearStatsBefore.misses}, evictions ${dedupeClearStatsBefore.evictions}`,
+    `  clear(): size ${dedupeClearSizeAfterClear} — stats size ${dedupeClearStatsAfterClear.size}, hits ${dedupeClearStatsAfterClear.hits}, misses ${dedupeClearStatsAfterClear.misses}, evictions ${dedupeClearStatsAfterClear.evictions} (every recorded id dropped, every counter reset to zero)`,
+    `  same eventId after clear — checkAndRecord: ${dedupeClearRerecord} (new event again, recorded — the reset reopened the window on purpose); stats after re-record: size ${dedupeClearStatsAfterRerecord.size}, hits ${dedupeClearStatsAfterRerecord.hits}, misses ${dedupeClearStatsAfterRerecord.misses}, evictions ${dedupeClearStatsAfterRerecord.evictions} (counting restarts from zero)`,
+  );
+
   // --- Subscribe onError routing: subscribe(listener, { onError }) (final closing) ---
   // The subscription segment above used a well-behaved
   // collecting listener; the error path never ran. Here a
@@ -3709,6 +3874,14 @@ export async function runDemo(): Promise<DemoResult> {
     dedupeSnapshotRestoredSeen,
     dedupeSnapshotRestoredUnseen,
     dedupeSnapshotTamperedError,
+    dedupeClearDedupe,
+    dedupeClearFirst,
+    dedupeClearDuplicate,
+    dedupeClearStatsBefore,
+    dedupeClearStatsAfterClear,
+    dedupeClearSizeAfterClear,
+    dedupeClearRerecord,
+    dedupeClearStatsAfterRerecord,
     onErrorEscrow,
     onErrorReports,
     onErrorProbeEscrow,

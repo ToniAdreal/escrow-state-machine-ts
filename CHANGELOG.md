@@ -18,6 +18,19 @@ version changes.
 
 ### Added
 
+- CLI demo coverage for the settlement-event dedupe
+  clear reset path: a fresh `SettlementEventDedupe` on a
+  fixed clock records one fixed eventId (new on first
+  sight, a duplicate on immediate redelivery, with stats
+  pinned at `{size: 1, hits: 1, misses: 1, evictions: 0}`),
+  is reset with `clear()` — the printed size and stats
+  read all zero — and the same eventId then counts as
+  new again and is re-recorded, its stats counting up
+  from zero (`{size: 1, hits: 0, misses: 1, evictions: 0}`).
+  The segment shows the explicit window reset a receiver
+  uses at key rotation, in test isolation, or at a window
+  reset, as the deliberate opposite of the snapshot
+  segment, where the recorded ids survive a restart.
 - Benchmark coverage for the settlement-event dedupe
   snapshot export path: `SettlementEventDedupe.exportSnapshot()`
   over a dedupe holding 1,001 recorded ids (1,000 live ids

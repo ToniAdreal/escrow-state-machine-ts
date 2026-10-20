@@ -11,6 +11,8 @@ import {
   DEMO_APPROVAL_LOG_SECOND_AT,
   DEMO_APPROVAL_LOG_WINDOW_MS,
   DEMO_ARBITRATION_AT,
+  DEMO_DEDUPE_CLEAR_EVENT_ID,
+  DEMO_DEDUPE_CLEAR_START_MS,
   DEMO_DEDUPE_SNAPSHOT_ENTRIES,
   DEMO_DEDUPE_SNAPSHOT_EVENT_IDS,
   DEMO_DEDUPE_SNAPSHOT_START_MS,
@@ -2092,6 +2094,24 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
       `  tampered snapshot rejected: a detached copy with v changed to 2 throws "${DEMO_DEDUPE_SNAPSHOT_TAMPERED_ERROR}" — a corrupt snapshot fails loudly at startup instead of silently disabling deduplication`,
     ),
   );
+  // Dedupe clear segment: the segment after the snapshot
+  // segment resets a fresh dedupe with clear() — one id
+  // new then duplicate with pinned stats, size and stats
+  // all zero after the clear, the same id new again.
+  assert.match(
+    out,
+    /Dedupe clear reset \(SettlementEventDedupe\.clear\(\) — explicit window reset\):/,
+  );
+  assert.ok(
+    out.includes(
+      "  clear(): size 0 — stats size 0, hits 0, misses 0, evictions 0 (every recorded id dropped, every counter reset to zero)",
+    ),
+  );
+  assert.ok(
+    out.includes(
+      `  same eventId after clear — checkAndRecord: false (new event again, recorded — the reset reopened the window on purpose); stats after re-record: size 1, hits 0, misses 1, evictions 0 (counting restarts from zero)`,
+    ),
+  );
   // Subscribe onError tail: the closing segment routes a
   // throwing listener's errors to onError — 3 reports with
   // dispatch contexts, a throwing onError swallowed on the
@@ -3411,7 +3431,7 @@ test("demo shows dedupe snapshot persistence: recorded ids survive a JSON round-
     ),
   );
   // The segment follows the single-target delivery
-  // segment and precedes the closing onError segment; it
+  // segment and precedes the dedupe-clear segment; it
   // prints its lines verbatim (only the snapshot version
   // and entry count — never a full entry line), and its
   // tampered-snapshot line is the segment's last line.
@@ -3439,7 +3459,7 @@ test("demo shows dedupe snapshot persistence: recorded ids survive a JSON round-
       "Dedupe snapshot persistence (SettlementEventDedupe exportSnapshot / restore across a restart):",
     ),
     lines.indexOf(
-      "Subscribe onError error routing (Escrow.subscribe(listener, { onError }) on a branch escrow):",
+      "Dedupe clear reset (SettlementEventDedupe.clear() — explicit window reset):",
     ) - 1,
   );
   assert.equal(
@@ -3455,7 +3475,7 @@ test("demo dedupe snapshot persistence segment is deterministic: two runs print 
         "Dedupe snapshot persistence (SettlementEventDedupe exportSnapshot / restore across a restart):",
       ),
       ls.indexOf(
-        "Subscribe onError error routing (Escrow.subscribe(listener, { onError }) on a branch escrow):",
+        "Dedupe clear reset (SettlementEventDedupe.clear() — explicit window reset):",
       ) - 1,
     );
   const a = await runDemo();
@@ -3477,6 +3497,131 @@ test("demo dedupe snapshot persistence segment is deterministic: two runs print 
   assert.deepEqual(a.dedupeSnapshotRestoredSeen, b.dedupeSnapshotRestoredSeen);
   assert.equal(a.dedupeSnapshotRestoredUnseen, b.dedupeSnapshotRestoredUnseen);
   assert.equal(a.dedupeSnapshotTamperedError, b.dedupeSnapshotTamperedError);
+});
+
+test("demo shows dedupe clear reset: clear drops the recorded id and zeroes the counters, and the same id counts as new again", async () => {
+  const {
+    dedupeClearDedupe,
+    dedupeClearFirst,
+    dedupeClearDuplicate,
+    dedupeClearStatsBefore,
+    dedupeClearStatsAfterClear,
+    dedupeClearSizeAfterClear,
+    dedupeClearRerecord,
+    dedupeClearStatsAfterRerecord,
+    lines,
+  } = await runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned expectations — written out here from the
+  // documented clear() semantics in src/webhooks.ts (drop
+  // all tracked ids, reset the observability counters to
+  // zero), never derived by calling clear() to produce
+  // them. test/settlementEventDedupe.test.ts pins the same
+  // shape independently (record, duplicate, clear to size
+  // 0 with zeroed stats, the same id new again).
+  assert.equal(DEMO_DEDUPE_CLEAR_START_MS, Date.parse(DEMO_WEBHOOK_AT));
+  assert.equal(dedupeClearFirst, false);
+  assert.equal(dedupeClearDuplicate, true);
+  assert.deepEqual(dedupeClearStatsBefore, {
+    size: 1,
+    hits: 1,
+    misses: 1,
+    evictions: 0,
+  });
+  assert.equal(dedupeClearSizeAfterClear, 0);
+  assert.deepEqual(dedupeClearStatsAfterClear, {
+    size: 0,
+    hits: 0,
+    misses: 0,
+    evictions: 0,
+  });
+  assert.equal(dedupeClearRerecord, false);
+  assert.deepEqual(dedupeClearStatsAfterRerecord, {
+    size: 1,
+    hits: 0,
+    misses: 1,
+    evictions: 0,
+  });
+  assert.equal(dedupeClearDedupe.size, 1);
+  // Independent cross-check: a fresh dedupe through the
+  // library entry points reproduces the same shape — the
+  // demo segment is not self-certifying.
+  const probe = new SettlementEventDedupe({
+    ttlMs: DEMO_DEDUPE_TTL_MS,
+    now: () => DEMO_DEDUPE_CLEAR_START_MS,
+  });
+  assert.equal(probe.checkAndRecord(DEMO_DEDUPE_CLEAR_EVENT_ID), false);
+  assert.equal(probe.checkAndRecord(DEMO_DEDUPE_CLEAR_EVENT_ID), true);
+  assert.deepEqual(probe.stats(), dedupeClearStatsBefore);
+  probe.clear();
+  assert.equal(probe.size, 0);
+  assert.deepEqual(probe.stats(), dedupeClearStatsAfterClear);
+  assert.equal(probe.checkAndRecord(DEMO_DEDUPE_CLEAR_EVENT_ID), false);
+  assert.deepEqual(probe.stats(), dedupeClearStatsAfterRerecord);
+  // The segment follows the dedupe snapshot segment and
+  // precedes the closing onError segment; it prints its
+  // lines verbatim, and its re-record line is the
+  // segment's last line.
+  const clearAt = text.indexOf(
+    "Dedupe clear reset (SettlementEventDedupe.clear() — explicit window reset):",
+  );
+  assert.ok(
+    clearAt >
+      text.indexOf(
+        "Dedupe snapshot persistence (SettlementEventDedupe exportSnapshot / restore across a restart):",
+      ),
+    "dedupe clear segment must follow the dedupe snapshot segment",
+  );
+  for (const line of [
+    `  dedupe (fixed clock ${DEMO_WEBHOOK_AT}, TTL ${DEMO_DEDUPE_TTL_MS} ms): eventId ${DEMO_DEDUPE_CLEAR_EVENT_ID} — checkAndRecord: false (new event), again: true (duplicate); stats before clear: size 1, hits 1, misses 1, evictions 0`,
+    "  clear(): size 0 — stats size 0, hits 0, misses 0, evictions 0 (every recorded id dropped, every counter reset to zero)",
+    `  same eventId after clear — checkAndRecord: false (new event again, recorded — the reset reopened the window on purpose); stats after re-record: size 1, hits 0, misses 1, evictions 0 (counting restarts from zero)`,
+  ]) {
+    assert.ok(text.includes(line), `missing dedupe clear line: ${line}`);
+  }
+  const clearSegment = lines.slice(
+    lines.indexOf(
+      "Dedupe clear reset (SettlementEventDedupe.clear() — explicit window reset):",
+    ),
+    lines.indexOf(
+      "Subscribe onError error routing (Escrow.subscribe(listener, { onError }) on a branch escrow):",
+    ) - 1,
+  );
+  assert.equal(
+    clearSegment[clearSegment.length - 1],
+    `  same eventId after clear — checkAndRecord: false (new event again, recorded — the reset reopened the window on purpose); stats after re-record: size 1, hits 0, misses 1, evictions 0 (counting restarts from zero)`,
+  );
+});
+
+test("demo dedupe clear segment is deterministic: two runs print byte-identical clear lines", async () => {
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf(
+        "Dedupe clear reset (SettlementEventDedupe.clear() — explicit window reset):",
+      ),
+      ls.indexOf(
+        "Subscribe onError error routing (Escrow.subscribe(listener, { onError }) on a branch escrow):",
+      ) - 1,
+    );
+  const a = await runDemo();
+  const b = await runDemo();
+  const segA = segment(a.lines);
+  // Header + the dedupe line + the clear line + the
+  // re-record line; every value is derived from the fixed
+  // fixtures alone, so no normalization is needed.
+  assert.equal(segA.length, 4);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.equal(a.dedupeClearFirst, b.dedupeClearFirst);
+  assert.equal(a.dedupeClearDuplicate, b.dedupeClearDuplicate);
+  assert.deepEqual(a.dedupeClearStatsBefore, b.dedupeClearStatsBefore);
+  assert.deepEqual(a.dedupeClearStatsAfterClear, b.dedupeClearStatsAfterClear);
+  assert.equal(a.dedupeClearSizeAfterClear, b.dedupeClearSizeAfterClear);
+  assert.equal(a.dedupeClearRerecord, b.dedupeClearRerecord);
+  assert.deepEqual(
+    a.dedupeClearStatsAfterRerecord,
+    b.dedupeClearStatsAfterRerecord,
+  );
 });
 
 test("demo shows subscribe onError routing: a throwing listener's errors reach onError with dispatch context, a throwing onError is swallowed, and a non-function onError is rejected", async () => {
@@ -3595,7 +3740,7 @@ test("demo shows subscribe onError routing: a throwing listener's errors reach o
   );
   assert.equal(probe.listenerCount, 1);
   // The segment closes the demo: it follows the dedupe
-  // snapshot segment, prints its lines verbatim, and its
+  // clear segment, prints its lines verbatim, and its
   // rejection line is the demo's last line.
   const onErrorAt = text.indexOf(
     "Subscribe onError error routing (Escrow.subscribe(listener, { onError }) on a branch escrow):",
@@ -3603,9 +3748,9 @@ test("demo shows subscribe onError routing: a throwing listener's errors reach o
   assert.ok(
     onErrorAt >
       text.indexOf(
-        "Dedupe snapshot persistence (SettlementEventDedupe exportSnapshot / restore across a restart):",
+        "Dedupe clear reset (SettlementEventDedupe.clear() — explicit window reset):",
       ),
-    "onError segment must follow the dedupe snapshot segment",
+    "onError segment must follow the dedupe clear segment",
   );
   for (const line of [
     `  escrow ${DEMO_ONERROR_ESCROW_ID}: 1 throwing listener + 1 collecting onError — 3 fixed dispatches (FUND, SUBMIT_MILESTONE, VERIFY_PASS) all succeeded: state VERIFIED, 3 history entries (a throwing listener never breaks dispatch or the audit trail)`,
