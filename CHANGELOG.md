@@ -19,6 +19,27 @@ version changes.
 ### Added
 
 - Benchmark coverage for the settlement-event dedupe
+  stats snapshot path: `SettlementEventDedupe.stats()` on a
+  fixed dedupe (7 ids recorded under an injectable clock
+  that advances only while the fixture is built, with a
+  60-second TTL and a capacity of 6 — one id LRU-evicted
+  during construction, one id expired at the stats instant
+  but still sitting in the map, and 5 live ids) — the
+  observability snapshot a receiver's monitoring polls on
+  every tick, previously read only as an incidental fixture
+  self-check inside the other dedupe paths. Its
+  per-iteration self-check pins the snapshot to the
+  hand-written expectation (`{ size: 5, hits: 1, misses: 7,
+  evictions: 1 }` — size counts only the live ids, so the
+  expired id still sitting in the map is excluded); outside
+  the timed loop, a mutated detached snapshot is pinned to
+  leave a re-read unchanged and an empty dedupe is pinned
+  to report all-zero stats. The README Benchmarks table was
+  refreshed from one real run and gained the
+  `SettlementEventDedupe.stats (5 live entries, 1 expired)`
+  row (4,077,272 ops/sec in that run). Benchmark only; no
+  library behavior change.
+- Benchmark coverage for the settlement-event dedupe
   clear reset path: `SettlementEventDedupe.clear()` on a
   fresh dedupe rebuilt on every iteration (1,000 fixed
   ids recorded under an injected fixed clock, plus one
