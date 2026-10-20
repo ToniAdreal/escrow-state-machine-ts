@@ -70,6 +70,10 @@ import {
   DEMO_QUORUM_SIGNERS,
   DEMO_QUORUM_THRESHOLD,
   DEMO_REBUILT_DEADLINE,
+  DEMO_RETRY_AFTER_DELIVERY_HINT,
+  DEMO_RETRY_AFTER_DELIVERY_HINT_MS,
+  DEMO_RETRY_AFTER_DELIVERY_SCRIPTED_STATUSES,
+  DEMO_RETRY_AFTER_DELIVERY_URL,
   DEMO_RETRY_AFTER_NOW_MS,
   DEMO_SINGLE_DELIVERY_SCRIPTED_STATUSES,
   DEMO_SINGLE_DELIVERY_URL,
@@ -2089,6 +2093,24 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
       "  wire check: 2 captured POSTs, bodies byte-identical across attempts and equal to the signed payload body; the X-Signature the endpoint received verifies over the captured body: verifySettlementWebhook: ok",
     ),
   );
+  // 429 Retry-After delivery tail: that segment runs
+  // the rate-limit retry path end to end — scripted 429
+  // with the pinned hint, parsed then clamped to a zero
+  // wait by maxRetryDelayMs 0, scripted 200 on the retry.
+  assert.match(
+    out,
+    /429 Retry-After webhook delivery \(deliverSettlementWebhook via scripted fake fetch, zero network\):/,
+  );
+  assert.ok(
+    out.includes(
+      `  attempt 1: scripted 429 with Retry-After: ${DEMO_RETRY_AFTER_DELIVERY_HINT} (parseRetryAfter -> ${DEMO_RETRY_AFTER_DELIVERY_HINT_MS} ms) — attempt 2: scripted 200; result: status 200, attempts 2`,
+    ),
+  );
+  assert.ok(
+    out.includes(
+      "  wire check: 2 captured POSTs, bodies byte-identical across attempts and equal to the signed payload body; the X-Signature the endpoint received on the re-delivery verifies over the captured body: verifySettlementWebhook: ok",
+    ),
+  );
   // Dedupe snapshot tail: that segment persists a
   // fresh dedupe across a simulated restart — two ids new
   // then duplicate, snapshot exported (version + count
@@ -3370,7 +3392,7 @@ test("demo shows single-target delivery: deliverSettlementWebhook retries a scri
   // no later code can observe either fake.
   assert.equal(globalThis.fetch, originalFetch);
   // The segment follows the approval-log segment and
-  // precedes the closing dedupe-snapshot segment; it
+  // precedes the 429 Retry-After delivery segment; it
   // prints its lines verbatim, and its wire-check line is
   // the segment's last line.
   const deliveryAt = text.indexOf(
@@ -3392,7 +3414,7 @@ test("demo shows single-target delivery: deliverSettlementWebhook retries a scri
       "Single-target webhook delivery (deliverSettlementWebhook via scripted fake fetch, zero network):",
     ),
     lines.indexOf(
-      "Dedupe snapshot persistence (SettlementEventDedupe exportSnapshot / restore across a restart):",
+      "429 Retry-After webhook delivery (deliverSettlementWebhook via scripted fake fetch, zero network):",
     ) - 1,
   );
   assert.equal(
@@ -3408,7 +3430,7 @@ test("demo single-target delivery segment is deterministic: two runs print byte-
         "Single-target webhook delivery (deliverSettlementWebhook via scripted fake fetch, zero network):",
       ),
       ls.indexOf(
-        "Dedupe snapshot persistence (SettlementEventDedupe exportSnapshot / restore across a restart):",
+        "429 Retry-After webhook delivery (deliverSettlementWebhook via scripted fake fetch, zero network):",
       ) - 1,
     );
   const a = await runDemo();
@@ -3425,6 +3447,165 @@ test("demo single-target delivery segment is deterministic: two runs print byte-
   assert.equal(
     a.singleDeliverySignatureVerified,
     b.singleDeliverySignatureVerified,
+  );
+});
+
+test("demo shows 429 Retry-After delivery: deliverSettlementWebhook parses the pinned hint, clamps the wait to zero, and retries to success", async () => {
+  const {
+    webhook,
+    retryAfterDeliveryResult,
+    retryAfterDeliveryHintMs,
+    retryAfterDeliveryCalls,
+    retryAfterDeliverySignatureVerified,
+    lines,
+  } = await runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned expectations — written out here from the
+  // documented deliverSettlementWebhook() semantics in
+  // src/webhooks.ts, never derived by calling the delivery
+  // to produce them. test/maxRetryDelay.test.ts pins the
+  // maxRetryDelayMs clamp independently and
+  // test/webhookDelivery.test.ts pins the same
+  // 429-then-200 retry shape (the hint honored over
+  // backoff, the same signature and body on every
+  // attempt, the receiver verifying over the raw bytes).
+  assert.deepEqual(DEMO_RETRY_AFTER_DELIVERY_SCRIPTED_STATUSES, [429, 200]);
+  assert.equal(DEMO_RETRY_AFTER_DELIVERY_HINT, "120");
+  assert.equal(DEMO_RETRY_AFTER_DELIVERY_HINT_MS, 120_000);
+  assert.deepEqual(retryAfterDeliveryResult, { status: 200, attempts: 2 });
+  assert.equal(retryAfterDeliveryHintMs, 120_000);
+  // Independent cross-check: parsing the pinned hint
+  // directly reproduces the same milliseconds — the demo
+  // segment is not self-certifying.
+  assert.equal(parseRetryAfter(DEMO_RETRY_AFTER_DELIVERY_HINT), 120_000);
+  assert.equal(retryAfterDeliveryCalls.length, 2);
+  for (const call of retryAfterDeliveryCalls) {
+    assert.equal(call.url, DEMO_RETRY_AFTER_DELIVERY_URL);
+    assert.equal(call.method, "POST");
+    assert.equal(call.body, JSON.stringify(webhook.payload));
+    assert.equal(call.signature, webhook.signature);
+  }
+  assert.equal(retryAfterDeliverySignatureVerified, true);
+  assert.equal(
+    verifySettlementWebhook(
+      retryAfterDeliveryCalls[1].body,
+      retryAfterDeliveryCalls[1].signature,
+      DEMO_WEBHOOK_SECRET,
+    ),
+    true,
+  );
+  // Independent cross-check: a fresh scripted fetch
+  // through the library entry point reproduces the same
+  // shape — a 429 carrying the pinned hint, clamped to a
+  // zero wait, retried once to a 200. The probe restores
+  // the global fetch in the finally, exactly like the
+  // demo.
+  const probeCalls: Array<{ body: string; signature: string }> = [];
+  const probeFetch: typeof fetch = async (_input, init) => {
+    probeCalls.push({
+      body: String(init?.body ?? ""),
+      signature: String(
+        new Headers(init?.headers).get("x-signature") ?? "",
+      ),
+    });
+    const status = probeCalls.length === 1 ? 429 : 200;
+    return new Response(status === 200 ? "{}" : "rate limited", {
+      status,
+      headers:
+        status === 429
+          ? { "retry-after": DEMO_RETRY_AFTER_DELIVERY_HINT }
+          : { "content-type": "application/json" },
+    });
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = probeFetch;
+  let probeResult;
+  try {
+    probeResult = await deliverSettlementWebhook(
+      DEMO_RETRY_AFTER_DELIVERY_URL,
+      webhook,
+      { maxRetryDelayMs: 0 },
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.deepEqual(probeResult, { status: 200, attempts: 2 });
+  assert.equal(probeCalls.length, 2);
+  assert.equal(probeCalls[0].body, probeCalls[1].body);
+  assert.equal(
+    verifySettlementWebhook(
+      probeCalls[1].body,
+      probeCalls[1].signature,
+      DEMO_WEBHOOK_SECRET,
+    ),
+    true,
+  );
+  // Global fetch restored by both the probe and the demo:
+  // no later code can observe either fake.
+  assert.equal(globalThis.fetch, originalFetch);
+  // The segment follows the single-target delivery
+  // segment and precedes the closing dedupe-snapshot
+  // segment; it prints its lines verbatim, and its
+  // wire-check line is the segment's last line.
+  const retryAt = text.indexOf(
+    "429 Retry-After webhook delivery (deliverSettlementWebhook via scripted fake fetch, zero network):",
+  );
+  assert.ok(
+    retryAt >
+      text.indexOf(
+        "Single-target webhook delivery (deliverSettlementWebhook via scripted fake fetch, zero network):",
+      ),
+    "429 Retry-After delivery segment must follow the single-target delivery segment",
+  );
+  for (const line of [
+    `  endpoint: ${DEMO_RETRY_AFTER_DELIVERY_URL} — the main escrow's signed webhook (eventId ${DEMO_WEBHOOK_EVENT_ID}) delivered alone against a rate-limiting endpoint, the first demo delivery to run the 429 retry path end to end`,
+    `  attempt 1: scripted 429 with Retry-After: ${DEMO_RETRY_AFTER_DELIVERY_HINT} (parseRetryAfter -> ${DEMO_RETRY_AFTER_DELIVERY_HINT_MS} ms) — attempt 2: scripted 200; result: status 200, attempts 2`,
+    `  wait: retryDelayMs parses the hint and maxRetryDelayMs 0 clamps the parsed ${DEMO_RETRY_AFTER_DELIVERY_HINT_MS} ms to 0 — the hint is parsed and applied, and the retry fires with zero real waiting`,
+    "  wire check: 2 captured POSTs, bodies byte-identical across attempts and equal to the signed payload body; the X-Signature the endpoint received on the re-delivery verifies over the captured body: verifySettlementWebhook: ok",
+  ]) {
+    assert.ok(text.includes(line), `missing 429 Retry-After line: ${line}`);
+  }
+  const retrySegment = lines.slice(
+    lines.indexOf(
+      "429 Retry-After webhook delivery (deliverSettlementWebhook via scripted fake fetch, zero network):",
+    ),
+    lines.indexOf(
+      "Dedupe snapshot persistence (SettlementEventDedupe exportSnapshot / restore across a restart):",
+    ) - 1,
+  );
+  assert.equal(
+    retrySegment[retrySegment.length - 1],
+    "  wire check: 2 captured POSTs, bodies byte-identical across attempts and equal to the signed payload body; the X-Signature the endpoint received on the re-delivery verifies over the captured body: verifySettlementWebhook: ok",
+  );
+});
+
+test("demo 429 Retry-After delivery segment is deterministic: two runs print byte-identical delivery lines", async () => {
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf(
+        "429 Retry-After webhook delivery (deliverSettlementWebhook via scripted fake fetch, zero network):",
+      ),
+      ls.indexOf(
+        "Dedupe snapshot persistence (SettlementEventDedupe exportSnapshot / restore across a restart):",
+      ) - 1,
+    );
+  const a = await runDemo();
+  const b = await runDemo();
+  const segA = segment(a.lines);
+  // Header + the endpoint line + the attempt line + the
+  // wait line + the wire-check line; every value is
+  // derived from the fixed fixtures and the scripted
+  // statuses alone (the wait is clamped to zero, so no
+  // real time enters), and no normalization is needed.
+  assert.equal(segA.length, 5);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(a.retryAfterDeliveryResult, b.retryAfterDeliveryResult);
+  assert.equal(a.retryAfterDeliveryHintMs, b.retryAfterDeliveryHintMs);
+  assert.deepEqual(a.retryAfterDeliveryCalls, b.retryAfterDeliveryCalls);
+  assert.equal(
+    a.retryAfterDeliverySignatureVerified,
+    b.retryAfterDeliverySignatureVerified,
   );
 });
 
@@ -3516,7 +3697,7 @@ test("demo shows dedupe snapshot persistence: recorded ids survive a JSON round-
       ),
     ),
   );
-  // The segment follows the single-target delivery
+  // The segment follows the 429 Retry-After delivery
   // segment and precedes the dedupe-clear segment; it
   // prints its lines verbatim (only the snapshot version
   // and entry count — never a full entry line), and its
@@ -3527,9 +3708,9 @@ test("demo shows dedupe snapshot persistence: recorded ids survive a JSON round-
   assert.ok(
     snapshotAt >
       text.indexOf(
-        "Single-target webhook delivery (deliverSettlementWebhook via scripted fake fetch, zero network):",
+        "429 Retry-After webhook delivery (deliverSettlementWebhook via scripted fake fetch, zero network):",
       ),
-    "dedupe snapshot segment must follow the single-target delivery segment",
+    "dedupe snapshot segment must follow the 429 Retry-After delivery segment",
   );
   for (const line of [
     `  source dedupe (fixed clock ${DEMO_WEBHOOK_AT}, TTL ${DEMO_DEDUPE_TTL_MS} ms): eventId ${DEMO_DEDUPE_SNAPSHOT_EVENT_IDS[0]} — checkAndRecord: false (new event), again: true (duplicate); eventId ${DEMO_DEDUPE_SNAPSHOT_EVENT_IDS[1]} — checkAndRecord: false (new event), again: true (duplicate)`,

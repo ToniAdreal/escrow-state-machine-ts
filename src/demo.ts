@@ -235,6 +235,25 @@
  * verifies under the demo secret with
  * `verifySettlementWebhook()`; both sides are asserted
  * outside the printing against hand-pinned expectations.
+ * The demo then shows a 429 Retry-After delivery
+ * segment: the same signed webhook is delivered again
+ * with `deliverSettlementWebhook()` alone, this time to
+ * a fixed endpoint whose fake `fetch` answers 429 with
+ * a pinned `Retry-After: 120` header on the first
+ * attempt and 200 on the second — the first demo
+ * delivery that actually runs the rate-limit retry
+ * path the parsing segment above only ever described
+ * (its text concedes the demo never runs a live
+ * delivery, and no delivery segment calls `sleep` at
+ * all). The hint is parsed by `retryDelayMs` to
+ * 120,000 ms and clamped by `maxRetryDelayMs: 0` to a
+ * zero wait, so the retry fires immediately with no
+ * real waiting, and the delivery resolves
+ * `{status: 200, attempts: 2}`; the re-delivered body
+ * is byte-identical to the first attempt's and its
+ * `X-Signature` verifies over that body under the demo
+ * secret; all sides are asserted outside the printing
+ * against hand-pinned expectations.
  * The demo then shows a dedupe snapshot
  * persistence segment: a fresh `SettlementEventDedupe`
  * on a fixed clock records two fixed eventIds (each new
@@ -850,6 +869,52 @@ export const DEMO_SINGLE_DELIVERY_URL =
 export const DEMO_SINGLE_DELIVERY_SCRIPTED_STATUSES: readonly number[] = [
   500, 200,
 ];
+
+/**
+ * 429 Retry-After delivery fixtures for the closing
+ * segment after the single-target delivery: the main
+ * escrow's already-built signed webhook is delivered
+ * alone once more, to ONE fixed endpoint whose scripted
+ * fake answers 429 — carrying the pinned
+ * {@link DEMO_RETRY_AFTER_DELIVERY_HINT} header — on
+ * attempt 1 and 200 on attempt 2. Hand-pinned
+ * expectations — written from the documented
+ * `deliverSettlementWebhook()` semantics in
+ * src/webhooks.ts (a 429 is retried; `retryDelayMs`
+ * parses the `Retry-After` hint through
+ * `parseRetryAfter` and clamps it with `Math.min` to
+ * `maxRetryDelayMs` before `sleepAbortable` waits;
+ * delay-seconds "120" parses to 120,000 ms), never
+ * derived by calling the delivery itself, and
+ * cross-checked against test/maxRetryDelay.test.ts and
+ * test/webhookDelivery.test.ts, which pin the same
+ * clamp and the same 429-then-200 retry shape:
+ * - the result is exactly `{status: 200, attempts: 2}`
+ * - `parseRetryAfter(DEMO_RETRY_AFTER_DELIVERY_HINT)`
+ *   is exactly 120,000 — the hint is genuinely parsed
+ *   before it is clamped
+ * - exactly 2 requests are captured, both POSTs to
+ *   {@link DEMO_RETRY_AFTER_DELIVERY_URL}, bodies
+ *   byte-identical to each other and to the canonical
+ *   body of the demo webhook, and the captured
+ *   `X-Signature` equals the webhook's signature and
+ *   verifies over the captured body under
+ *   {@link DEMO_WEBHOOK_SECRET}
+ * The endpoint is an example.com URL that is never
+ * really fetched (scripted fake on `globalThis` for
+ * this segment only, the original restored afterwards,
+ * the same seam the single-target segment uses).
+ * `maxRetryDelayMs: 0` clamps the parsed 120,000 ms
+ * hint to a zero wait — the hint is still parsed and
+ * applied, the retry just fires immediately — so no
+ * real waiting and no wall clock enter the segment.
+ */
+export const DEMO_RETRY_AFTER_DELIVERY_URL =
+  "https://hooks.example.com/settlement-retry-after";
+export const DEMO_RETRY_AFTER_DELIVERY_HINT = "120";
+export const DEMO_RETRY_AFTER_DELIVERY_HINT_MS = 120_000;
+export const DEMO_RETRY_AFTER_DELIVERY_SCRIPTED_STATUSES: readonly number[] =
+  [429, 200];
 
 /**
  * Dedupe snapshot-persistence fixtures for the final
@@ -1571,6 +1636,44 @@ export interface DemoResult {
    * over the wire bytes.
    */
   singleDeliverySignatureVerified: boolean;
+  /**
+   * Result of delivering the main escrow's signed webhook
+   * alone to {@link DEMO_RETRY_AFTER_DELIVERY_URL} with
+   * `deliverSettlementWebhook()`: exactly
+   * `{status: 200, attempts: 2}` — the scripted endpoint
+   * answered 429 (with the pinned `Retry-After` hint)
+   * first, so the delivery succeeded only after the
+   * rate-limit retry.
+   */
+  retryAfterDeliveryResult: WebhookDeliveryResult;
+  /**
+   * `parseRetryAfter()` on the pinned hint the scripted
+   * 429 carried ({@link DEMO_RETRY_AFTER_DELIVERY_HINT}):
+   * exactly {@link DEMO_RETRY_AFTER_DELIVERY_HINT_MS} —
+   * the hint is genuinely parsed before
+   * `maxRetryDelayMs: 0` clamps the wait to zero.
+   */
+  retryAfterDeliveryHintMs: number | undefined;
+  /**
+   * The requests the scripted fake fetch captured during
+   * the 429 Retry-After delivery, in call order: exactly
+   * 2, both POSTs to {@link DEMO_RETRY_AFTER_DELIVERY_URL}
+   * with byte-identical bodies (the canonical body of
+   * the demo webhook) and the webhook's signature in
+   * `x-signature`.
+   */
+  retryAfterDeliveryCalls: Array<{
+    url: string;
+    method: string;
+    body: string;
+    signature: string;
+  }>;
+  /**
+   * True when the `X-Signature` header captured on the
+   * re-delivered (successful) attempt verifies over that
+   * attempt's captured raw body under the demo secret.
+   */
+  retryAfterDeliverySignatureVerified: boolean;
   /**
    * The final closing segment's source dedupe, after both
    * fixed ids were recorded twice (new, then duplicate):
@@ -3535,6 +3638,118 @@ export async function runDemo(): Promise<DemoResult> {
     `  wire check: ${singleDeliveryCalls.length} captured POSTs, bodies byte-identical across attempts and equal to the signed payload body; the X-Signature the endpoint received verifies over the captured body: verifySettlementWebhook: ${singleDeliverySignatureVerified ? "ok" : "FAILED"}`,
   );
 
+  // --- 429 Retry-After delivery: deliverSettlementWebhook (closing) ---
+  // The Retry-After parsing segment above only ever
+  // parsed hints on a fixed clock — its own text concedes
+  // the demo never runs a live delivery, and no delivery
+  // segment so far has taken the 429 path at all (the
+  // fan-out fake answers 200 immediately, the
+  // single-target fake answers 500 then 200). Here the
+  // same signed webhook is delivered alone once more,
+  // through a scripted fake fetch installed on
+  // `globalThis` for this segment only (the original is
+  // restored in the `finally`): attempt 1 answers 429
+  // carrying the pinned `Retry-After` hint, and
+  // `deliverSettlementWebhook` runs it through
+  // `retryDelayMs` — parsed to the pinned hint ms, then
+  // clamped by `maxRetryDelayMs: 0` to a zero wait, so
+  // the hint is genuinely parsed and applied yet no real
+  // waiting happens — and `sleepAbortable`, after which
+  // attempt 2 answers 200 and the delivery resolves
+  // {status: 200, attempts: 2}. Hand-pinned expectations
+  // (see the fixture comment above), asserted HERE,
+  // outside the printing: the parsed hint equals the
+  // pinned hint ms, exactly 2 requests are captured,
+  // both POSTs to the pinned URL carrying byte-identical
+  // bodies equal to the canonical body of the demo
+  // webhook, and the re-delivered attempt's X-Signature
+  // equals the webhook's signature and verifies over
+  // the captured body under the demo secret — a delivery
+  // that skipped the retry, waited on the unclamped
+  // hint, or altered the body between attempts would
+  // fail (or visibly stall) the demo itself. Zero
+  // network, zero real waiting, no wall clock.
+  const retryAfterDeliveryHintMs = parseRetryAfter(
+    DEMO_RETRY_AFTER_DELIVERY_HINT,
+  );
+  const retryAfterDeliveryCalls: Array<{
+    url: string;
+    method: string;
+    body: string;
+    signature: string;
+  }> = [];
+  const retryAfterDeliveryFetch: typeof fetch = async (input, init) => {
+    retryAfterDeliveryCalls.push({
+      url: String(input),
+      method: String(init?.method ?? ""),
+      body: String(init?.body ?? ""),
+      signature: String(
+        new Headers(init?.headers).get("x-signature") ?? "",
+      ),
+    });
+    const status =
+      DEMO_RETRY_AFTER_DELIVERY_SCRIPTED_STATUSES[
+        Math.min(
+          retryAfterDeliveryCalls.length - 1,
+          DEMO_RETRY_AFTER_DELIVERY_SCRIPTED_STATUSES.length - 1,
+        )
+      ];
+    return new Response(status === 200 ? "{}" : "rate limited", {
+      status,
+      headers:
+        status === 429
+          ? { "retry-after": DEMO_RETRY_AFTER_DELIVERY_HINT }
+          : { "content-type": "application/json" },
+    });
+  };
+  const originalFetchForRetryAfter = globalThis.fetch;
+  let retryAfterDeliveryResult: WebhookDeliveryResult;
+  globalThis.fetch = retryAfterDeliveryFetch;
+  try {
+    retryAfterDeliveryResult = await deliverSettlementWebhook(
+      DEMO_RETRY_AFTER_DELIVERY_URL,
+      webhook,
+      { maxRetryDelayMs: 0 },
+    );
+  } finally {
+    globalThis.fetch = originalFetchForRetryAfter;
+  }
+  const retryAfterDeliveryFinalCall =
+    retryAfterDeliveryCalls[retryAfterDeliveryCalls.length - 1];
+  const retryAfterDeliverySignatureVerified =
+    retryAfterDeliveryFinalCall !== undefined &&
+    verifySettlementWebhook(
+      retryAfterDeliveryFinalCall.body,
+      retryAfterDeliveryFinalCall.signature,
+      DEMO_WEBHOOK_SECRET,
+    );
+  if (
+    retryAfterDeliveryResult.status !== 200 ||
+    retryAfterDeliveryResult.attempts !== 2 ||
+    retryAfterDeliveryHintMs !== DEMO_RETRY_AFTER_DELIVERY_HINT_MS ||
+    retryAfterDeliveryCalls.length !== 2 ||
+    retryAfterDeliveryCalls.some(
+      (call) =>
+        call.url !== DEMO_RETRY_AFTER_DELIVERY_URL ||
+        call.method !== "POST" ||
+        call.body !== JSON.stringify(webhook.payload) ||
+        call.signature !== webhook.signature,
+    ) ||
+    !retryAfterDeliverySignatureVerified
+  ) {
+    throw new Error(
+      "demo fixture broken: deliverSettlementWebhook 429 Retry-After delivery does not match the pinned shape (scripted 429 with the pinned Retry-After hint then 200, hint parsed to the pinned ms, result {status: 200, attempts: 2}, two POSTs with byte-identical signed bodies, captured X-Signature verifiable under the demo secret)",
+    );
+  }
+  lines.push(
+    "",
+    "429 Retry-After webhook delivery (deliverSettlementWebhook via scripted fake fetch, zero network):",
+    `  endpoint: ${DEMO_RETRY_AFTER_DELIVERY_URL} — the main escrow's signed webhook (eventId ${webhook.payload.eventId}) delivered alone against a rate-limiting endpoint, the first demo delivery to run the 429 retry path end to end`,
+    `  attempt 1: scripted 429 with Retry-After: ${DEMO_RETRY_AFTER_DELIVERY_HINT} (parseRetryAfter -> ${retryAfterDeliveryHintMs} ms) — attempt 2: scripted 200; result: status ${retryAfterDeliveryResult.status}, attempts ${retryAfterDeliveryResult.attempts}`,
+    `  wait: retryDelayMs parses the hint and maxRetryDelayMs 0 clamps the parsed ${DEMO_RETRY_AFTER_DELIVERY_HINT_MS} ms to 0 — the hint is parsed and applied, and the retry fires with zero real waiting`,
+    `  wire check: ${retryAfterDeliveryCalls.length} captured POSTs, bodies byte-identical across attempts and equal to the signed payload body; the X-Signature the endpoint received on the re-delivery verifies over the captured body: verifySettlementWebhook: ${retryAfterDeliverySignatureVerified ? "ok" : "FAILED"}`,
+  );
+
   // --- Dedupe snapshot persistence: exportSnapshot / restore (closing) ---
   // The receiver-dedupe segment above ran entirely in
   // memory: a receiver restart would forget every id
@@ -3923,6 +4138,10 @@ export async function runDemo(): Promise<DemoResult> {
     singleDeliveryResult,
     singleDeliveryCalls,
     singleDeliverySignatureVerified,
+    retryAfterDeliveryResult,
+    retryAfterDeliveryHintMs,
+    retryAfterDeliveryCalls,
+    retryAfterDeliverySignatureVerified,
     dedupeSnapshotSource,
     dedupeSnapshotFirst,
     dedupeSnapshotDuplicate,

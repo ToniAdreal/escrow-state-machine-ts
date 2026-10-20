@@ -18,6 +18,27 @@ version changes.
 
 ### Added
 
+- CLI demo coverage for the 429 Retry-After delivery
+  retry path: the main escrow's signed webhook is
+  delivered with `deliverSettlementWebhook()` to a
+  scripted fake endpoint that answers 429 with a pinned
+  `Retry-After: 120` header first and 200 on the retry —
+  the first demo delivery to run the rate-limit retry
+  end to end (the parsing segment only ever parsed
+  hints; no earlier delivery took the 429 path). The
+  segment prints the parsed hint (120,000 ms) and the
+  clamp: `maxRetryDelayMs: 0` clamps the parsed wait to
+  zero, so the hint is parsed and applied with no real
+  waiting. Outside the printing it asserts the result
+  is exactly `{status: 200, attempts: 2}`, exactly two
+  POSTs were captured with byte-identical signed
+  bodies, and the re-delivered attempt's `X-Signature`
+  verifies over the captured body under the demo
+  secret. `DemoResult` exposes the delivery result, the
+  parsed hint milliseconds, the captured calls, and the
+  signature-verified verdict; the demo tests pin the
+  segment's lines, its order, and its determinism.
+  Demo and tests only; no library behavior change.
 - Benchmark coverage for the settlement-event dedupe
   stats snapshot path: `SettlementEventDedupe.stats()` on a
   fixed dedupe (7 ids recorded under an injectable clock
