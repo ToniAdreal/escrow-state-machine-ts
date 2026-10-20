@@ -18,6 +18,23 @@ version changes.
 
 ### Added
 
+- Benchmark coverage for the settlement-event dedupe
+  clear reset path: `SettlementEventDedupe.clear()` on a
+  fresh dedupe rebuilt on every iteration (1,000 fixed
+  ids recorded under an injected fixed clock, plus one
+  duplicate hit on the first id, so the counters about to
+  be zeroed are non-trivial), checked on every iteration
+  against hand-pinned expectations (the size and every
+  observability counter at zero right after the clear,
+  the first id recording as a new event again with the
+  counters re-accumulating from zero), with clearing an
+  empty dedupe pinned as a harmless no-op once outside
+  the timed loop. This separates the reset cost from the
+  checkAndRecord / restore / exportSnapshot rows, which
+  never drop the recorded ids. The README Benchmarks
+  table was refreshed from one real run and gained the
+  `SettlementEventDedupe.clear (1,000 recorded ids, fresh fixture)`
+  row (6,635 ops/sec in that run).
 - CLI demo coverage for the README diagram sync check:
   `readmeDiagramInSync()` (imported directly from
   `src/diagram.ts`, as the benchmark does) reads this
