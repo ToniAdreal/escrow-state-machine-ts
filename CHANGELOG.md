@@ -18,6 +18,25 @@ version changes.
 
 ### Added
 
+- CLI demo coverage for the quorum `revoke()`
+  vote-change path: a fresh 2-of-3 quorum on a fixed
+  clock collects two approvals and reaches its
+  threshold, one signer revokes (approvalCount drops
+  to 1, `hasQuorum()` turns false, `approvals()` is
+  exactly [arb-2] and the audit trail keeps only that
+  signer's entry), and the same signer re-approves —
+  the threshold is restored with the re-voter last in
+  `approvals()` order. Revoking an unknown signer and
+  revoking a signer that never approved are both
+  rejected with their exact errors and leave the
+  quorum untouched; all sides are asserted outside
+  the printing against hand-pinned expectations.
+  `DemoResult` exposes the quorum, the before / after
+  counts and quorum verdicts, the approval orders,
+  the final audit trail, and both error messages; the
+  demo tests pin the segment's lines, its order, and
+  its determinism. Demo and tests only; no library
+  behavior change.
 - CLI demo coverage for the 429 Retry-After delivery
   retry path: the main escrow's signed webhook is
   delivered with `deliverSettlementWebhook()` to a

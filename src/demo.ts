@@ -285,7 +285,7 @@
  * (there the recorded ids survive, here they are dropped
  * on purpose); all sides are asserted outside the
  * printing against hand-pinned expectations.
- * The demo finally closes with a subscribe `onError`
+ * The demo then shows a subscribe `onError`
  * error-routing segment: a branch escrow subscribes one
  * pinned throwing listener with a collecting `onError`,
  * and a short fixed-timestamp chain (FUND,
@@ -299,6 +299,19 @@
  * rejected at subscribe time with the exact
  * invalid-subscribe error; all sides are asserted outside
  * the printing against hand-pinned expectations.
+ * The demo finally closes with a quorum revoke segment:
+ * a fresh quorum on a fixed clock (2-of-3, same signer ids
+ * as the dispute quorum) collects two approvals and
+ * reaches its threshold, then one signer `revoke()`s —
+ * the count drops below the threshold and `hasQuorum()`
+ * turns false — and the same signer re-approves, so the
+ * threshold is reached again with the re-voter last in
+ * `approvals()` order (order follows each signer's latest
+ * approval); revoking an unknown signer and revoking a
+ * signer that never approved are both rejected with their
+ * exact errors and leave the quorum untouched; all sides
+ * are asserted outside the printing against hand-pinned
+ * expectations.
  *
  * Usage: `npm run demo` (builds with tsc, then runs node on the compiled
  * output). Zero runtime dependencies: this file only imports the library
@@ -1072,6 +1085,51 @@ export const DEMO_ONERROR_EXPECTED_REPORTS: ReadonlyArray<{
 export const DEMO_ONERROR_INVALID_ERROR =
   "invalid subscribe: onError must be a function, got string";
 
+/**
+ * Quorum revoke fixtures for the final closing segment: a
+ * fresh quorum (2-of-3, same signer ids as the dispute
+ * quorum) on a fixed clock. Hand-pinned expectations —
+ * written from the documented `revoke()` semantics in
+ * src/quorum.ts (revoking removes all of the signer's log
+ * entries; re-approving appends a fresh entry, so the
+ * re-voter sorts last in `approvals()`; unknown signers
+ * and signers that have not approved throw), never derived
+ * by calling `revoke()` itself, and cross-checked against
+ * test/revoke.test.ts:
+ * - arb-1 approves at {@link DEMO_REVOKE_FIRST_AT} and
+ *   arb-2 at {@link DEMO_REVOKE_SECOND_AT}: approvalCount
+ *   2, hasQuorum true, approvals [arb-1, arb-2]
+ * - arb-1 revokes: approvalCount 1, hasQuorum false,
+ *   approvals exactly [arb-2], and the audit trail keeps
+ *   only arb-2's entry
+ * - arb-1 re-approves at {@link DEMO_REVOKE_REAPPROVE_AT}:
+ *   approvalCount 2, hasQuorum true, approvals exactly
+ *   [arb-2, arb-1] — the re-voter is last
+ * - revoking {@link DEMO_REVOKE_UNKNOWN_SIGNER} throws
+ *   exactly {@link DEMO_REVOKE_UNKNOWN_ERROR}, and
+ *   revoking arb-3 (a signer that never approved) throws
+ *   exactly {@link DEMO_REVOKE_NOT_APPROVED_ERROR}; both
+ *   failed revokes leave the quorum untouched
+ * Every timestamp is a fixed literal: no network, no
+ * randomness, no wall clock (the quorum's clock is a
+ * variable the segment sets to fixed instants only).
+ */
+export const DEMO_REVOKE_FIRST_AT = "2026-03-17T09:00:00.000Z";
+export const DEMO_REVOKE_SECOND_AT = "2026-03-17T09:01:00.000Z";
+export const DEMO_REVOKE_REAPPROVE_AT = "2026-03-17T09:02:00.000Z";
+export const DEMO_REVOKE_UNKNOWN_SIGNER = "mallory";
+export const DEMO_REVOKE_UNKNOWN_ERROR =
+  'unknown quorum signer: "mallory"';
+export const DEMO_REVOKE_NOT_APPROVED_ERROR =
+  'cannot revoke: signer "arb-3" has not approved';
+export const DEMO_REVOKE_LOG_AFTER_REVOKE: readonly ApprovalLogEntry[] = [
+  { signerId: "arb-2", at: "2026-03-17T09:01:00.000Z" },
+];
+export const DEMO_REVOKE_LOG_FINAL: readonly ApprovalLogEntry[] = [
+  { signerId: "arb-2", at: "2026-03-17T09:01:00.000Z" },
+  { signerId: "arb-1", at: "2026-03-17T09:02:00.000Z" },
+];
+
 const steps: Array<{
   event: EscrowEvent;
   actor: string;
@@ -1825,6 +1883,55 @@ export interface DemoResult {
    * still reads 1.
    */
   onErrorInvalidError: string;
+  /**
+   * The final closing segment's fresh quorum (2-of-3, same
+   * signer ids as the dispute quorum), after the revoke /
+   * re-approve cycle and both failed revoke probes:
+   * approvalCount 2, hasQuorum true, approvals exactly
+   * [arb-2, arb-1].
+   */
+  quorumRevokeQuorum: Quorum;
+  /** Counted approvals before the revoke: 2 — threshold reached. */
+  quorumRevokeCountBefore: number;
+  /** `hasQuorum()` before the revoke: `true`. */
+  quorumRevokeHasQuorumBefore: boolean;
+  /** Counted approvals after arb-1 revokes: 1 — below threshold. */
+  quorumRevokeCountAfterRevoke: number;
+  /** `hasQuorum()` after the revoke: `false`. */
+  quorumRevokeHasQuorumAfterRevoke: boolean;
+  /**
+   * `approvals()` after the revoke: exactly [arb-2]; the
+   * audit trail likewise keeps only arb-2's entry
+   * ({@link DEMO_REVOKE_LOG_AFTER_REVOKE}).
+   */
+  quorumRevokeApprovalsAfterRevoke: readonly string[];
+  /** Counted approvals after arb-1 re-approves: 2 — threshold restored. */
+  quorumRevokeCountAfterReapprove: number;
+  /** `hasQuorum()` after the re-approval: `true`. */
+  quorumRevokeHasQuorumAfterReapprove: boolean;
+  /**
+   * `approvals()` after the re-approval: exactly
+   * [arb-2, arb-1] — the re-voter sorts last, by latest
+   * approval.
+   */
+  quorumRevokeApprovalsAfterReapprove: readonly string[];
+  /**
+   * `approvalLog()` after the re-approval: exactly
+   * {@link DEMO_REVOKE_LOG_FINAL} — arb-2's original entry
+   * plus arb-1's fresh re-approval entry.
+   */
+  quorumRevokeLogFinal: ReadonlyArray<ApprovalLogEntry>;
+  /**
+   * Error message of revoking the unknown signer
+   * {@link DEMO_REVOKE_UNKNOWN_SIGNER}: exactly
+   * {@link DEMO_REVOKE_UNKNOWN_ERROR}.
+   */
+  quorumRevokeUnknownError: string;
+  /**
+   * Error message of revoking arb-3, a signer that never
+   * approved: exactly {@link DEMO_REVOKE_NOT_APPROVED_ERROR}.
+   */
+  quorumRevokeNotApprovedError: string;
   lines: string[];
 }
 
@@ -4057,6 +4164,108 @@ export async function runDemo(): Promise<DemoResult> {
     `  non-function onError rejected at subscribe time: "${onErrorInvalidError}" — nothing was registered (listenerCount still ${onErrorEscrow.listenerCount})`,
   );
 
+  // --- Quorum revoke: revoke() vote change (final closing) ---
+  // The approval-log segment above narrates that only
+  // revoke() removes a signer's entries, but no demo
+  // segment ever called it: the change-of-vote semantics
+  // lived only in the unit tests and the bench. Here a
+  // fresh quorum (2-of-3, same signer ids, fixed clock)
+  // collects arb-1 and arb-2 and reaches its threshold;
+  // arb-1 then revokes — the count drops to 1, hasQuorum
+  // turns false, approvals() is exactly [arb-2], and the
+  // audit trail keeps only arb-2's entry — and arb-1
+  // re-approves at a later fixed instant, restoring the
+  // threshold with the re-voter last in approvals()
+  // order. Two failed revokes close the segment: an
+  // unknown signer and a signer that never approved
+  // (arb-3) are each rejected with their exact error and
+  // leave the quorum untouched. Hand-pinned expectations
+  // (see the fixture comment above), asserted HERE,
+  // outside the printing: a revoke that left the entry in
+  // the trail, a re-approval that kept the old order, or
+  // a failed revoke that mutated the quorum would fail
+  // the demo itself, not just a test. Zero network, zero
+  // randomness; the quorum clock is set to fixed instants
+  // only.
+  let quorumRevokeNowMs = Date.parse(DEMO_REVOKE_FIRST_AT);
+  const quorumRevokeQuorum = createQuorum({
+    threshold: DEMO_QUORUM_THRESHOLD,
+    signers: [...DEMO_QUORUM_SIGNERS],
+    now: () => quorumRevokeNowMs,
+  });
+  quorumRevokeQuorum.approve(DEMO_QUORUM_SIGNERS[0]);
+  quorumRevokeNowMs = Date.parse(DEMO_REVOKE_SECOND_AT);
+  quorumRevokeQuorum.approve(DEMO_QUORUM_SIGNERS[1]);
+  const quorumRevokeCountBefore = quorumRevokeQuorum.approvalCount();
+  const quorumRevokeHasQuorumBefore = quorumRevokeQuorum.hasQuorum();
+  quorumRevokeQuorum.revoke(DEMO_QUORUM_SIGNERS[0]);
+  const quorumRevokeCountAfterRevoke = quorumRevokeQuorum.approvalCount();
+  const quorumRevokeHasQuorumAfterRevoke = quorumRevokeQuorum.hasQuorum();
+  const quorumRevokeApprovalsAfterRevoke = quorumRevokeQuorum.approvals();
+  const quorumRevokeLogAfterRevoke = quorumRevokeQuorum.approvalLog();
+  quorumRevokeNowMs = Date.parse(DEMO_REVOKE_REAPPROVE_AT);
+  quorumRevokeQuorum.approve(DEMO_QUORUM_SIGNERS[0]);
+  const quorumRevokeCountAfterReapprove = quorumRevokeQuorum.approvalCount();
+  const quorumRevokeHasQuorumAfterReapprove = quorumRevokeQuorum.hasQuorum();
+  const quorumRevokeApprovalsAfterReapprove = quorumRevokeQuorum.approvals();
+  const quorumRevokeLogFinal = quorumRevokeQuorum.approvalLog();
+  let quorumRevokeUnknownError = "";
+  try {
+    quorumRevokeQuorum.revoke(DEMO_REVOKE_UNKNOWN_SIGNER);
+  } catch (err) {
+    quorumRevokeUnknownError = err instanceof Error ? err.message : String(err);
+  }
+  let quorumRevokeNotApprovedError = "";
+  try {
+    quorumRevokeQuorum.revoke(DEMO_QUORUM_SIGNERS[2]);
+  } catch (err) {
+    quorumRevokeNotApprovedError =
+      err instanceof Error ? err.message : String(err);
+  }
+  const sameStringList = (
+    actual: readonly string[],
+    expected: readonly string[],
+  ): boolean =>
+    actual.length === expected.length &&
+    actual.every((v, i) => v === expected[i]);
+  if (
+    quorumRevokeCountBefore !== 2 ||
+    quorumRevokeHasQuorumBefore !== true ||
+    quorumRevokeCountAfterRevoke !== 1 ||
+    quorumRevokeHasQuorumAfterRevoke !== false ||
+    !sameStringList(quorumRevokeApprovalsAfterRevoke, [
+      DEMO_QUORUM_SIGNERS[1],
+    ]) ||
+    !sameApprovalEntries(
+      quorumRevokeLogAfterRevoke,
+      DEMO_REVOKE_LOG_AFTER_REVOKE,
+    ) ||
+    quorumRevokeCountAfterReapprove !== 2 ||
+    quorumRevokeHasQuorumAfterReapprove !== true ||
+    !sameStringList(quorumRevokeApprovalsAfterReapprove, [
+      DEMO_QUORUM_SIGNERS[1],
+      DEMO_QUORUM_SIGNERS[0],
+    ]) ||
+    !sameApprovalEntries(quorumRevokeLogFinal, DEMO_REVOKE_LOG_FINAL) ||
+    quorumRevokeUnknownError !== DEMO_REVOKE_UNKNOWN_ERROR ||
+    quorumRevokeNotApprovedError !== DEMO_REVOKE_NOT_APPROVED_ERROR ||
+    quorumRevokeQuorum.approvalCount() !== 2 ||
+    quorumRevokeQuorum.hasQuorum() !== true
+  ) {
+    throw new Error(
+      "demo fixture broken: quorum revoke does not match the pinned shape (2 counted / quorum before, revoke drops to 1 counted / no quorum with approvals [arb-2] and only arb-2 in the trail, re-approval restores 2 counted / quorum with the re-voter last, unknown-signer and never-approved revokes rejected with the pinned errors and the quorum untouched)",
+    );
+  }
+  lines.push(
+    "",
+    "Quorum revoke (Quorum.revoke() — a signer changes their vote):",
+    `  quorum (${DEMO_QUORUM_THRESHOLD}-of-${DEMO_QUORUM_SIGNERS.length}): approvals at ${DEMO_REVOKE_FIRST_AT} (${DEMO_QUORUM_SIGNERS[0]}) and ${DEMO_REVOKE_SECOND_AT} (${DEMO_QUORUM_SIGNERS[1]}) — approvalCount ${quorumRevokeCountBefore}, hasQuorum: ${quorumRevokeHasQuorumBefore}`,
+    `  revoke ${DEMO_QUORUM_SIGNERS[0]}: approvalCount ${quorumRevokeCountAfterRevoke}, hasQuorum: ${quorumRevokeHasQuorumAfterRevoke} — approvals now [${quorumRevokeApprovalsAfterRevoke.join(", ")}], approvalLog keeps ${quorumRevokeLogAfterRevoke.length} entry (revoke removes the signer's entries; expiry never does)`,
+    `  re-approve ${DEMO_QUORUM_SIGNERS[0]} at ${DEMO_REVOKE_REAPPROVE_AT}: approvalCount ${quorumRevokeCountAfterReapprove}, hasQuorum: ${quorumRevokeHasQuorumAfterReapprove} — approvals [${quorumRevokeApprovalsAfterReapprove.join(", ")}] (the re-voter sorts last, by latest approval)`,
+    `  revoke unknown signer "${DEMO_REVOKE_UNKNOWN_SIGNER}" rejected: "${quorumRevokeUnknownError}"`,
+    `  revoke ${DEMO_QUORUM_SIGNERS[2]} (never approved) rejected: "${quorumRevokeNotApprovedError}" — both failed revokes leave the quorum untouched (approvalCount still ${quorumRevokeQuorum.approvalCount()}, hasQuorum: ${quorumRevokeQuorum.hasQuorum()})`,
+  );
+
   return {
     escrow,
     report,
@@ -4164,6 +4373,18 @@ export async function runDemo(): Promise<DemoResult> {
     onErrorProbeEscrow,
     onErrorProbeState,
     onErrorInvalidError,
+    quorumRevokeQuorum,
+    quorumRevokeCountBefore,
+    quorumRevokeHasQuorumBefore,
+    quorumRevokeCountAfterRevoke,
+    quorumRevokeHasQuorumAfterRevoke,
+    quorumRevokeApprovalsAfterRevoke,
+    quorumRevokeCountAfterReapprove,
+    quorumRevokeHasQuorumAfterReapprove,
+    quorumRevokeApprovalsAfterReapprove,
+    quorumRevokeLogFinal,
+    quorumRevokeUnknownError,
+    quorumRevokeNotApprovedError,
     lines,
   };
 }

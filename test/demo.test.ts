@@ -69,6 +69,14 @@ import {
   DEMO_QUORUM_APPROVAL_ATS,
   DEMO_QUORUM_SIGNERS,
   DEMO_QUORUM_THRESHOLD,
+  DEMO_REVOKE_FIRST_AT,
+  DEMO_REVOKE_LOG_AFTER_REVOKE,
+  DEMO_REVOKE_LOG_FINAL,
+  DEMO_REVOKE_NOT_APPROVED_ERROR,
+  DEMO_REVOKE_REAPPROVE_AT,
+  DEMO_REVOKE_SECOND_AT,
+  DEMO_REVOKE_UNKNOWN_ERROR,
+  DEMO_REVOKE_UNKNOWN_SIGNER,
   DEMO_REBUILT_DEADLINE,
   DEMO_RETRY_AFTER_DELIVERY_HINT,
   DEMO_RETRY_AFTER_DELIVERY_HINT_MS,
@@ -2153,11 +2161,10 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
       `  same eventId after clear — checkAndRecord: false (new event again, recorded — the reset reopened the window on purpose); stats after re-record: size 1, hits 0, misses 1, evictions 0 (counting restarts from zero)`,
     ),
   );
-  // Subscribe onError tail: the closing segment routes a
+  // Subscribe onError tail: that segment routes a
   // throwing listener's errors to onError — 3 reports with
   // dispatch contexts, a throwing onError swallowed on the
-  // probe escrow, and a non-function onError rejected; the
-  // demo ends on the rejection line.
+  // probe escrow, and a non-function onError rejected.
   assert.match(
     out,
     /Subscribe onError error routing \(Escrow\.subscribe\(listener, \{ onError \}\) on a branch escrow\):/,
@@ -2173,10 +2180,26 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
     ),
   );
   assert.ok(
+    out.includes(
+      `  non-function onError rejected at subscribe time: "${DEMO_ONERROR_INVALID_ERROR}" — nothing was registered (listenerCount still 1)`,
+    ),
+  );
+  // Quorum revoke tail: the closing segment revokes one
+  // vote (count drops below threshold), re-approves it
+  // (threshold restored, re-voter last), and rejects an
+  // unknown signer and a never-approved signer; the demo
+  // ends on the failed-revokes line.
+  assert.match(out, /Quorum revoke \(Quorum\.revoke\(\) — a signer changes their vote\):/);
+  assert.ok(
+    out.includes(
+      `  revoke ${DEMO_QUORUM_SIGNERS[0]}: approvalCount 1, hasQuorum: false — approvals now [${DEMO_QUORUM_SIGNERS[1]}], approvalLog keeps 1 entry (revoke removes the signer's entries; expiry never does)`,
+    ),
+  );
+  assert.ok(
     out
       .trimEnd()
       .endsWith(
-        `  non-function onError rejected at subscribe time: "${DEMO_ONERROR_INVALID_ERROR}" — nothing was registered (listenerCount still 1)`,
+        `  revoke ${DEMO_QUORUM_SIGNERS[2]} (never approved) rejected: "${DEMO_REVOKE_NOT_APPROVED_ERROR}" — both failed revokes leave the quorum untouched (approvalCount still 2, hasQuorum: true)`,
       ),
   );
 });
@@ -4006,9 +4029,10 @@ test("demo shows subscribe onError routing: a throwing listener's errors reach o
     ),
   );
   assert.equal(probe.listenerCount, 1);
-  // The segment closes the demo: it follows the dedupe
-  // clear segment, prints its lines verbatim, and its
-  // rejection line is the demo's last line.
+  // The segment follows the dedupe clear segment and
+  // precedes the closing quorum revoke segment; it prints
+  // its lines verbatim, and its rejection line is the
+  // segment's last line.
   const onErrorAt = text.indexOf(
     "Subscribe onError error routing (Escrow.subscribe(listener, { onError }) on a branch escrow):",
   );
@@ -4028,8 +4052,16 @@ test("demo shows subscribe onError routing: a throwing listener's errors reach o
   ]) {
     assert.ok(text.includes(line), `missing onError line: ${line}`);
   }
+  const onErrorSegment = lines.slice(
+    lines.indexOf(
+      "Subscribe onError error routing (Escrow.subscribe(listener, { onError }) on a branch escrow):",
+    ),
+    lines.indexOf(
+      "Quorum revoke (Quorum.revoke() — a signer changes their vote):",
+    ) - 1,
+  );
   assert.equal(
-    lines[lines.length - 1],
+    onErrorSegment[onErrorSegment.length - 1],
     `  non-function onError rejected at subscribe time: "${DEMO_ONERROR_INVALID_ERROR}" — nothing was registered (listenerCount still 1)`,
   );
 });
@@ -4040,6 +4072,9 @@ test("demo subscribe onError segment is deterministic: two runs print byte-ident
       ls.indexOf(
         "Subscribe onError error routing (Escrow.subscribe(listener, { onError }) on a branch escrow):",
       ),
+      ls.indexOf(
+        "Quorum revoke (Quorum.revoke() — a signer changes their vote):",
+      ) - 1,
     );
   const a = await runDemo();
   const b = await runDemo();
@@ -4053,4 +4088,145 @@ test("demo subscribe onError segment is deterministic: two runs print byte-ident
   assert.deepEqual(a.onErrorReports, b.onErrorReports);
   assert.equal(a.onErrorProbeState, b.onErrorProbeState);
   assert.equal(a.onErrorInvalidError, b.onErrorInvalidError);
+});
+
+test("demo shows quorum revoke: a revoked vote drops below threshold and a re-approval restores it with the re-voter last", async () => {
+  const {
+    quorumRevokeQuorum,
+    quorumRevokeCountBefore,
+    quorumRevokeHasQuorumBefore,
+    quorumRevokeCountAfterRevoke,
+    quorumRevokeHasQuorumAfterRevoke,
+    quorumRevokeApprovalsAfterRevoke,
+    quorumRevokeCountAfterReapprove,
+    quorumRevokeHasQuorumAfterReapprove,
+    quorumRevokeApprovalsAfterReapprove,
+    quorumRevokeLogFinal,
+    quorumRevokeUnknownError,
+    quorumRevokeNotApprovedError,
+    lines,
+  } = await runDemo();
+  const text = lines.join("\n");
+  // Hand-pinned expectations — written from the documented
+  // revoke() semantics in src/quorum.ts and cross-checked
+  // against test/revoke.test.ts, never derived by calling
+  // the demo segment itself.
+  assert.equal(quorumRevokeCountBefore, 2);
+  assert.equal(quorumRevokeHasQuorumBefore, true);
+  assert.equal(quorumRevokeCountAfterRevoke, 1);
+  assert.equal(quorumRevokeHasQuorumAfterRevoke, false);
+  assert.deepEqual(quorumRevokeApprovalsAfterRevoke, [DEMO_QUORUM_SIGNERS[1]]);
+  assert.deepEqual(DEMO_REVOKE_LOG_AFTER_REVOKE, [
+    { signerId: "arb-2", at: "2026-03-17T09:01:00.000Z" },
+  ]);
+  assert.equal(quorumRevokeCountAfterReapprove, 2);
+  assert.equal(quorumRevokeHasQuorumAfterReapprove, true);
+  assert.deepEqual(quorumRevokeApprovalsAfterReapprove, [
+    DEMO_QUORUM_SIGNERS[1],
+    DEMO_QUORUM_SIGNERS[0],
+  ]);
+  assert.deepEqual(quorumRevokeLogFinal, DEMO_REVOKE_LOG_FINAL);
+  assert.deepEqual(DEMO_REVOKE_LOG_FINAL, [
+    { signerId: "arb-2", at: "2026-03-17T09:01:00.000Z" },
+    { signerId: "arb-1", at: "2026-03-17T09:02:00.000Z" },
+  ]);
+  assert.equal(quorumRevokeUnknownError, DEMO_REVOKE_UNKNOWN_ERROR);
+  assert.equal(DEMO_REVOKE_UNKNOWN_ERROR, 'unknown quorum signer: "mallory"');
+  assert.equal(quorumRevokeNotApprovedError, DEMO_REVOKE_NOT_APPROVED_ERROR);
+  assert.equal(
+    DEMO_REVOKE_NOT_APPROVED_ERROR,
+    'cannot revoke: signer "arb-3" has not approved',
+  );
+  assert.equal(quorumRevokeQuorum.approvalCount(), 2);
+  assert.equal(quorumRevokeQuorum.hasQuorum(), true);
+  assert.deepEqual(quorumRevokeQuorum.approvals(), [
+    DEMO_QUORUM_SIGNERS[1],
+    DEMO_QUORUM_SIGNERS[0],
+  ]);
+  // Independent cross-check: a fresh quorum through the
+  // library entry points reproduces the same cycle — the
+  // demo segment is not self-certifying.
+  let probeNowMs = Date.parse(DEMO_REVOKE_FIRST_AT);
+  const probe = createQuorum({
+    threshold: DEMO_QUORUM_THRESHOLD,
+    signers: [...DEMO_QUORUM_SIGNERS],
+    now: () => probeNowMs,
+  });
+  probe.approve(DEMO_QUORUM_SIGNERS[0]);
+  probeNowMs = Date.parse(DEMO_REVOKE_SECOND_AT);
+  probe.approve(DEMO_QUORUM_SIGNERS[1]);
+  assert.equal(probe.approvalCount(), quorumRevokeCountBefore);
+  probe.revoke(DEMO_QUORUM_SIGNERS[0]);
+  assert.equal(probe.approvalCount(), quorumRevokeCountAfterRevoke);
+  assert.equal(probe.hasQuorum(), false);
+  assert.deepEqual(probe.approvalLog(), DEMO_REVOKE_LOG_AFTER_REVOKE);
+  probeNowMs = Date.parse(DEMO_REVOKE_REAPPROVE_AT);
+  probe.approve(DEMO_QUORUM_SIGNERS[0]);
+  assert.deepEqual(probe.approvals(), quorumRevokeApprovalsAfterReapprove);
+  assert.deepEqual(probe.approvalLog(), quorumRevokeLogFinal);
+  assert.throws(
+    () => probe.revoke(DEMO_REVOKE_UNKNOWN_SIGNER),
+    new Error(DEMO_REVOKE_UNKNOWN_ERROR),
+  );
+  assert.throws(
+    () => probe.revoke(DEMO_QUORUM_SIGNERS[2]),
+    new Error(DEMO_REVOKE_NOT_APPROVED_ERROR),
+  );
+  assert.equal(probe.approvalCount(), 2);
+  // The segment closes the demo: it follows the onError
+  // segment, prints its lines verbatim, and its
+  // failed-revokes line is the demo's last line.
+  const revokeAt = text.indexOf(
+    "Quorum revoke (Quorum.revoke() — a signer changes their vote):",
+  );
+  assert.ok(
+    revokeAt >
+      text.indexOf(
+        "Subscribe onError error routing (Escrow.subscribe(listener, { onError }) on a branch escrow):",
+      ),
+    "quorum revoke segment must follow the onError segment",
+  );
+  for (const line of [
+    `  quorum (${DEMO_QUORUM_THRESHOLD}-of-${DEMO_QUORUM_SIGNERS.length}): approvals at ${DEMO_REVOKE_FIRST_AT} (${DEMO_QUORUM_SIGNERS[0]}) and ${DEMO_REVOKE_SECOND_AT} (${DEMO_QUORUM_SIGNERS[1]}) — approvalCount 2, hasQuorum: true`,
+    `  revoke ${DEMO_QUORUM_SIGNERS[0]}: approvalCount 1, hasQuorum: false — approvals now [${DEMO_QUORUM_SIGNERS[1]}], approvalLog keeps 1 entry (revoke removes the signer's entries; expiry never does)`,
+    `  re-approve ${DEMO_QUORUM_SIGNERS[0]} at ${DEMO_REVOKE_REAPPROVE_AT}: approvalCount 2, hasQuorum: true — approvals [${DEMO_QUORUM_SIGNERS[1]}, ${DEMO_QUORUM_SIGNERS[0]}] (the re-voter sorts last, by latest approval)`,
+    `  revoke unknown signer "${DEMO_REVOKE_UNKNOWN_SIGNER}" rejected: "${DEMO_REVOKE_UNKNOWN_ERROR}"`,
+    `  revoke ${DEMO_QUORUM_SIGNERS[2]} (never approved) rejected: "${DEMO_REVOKE_NOT_APPROVED_ERROR}" — both failed revokes leave the quorum untouched (approvalCount still 2, hasQuorum: true)`,
+  ]) {
+    assert.ok(text.includes(line), `missing quorum revoke line: ${line}`);
+  }
+  assert.equal(
+    lines[lines.length - 1],
+    `  revoke ${DEMO_QUORUM_SIGNERS[2]} (never approved) rejected: "${DEMO_REVOKE_NOT_APPROVED_ERROR}" — both failed revokes leave the quorum untouched (approvalCount still 2, hasQuorum: true)`,
+  );
+});
+
+test("demo quorum revoke segment is deterministic: two runs print byte-identical revoke lines", async () => {
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf(
+        "Quorum revoke (Quorum.revoke() — a signer changes their vote):",
+      ),
+    );
+  const a = await runDemo();
+  const b = await runDemo();
+  const segA = segment(a.lines);
+  // Header + the reached line + the revoke line + the
+  // re-approve line + the two rejection lines; every value
+  // is derived from the fixed fixtures alone, so no
+  // normalization is needed.
+  assert.equal(segA.length, 6);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.equal(a.quorumRevokeCountBefore, b.quorumRevokeCountBefore);
+  assert.equal(a.quorumRevokeCountAfterRevoke, b.quorumRevokeCountAfterRevoke);
+  assert.deepEqual(
+    a.quorumRevokeApprovalsAfterReapprove,
+    b.quorumRevokeApprovalsAfterReapprove,
+  );
+  assert.deepEqual(a.quorumRevokeLogFinal, b.quorumRevokeLogFinal);
+  assert.equal(a.quorumRevokeUnknownError, b.quorumRevokeUnknownError);
+  assert.equal(
+    a.quorumRevokeNotApprovedError,
+    b.quorumRevokeNotApprovedError,
+  );
 });
