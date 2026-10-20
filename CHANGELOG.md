@@ -18,6 +18,24 @@ version changes.
 
 ### Added
 
+- CLI demo coverage for the settlement-webhook freshness
+  window: the main escrow's signed webhook is re-verified
+  under the opt-in `maxAgeMs` bound (1 hour) at three
+  injected instants — inside the window and exactly at its
+  inclusive boundary it verifies, past the window the
+  still-valid signature is refused fail-closed — and under
+  a 5-minute `maxFutureSkewMs` bound with the payload's
+  `at` 10 minutes ahead of the injected `now`, which is
+  refused as sender-clock skew beyond the bound. All four
+  verdicts are asserted outside the printing against
+  hand-pinned expectations, and an independent
+  re-verification in the demo tests confirms the expired
+  verdict comes from the window, not the signature (the
+  same body verifies with no window configured).
+  `DemoResult` exposes both bounds and all four verdicts;
+  the demo tests pin the segment's lines, its order, and
+  its fixture instants. Demo and tests only; no library
+  behavior change.
 - Benchmark coverage for the quorum snapshot export
   path: `snapshot()` on the fixed 9-signer / threshold-5
   quorum carrying 7 recorded approvals (dao-1..dao-7, one

@@ -6,7 +6,13 @@
  * intact chain passes, and a detached copy whose FUND entry's amount
  * is altered fails, while the escrow's own history stays untouched —
  * then build the signed settlement webhook for the released escrow and
- * verify it the way a receiver would. The receiver side then runs
+ * verify it the way a receiver would. That same webhook is then
+ * re-verified under the opt-in freshness window (`maxAgeMs` /
+ * `maxFutureSkewMs` on an injected `now`): inside the window and
+ * exactly at its inclusive boundary it passes, past the window the
+ * still-valid signature is refused fail-closed, and a payload whose
+ * `at` runs ahead of the receiver's clock beyond the skew bound is
+ * refused too. The receiver side then runs
  * that webhook's `eventId` through `SettlementEventDedupe` on a fixed
  * clock: the first delivery is new (booked), an immediate redelivery
  * is a duplicate (skipped), and after the clock advances by exactly
@@ -416,6 +422,29 @@ export const DEMO_DEDUPE_START_MS = Date.parse(DEMO_WEBHOOK_AT);
  * wall clock enters the segment.
  */
 export const DEMO_RETRY_AFTER_NOW_MS = DEMO_DEDUPE_START_MS;
+
+/**
+ * Webhook freshness-window fixtures: the opt-in replay bound on the
+ * main webhook (whose `at` is {@link DEMO_WEBHOOK_AT}). A 1-hour
+ * `maxAgeMs` window is evaluated at three injected instants — half
+ * the window after `at` (inside), exactly the window after `at`
+ * (the inclusive boundary: only `now - at > maxAgeMs` fails), and
+ * twice the window after `at` (expired) — plus a 5-minute
+ * `maxFutureSkewMs` bound evaluated with `now` 10 minutes before
+ * `at`, so the sender's clock reads 10 minutes ahead and the skew
+ * exceeds the bound. Every instant derives from the pinned `at`;
+ * no wall clock enters the segment.
+ */
+export const DEMO_WEBHOOK_FRESHNESS_MAX_AGE_MS = 3_600_000;
+export const DEMO_WEBHOOK_FRESHNESS_MAX_FUTURE_SKEW_MS = 300_000;
+export const DEMO_WEBHOOK_FRESHNESS_WITHIN_NOW_MS =
+  DEMO_DEDUPE_START_MS + DEMO_WEBHOOK_FRESHNESS_MAX_AGE_MS / 2;
+export const DEMO_WEBHOOK_FRESHNESS_BOUNDARY_NOW_MS =
+  DEMO_DEDUPE_START_MS + DEMO_WEBHOOK_FRESHNESS_MAX_AGE_MS;
+export const DEMO_WEBHOOK_FRESHNESS_EXPIRED_NOW_MS =
+  DEMO_DEDUPE_START_MS + 2 * DEMO_WEBHOOK_FRESHNESS_MAX_AGE_MS;
+export const DEMO_WEBHOOK_FRESHNESS_FUTURE_NOW_MS =
+  DEMO_DEDUPE_START_MS - 2 * DEMO_WEBHOOK_FRESHNESS_MAX_FUTURE_SKEW_MS;
 
 /** Fixed fixture for the dispute branch: a second escrow, same deposit. */
 export const DEMO_DISPUTE_ESCROW_ID = "DEMO-ESC-002";
@@ -1219,6 +1248,31 @@ export interface DemoResult {
   tamperedFundAmount: number;
   webhook: SettlementWebhook;
   webhookVerified: boolean;
+  /** The `maxAgeMs` freshness window of the demo segment: 3,600,000. */
+  webhookFreshnessMaxAgeMs: number;
+  /**
+   * Freshness verdict on the main webhook at the injected
+   * within-window instant (at + half the window): `true`.
+   */
+  webhookFreshnessWithinWindow: boolean;
+  /**
+   * Freshness verdict at exactly `at + maxAgeMs`: `true` — the
+   * boundary is inclusive (only `now - at > maxAgeMs` fails).
+   */
+  webhookFreshnessBoundary: boolean;
+  /**
+   * Freshness verdict at `at + 2 * maxAgeMs`: `false` — the
+   * signature itself stays valid; the opt-in window is a replay
+   * bound, not a signature check, and it refuses fail-closed.
+   */
+  webhookFreshnessExpired: boolean;
+  /** The `maxFutureSkewMs` freshness bound of the demo segment: 300,000. */
+  webhookFreshnessMaxFutureSkewMs: number;
+  /**
+   * Freshness verdict with the payload's `at` 10 minutes ahead of
+   * the injected `now` under the 5-minute skew bound: `false`.
+   */
+  webhookFreshnessFutureSkewExceeded: boolean;
   /**
    * Receiver-side dedupe store after the demo's three deliveries of
    * the main webhook's `eventId` (new, duplicate, new-after-TTL):
@@ -2041,6 +2095,67 @@ export async function runDemo(): Promise<DemoResult> {
   lines.push(`  signature:    ${webhook.signature}`);
   lines.push(
     `  verifySettlementWebhook: ${webhookVerified ? "ok" : "FAILED"}`,
+  );
+
+  // --- Webhook freshness window: the opt-in replay bound ---
+  // The signature check above proves authenticity, but a captured
+  // authentic notification could be replayed later. The opt-in
+  // freshness window is the receiver's replay bound: with
+  // `maxAgeMs` set, verification additionally requires the
+  // payload's `at` to sit inside the window ending at the injected
+  // `now` — the boundary is inclusive (only `now - at > maxAgeMs`
+  // fails). The main webhook's body bytes and signature are reused
+  // verbatim at three injected instants (inside / boundary /
+  // expired), and a fourth call bounds the other direction: with
+  // `now` 10 minutes before `at`, the sender's clock reads ahead
+  // by more than the 5-minute `maxFutureSkewMs`, so that call
+  // fails too. All four verdicts are asserted outside the printing.
+  const webhookBody = JSON.stringify(webhook.payload);
+  const webhookFreshnessOpts = {
+    secrets: [DEMO_WEBHOOK_SECRET],
+    maxAgeMs: DEMO_WEBHOOK_FRESHNESS_MAX_AGE_MS,
+  };
+  const webhookFreshnessWithinWindow = verifySettlementWebhook(
+    webhookBody,
+    webhook.signature,
+    { ...webhookFreshnessOpts, now: DEMO_WEBHOOK_FRESHNESS_WITHIN_NOW_MS },
+  );
+  const webhookFreshnessBoundary = verifySettlementWebhook(
+    webhookBody,
+    webhook.signature,
+    { ...webhookFreshnessOpts, now: DEMO_WEBHOOK_FRESHNESS_BOUNDARY_NOW_MS },
+  );
+  const webhookFreshnessExpired = verifySettlementWebhook(
+    webhookBody,
+    webhook.signature,
+    { ...webhookFreshnessOpts, now: DEMO_WEBHOOK_FRESHNESS_EXPIRED_NOW_MS },
+  );
+  const webhookFreshnessFutureSkewExceeded = verifySettlementWebhook(
+    webhookBody,
+    webhook.signature,
+    {
+      secrets: [DEMO_WEBHOOK_SECRET],
+      maxFutureSkewMs: DEMO_WEBHOOK_FRESHNESS_MAX_FUTURE_SKEW_MS,
+      now: DEMO_WEBHOOK_FRESHNESS_FUTURE_NOW_MS,
+    },
+  );
+  if (
+    webhookFreshnessWithinWindow !== true ||
+    webhookFreshnessBoundary !== true ||
+    webhookFreshnessExpired !== false ||
+    webhookFreshnessFutureSkewExceeded !== false
+  ) {
+    throw new Error(
+      "demo fixture broken: webhook freshness window does not match the pinned shape (inside the 1-hour maxAgeMs window and at its inclusive boundary the main webhook verifies; past the window and beyond the 5-minute future-skew bound the same signed body is refused)",
+    );
+  }
+  lines.push(
+    "",
+    "Webhook freshness window (verifySettlementWebhook maxAgeMs / maxFutureSkewMs on the main webhook, injected now):",
+    `  payload at ${webhook.payload.at}, maxAgeMs ${DEMO_WEBHOOK_FRESHNESS_MAX_AGE_MS} ms: now at +${DEMO_WEBHOOK_FRESHNESS_WITHIN_NOW_MS - DEMO_DEDUPE_START_MS} ms — verifySettlementWebhook: ${webhookFreshnessWithinWindow} (signature valid and inside the window)`,
+    `  boundary: now at exactly +${DEMO_WEBHOOK_FRESHNESS_BOUNDARY_NOW_MS - DEMO_DEDUPE_START_MS} ms = maxAgeMs — verifySettlementWebhook: ${webhookFreshnessBoundary} (inclusive boundary — only a larger age fails)`,
+    `  expired: now at +${DEMO_WEBHOOK_FRESHNESS_EXPIRED_NOW_MS - DEMO_DEDUPE_START_MS} ms — verifySettlementWebhook: ${webhookFreshnessExpired} (signature still valid, but the replay window has closed — fail-closed)`,
+    `  sender clock ahead: payload at is ${DEMO_DEDUPE_START_MS - DEMO_WEBHOOK_FRESHNESS_FUTURE_NOW_MS} ms ahead of now, maxFutureSkewMs ${DEMO_WEBHOOK_FRESHNESS_MAX_FUTURE_SKEW_MS} ms — verifySettlementWebhook: ${webhookFreshnessFutureSkewExceeded} (future skew beyond the bound)`,
   );
 
   // --- Receiver dedupe: the same eventId delivered three times ---
@@ -4274,6 +4389,12 @@ export async function runDemo(): Promise<DemoResult> {
     tamperedFundAmount,
     webhook,
     webhookVerified,
+    webhookFreshnessMaxAgeMs: DEMO_WEBHOOK_FRESHNESS_MAX_AGE_MS,
+    webhookFreshnessWithinWindow,
+    webhookFreshnessBoundary,
+    webhookFreshnessExpired,
+    webhookFreshnessMaxFutureSkewMs: DEMO_WEBHOOK_FRESHNESS_MAX_FUTURE_SKEW_MS,
+    webhookFreshnessFutureSkewExceeded,
     webhookDedupe,
     retryAfterParsed,
     disputeEscrow,

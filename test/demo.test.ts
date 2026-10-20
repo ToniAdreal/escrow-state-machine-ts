@@ -104,6 +104,12 @@ import {
   DEMO_UNEXPIRABLE_VERIFY_AT,
   DEMO_WEBHOOK_AT,
   DEMO_WEBHOOK_EVENT_ID,
+  DEMO_WEBHOOK_FRESHNESS_BOUNDARY_NOW_MS,
+  DEMO_WEBHOOK_FRESHNESS_EXPIRED_NOW_MS,
+  DEMO_WEBHOOK_FRESHNESS_FUTURE_NOW_MS,
+  DEMO_WEBHOOK_FRESHNESS_MAX_AGE_MS,
+  DEMO_WEBHOOK_FRESHNESS_MAX_FUTURE_SKEW_MS,
+  DEMO_WEBHOOK_FRESHNESS_WITHIN_NOW_MS,
   DEMO_WEBHOOK_SECRET,
 } from "../src/demo.js";
 import {
@@ -298,6 +304,103 @@ test("demo lines print the webhook build + verify section", async () => {
   assert.ok(text.includes(`  at:           ${DEMO_WEBHOOK_AT}`));
   assert.match(text, / {2}signature: {4}sha256=[0-9a-f]{64}/);
   assert.ok(text.includes("  verifySettlementWebhook: ok"));
+});
+
+test("demo shows the webhook freshness window: inside and at the boundary pass, expired and future-skewed fail", async () => {
+  const {
+    webhook,
+    webhookFreshnessMaxAgeMs,
+    webhookFreshnessWithinWindow,
+    webhookFreshnessBoundary,
+    webhookFreshnessExpired,
+    webhookFreshnessMaxFutureSkewMs,
+    webhookFreshnessFutureSkewExceeded,
+  } = await runDemo();
+
+  // Hand-pinned fixture shape: a 1-hour age window and a 5-minute
+  // future-skew bound, every injected instant derived from the
+  // webhook's pinned `at`.
+  assert.equal(DEMO_WEBHOOK_FRESHNESS_MAX_AGE_MS, 3_600_000);
+  assert.equal(DEMO_WEBHOOK_FRESHNESS_MAX_FUTURE_SKEW_MS, 300_000);
+  assert.equal(webhookFreshnessMaxAgeMs, DEMO_WEBHOOK_FRESHNESS_MAX_AGE_MS);
+  assert.equal(
+    webhookFreshnessMaxFutureSkewMs,
+    DEMO_WEBHOOK_FRESHNESS_MAX_FUTURE_SKEW_MS,
+  );
+  const atMs = Date.parse(DEMO_WEBHOOK_AT);
+  assert.equal(DEMO_WEBHOOK_FRESHNESS_WITHIN_NOW_MS, atMs + 1_800_000);
+  assert.equal(DEMO_WEBHOOK_FRESHNESS_BOUNDARY_NOW_MS, atMs + 3_600_000);
+  assert.equal(DEMO_WEBHOOK_FRESHNESS_EXPIRED_NOW_MS, atMs + 7_200_000);
+  assert.equal(DEMO_WEBHOOK_FRESHNESS_FUTURE_NOW_MS, atMs - 600_000);
+
+  // The four verdicts: inside passes, the inclusive boundary
+  // passes, past the window the still-valid signature is refused,
+  // and a sender clock ahead beyond the skew bound is refused.
+  assert.equal(webhookFreshnessWithinWindow, true);
+  assert.equal(webhookFreshnessBoundary, true);
+  assert.equal(webhookFreshnessExpired, false);
+  assert.equal(webhookFreshnessFutureSkewExceeded, false);
+
+  // Independent re-verification agrees, and without the opt-in the
+  // expired call's signature still verifies on its own — the
+  // window, not the signature, is what refused it.
+  const body = JSON.stringify(webhook.payload);
+  assert.equal(
+    verifySettlementWebhook(body, webhook.signature, {
+      secrets: [DEMO_WEBHOOK_SECRET],
+      maxAgeMs: DEMO_WEBHOOK_FRESHNESS_MAX_AGE_MS,
+      now: DEMO_WEBHOOK_FRESHNESS_WITHIN_NOW_MS,
+    }),
+    true,
+  );
+  assert.equal(
+    verifySettlementWebhook(body, webhook.signature, {
+      secrets: [DEMO_WEBHOOK_SECRET],
+      maxAgeMs: DEMO_WEBHOOK_FRESHNESS_MAX_AGE_MS,
+      now: DEMO_WEBHOOK_FRESHNESS_EXPIRED_NOW_MS,
+    }),
+    false,
+  );
+  assert.equal(
+    verifySettlementWebhook(body, webhook.signature, DEMO_WEBHOOK_SECRET),
+    true,
+  );
+});
+
+test("demo lines print the webhook freshness window section", async () => {
+  const { lines } = await runDemo();
+  const text = lines.join("\n");
+
+  assert.match(
+    text,
+    /Webhook freshness window \(verifySettlementWebhook maxAgeMs \/ maxFutureSkewMs on the main webhook, injected now\):/,
+  );
+  assert.ok(
+    text.includes(
+      `  payload at ${DEMO_WEBHOOK_AT}, maxAgeMs ${DEMO_WEBHOOK_FRESHNESS_MAX_AGE_MS} ms: now at +1800000 ms — verifySettlementWebhook: true (signature valid and inside the window)`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  boundary: now at exactly +${DEMO_WEBHOOK_FRESHNESS_MAX_AGE_MS} ms = maxAgeMs — verifySettlementWebhook: true (inclusive boundary — only a larger age fails)`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  expired: now at +7200000 ms — verifySettlementWebhook: false (signature still valid, but the replay window has closed — fail-closed)",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  sender clock ahead: payload at is 600000 ms ahead of now, maxFutureSkewMs ${DEMO_WEBHOOK_FRESHNESS_MAX_FUTURE_SKEW_MS} ms — verifySettlementWebhook: false (future skew beyond the bound)`,
+    ),
+  );
+  // The freshness section sits between the webhook section and the
+  // receiver dedupe section — it bounds the same notification.
+  const webhookAt = text.indexOf("Settlement webhook (signed");
+  const freshnessAt = text.indexOf("Webhook freshness window (verifySettlementWebhook");
+  const dedupeAt = text.indexOf("Receiver dedupe (SettlementEventDedupe");
+  assert.ok(webhookAt < freshnessAt && freshnessAt < dedupeAt);
 });
 
 test("demo receiver dedupe counts the main webhook eventId new, duplicate, then new after the TTL", async () => {
