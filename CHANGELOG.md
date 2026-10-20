@@ -18,6 +18,28 @@ version changes.
 
 ### Added
 
+- Benchmark coverage for the quorum snapshot export
+  path: `snapshot()` on the fixed 9-signer / threshold-5
+  quorum carrying 7 recorded approvals (dao-1..dao-7, one
+  second apart on a stepped fixed clock — the same shape
+  the snapshot-restore row persists) — the checkpoint
+  export an arbitration service pays on every persist,
+  previously visible only as the restore fixture's one
+  construction call. Its per-iteration self-check pins
+  the exported envelope against hand-written expectations
+  (the `{ v: 1, ... }` envelope in its pinned key order,
+  threshold 5, the 9 signers in config order, no
+  `maxApprovalAgeMs` key, and the 7 approval entries in
+  record order with their pinned canonical timestamps);
+  outside the timed loop, a detached-copy mutation is
+  pinned to leave a re-export unchanged and the
+  JSON round-tripped export is pinned to restore via
+  `restoreQuorum` into a quorum re-exporting the restore
+  fixture's persisted snapshot byte-for-byte. The README
+  Benchmarks table was refreshed from one real run and
+  gained the `quorum snapshot export (7 approvals of 9)`
+  row (51,679 ops/sec in that run). Benchmark only; no
+  library behavior change.
 - CLI demo coverage for the quorum `revoke()`
   vote-change path: a fresh 2-of-3 quorum on a fixed
   clock collects two approvals and reaches its
