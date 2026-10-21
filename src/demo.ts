@@ -1241,6 +1241,57 @@ export const DEMO_ABORT_BACKOFF_URL =
 export const DEMO_ABORT_ERROR = "webhook delivery aborted";
 export const DEMO_ABORT_BACKOFF_MS = 60_000;
 
+/**
+ * Optimistic-concurrency fixtures for the final closing
+ * segment: a fresh branch escrow driven through three
+ * fixed-timestamp dispatches while the `expectedSeq`
+ * guard of `DispatchOptions` (src/stateMachine.ts) is
+ * exercised in every shape. Hand-pinned expectations —
+ * written from the documented guard semantics there
+ * (`expectedSeq` asserts the current history length,
+ * which is also the last entry's `seq`, `0` for an empty
+ * history; the guard is checked before every other
+ * dispatch validation, so a mismatch changes nothing —
+ * no state move, no history entry), never derived by
+ * calling the guarded dispatch itself, and
+ * cross-checked against test/expectedSeq.test.ts, which
+ * pins the same shapes:
+ * - FUND with `expectedSeq: 0` on the empty history
+ *   succeeds: state FUNDED, seq 0 -> 1 (exactly +1)
+ * - SUBMIT_MILESTONE with `expectedSeq: 1` succeeds:
+ *   state MILESTONE_SUBMITTED, seq 1 -> 2
+ * - VERIFY_PASS retried with the now-stale
+ *   `expectedSeq: 1` (a second writer still holding the
+ *   seq-1 snapshot) throws exactly
+ *   {@link DEMO_EXPECTED_SEQ_STALE_ERROR} and leaves
+ *   state (MILESTONE_SUBMITTED) and history (2 entries)
+ *   untouched
+ * - VERIFY_PASS with `expectedSeq: -1` throws exactly
+ *   {@link DEMO_EXPECTED_SEQ_INVALID_NEGATIVE_ERROR}
+ *   and with `expectedSeq: 1.5` exactly
+ *   {@link DEMO_EXPECTED_SEQ_INVALID_FRACTION_ERROR} —
+ *   a non-negative-integer caller configuration error,
+ *   checked before the transition itself
+ * - VERIFY_PASS with NO `expectedSeq` then succeeds:
+ *   state VERIFIED, seq 2 -> 3 — omitting the guard
+ *   preserves the exact pre-guard behavior
+ * Fixed escrow id, fixed amount (the golden deposit),
+ * fixed timestamps: no network, no randomness, no
+ * wall clock.
+ */
+export const DEMO_EXPECTED_SEQ_ESCROW_ID = "DEMO-ESC-016";
+export const DEMO_EXPECTED_SEQ_FUND_AT = "2026-03-18T09:00:00.000Z";
+export const DEMO_EXPECTED_SEQ_SUBMIT_AT = "2026-03-18T10:00:00.000Z";
+export const DEMO_EXPECTED_SEQ_VERIFY_AT = "2026-03-18T11:00:00.000Z";
+export const DEMO_EXPECTED_SEQ_VERIFY_EVIDENCE =
+  "demo-oracle-attestation-016";
+export const DEMO_EXPECTED_SEQ_STALE_ERROR =
+  "dispatch conflict: expected seq 1 but escrow is at seq 2";
+export const DEMO_EXPECTED_SEQ_INVALID_NEGATIVE_ERROR =
+  "invalid dispatch options: expectedSeq must be a non-negative integer, got -1";
+export const DEMO_EXPECTED_SEQ_INVALID_FRACTION_ERROR =
+  "invalid dispatch options: expectedSeq must be a non-negative integer, got 1.5";
+
 const steps: Array<{
   event: EscrowEvent;
   actor: string;
@@ -2119,6 +2170,64 @@ export interface DemoResult {
    * and no retry fires after the abort.
    */
   abortDuringBackoffFetchCalls: number;
+  /**
+   * The final closing segment's branch escrow
+   * (DEMO-ESC-016), after the guarded chain and the
+   * unguarded VERIFY_PASS: VERIFIED with 3 history
+   * entries.
+   */
+  expectedSeqEscrow: Escrow;
+  /**
+   * State returned by the guarded FUND dispatch
+   * (`expectedSeq: 0` on the empty history): `"FUNDED"`.
+   */
+  expectedSeqFundState: EscrowState;
+  /** History length after the guarded FUND: exactly 1 (seq 0 -> 1). */
+  expectedSeqSeqAfterFund: number;
+  /**
+   * State returned by the guarded SUBMIT_MILESTONE
+   * dispatch (`expectedSeq: 1`): `"MILESTONE_SUBMITTED"`.
+   */
+  expectedSeqSubmitState: EscrowState;
+  /** History length after the guarded SUBMIT_MILESTONE: exactly 2. */
+  expectedSeqSeqAfterSubmit: number;
+  /**
+   * Error message of the stale VERIFY_PASS retry
+   * (`expectedSeq: 1` at seq 2): exactly
+   * {@link DEMO_EXPECTED_SEQ_STALE_ERROR}.
+   */
+  expectedSeqStaleError: string;
+  /**
+   * The branch escrow's state after the stale retry:
+   * `"MILESTONE_SUBMITTED"` — the conflict changed
+   * nothing.
+   */
+  expectedSeqStateAfterStale: EscrowState;
+  /**
+   * The branch escrow's history length after the stale
+   * retry: exactly 2 — nothing was appended.
+   */
+  expectedSeqHistoryLengthAfterStale: number;
+  /**
+   * Error message of the negative-guard probe
+   * (`expectedSeq: -1`): exactly
+   * {@link DEMO_EXPECTED_SEQ_INVALID_NEGATIVE_ERROR}.
+   */
+  expectedSeqInvalidNegativeError: string;
+  /**
+   * Error message of the non-integer-guard probe
+   * (`expectedSeq: 1.5`): exactly
+   * {@link DEMO_EXPECTED_SEQ_INVALID_FRACTION_ERROR}.
+   */
+  expectedSeqInvalidFractionError: string;
+  /**
+   * State returned by the final VERIFY_PASS dispatched
+   * with NO `expectedSeq`: `"VERIFIED"` — omitting the
+   * guard preserves the pre-guard behavior.
+   */
+  expectedSeqUnguardedState: EscrowState;
+  /** Final history length of the branch escrow: exactly 3. */
+  expectedSeqFinalHistoryLength: number;
   lines: string[];
 }
 
@@ -4675,6 +4784,126 @@ export async function runDemo(): Promise<DemoResult> {
     "  an abort is a caller request to stop, never a retryable failure: neither shape retries, sleeps it off, or reports success",
   );
 
+  // --- Optimistic concurrency: dispatch expectedSeq guard (final closing) ---
+  // Two writers that read the same escrow snapshot and
+  // then race to dispatch off it are the payment
+  // state-machine hazard the `expectedSeq` guard exists
+  // for: the caller pins the seq it based its decision
+  // on, and a stale pin fails loudly instead of silently
+  // advancing a state it never saw. A fresh branch
+  // escrow walks the guard in every shape on fixed
+  // timestamps: two guarded dispatches whose pins match
+  // the current seq advance exactly one entry each; a
+  // VERIFY_PASS retried with the now-stale seq-1 pin (the
+  // second writer's view) throws the pinned conflict
+  // error and leaves state and history untouched; a
+  // negative pin and a non-integer pin each throw the
+  // pinned validation error — a caller configuration
+  // error, checked before the transition itself; and a
+  // final VERIFY_PASS with no pin at all succeeds,
+  // because omitting the guard preserves the exact
+  // pre-guard behavior. Hand-pinned expectations (see
+  // the fixture comment above), asserted HERE, outside
+  // the printing: a guarded dispatch that appended
+  // anything but exactly one entry, a conflict that
+  // moved the escrow, or a different error message
+  // would fail the demo itself, not just a test. Zero
+  // network, zero randomness, fixed timestamps.
+  const expectedSeqEscrow = new Escrow(DEMO_EXPECTED_SEQ_ESCROW_ID);
+  const expectedSeqFundState = expectedSeqEscrow.dispatch(
+    "FUND",
+    "Deposit locked (wire received)",
+    10630,
+    {
+      actor: "sponsor",
+      at: DEMO_EXPECTED_SEQ_FUND_AT,
+      expectedSeq: 0,
+    },
+  );
+  const expectedSeqSeqAfterFund = expectedSeqEscrow.history.length;
+  const expectedSeqSubmitState = expectedSeqEscrow.dispatch(
+    "SUBMIT_MILESTONE",
+    "Deliverable URLs + IPFS metadata hash",
+    undefined,
+    {
+      actor: "creator",
+      at: DEMO_EXPECTED_SEQ_SUBMIT_AT,
+      expectedSeq: 1,
+    },
+  );
+  const expectedSeqSeqAfterSubmit = expectedSeqEscrow.history.length;
+  let expectedSeqStaleError = "";
+  try {
+    expectedSeqEscrow.dispatch("VERIFY_PASS", undefined, undefined, {
+      expectedSeq: 1,
+    });
+  } catch (err) {
+    expectedSeqStaleError =
+      err instanceof Error ? err.message : String(err);
+  }
+  const expectedSeqStateAfterStale = expectedSeqEscrow.state;
+  const expectedSeqHistoryLengthAfterStale =
+    expectedSeqEscrow.history.length;
+  let expectedSeqInvalidNegativeError = "";
+  try {
+    expectedSeqEscrow.dispatch("VERIFY_PASS", undefined, undefined, {
+      expectedSeq: -1,
+    });
+  } catch (err) {
+    expectedSeqInvalidNegativeError =
+      err instanceof Error ? err.message : String(err);
+  }
+  let expectedSeqInvalidFractionError = "";
+  try {
+    expectedSeqEscrow.dispatch("VERIFY_PASS", undefined, undefined, {
+      expectedSeq: 1.5,
+    });
+  } catch (err) {
+    expectedSeqInvalidFractionError =
+      err instanceof Error ? err.message : String(err);
+  }
+  const expectedSeqUnguardedState = expectedSeqEscrow.dispatch(
+    "VERIFY_PASS",
+    "KPIs validated by oracle",
+    undefined,
+    {
+      actor: "oracle",
+      at: DEMO_EXPECTED_SEQ_VERIFY_AT,
+      evidence: DEMO_EXPECTED_SEQ_VERIFY_EVIDENCE,
+    },
+  );
+  const expectedSeqFinalHistoryLength = expectedSeqEscrow.history.length;
+  if (
+    expectedSeqFundState !== "FUNDED" ||
+    expectedSeqSeqAfterFund !== 1 ||
+    expectedSeqSubmitState !== "MILESTONE_SUBMITTED" ||
+    expectedSeqSeqAfterSubmit !== 2 ||
+    expectedSeqStaleError !== DEMO_EXPECTED_SEQ_STALE_ERROR ||
+    expectedSeqStateAfterStale !== "MILESTONE_SUBMITTED" ||
+    expectedSeqHistoryLengthAfterStale !== 2 ||
+    expectedSeqInvalidNegativeError !==
+      DEMO_EXPECTED_SEQ_INVALID_NEGATIVE_ERROR ||
+    expectedSeqInvalidFractionError !==
+      DEMO_EXPECTED_SEQ_INVALID_FRACTION_ERROR ||
+    expectedSeqUnguardedState !== "VERIFIED" ||
+    expectedSeqFinalHistoryLength !== 3 ||
+    expectedSeqEscrow.state !== "VERIFIED"
+  ) {
+    throw new Error(
+      "demo fixture broken: dispatch expectedSeq guard does not match the pinned shape (matching pins advance exactly one entry each, a stale pin throws the pinned conflict and changes nothing, negative and non-integer pins throw the pinned validation errors, and an unguarded dispatch keeps the pre-guard behavior)",
+    );
+  }
+  lines.push(
+    "",
+    "Optimistic concurrency (dispatch expectedSeq guard on a branch escrow):",
+    `  escrow ${expectedSeqEscrow.id}: FUND with expectedSeq 0 (the empty history): -> ${expectedSeqFundState}, seq 0 -> ${expectedSeqSeqAfterFund} (a matching guard advances exactly one entry)`,
+    `  SUBMIT_MILESTONE with expectedSeq 1: -> ${expectedSeqSubmitState}, seq 1 -> ${expectedSeqSeqAfterSubmit} (the fresh pin matches again)`,
+    `  VERIFY_PASS retried with stale expectedSeq 1 (a second writer still holding the seq-1 snapshot): throws "${expectedSeqStaleError}" — state stays ${expectedSeqStateAfterStale}, history stays ${expectedSeqHistoryLengthAfterStale} entries (nothing appended, nothing overwritten)`,
+    `  VERIFY_PASS with expectedSeq -1: throws "${expectedSeqInvalidNegativeError}" (a caller configuration error, checked before the transition)`,
+    `  VERIFY_PASS with expectedSeq 1.5: throws "${expectedSeqInvalidFractionError}" (a non-integer pin is rejected the same way)`,
+    `  VERIFY_PASS without expectedSeq: -> ${expectedSeqUnguardedState}, seq 2 -> ${expectedSeqFinalHistoryLength} (omitting the guard preserves the pre-guard behavior)`,
+  );
+
   return {
     escrow,
     report,
@@ -4808,6 +5037,18 @@ export async function runDemo(): Promise<DemoResult> {
     abortPreAbortedFetchCalls,
     abortDuringBackoffError,
     abortDuringBackoffFetchCalls,
+    expectedSeqEscrow,
+    expectedSeqFundState,
+    expectedSeqSeqAfterFund,
+    expectedSeqSubmitState,
+    expectedSeqSeqAfterSubmit,
+    expectedSeqStaleError,
+    expectedSeqStateAfterStale,
+    expectedSeqHistoryLengthAfterStale,
+    expectedSeqInvalidNegativeError,
+    expectedSeqInvalidFractionError,
+    expectedSeqUnguardedState,
+    expectedSeqFinalHistoryLength,
     lines,
   };
 }

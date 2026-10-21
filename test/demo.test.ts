@@ -33,6 +33,14 @@ import {
   DEMO_DEADLINE_STALE_FUND_AT,
   DEMO_DISPUTE_ESCROW_ID,
   DEMO_ESCROW_ID,
+  DEMO_EXPECTED_SEQ_ESCROW_ID,
+  DEMO_EXPECTED_SEQ_FUND_AT,
+  DEMO_EXPECTED_SEQ_INVALID_FRACTION_ERROR,
+  DEMO_EXPECTED_SEQ_INVALID_NEGATIVE_ERROR,
+  DEMO_EXPECTED_SEQ_STALE_ERROR,
+  DEMO_EXPECTED_SEQ_SUBMIT_AT,
+  DEMO_EXPECTED_SEQ_VERIFY_AT,
+  DEMO_EXPECTED_SEQ_VERIFY_EVIDENCE,
   DEMO_EXPIRABLE_DEADLINE,
   DEMO_EXPIRABLE_ESCROW_ID,
   DEMO_EXPIRABLE_FUND_AT,
@@ -2421,15 +2429,37 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
       `  revoke ${DEMO_QUORUM_SIGNERS[0]}: approvalCount 1, hasQuorum: false — approvals now [${DEMO_QUORUM_SIGNERS[1]}], approvalLog keeps 1 entry (revoke removes the signer's entries; expiry never does)`,
     ),
   );
-  // AbortSignal tail: the closing segment aborts one
+  // AbortSignal tail: that segment aborts one
   // delivery before it starts and another during its
-  // backoff sleep; the demo ends on the abort summary line.
+  // backoff sleep.
   assert.match(out, /Webhook delivery abort \(deliverSettlementWebhook with an AbortSignal, scripted fake fetch, zero network\):/);
+  assert.ok(
+    out.includes(
+      "  an abort is a caller request to stop, never a retryable failure: neither shape retries, sleeps it off, or reports success",
+    ),
+  );
+  // expectedSeq tail: the closing segment drives a
+  // branch escrow through the optimistic-concurrency
+  // guard — matching pins advance, a stale pin is
+  // refused, invalid pins are refused, and an
+  // unguarded dispatch is unchanged; the demo ends
+  // on the unguarded-behavior line.
+  assert.match(out, /Optimistic concurrency \(dispatch expectedSeq guard on a branch escrow\):/);
+  assert.ok(
+    out.includes(
+      `  escrow ${DEMO_EXPECTED_SEQ_ESCROW_ID}: FUND with expectedSeq 0 (the empty history): -> FUNDED, seq 0 -> 1 (a matching guard advances exactly one entry)`,
+    ),
+  );
+  assert.ok(
+    out.includes(
+      `  VERIFY_PASS retried with stale expectedSeq 1 (a second writer still holding the seq-1 snapshot): throws "${DEMO_EXPECTED_SEQ_STALE_ERROR}" — state stays MILESTONE_SUBMITTED, history stays 2 entries (nothing appended, nothing overwritten)`,
+    ),
+  );
   assert.ok(
     out
       .trimEnd()
       .endsWith(
-        "  an abort is a caller request to stop, never a retryable failure: neither shape retries, sleeps it off, or reports success",
+        "  VERIFY_PASS without expectedSeq: -> VERIFIED, seq 2 -> 3 (omitting the guard preserves the pre-guard behavior)",
       ),
   );
 });
@@ -4404,8 +4434,9 @@ test("demo shows quorum revoke: a revoked vote drops below threshold and a re-ap
   );
   assert.equal(probe.approvalCount(), 2);
   // The segment follows the onError segment and prints
-  // its lines verbatim; the AbortSignal segment closes
-  // the demo after it.
+  // its lines verbatim; the AbortSignal segment follows
+  // it (and the expectedSeq segment closes the demo
+  // after that).
   const revokeAt = text.indexOf(
     "Quorum revoke (Quorum.revoke() — a signer changes their vote):",
   );
@@ -4507,9 +4538,9 @@ test("demo shows webhook delivery abort: a pre-aborted signal fetches zero times
     globalThis.fetch = originalFetch;
   }
   assert.equal(probeCalls, 0);
-  // The segment closes the demo: it follows the quorum
-  // revoke segment, prints its lines verbatim, and its
-  // summary line is the demo's last line.
+  // The segment follows the quorum revoke segment and
+  // prints its lines verbatim; the expectedSeq segment
+  // closes the demo after it.
   const abortAt = text.indexOf(
     "Webhook delivery abort (deliverSettlementWebhook with an AbortSignal, scripted fake fetch, zero network):",
   );
@@ -4527,9 +4558,12 @@ test("demo shows webhook delivery abort: a pre-aborted signal fetches zero times
   ]) {
     assert.ok(text.includes(line), `missing abort line: ${line}`);
   }
-  assert.equal(
-    lines[lines.length - 1],
-    "  an abort is a caller request to stop, never a retryable failure: neither shape retries, sleeps it off, or reports success",
+  const expectedSeqAt = text.indexOf(
+    "Optimistic concurrency (dispatch expectedSeq guard on a branch escrow):",
+  );
+  assert.ok(
+    expectedSeqAt > abortAt,
+    "expectedSeq segment must follow the abort segment",
   );
 });
 
@@ -4539,6 +4573,9 @@ test("demo webhook abort segment is deterministic: two runs print byte-identical
       ls.indexOf(
         "Webhook delivery abort (deliverSettlementWebhook with an AbortSignal, scripted fake fetch, zero network):",
       ),
+      ls.indexOf(
+        "Optimistic concurrency (dispatch expectedSeq guard on a branch escrow):",
+      ) - 1,
     );
   const a = await runDemo();
   const b = await runDemo();
@@ -4552,4 +4589,163 @@ test("demo webhook abort segment is deterministic: two runs print byte-identical
   assert.equal(a.abortPreAbortedFetchCalls, b.abortPreAbortedFetchCalls);
   assert.equal(a.abortDuringBackoffError, b.abortDuringBackoffError);
   assert.equal(a.abortDuringBackoffFetchCalls, b.abortDuringBackoffFetchCalls);
+});
+
+test("demo shows dispatch expectedSeq optimistic concurrency: matching pins advance one entry each, a stale pin conflicts without touching the escrow, invalid pins throw, and an unguarded dispatch is unchanged", async () => {
+  const {
+    expectedSeqEscrow,
+    expectedSeqFundState,
+    expectedSeqSeqAfterFund,
+    expectedSeqSubmitState,
+    expectedSeqSeqAfterSubmit,
+    expectedSeqStaleError,
+    expectedSeqStateAfterStale,
+    expectedSeqHistoryLengthAfterStale,
+    expectedSeqInvalidNegativeError,
+    expectedSeqInvalidFractionError,
+    expectedSeqUnguardedState,
+    expectedSeqFinalHistoryLength,
+    lines,
+  } = await runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned fixture shape: the pinned errors are the
+  // exact strings src/stateMachine.ts throws for a seq-1
+  // pin at seq 2 and for the two invalid pin shapes.
+  assert.equal(
+    DEMO_EXPECTED_SEQ_STALE_ERROR,
+    "dispatch conflict: expected seq 1 but escrow is at seq 2",
+  );
+  assert.equal(
+    DEMO_EXPECTED_SEQ_INVALID_NEGATIVE_ERROR,
+    "invalid dispatch options: expectedSeq must be a non-negative integer, got -1",
+  );
+  assert.equal(
+    DEMO_EXPECTED_SEQ_INVALID_FRACTION_ERROR,
+    "invalid dispatch options: expectedSeq must be a non-negative integer, got 1.5",
+  );
+
+  // The four shapes: matching pins advance exactly one
+  // entry each, the stale pin conflicts and changes
+  // nothing, both invalid pins throw their pinned
+  // validation errors, and the unguarded dispatch keeps
+  // the pre-guard behavior.
+  assert.equal(expectedSeqFundState, "FUNDED");
+  assert.equal(expectedSeqSeqAfterFund, 1);
+  assert.equal(expectedSeqSubmitState, "MILESTONE_SUBMITTED");
+  assert.equal(expectedSeqSeqAfterSubmit, 2);
+  assert.equal(expectedSeqStaleError, DEMO_EXPECTED_SEQ_STALE_ERROR);
+  assert.equal(expectedSeqStateAfterStale, "MILESTONE_SUBMITTED");
+  assert.equal(expectedSeqHistoryLengthAfterStale, 2);
+  assert.equal(
+    expectedSeqInvalidNegativeError,
+    DEMO_EXPECTED_SEQ_INVALID_NEGATIVE_ERROR,
+  );
+  assert.equal(
+    expectedSeqInvalidFractionError,
+    DEMO_EXPECTED_SEQ_INVALID_FRACTION_ERROR,
+  );
+  assert.equal(expectedSeqUnguardedState, "VERIFIED");
+  assert.equal(expectedSeqFinalHistoryLength, 3);
+  assert.equal(expectedSeqEscrow.id, DEMO_EXPECTED_SEQ_ESCROW_ID);
+  assert.equal(expectedSeqEscrow.state, "VERIFIED");
+  assert.deepEqual(
+    expectedSeqEscrow.history.map((e) => [e.seq, e.event, e.at]),
+    [
+      [1, "FUND", DEMO_EXPECTED_SEQ_FUND_AT],
+      [2, "SUBMIT_MILESTONE", DEMO_EXPECTED_SEQ_SUBMIT_AT],
+      [3, "VERIFY_PASS", DEMO_EXPECTED_SEQ_VERIFY_AT],
+    ],
+  );
+  assert.equal(
+    expectedSeqEscrow.history[2].evidence,
+    DEMO_EXPECTED_SEQ_VERIFY_EVIDENCE,
+  );
+
+  // Independent re-verification: a fresh escrow driven
+  // by hand through the same shapes agrees — a matching
+  // pin advances, the stale pin throws the pinned
+  // conflict, both invalid pins throw, and the
+  // unguarded dispatch still lands.
+  const probe = new Escrow("probe-expected-seq-demo");
+  assert.equal(
+    probe.dispatch("FUND", undefined, 100, { expectedSeq: 0 }),
+    "FUNDED",
+  );
+  assert.throws(
+    () => probe.dispatch("SUBMIT_MILESTONE", undefined, undefined, { expectedSeq: 0 }),
+    new Error("dispatch conflict: expected seq 0 but escrow is at seq 1"),
+  );
+  assert.equal(probe.state, "FUNDED");
+  assert.equal(probe.history.length, 1);
+  assert.throws(
+    () => probe.dispatch("SUBMIT_MILESTONE", undefined, undefined, { expectedSeq: -1 }),
+    new Error(DEMO_EXPECTED_SEQ_INVALID_NEGATIVE_ERROR),
+  );
+  assert.throws(
+    () => probe.dispatch("SUBMIT_MILESTONE", undefined, undefined, { expectedSeq: 1.5 }),
+    new Error(DEMO_EXPECTED_SEQ_INVALID_FRACTION_ERROR),
+  );
+  assert.equal(
+    probe.dispatch("SUBMIT_MILESTONE", undefined, undefined, { expectedSeq: 1 }),
+    "MILESTONE_SUBMITTED",
+  );
+  assert.equal(probe.dispatch("VERIFY_PASS"), "VERIFIED");
+  assert.equal(probe.history.length, 3);
+
+  // The segment closes the demo: it follows the abort
+  // segment, prints its lines verbatim, and its
+  // unguarded-behavior line is the demo's last line.
+  const abortAt = text.indexOf(
+    "Webhook delivery abort (deliverSettlementWebhook with an AbortSignal, scripted fake fetch, zero network):",
+  );
+  const expectedSeqAt = text.indexOf(
+    "Optimistic concurrency (dispatch expectedSeq guard on a branch escrow):",
+  );
+  assert.ok(
+    expectedSeqAt > abortAt,
+    "expectedSeq segment must follow the abort segment",
+  );
+  for (const line of [
+    `  escrow ${DEMO_EXPECTED_SEQ_ESCROW_ID}: FUND with expectedSeq 0 (the empty history): -> FUNDED, seq 0 -> 1 (a matching guard advances exactly one entry)`,
+    `  SUBMIT_MILESTONE with expectedSeq 1: -> MILESTONE_SUBMITTED, seq 1 -> 2 (the fresh pin matches again)`,
+    `  VERIFY_PASS retried with stale expectedSeq 1 (a second writer still holding the seq-1 snapshot): throws "${DEMO_EXPECTED_SEQ_STALE_ERROR}" — state stays MILESTONE_SUBMITTED, history stays 2 entries (nothing appended, nothing overwritten)`,
+    `  VERIFY_PASS with expectedSeq -1: throws "${DEMO_EXPECTED_SEQ_INVALID_NEGATIVE_ERROR}" (a caller configuration error, checked before the transition)`,
+    `  VERIFY_PASS with expectedSeq 1.5: throws "${DEMO_EXPECTED_SEQ_INVALID_FRACTION_ERROR}" (a non-integer pin is rejected the same way)`,
+    `  VERIFY_PASS without expectedSeq: -> VERIFIED, seq 2 -> 3 (omitting the guard preserves the pre-guard behavior)`,
+  ]) {
+    assert.ok(text.includes(line), `missing expectedSeq line: ${line}`);
+  }
+  assert.equal(
+    lines[lines.length - 1],
+    "  VERIFY_PASS without expectedSeq: -> VERIFIED, seq 2 -> 3 (omitting the guard preserves the pre-guard behavior)",
+  );
+});
+
+test("demo expectedSeq segment is deterministic: two runs print byte-identical expectedSeq lines", async () => {
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf(
+        "Optimistic concurrency (dispatch expectedSeq guard on a branch escrow):",
+      ),
+    );
+  const a = await runDemo();
+  const b = await runDemo();
+  const segA = segment(a.lines);
+  // Header + the two matching-pin lines + the stale
+  // line + the two invalid-pin lines + the unguarded
+  // line; every value is derived from the fixed
+  // fixtures alone, so no normalization is needed.
+  assert.equal(segA.length, 7);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.equal(a.expectedSeqStaleError, b.expectedSeqStaleError);
+  assert.equal(
+    a.expectedSeqInvalidNegativeError,
+    b.expectedSeqInvalidNegativeError,
+  );
+  assert.equal(
+    a.expectedSeqInvalidFractionError,
+    b.expectedSeqInvalidFractionError,
+  );
+  assert.equal(a.expectedSeqFinalHistoryLength, b.expectedSeqFinalHistoryLength);
 });

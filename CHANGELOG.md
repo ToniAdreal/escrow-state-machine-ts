@@ -18,6 +18,28 @@ version changes.
 
 ### Added
 
+- CLI demo coverage for the dispatch optimistic-
+  concurrency guard: a fresh branch escrow
+  (DEMO-ESC-016) is driven on fixed timestamps through
+  `dispatch(..., { expectedSeq })` in every shape —
+  FUND with `expectedSeq: 0` and SUBMIT_MILESTONE with
+  `expectedSeq: 1` succeed, each advancing the seq by
+  exactly one entry; a VERIFY_PASS retried with the
+  stale `expectedSeq: 1` pin throws the pinned
+  `dispatch conflict: expected seq 1 but escrow is at seq 2`
+  error and leaves state and history untouched; pins
+  of `-1` and `1.5` throw the pinned
+  non-negative-integer validation error; and a final
+  VERIFY_PASS with no pin succeeds, preserving the
+  pre-guard behavior. All shapes are asserted outside
+  the printing against hand-pinned expectations, and
+  an independent re-verification in the demo tests
+  drives a fresh escrow through the same shapes and
+  agrees. `DemoResult` exposes the branch escrow, both
+  guarded states and seqs, the three thrown error
+  messages, the post-conflict state/history, and the
+  unguarded result. Demo and tests only; no library
+  behavior change.
 - Benchmark coverage for the keyed audit-chain
   verification path: `verifyHistoryChain` with the
   pinned `auditKey` over a fixed 4-entry history
