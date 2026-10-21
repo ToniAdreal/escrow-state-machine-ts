@@ -18,6 +18,29 @@ version changes.
 
 ### Added
 
+- Benchmark coverage for the keyed audit-chain
+  verification path: `verifyHistoryChain` with the
+  pinned `auditKey` over a fixed 4-entry history
+  produced by an escrow constructed with that key
+  (the same lifecycle, id, and fixed dispatch
+  timestamps as the unkeyed bench fixture, so the two
+  chains differ only in their hash function —
+  HMAC-SHA256 instead of plain SHA-256), checked to
+  return exactly `true` on every iteration with the
+  genesis and successor links pinned on every
+  iteration as well. Outside the timed loop, a wrong
+  key is pinned to return `false`, verification with
+  no key is pinned to return `false` (the keyed and
+  unkeyed modes fail closed against each other), and
+  a detached tampered copy (the middle entry gaining
+  a note it never carried) is pinned to return
+  `false` under the correct key. This separates the
+  keyed (MAC) audit-chain cost from the unkeyed
+  verify row, which never exercises the HMAC form.
+  The README Benchmarks table was refreshed from one
+  real run and gained the
+  `verifyHistoryChain auditKey (4 entries, keyed)`
+  row.
 - Benchmark coverage for the settlement-webhook
   secret-rotation verification path:
   `verifySettlementWebhook` with the rotation candidate
