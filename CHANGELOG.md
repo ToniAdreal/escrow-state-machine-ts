@@ -18,6 +18,27 @@ version changes.
 
 ### Added
 
+- Benchmark coverage for the quorum approval-expiry
+  path: the counting views (`approvalCount()` /
+  `hasQuorum()` / `approvals()`) of a fresh 5/9 quorum
+  configured with `maxApprovalAgeMs` (60-second window)
+  on an advancing injected clock, checked on every
+  iteration against hand-pinned expectations (approvals
+  staggered at BASE, BASE + 30s, and BASE + 60s — all
+  five counted with dao-1 exactly at the inclusive
+  boundary, then expiring one at a time as the clock
+  crosses each window, dao-2 pinned at its own boundary
+  on the way, `approvalLog()` held at its full 5 entries
+  throughout, and the two expired signers re-approving
+  to restore the quorum with the log grown to 7), with
+  the fully-expired log retention and the re-approval's
+  fresh timestamp pinned once outside the timed loop.
+  This separates the approval-freshness cost from the
+  approve / revoke / snapshot rows, which never set an
+  expiry window. The README Benchmarks table was
+  refreshed from one real run and gained the
+  `quorum maxApprovalAgeMs expiry (5 of 9, 60s window)`
+  row.
 - CLI demo coverage for settlement-webhook secret
   rotation: the main escrow's signed webhook (signed with
   the demo secret, playing the old secret) is re-verified
