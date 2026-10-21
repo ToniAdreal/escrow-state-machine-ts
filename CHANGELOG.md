@@ -19,6 +19,33 @@ version changes.
 ### Added
 
 - Benchmark coverage for the settlement-webhook
+  `maxFutureSkewMs` future-skew verification path:
+  `verifySettlementWebhook` with
+  `{ secrets: [secret], maxFutureSkewMs: 300000, now }`
+  over the fixed webhook fixture (signed at the fixed
+  timestamp / `eventId`, so its payload `at` is
+  pinned), with the injected `now` pinned at
+  `at - 120s` so the payload sits 120 s in the future,
+  inside the skew window — checked to return exactly
+  `true` on every iteration. This separates the
+  future side of the two-sided freshness window
+  (signature check first, freshness gate only after a
+  match) from the plain, secret-rotation, and
+  `maxAgeMs` verify rows, none of which bounds a
+  future timestamp. Outside the timed loop, an
+  over-skew payload (`now` at
+  `at - maxFutureSkewMs - 1`) is pinned to return
+  `false`, a payload skewed exactly to the boundary
+  is pinned to still verify (the boundary is
+  inclusive), both bounds set together are pinned to
+  reject on each side while a payload inside both
+  windows still verifies, and an illegal
+  `maxFutureSkewMs` of -1 is pinned to throw its
+  exact configuration error. The README Benchmarks
+  table was refreshed from one real run and gained
+  the `verifySettlementWebhook (maxFutureSkewMs future-skew window)`
+  row.
+- Benchmark coverage for the settlement-webhook
   `maxAgeMs` freshness verification path:
   `verifySettlementWebhook` with
   `{ secrets: [secret], maxAgeMs: 300000, now }` over
