@@ -19,6 +19,27 @@ version changes.
 ### Added
 
 - Benchmark coverage for the settlement-webhook
+  pre-aborted `AbortSignal` delivery path:
+  `deliverSettlementWebhook` with a pre-aborted
+  `signal` over the fixed webhook fixture, through a
+  counting fake global `fetch`, checked on every
+  iteration to reject with the exact error
+  `webhook delivery aborted` and to leave the fetch
+  call count at exactly zero. This separates the
+  deterministic cancel-before-dispatch guard (the
+  aborted check runs before any request is made)
+  from the single-target delivery row, which never
+  sets a signal. Outside the timed loop, a
+  non-`AbortSignal` `signal` value is pinned to
+  throw its exact configuration error before any
+  request, and a signal that never aborts is pinned
+  to leave the normal delivery path untouched
+  (`{ status: 200, attempts: 1 }` after exactly one
+  fetch). The README Benchmarks table was refreshed
+  from one real run and gained the
+  `deliverSettlementWebhook (pre-aborted signal)`
+  row.
+- Benchmark coverage for the settlement-webhook
   `maxFutureSkewMs` future-skew verification path:
   `verifySettlementWebhook` with
   `{ secrets: [secret], maxFutureSkewMs: 300000, now }`
