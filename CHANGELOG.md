@@ -18,6 +18,28 @@ version changes.
 
 ### Added
 
+- Benchmark coverage for the settlement-webhook
+  `maxAgeMs` freshness verification path:
+  `verifySettlementWebhook` with
+  `{ secrets: [secret], maxAgeMs: 300000, now }` over
+  the fixed webhook fixture (signed at the fixed
+  timestamp / `eventId`, so its payload `at` is
+  pinned), with the injected `now` pinned at
+  `at + 120s` inside the window — checked to return
+  exactly `true` on every iteration. This separates
+  the opt-in replay-bound receiver cost (signature
+  check first, freshness gate only after a match)
+  from the plain and secret-rotation verify rows,
+  which never set a window. Outside the timed loop,
+  an over-age payload (`now` at `at + maxAgeMs + 1`)
+  is pinned to return `false`, a payload aged
+  exactly to the boundary is pinned to still verify
+  (the boundary is inclusive), and an illegal
+  `maxAgeMs` of -1 is pinned to throw its exact
+  configuration error. The README Benchmarks table
+  was refreshed from one real run and gained the
+  `verifySettlementWebhook (maxAgeMs freshness window)`
+  row.
 - CLI demo coverage for the keyed audit chain: a
   fresh branch escrow (DEMO-ESC-019, constructed with
   the pinned `auditKey`) is driven on fixed timestamps

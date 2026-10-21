@@ -1162,54 +1162,55 @@ One real run on 2026-10-21:
 
 | path | throughput |
 |------|------------|
-| dispatch (full lifecycle, 4 dispatches) | ~16,842 ops/sec (~59.37 µs/op) |
-| benchTransition (single step, snapshot restore) | ~53,369 ops/sec (~18.74 µs/op) |
-| verifyHistoryChain (4 entries) | ~62,794 ops/sec (~15.93 µs/op) |
-| verifyHistoryChain auditKey (4 entries, keyed) | ~22,235 ops/sec (~44.97 µs/op) |
-| Escrow.fromHistory (4 entries) | ~6,736 ops/sec (~148.45 µs/op) |
-| settleRelease (4 fixed inputs) | ~776,380 ops/sec (~1.29 µs/op) |
-| buildSettlementReport (4 entries) | ~42,830 ops/sec (~23.35 µs/op) |
-| renderReport (released report, 4 parties) | ~1,149 ops/sec (~870.18 µs/op) |
-| depositAmountFromHistory (4-shape corpus) | ~5,853 ops/sec (~170.86 µs/op) |
-| buildSettlementReports (batch 4 x 4 entries) | ~3,167 ops/sec (~315.75 µs/op) |
-| summarizeSettlementReports (batch 4 results) | ~263,295 ops/sec (~3.80 µs/op) |
-| buildSettlementWebhooks (batch 4 results) | ~10,230 ops/sec (~97.75 µs/op) |
-| buildSettlementWebhook (sign) | ~105,115 ops/sec (~9.51 µs/op) |
-| verifySettlementWebhook | ~67,095 ops/sec (~14.90 µs/op) |
-| verifySettlementWebhook (secrets rotation, 2 candidates) | ~56,119 ops/sec (~17.82 µs/op) |
-| parseRetryAfter (11-value corpus) | ~202,362 ops/sec (~4.94 µs/op) |
-| historyToNdjson (8 entries) | ~11,828 ops/sec (~84.54 µs/op) |
-| historyFromNdjson (8 entries, chain re-verify) | ~6,982 ops/sec (~143.23 µs/op) |
-| quorum approve to threshold (5 of 9) | ~32,830 ops/sec (~30.46 µs/op) |
-| restoreQuorum (snapshot, 7 approvals of 9) | ~19,731 ops/sec (~50.68 µs/op) |
-| quorum snapshot export (7 approvals of 9) | ~126,054 ops/sec (~7.93 µs/op) |
-| quorum revoke cycle (5 of 9, revoke + re-approve) | ~52,330 ops/sec (~19.11 µs/op) |
-| quorum maxApprovalAgeMs expiry (5 of 9, 60s window) | ~9,520 ops/sec (~105.04 µs/op) |
-| deliverSettlementWebhookToMany (4 endpoints) | ~3,216 ops/sec (~310.96 µs/op) |
-| deliverSettlementWebhook (single endpoint) | ~15,617 ops/sec (~64.03 µs/op) |
-| SettlementEventDedupe checkAndRecord (hit, 1k) | ~794,218 ops/sec (~1.26 µs/op) |
-| SettlementEventDedupe.restore (1,000-entry snapshot) | ~1,359 ops/sec (~735.72 µs/op) |
-| SettlementEventDedupe.exportSnapshot (1,000-entry snapshot) | ~6,876 ops/sec (~145.43 µs/op) |
-| SettlementEventDedupe.clear (1,000 recorded ids, fresh fixture) | ~2,191 ops/sec (~456.36 µs/op) |
-| SettlementEventDedupe.stats (5 live entries, 1 expired) | ~3,348,610 ops/sec (~0.30 µs/op) |
-| expiredEscrows (batch 100 escrows) | ~23,596 ops/sec (~42.38 µs/op) |
-| staleEscrows (batch 100 escrows) | ~9,703 ops/sec (~103.06 µs/op) |
-| expireOverdueEscrows (batch 100 escrows) | ~244.1 ops/sec (~4097.31 µs/op) |
-| actOnStaleEscrows (batch 100 escrows) | ~301.0 ops/sec (~3321.98 µs/op) |
-| allowedEvents (all 8 states) | ~193,225 ops/sec (~5.18 µs/op) |
-| calculateDeposit (3-shape corpus) | ~51,828 ops/sec (~19.29 µs/op) |
-| dispatchArbitration (refund, rebuilt fixture) | ~11,410 ops/sec (~87.64 µs/op) |
-| isOverdue (4-case corpus) | ~1,075,135 ops/sec (~0.93 µs/op) |
-| setDeadline + clearDeadline (FUNDED escrow write cycle) | ~252,272 ops/sec (~3.96 µs/op) |
-| assertNonNegativeMoney (legal corpus) | ~2,269,213 ops/sec (~0.44 µs/op) |
-| transitionTableJson (14 edges) | ~45,026 ops/sec (~22.21 µs/op) |
-| transitionTable (14 edges) | ~93,056 ops/sec (~10.75 µs/op) |
-| stateDiagram (14 edges, 21 lines) | ~36,055 ops/sec (~27.74 µs/op) |
-| readmeDiagramInSync (README sync check) | ~839.8 ops/sec (~1190.75 µs/op) |
-| subscribe (full lifecycle, 1 collecting listener) | ~14,301 ops/sec (~69.93 µs/op) |
-| subscribe onError (short chain, 1 throwing listener) | ~1,071 ops/sec (~933.42 µs/op) |
-| Escrow.fromJSON (snapshot round-trip, 4 entries) | ~8,607 ops/sec (~116.18 µs/op) |
-| parseEscrowHistory (4 entries, JSON text) | ~3,156 ops/sec (~316.89 µs/op) |
+| dispatch (full lifecycle, 4 dispatches) | ~7,115 ops/sec (~140.54 µs/op) |
+| benchTransition (single step, snapshot restore) | ~23,568 ops/sec (~42.43 µs/op) |
+| verifyHistoryChain (4 entries) | ~22,653 ops/sec (~44.14 µs/op) |
+| verifyHistoryChain auditKey (4 entries, keyed) | ~9,961 ops/sec (~100.39 µs/op) |
+| Escrow.fromHistory (4 entries) | ~1,932 ops/sec (~517.55 µs/op) |
+| settleRelease (4 fixed inputs) | ~325,171 ops/sec (~3.08 µs/op) |
+| buildSettlementReport (4 entries) | ~7,435 ops/sec (~134.49 µs/op) |
+| renderReport (released report, 4 parties) | ~722.8 ops/sec (~1383.44 µs/op) |
+| depositAmountFromHistory (4-shape corpus) | ~4,626 ops/sec (~216.15 µs/op) |
+| buildSettlementReports (batch 4 x 4 entries) | ~4,759 ops/sec (~210.14 µs/op) |
+| summarizeSettlementReports (batch 4 results) | ~244,923 ops/sec (~4.08 µs/op) |
+| buildSettlementWebhooks (batch 4 results) | ~11,982 ops/sec (~83.46 µs/op) |
+| buildSettlementWebhook (sign) | ~72,915 ops/sec (~13.71 µs/op) |
+| verifySettlementWebhook | ~38,837 ops/sec (~25.75 µs/op) |
+| verifySettlementWebhook (secrets rotation, 2 candidates) | ~63,774 ops/sec (~15.68 µs/op) |
+| verifySettlementWebhook (maxAgeMs freshness window) | ~38,698 ops/sec (~25.84 µs/op) |
+| parseRetryAfter (11-value corpus) | ~170,252 ops/sec (~5.87 µs/op) |
+| historyToNdjson (8 entries) | ~10,412 ops/sec (~96.04 µs/op) |
+| historyFromNdjson (8 entries, chain re-verify) | ~3,741 ops/sec (~267.32 µs/op) |
+| quorum approve to threshold (5 of 9) | ~72,055 ops/sec (~13.88 µs/op) |
+| restoreQuorum (snapshot, 7 approvals of 9) | ~5,156 ops/sec (~193.94 µs/op) |
+| quorum snapshot export (7 approvals of 9) | ~26,359 ops/sec (~37.94 µs/op) |
+| quorum revoke cycle (5 of 9, revoke + re-approve) | ~15,637 ops/sec (~63.95 µs/op) |
+| quorum maxApprovalAgeMs expiry (5 of 9, 60s window) | ~4,370 ops/sec (~228.85 µs/op) |
+| deliverSettlementWebhookToMany (4 endpoints) | ~2,229 ops/sec (~448.63 µs/op) |
+| deliverSettlementWebhook (single endpoint) | ~20,183 ops/sec (~49.55 µs/op) |
+| SettlementEventDedupe checkAndRecord (hit, 1k) | ~1,432,669 ops/sec (~0.70 µs/op) |
+| SettlementEventDedupe.restore (1,000-entry snapshot) | ~1,063 ops/sec (~940.35 µs/op) |
+| SettlementEventDedupe.exportSnapshot (1,000-entry snapshot) | ~7,045 ops/sec (~141.94 µs/op) |
+| SettlementEventDedupe.clear (1,000 recorded ids, fresh fixture) | ~2,707 ops/sec (~369.42 µs/op) |
+| SettlementEventDedupe.stats (5 live entries, 1 expired) | ~2,460,590 ops/sec (~0.41 µs/op) |
+| expiredEscrows (batch 100 escrows) | ~24,164 ops/sec (~41.38 µs/op) |
+| staleEscrows (batch 100 escrows) | ~14,650 ops/sec (~68.26 µs/op) |
+| expireOverdueEscrows (batch 100 escrows) | ~275.9 ops/sec (~3624.61 µs/op) |
+| actOnStaleEscrows (batch 100 escrows) | ~288.4 ops/sec (~3467.85 µs/op) |
+| allowedEvents (all 8 states) | ~208,706 ops/sec (~4.79 µs/op) |
+| calculateDeposit (3-shape corpus) | ~363,289 ops/sec (~2.75 µs/op) |
+| dispatchArbitration (refund, rebuilt fixture) | ~19,418 ops/sec (~51.50 µs/op) |
+| isOverdue (4-case corpus) | ~146,038 ops/sec (~6.85 µs/op) |
+| setDeadline + clearDeadline (FUNDED escrow write cycle) | ~130,168 ops/sec (~7.68 µs/op) |
+| assertNonNegativeMoney (legal corpus) | ~1,000,837 ops/sec (~1.00 µs/op) |
+| transitionTableJson (14 edges) | ~19,130 ops/sec (~52.28 µs/op) |
+| transitionTable (14 edges) | ~55,738 ops/sec (~17.94 µs/op) |
+| stateDiagram (14 edges, 21 lines) | ~16,072 ops/sec (~62.22 µs/op) |
+| readmeDiagramInSync (README sync check) | ~1,595 ops/sec (~626.87 µs/op) |
+| subscribe (full lifecycle, 1 collecting listener) | ~15,061 ops/sec (~66.40 µs/op) |
+| subscribe onError (short chain, 1 throwing listener) | ~2,435 ops/sec (~410.69 µs/op) |
+| Escrow.fromJSON (snapshot round-trip, 4 entries) | ~11,169 ops/sec (~89.53 µs/op) |
+| parseEscrowHistory (4 entries, JSON text) | ~3,450 ops/sec (~289.83 µs/op) |
 Environment: Node v24.20.0, linux/x64, AMD EPYC 9D25 126-Core
 Processor (virtualized; shared host, so numbers vary run to
 run). Repeated runs swing individual rows widely in both
