@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 691 tests, all local
+npm test   # 693 tests, all local
 ```
 
 ## Quickstart
@@ -425,6 +425,13 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   reference is auditable but still *not* verified by the library. The flag
   is per-instance dispatch configuration and is not part of the snapshot;
   a restored escrow must re-enable it via `Escrow.fromJSON(snapshot, opts)`.
+  The CLI demo (`npm run demo`) walks the gate end to end on branch
+  escrows: an evidence-free `VERIFY_PASS` is refused with state and
+  history untouched, the same dispatch carrying an evidence reference is
+  accepted and recorded verbatim, and a default escrow (flag off) keeps
+  the pre-gate behavior. The demo's evidence reference is a fixed string,
+  not a verified oracle response — the gate is a caller-side hook shape,
+  not a claim that any real oracle or proof was checked.
 
 - **What about the 5/9 multi-sig DAO arbitration?**
   Partially modeled: `DISPUTE` → `ARBITRATE_RELEASE` /
@@ -745,7 +752,7 @@ and an empty batch yields an all-zero summary.
 
 ## Reproducibility
 
-`npm test` runs 691 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 693 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

@@ -18,6 +18,32 @@ version changes.
 
 ### Added
 
+- CLI demo coverage for the verify-evidence gate: two
+  fresh branch escrows (DEMO-ESC-017 with
+  `requireVerifyEvidence: true` and DEMO-ESC-018 with
+  the flag off) are driven on fixed timestamps through
+  `dispatch("VERIFY_PASS")` in every shape — the
+  strict escrow's evidence-free VERIFY_PASS throws the
+  pinned `verify evidence required: dispatch("VERIFY_PASS")
+  requires a non-empty evidence reference when
+  requireVerifyEvidence is enabled` error and leaves
+  state and history untouched; the same dispatch
+  carrying the pinned evidence reference succeeds and
+  records the reference verbatim on the audit entry;
+  and the default escrow's evidence-free VERIFY_PASS
+  succeeds, preserving the pre-gate behavior. The
+  entry is honest about the limit: the library records
+  the caller's reference and does not verify the
+  oracle signature, zk proof, or TEE attestation
+  behind it. All shapes are asserted outside the
+  printing against hand-pinned expectations, and an
+  independent re-verification in the demo tests drives
+  fresh escrows through the same shapes and agrees.
+  `DemoResult` exposes both branch escrows, the thrown
+  error message, the post-rejection state/history, the
+  verified state, the recorded reference, and the
+  default result. Demo and tests only; no library
+  behavior change.
 - CLI demo coverage for the dispatch optimistic-
   concurrency guard: a fresh branch escrow
   (DEMO-ESC-016) is driven on fixed timestamps through

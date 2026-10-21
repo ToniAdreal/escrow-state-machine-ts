@@ -1292,6 +1292,52 @@ export const DEMO_EXPECTED_SEQ_INVALID_NEGATIVE_ERROR =
 export const DEMO_EXPECTED_SEQ_INVALID_FRACTION_ERROR =
   "invalid dispatch options: expectedSeq must be a non-negative integer, got 1.5";
 
+/**
+ * Verify-evidence fixtures for the final closing segment:
+ * two fresh branch escrows driven on fixed timestamps
+ * while the `requireVerifyEvidence` gate of
+ * `EscrowOptions` (src/stateMachine.ts) is exercised in
+ * every shape. Hand-pinned expectations — written from
+ * the documented gate semantics there (with the flag on,
+ * a VERIFY_PASS dispatch without a non-empty `evidence`
+ * reference throws the pinned error BEFORE anything is
+ * appended; with evidence it proceeds and the reference
+ * is recorded verbatim on the audit entry; the library
+ * records the caller's claim and does NOT verify the
+ * oracle signature, zk proof, or TEE attestation behind
+ * it), never derived by calling the gated dispatch
+ * itself, and cross-checked against
+ * test/verifyEvidence.test.ts, which pins the same
+ * shapes:
+ * - DEMO-ESC-017 (flag on): FUND + SUBMIT_MILESTONE on
+ *   fixed timestamps reach MILESTONE_SUBMITTED (2
+ *   entries)
+ * - VERIFY_PASS with NO evidence throws exactly
+ *   {@link DEMO_VERIFY_EVIDENCE_ERROR} and leaves state
+ *   (MILESTONE_SUBMITTED) and history (2 entries)
+ *   untouched
+ * - VERIFY_PASS with evidence
+ *   {@link DEMO_VERIFY_EVIDENCE_REF} then succeeds:
+ *   state VERIFIED, and the last audit entry carries
+ *   the reference verbatim
+ * - DEMO-ESC-018 (flag off, the default): the same
+ *   chain with an evidence-free VERIFY_PASS succeeds —
+ *   omitting the flag preserves the exact pre-gate
+ *   behavior, and its VERIFY_PASS entry carries no
+ *   evidence field
+ * Fixed escrow ids, fixed amount (the golden deposit),
+ * fixed timestamps: no network, no randomness, no
+ * wall clock.
+ */
+export const DEMO_VERIFY_EVIDENCE_ESCROW_ID = "DEMO-ESC-017";
+export const DEMO_VERIFY_EVIDENCE_DEFAULT_ESCROW_ID = "DEMO-ESC-018";
+export const DEMO_VERIFY_EVIDENCE_FUND_AT = "2026-03-19T09:00:00.000Z";
+export const DEMO_VERIFY_EVIDENCE_SUBMIT_AT = "2026-03-19T10:00:00.000Z";
+export const DEMO_VERIFY_EVIDENCE_VERIFY_AT = "2026-03-19T11:00:00.000Z";
+export const DEMO_VERIFY_EVIDENCE_REF = "demo-oracle-attestation-017";
+export const DEMO_VERIFY_EVIDENCE_ERROR =
+  'verify evidence required: dispatch("VERIFY_PASS") requires a non-empty evidence reference when requireVerifyEvidence is enabled';
+
 const steps: Array<{
   event: EscrowEvent;
   actor: string;
@@ -2228,6 +2274,54 @@ export interface DemoResult {
   expectedSeqUnguardedState: EscrowState;
   /** Final history length of the branch escrow: exactly 3. */
   expectedSeqFinalHistoryLength: number;
+  /**
+   * The final closing segment's strict branch escrow
+   * (DEMO-ESC-017, `requireVerifyEvidence: true`), after
+   * the rejected evidence-free VERIFY_PASS and the
+   * accepted evidence-carrying one: VERIFIED with 3
+   * history entries, the last carrying the pinned
+   * evidence reference verbatim.
+   */
+  verifyEvidenceEscrow: Escrow;
+  /**
+   * Error message of the evidence-free VERIFY_PASS on
+   * the strict escrow: exactly
+   * {@link DEMO_VERIFY_EVIDENCE_ERROR}.
+   */
+  verifyEvidenceError: string;
+  /**
+   * The strict escrow's state after the rejection:
+   * `"MILESTONE_SUBMITTED"` — the gate changed nothing.
+   */
+  verifyEvidenceStateAfterReject: EscrowState;
+  /**
+   * The strict escrow's history length after the
+   * rejection: exactly 2 — nothing was appended.
+   */
+  verifyEvidenceHistoryLengthAfterReject: number;
+  /**
+   * State returned by the VERIFY_PASS dispatched with
+   * the pinned evidence reference: `"VERIFIED"`.
+   */
+  verifyEvidenceVerifiedState: EscrowState;
+  /**
+   * The evidence recorded verbatim on the strict
+   * escrow's VERIFY_PASS audit entry: exactly
+   * {@link DEMO_VERIFY_EVIDENCE_REF}.
+   */
+  verifyEvidenceRecordedEvidence: string;
+  /**
+   * The default branch escrow (DEMO-ESC-018, flag off),
+   * after its evidence-free VERIFY_PASS: VERIFIED with
+   * 3 history entries, the last carrying no evidence
+   * field — the pre-gate behavior.
+   */
+  verifyEvidenceDefaultEscrow: Escrow;
+  /**
+   * State returned by the default escrow's
+   * evidence-free VERIFY_PASS: `"VERIFIED"`.
+   */
+  verifyEvidenceDefaultState: EscrowState;
   lines: string[];
 }
 
@@ -4904,6 +4998,138 @@ export async function runDemo(): Promise<DemoResult> {
     `  VERIFY_PASS without expectedSeq: -> ${expectedSeqUnguardedState}, seq 2 -> ${expectedSeqFinalHistoryLength} (omitting the guard preserves the pre-guard behavior)`,
   );
 
+  // --- Verify evidence gate: requireVerifyEvidence (final closing) ---
+  // VERIFY_PASS is a caller trust decision: nothing in
+  // this library verifies an oracle signature, a zk
+  // proof, or a TEE attestation. The opt-in
+  // `requireVerifyEvidence` flag is the audit guardrail
+  // on top of that decision — it makes the caller cite
+  // the evidence reference it relied on, recorded
+  // verbatim on the audit entry, and refuses the
+  // dispatch outright when no reference is given. Two
+  // fresh branch escrows walk the gate in every shape
+  // on fixed timestamps: the strict escrow
+  // (DEMO-ESC-017, flag on) is driven to
+  // MILESTONE_SUBMITTED, its evidence-free VERIFY_PASS
+  // throws the pinned error and leaves state and
+  // history untouched, and the same dispatch carrying
+  // the pinned evidence reference then succeeds with
+  // the reference on the audit entry; the default
+  // escrow (DEMO-ESC-018, flag off) dispatches the
+  // same evidence-free VERIFY_PASS successfully,
+  // because omitting the flag preserves the exact
+  // pre-gate behavior. Hand-pinned expectations (see
+  // the fixture comment above), asserted HERE, outside
+  // the printing: a rejection that appended anything,
+  // a recorded reference that differed, or a default
+  // escrow that behaved differently would fail the
+  // demo itself, not just a test. Zero network, zero
+  // randomness, fixed timestamps.
+  const verifyEvidenceEscrow = new Escrow(DEMO_VERIFY_EVIDENCE_ESCROW_ID, {
+    requireVerifyEvidence: true,
+  });
+  verifyEvidenceEscrow.dispatch(
+    "FUND",
+    "Deposit locked (wire received)",
+    10630,
+    {
+      actor: "sponsor",
+      at: DEMO_VERIFY_EVIDENCE_FUND_AT,
+    },
+  );
+  verifyEvidenceEscrow.dispatch(
+    "SUBMIT_MILESTONE",
+    "Deliverable URLs + IPFS metadata hash",
+    undefined,
+    {
+      actor: "creator",
+      at: DEMO_VERIFY_EVIDENCE_SUBMIT_AT,
+    },
+  );
+  let verifyEvidenceError = "";
+  try {
+    verifyEvidenceEscrow.dispatch("VERIFY_PASS", "KPIs validated by oracle", undefined, {
+      actor: "oracle",
+      at: DEMO_VERIFY_EVIDENCE_VERIFY_AT,
+    });
+  } catch (err) {
+    verifyEvidenceError =
+      err instanceof Error ? err.message : String(err);
+  }
+  const verifyEvidenceStateAfterReject = verifyEvidenceEscrow.state;
+  const verifyEvidenceHistoryLengthAfterReject =
+    verifyEvidenceEscrow.history.length;
+  const verifyEvidenceVerifiedState = verifyEvidenceEscrow.dispatch(
+    "VERIFY_PASS",
+    "KPIs validated by oracle",
+    undefined,
+    {
+      actor: "oracle",
+      at: DEMO_VERIFY_EVIDENCE_VERIFY_AT,
+      evidence: DEMO_VERIFY_EVIDENCE_REF,
+    },
+  );
+  const verifyEvidenceRecordedEvidence =
+    verifyEvidenceEscrow.history[verifyEvidenceEscrow.history.length - 1]
+      .evidence ?? "";
+  const verifyEvidenceDefaultEscrow = new Escrow(
+    DEMO_VERIFY_EVIDENCE_DEFAULT_ESCROW_ID,
+  );
+  verifyEvidenceDefaultEscrow.dispatch(
+    "FUND",
+    "Deposit locked (wire received)",
+    10630,
+    {
+      actor: "sponsor",
+      at: DEMO_VERIFY_EVIDENCE_FUND_AT,
+    },
+  );
+  verifyEvidenceDefaultEscrow.dispatch(
+    "SUBMIT_MILESTONE",
+    "Deliverable URLs + IPFS metadata hash",
+    undefined,
+    {
+      actor: "creator",
+      at: DEMO_VERIFY_EVIDENCE_SUBMIT_AT,
+    },
+  );
+  const verifyEvidenceDefaultState = verifyEvidenceDefaultEscrow.dispatch(
+    "VERIFY_PASS",
+    "KPIs validated by oracle",
+    undefined,
+    {
+      actor: "oracle",
+      at: DEMO_VERIFY_EVIDENCE_VERIFY_AT,
+    },
+  );
+  if (
+    verifyEvidenceError !== DEMO_VERIFY_EVIDENCE_ERROR ||
+    verifyEvidenceStateAfterReject !== "MILESTONE_SUBMITTED" ||
+    verifyEvidenceHistoryLengthAfterReject !== 2 ||
+    verifyEvidenceVerifiedState !== "VERIFIED" ||
+    verifyEvidenceRecordedEvidence !== DEMO_VERIFY_EVIDENCE_REF ||
+    verifyEvidenceEscrow.state !== "VERIFIED" ||
+    verifyEvidenceEscrow.history.length !== 3 ||
+    verifyEvidenceDefaultState !== "VERIFIED" ||
+    verifyEvidenceDefaultEscrow.history.length !== 3 ||
+    "evidence" in
+      verifyEvidenceDefaultEscrow.history[
+        verifyEvidenceDefaultEscrow.history.length - 1
+      ]
+  ) {
+    throw new Error(
+      "demo fixture broken: requireVerifyEvidence gate does not match the pinned shape (an evidence-free VERIFY_PASS on the strict escrow throws the pinned error and changes nothing, the same dispatch with evidence succeeds and records the reference verbatim, and a default escrow keeps the pre-gate behavior)",
+    );
+  }
+  lines.push(
+    "",
+    "Verify evidence gate (EscrowOptions.requireVerifyEvidence on branch escrows):",
+    `  escrow ${verifyEvidenceEscrow.id} (requireVerifyEvidence: true): FUND 10630 -> FUNDED, SUBMIT_MILESTONE -> MILESTONE_SUBMITTED on fixed timestamps (the gate is armed)`,
+    `  VERIFY_PASS without evidence: throws "${verifyEvidenceError}" — state stays ${verifyEvidenceStateAfterReject}, history stays ${verifyEvidenceHistoryLengthAfterReject} entries (nothing appended)`,
+    `  VERIFY_PASS with evidence "${DEMO_VERIFY_EVIDENCE_REF}": -> ${verifyEvidenceVerifiedState}, evidence recorded verbatim on the audit entry (the library records the caller's reference; it does not verify the oracle or proof itself)`,
+    `  escrow ${verifyEvidenceDefaultEscrow.id} (default, flag off): VERIFY_PASS without evidence -> ${verifyEvidenceDefaultState} (omitting the flag preserves the pre-gate behavior)`,
+  );
+
   return {
     escrow,
     report,
@@ -5049,6 +5275,14 @@ export async function runDemo(): Promise<DemoResult> {
     expectedSeqInvalidFractionError,
     expectedSeqUnguardedState,
     expectedSeqFinalHistoryLength,
+    verifyEvidenceEscrow,
+    verifyEvidenceError,
+    verifyEvidenceStateAfterReject,
+    verifyEvidenceHistoryLengthAfterReject,
+    verifyEvidenceVerifiedState,
+    verifyEvidenceRecordedEvidence,
+    verifyEvidenceDefaultEscrow,
+    verifyEvidenceDefaultState,
     lines,
   };
 }

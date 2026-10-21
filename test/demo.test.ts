@@ -114,6 +114,13 @@ import {
   DEMO_UNEXPIRABLE_DEADLINE,
   DEMO_UNEXPIRABLE_ESCROW_ID,
   DEMO_UNEXPIRABLE_VERIFY_AT,
+  DEMO_VERIFY_EVIDENCE_DEFAULT_ESCROW_ID,
+  DEMO_VERIFY_EVIDENCE_ERROR,
+  DEMO_VERIFY_EVIDENCE_ESCROW_ID,
+  DEMO_VERIFY_EVIDENCE_FUND_AT,
+  DEMO_VERIFY_EVIDENCE_REF,
+  DEMO_VERIFY_EVIDENCE_SUBMIT_AT,
+  DEMO_VERIFY_EVIDENCE_VERIFY_AT,
   DEMO_WEBHOOK_AT,
   DEMO_WEBHOOK_EVENT_ID,
   DEMO_WEBHOOK_FRESHNESS_BOUNDARY_NOW_MS,
@@ -2438,12 +2445,11 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
       "  an abort is a caller request to stop, never a retryable failure: neither shape retries, sleeps it off, or reports success",
     ),
   );
-  // expectedSeq tail: the closing segment drives a
-  // branch escrow through the optimistic-concurrency
-  // guard — matching pins advance, a stale pin is
-  // refused, invalid pins are refused, and an
-  // unguarded dispatch is unchanged; the demo ends
-  // on the unguarded-behavior line.
+  // expectedSeq tail: that segment drives a branch
+  // escrow through the optimistic-concurrency guard —
+  // matching pins advance, a stale pin is refused,
+  // invalid pins are refused, and an unguarded dispatch
+  // is unchanged.
   assert.match(out, /Optimistic concurrency \(dispatch expectedSeq guard on a branch escrow\):/);
   assert.ok(
     out.includes(
@@ -2456,10 +2462,32 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
     ),
   );
   assert.ok(
+    out.includes(
+      "  VERIFY_PASS without expectedSeq: -> VERIFIED, seq 2 -> 3 (omitting the guard preserves the pre-guard behavior)",
+    ),
+  );
+  // verifyEvidence tail: the closing segment drives
+  // two branch escrows through the evidence gate — an
+  // evidence-free VERIFY_PASS is refused on the strict
+  // escrow, the same dispatch with evidence passes,
+  // and a default escrow is unchanged; the demo ends
+  // on the pre-gate-behavior line.
+  assert.match(out, /Verify evidence gate \(EscrowOptions\.requireVerifyEvidence on branch escrows\):/);
+  assert.ok(
+    out.includes(
+      `  VERIFY_PASS without evidence: throws "${DEMO_VERIFY_EVIDENCE_ERROR}" — state stays MILESTONE_SUBMITTED, history stays 2 entries (nothing appended)`,
+    ),
+  );
+  assert.ok(
+    out.includes(
+      `  VERIFY_PASS with evidence "${DEMO_VERIFY_EVIDENCE_REF}": -> VERIFIED, evidence recorded verbatim on the audit entry (the library records the caller's reference; it does not verify the oracle or proof itself)`,
+    ),
+  );
+  assert.ok(
     out
       .trimEnd()
       .endsWith(
-        "  VERIFY_PASS without expectedSeq: -> VERIFIED, seq 2 -> 3 (omitting the guard preserves the pre-guard behavior)",
+        `  escrow ${DEMO_VERIFY_EVIDENCE_DEFAULT_ESCROW_ID} (default, flag off): VERIFY_PASS without evidence -> VERIFIED (omitting the flag preserves the pre-gate behavior)`,
       ),
   );
 });
@@ -4435,8 +4463,8 @@ test("demo shows quorum revoke: a revoked vote drops below threshold and a re-ap
   assert.equal(probe.approvalCount(), 2);
   // The segment follows the onError segment and prints
   // its lines verbatim; the AbortSignal segment follows
-  // it (and the expectedSeq segment closes the demo
-  // after that).
+  // it (and the expectedSeq and verifyEvidence segments
+  // close the demo after that).
   const revokeAt = text.indexOf(
     "Quorum revoke (Quorum.revoke() — a signer changes their vote):",
   );
@@ -4540,7 +4568,8 @@ test("demo shows webhook delivery abort: a pre-aborted signal fetches zero times
   assert.equal(probeCalls, 0);
   // The segment follows the quorum revoke segment and
   // prints its lines verbatim; the expectedSeq segment
-  // closes the demo after it.
+  // follows it (and the verifyEvidence segment closes
+  // the demo after that).
   const abortAt = text.indexOf(
     "Webhook delivery abort (deliverSettlementWebhook with an AbortSignal, scripted fake fetch, zero network):",
   );
@@ -4564,6 +4593,13 @@ test("demo shows webhook delivery abort: a pre-aborted signal fetches zero times
   assert.ok(
     expectedSeqAt > abortAt,
     "expectedSeq segment must follow the abort segment",
+  );
+  const verifyEvidenceAt = text.indexOf(
+    "Verify evidence gate (EscrowOptions.requireVerifyEvidence on branch escrows):",
+  );
+  assert.ok(
+    verifyEvidenceAt > expectedSeqAt,
+    "verifyEvidence segment must follow the expectedSeq segment",
   );
 });
 
@@ -4693,9 +4729,9 @@ test("demo shows dispatch expectedSeq optimistic concurrency: matching pins adva
   assert.equal(probe.dispatch("VERIFY_PASS"), "VERIFIED");
   assert.equal(probe.history.length, 3);
 
-  // The segment closes the demo: it follows the abort
-  // segment, prints its lines verbatim, and its
-  // unguarded-behavior line is the demo's last line.
+  // The segment follows the abort segment and prints
+  // its lines verbatim; the verifyEvidence segment
+  // closes the demo after it.
   const abortAt = text.indexOf(
     "Webhook delivery abort (deliverSettlementWebhook with an AbortSignal, scripted fake fetch, zero network):",
   );
@@ -4716,9 +4752,12 @@ test("demo shows dispatch expectedSeq optimistic concurrency: matching pins adva
   ]) {
     assert.ok(text.includes(line), `missing expectedSeq line: ${line}`);
   }
-  assert.equal(
-    lines[lines.length - 1],
-    "  VERIFY_PASS without expectedSeq: -> VERIFIED, seq 2 -> 3 (omitting the guard preserves the pre-guard behavior)",
+  const verifyEvidenceAt = text.indexOf(
+    "Verify evidence gate (EscrowOptions.requireVerifyEvidence on branch escrows):",
+  );
+  assert.ok(
+    verifyEvidenceAt > expectedSeqAt,
+    "verifyEvidence segment must follow the expectedSeq segment",
   );
 });
 
@@ -4728,6 +4767,9 @@ test("demo expectedSeq segment is deterministic: two runs print byte-identical e
       ls.indexOf(
         "Optimistic concurrency (dispatch expectedSeq guard on a branch escrow):",
       ),
+      ls.indexOf(
+        "Verify evidence gate (EscrowOptions.requireVerifyEvidence on branch escrows):",
+      ) - 1,
     );
   const a = await runDemo();
   const b = await runDemo();
@@ -4748,4 +4790,146 @@ test("demo expectedSeq segment is deterministic: two runs print byte-identical e
     b.expectedSeqInvalidFractionError,
   );
   assert.equal(a.expectedSeqFinalHistoryLength, b.expectedSeqFinalHistoryLength);
+});
+
+test("demo shows requireVerifyEvidence gate: an evidence-free VERIFY_PASS is refused without touching the strict escrow, the same dispatch with evidence passes and records it, and a default escrow is unchanged", async () => {
+  const {
+    verifyEvidenceEscrow,
+    verifyEvidenceError,
+    verifyEvidenceStateAfterReject,
+    verifyEvidenceHistoryLengthAfterReject,
+    verifyEvidenceVerifiedState,
+    verifyEvidenceRecordedEvidence,
+    verifyEvidenceDefaultEscrow,
+    verifyEvidenceDefaultState,
+    lines,
+  } = await runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned fixture shape: the pinned error is the
+  // exact string src/stateMachine.ts throws when the
+  // gate is on and no evidence reference is given.
+  assert.equal(
+    DEMO_VERIFY_EVIDENCE_ERROR,
+    'verify evidence required: dispatch("VERIFY_PASS") requires a non-empty evidence reference when requireVerifyEvidence is enabled',
+  );
+
+  // The three shapes: the evidence-free dispatch is
+  // refused and changes nothing, the same dispatch
+  // with evidence succeeds and records the reference
+  // verbatim, and the default escrow (flag off) keeps
+  // the pre-gate behavior.
+  assert.equal(verifyEvidenceError, DEMO_VERIFY_EVIDENCE_ERROR);
+  assert.equal(verifyEvidenceStateAfterReject, "MILESTONE_SUBMITTED");
+  assert.equal(verifyEvidenceHistoryLengthAfterReject, 2);
+  assert.equal(verifyEvidenceVerifiedState, "VERIFIED");
+  assert.equal(verifyEvidenceRecordedEvidence, DEMO_VERIFY_EVIDENCE_REF);
+  assert.equal(verifyEvidenceEscrow.id, DEMO_VERIFY_EVIDENCE_ESCROW_ID);
+  assert.equal(verifyEvidenceEscrow.state, "VERIFIED");
+  assert.deepEqual(
+    verifyEvidenceEscrow.history.map((e) => [e.seq, e.event, e.at]),
+    [
+      [1, "FUND", DEMO_VERIFY_EVIDENCE_FUND_AT],
+      [2, "SUBMIT_MILESTONE", DEMO_VERIFY_EVIDENCE_SUBMIT_AT],
+      [3, "VERIFY_PASS", DEMO_VERIFY_EVIDENCE_VERIFY_AT],
+    ],
+  );
+  assert.equal(
+    verifyEvidenceEscrow.history[2].evidence,
+    DEMO_VERIFY_EVIDENCE_REF,
+  );
+  assert.equal(verifyEvidenceDefaultState, "VERIFIED");
+  assert.equal(
+    verifyEvidenceDefaultEscrow.id,
+    DEMO_VERIFY_EVIDENCE_DEFAULT_ESCROW_ID,
+  );
+  assert.equal(verifyEvidenceDefaultEscrow.state, "VERIFIED");
+  assert.equal(verifyEvidenceDefaultEscrow.history.length, 3);
+  assert.ok(
+    !("evidence" in verifyEvidenceDefaultEscrow.history[2]),
+    "default escrow VERIFY_PASS entry must carry no evidence field",
+  );
+
+  // Independent re-verification: fresh escrows driven
+  // by hand through the same shapes agree — the strict
+  // escrow refuses without evidence (state and history
+  // untouched), accepts with evidence, and a default
+  // escrow accepts without evidence.
+  const probeStrict = new Escrow("probe-verify-evidence-demo", {
+    requireVerifyEvidence: true,
+  });
+  probeStrict.dispatch("FUND", undefined, 100);
+  probeStrict.dispatch("SUBMIT_MILESTONE");
+  assert.throws(
+    () => probeStrict.dispatch("VERIFY_PASS"),
+    new Error(DEMO_VERIFY_EVIDENCE_ERROR),
+  );
+  assert.equal(probeStrict.state, "MILESTONE_SUBMITTED");
+  assert.equal(probeStrict.history.length, 2);
+  assert.equal(
+    probeStrict.dispatch("VERIFY_PASS", undefined, undefined, {
+      evidence: "probe-evidence-ref",
+    }),
+    "VERIFIED",
+  );
+  assert.equal(probeStrict.history[2].evidence, "probe-evidence-ref");
+  const probeDefault = new Escrow("probe-verify-evidence-default-demo");
+  probeDefault.dispatch("FUND", undefined, 100);
+  probeDefault.dispatch("SUBMIT_MILESTONE");
+  assert.equal(probeDefault.dispatch("VERIFY_PASS"), "VERIFIED");
+  assert.ok(!("evidence" in probeDefault.history[2]));
+
+  // The segment closes the demo: it follows the
+  // expectedSeq segment, prints its lines verbatim,
+  // and its pre-gate-behavior line is the demo's last
+  // line.
+  const expectedSeqAt = text.indexOf(
+    "Optimistic concurrency (dispatch expectedSeq guard on a branch escrow):",
+  );
+  const verifyEvidenceAt = text.indexOf(
+    "Verify evidence gate (EscrowOptions.requireVerifyEvidence on branch escrows):",
+  );
+  assert.ok(
+    verifyEvidenceAt > expectedSeqAt,
+    "verifyEvidence segment must follow the expectedSeq segment",
+  );
+  for (const line of [
+    `  escrow ${DEMO_VERIFY_EVIDENCE_ESCROW_ID} (requireVerifyEvidence: true): FUND 10630 -> FUNDED, SUBMIT_MILESTONE -> MILESTONE_SUBMITTED on fixed timestamps (the gate is armed)`,
+    `  VERIFY_PASS without evidence: throws "${DEMO_VERIFY_EVIDENCE_ERROR}" — state stays MILESTONE_SUBMITTED, history stays 2 entries (nothing appended)`,
+    `  VERIFY_PASS with evidence "${DEMO_VERIFY_EVIDENCE_REF}": -> VERIFIED, evidence recorded verbatim on the audit entry (the library records the caller's reference; it does not verify the oracle or proof itself)`,
+    `  escrow ${DEMO_VERIFY_EVIDENCE_DEFAULT_ESCROW_ID} (default, flag off): VERIFY_PASS without evidence -> VERIFIED (omitting the flag preserves the pre-gate behavior)`,
+  ]) {
+    assert.ok(text.includes(line), `missing verifyEvidence line: ${line}`);
+  }
+  assert.equal(
+    lines[lines.length - 1],
+    `  escrow ${DEMO_VERIFY_EVIDENCE_DEFAULT_ESCROW_ID} (default, flag off): VERIFY_PASS without evidence -> VERIFIED (omitting the flag preserves the pre-gate behavior)`,
+  );
+});
+
+test("demo verifyEvidence segment is deterministic: two runs print byte-identical verifyEvidence lines", async () => {
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf(
+        "Verify evidence gate (EscrowOptions.requireVerifyEvidence on branch escrows):",
+      ),
+    );
+  const a = await runDemo();
+  const b = await runDemo();
+  const segA = segment(a.lines);
+  // Header + the armed line + the refusal line + the
+  // evidence line + the default line; every value is
+  // derived from the fixed fixtures alone, so no
+  // normalization is needed.
+  assert.equal(segA.length, 5);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.equal(a.verifyEvidenceError, b.verifyEvidenceError);
+  assert.equal(
+    a.verifyEvidenceRecordedEvidence,
+    b.verifyEvidenceRecordedEvidence,
+  );
+  assert.equal(
+    a.verifyEvidenceHistoryLengthAfterReject,
+    b.verifyEvidenceHistoryLengthAfterReject,
+  );
 });
