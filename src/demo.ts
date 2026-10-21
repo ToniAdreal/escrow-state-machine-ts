@@ -341,6 +341,7 @@ import { fileURLToPath } from "node:url";
 import { readmeDiagramInSync } from "./diagram.js";
 import {
   Escrow,
+  GENESIS_PREV_HASH,
   SettlementEventDedupe,
   actOnStaleEscrows,
   assertNonNegativeMoney,
@@ -1338,6 +1339,56 @@ export const DEMO_VERIFY_EVIDENCE_REF = "demo-oracle-attestation-017";
 export const DEMO_VERIFY_EVIDENCE_ERROR =
   'verify evidence required: dispatch("VERIFY_PASS") requires a non-empty evidence reference when requireVerifyEvidence is enabled';
 
+/**
+ * Keyed audit-chain fixtures for the final closing segment:
+ * one fresh branch escrow driven on fixed timestamps while
+ * the keyed (HMAC) mode of the audit hash chain —
+ * `EscrowOptions.auditKey` (src/stateMachine.ts) — is
+ * exercised in every shape. Hand-pinned expectations —
+ * written from the documented keyed-mode semantics there
+ * (with a key set, every entry's `hash` is HMAC-SHA256
+ * over the canonical entry plus its `prevHash`;
+ * `verifyHistoryChain(history, key)` recomputes every
+ * link under that key; the two modes are fail-closed
+ * against each other — a keyed chain verifies neither
+ * without its key nor under a wrong key, exactly as
+ * test/keyedHashChain.test.ts pins), never derived by
+ * calling the verifier itself:
+ * - DEMO-ESC-019 (auditKey set): FUND +
+ *   SUBMIT_MILESTONE + VERIFY_PASS + RELEASE on fixed
+ *   timestamps reach RELEASED (4 entries, genesis-linked
+ *   to GENESIS_PREV_HASH, every successor's `prevHash`
+ *   equal to its predecessor's `hash`)
+ * - `verifyHistoryChain(history, DEMO_AUDIT_KEY)` is
+ *   `true` — the correct key recomputes every link
+ * - `verifyHistoryChain(history, DEMO_AUDIT_WRONG_KEY)`
+ *   is `false` — a wrong key recomputes nothing
+ * - `verifyHistoryChain(history)` with NO key is
+ *   `false` — a keyed chain never verifies keylessly
+ * - a detached copy whose middle (SUBMIT_MILESTONE)
+ *   entry's note is rewritten to
+ *   {@link DEMO_AUDIT_KEY_TAMPERED_NOTE} verifies
+ *   `false` even under the correct key, and the
+ *   escrow's own history still verifies afterwards
+ * Both keys carry the same placeholder status as
+ * {@link DEMO_WEBHOOK_SECRET}: printed in the source,
+ * NOT real credentials. Fixed escrow id, fixed amount
+ * (the golden deposit), fixed timestamps: no network,
+ * no randomness, no wall clock.
+ */
+export const DEMO_AUDIT_KEY_ESCROW_ID = "DEMO-ESC-019";
+export const DEMO_AUDIT_KEY = "demo-audit-key-019-not-a-real-secret";
+export const DEMO_AUDIT_WRONG_KEY = "demo-audit-key-wrong-not-a-real-secret";
+export const DEMO_AUDIT_KEY_FUND_AT = "2026-03-20T09:00:00.000Z";
+export const DEMO_AUDIT_KEY_SUBMIT_AT = "2026-03-20T10:00:00.000Z";
+export const DEMO_AUDIT_KEY_VERIFY_AT = "2026-03-20T11:00:00.000Z";
+export const DEMO_AUDIT_KEY_RELEASE_AT = "2026-03-20T11:01:00.000Z";
+export const DEMO_AUDIT_KEY_VERIFY_EVIDENCE = "demo-oracle-attestation-019";
+export const DEMO_AUDIT_KEY_SUBMIT_NOTE =
+  "Deliverable URLs + IPFS metadata hash";
+export const DEMO_AUDIT_KEY_TAMPERED_NOTE =
+  "Deliverable URLs + IPFS metadata hash (rewritten)";
+
 const steps: Array<{
   event: EscrowEvent;
   actor: string;
@@ -2322,6 +2373,45 @@ export interface DemoResult {
    * evidence-free VERIFY_PASS: `"VERIFIED"`.
    */
   verifyEvidenceDefaultState: EscrowState;
+  /**
+   * The final closing segment's keyed branch escrow
+   * (DEMO-ESC-019, `auditKey` set), after the full
+   * lifecycle: RELEASED with 4 history entries, every
+   * hash an HMAC-SHA256 link under the pinned key.
+   */
+  auditKeyEscrow: Escrow;
+  /**
+   * `verifyHistoryChain` verdict on the keyed history
+   * under the correct key ({@link DEMO_AUDIT_KEY}):
+   * `true` — every HMAC link recomputes.
+   */
+  auditKeyChainVerified: boolean;
+  /**
+   * `verifyHistoryChain` verdict on the keyed history
+   * under the wrong key ({@link DEMO_AUDIT_WRONG_KEY}):
+   * `false` — fail-closed.
+   */
+  auditKeyWrongKeyVerified: boolean;
+  /**
+   * `verifyHistoryChain` verdict on the keyed history
+   * with NO key: `false` — a keyed chain never
+   * verifies keylessly; the two modes fail closed
+   * against each other.
+   */
+  auditKeyNoKeyVerified: boolean;
+  /**
+   * `verifyHistoryChain` verdict, under the correct
+   * key, on a detached copy whose middle
+   * (SUBMIT_MILESTONE) entry's note was rewritten:
+   * `false` — the stored HMAC no longer recomputes,
+   * even for the key holder. The escrow's own history
+   * is untouched by the tamper.
+   */
+  auditKeyTamperedVerified: boolean;
+  /** The rewritten note on the tampered copy. */
+  auditKeyTamperedNote: string;
+  /** History length of the keyed escrow: exactly 4. */
+  auditKeyHistoryLength: number;
   lines: string[];
 }
 
@@ -5130,6 +5220,135 @@ export async function runDemo(): Promise<DemoResult> {
     `  escrow ${verifyEvidenceDefaultEscrow.id} (default, flag off): VERIFY_PASS without evidence -> ${verifyEvidenceDefaultState} (omitting the flag preserves the pre-gate behavior)`,
   );
 
+  // --- Keyed audit chain: verifyHistoryChain auditKey (final closing) ---
+  // The main escrow's audit chain above is the UNKEYED
+  // form: plain SHA-256 links are tamper evidence, but
+  // anyone who rewrites the whole log can recompute
+  // them. The opt-in keyed mode is the upgrade to a
+  // real MAC: an escrow constructed with
+  // `EscrowOptions.auditKey` links every entry with
+  // HMAC-SHA256 under that key, so a full-log rewrite
+  // is detected without the key. One fresh branch
+  // escrow walks the keyed chain in every shape on
+  // fixed timestamps: the full lifecycle lands on
+  // RELEASED with 4 HMAC-linked entries; the correct
+  // key verifies; a wrong key and no key at all both
+  // fail closed (the two modes reject each other); a
+  // detached copy with its middle entry's note
+  // rewritten fails even under the correct key; and
+  // the escrow's own history still verifies after the
+  // tamper check. The key is per-instance
+  // configuration — never written into snapshots —
+  // and key management stays the caller's problem.
+  // Hand-pinned expectations (see the fixture comment
+  // above), asserted HERE, outside the printing: a
+  // keyed chain that verified keylessly, under a wrong
+  // key, or after a rewrite would fail the demo
+  // itself, not just a test. Zero network, zero
+  // randomness, fixed timestamps.
+  const auditKeyEscrow = new Escrow(DEMO_AUDIT_KEY_ESCROW_ID, {
+    auditKey: DEMO_AUDIT_KEY,
+  });
+  auditKeyEscrow.dispatch(
+    "FUND",
+    "Deposit locked (wire received)",
+    10630,
+    {
+      actor: "sponsor",
+      at: DEMO_AUDIT_KEY_FUND_AT,
+    },
+  );
+  auditKeyEscrow.dispatch(
+    "SUBMIT_MILESTONE",
+    DEMO_AUDIT_KEY_SUBMIT_NOTE,
+    undefined,
+    {
+      actor: "creator",
+      at: DEMO_AUDIT_KEY_SUBMIT_AT,
+    },
+  );
+  auditKeyEscrow.dispatch(
+    "VERIFY_PASS",
+    "KPIs validated by oracle",
+    undefined,
+    {
+      actor: "oracle",
+      at: DEMO_AUDIT_KEY_VERIFY_AT,
+      evidence: DEMO_AUDIT_KEY_VERIFY_EVIDENCE,
+    },
+  );
+  auditKeyEscrow.dispatch(
+    "RELEASE",
+    "Verification passed — release funds",
+    undefined,
+    {
+      actor: "system",
+      at: DEMO_AUDIT_KEY_RELEASE_AT,
+    },
+  );
+  const auditKeyHistoryLength = auditKeyEscrow.history.length;
+  const auditKeyChainVerified = verifyHistoryChain(
+    auditKeyEscrow.history,
+    DEMO_AUDIT_KEY,
+  );
+  const auditKeyWrongKeyVerified = verifyHistoryChain(
+    auditKeyEscrow.history,
+    DEMO_AUDIT_WRONG_KEY,
+  );
+  const auditKeyNoKeyVerified = verifyHistoryChain(auditKeyEscrow.history);
+  const auditKeyTamperedHistory = auditKeyEscrow.history.map((entry) => ({
+    ...entry,
+  }));
+  const auditKeyTamperedEntry = auditKeyTamperedHistory[1];
+  if (
+    auditKeyTamperedEntry === undefined ||
+    auditKeyTamperedEntry.event !== "SUBMIT_MILESTONE"
+  ) {
+    throw new Error(
+      "demo fixture broken: keyed history has no SUBMIT_MILESTONE middle entry",
+    );
+  }
+  auditKeyTamperedEntry.note = DEMO_AUDIT_KEY_TAMPERED_NOTE;
+  const auditKeyTamperedNote = auditKeyTamperedEntry.note;
+  const auditKeyTamperedVerified = verifyHistoryChain(
+    auditKeyTamperedHistory,
+    DEMO_AUDIT_KEY,
+  );
+  const auditKeyRecheckVerified = verifyHistoryChain(
+    auditKeyEscrow.history,
+    DEMO_AUDIT_KEY,
+  );
+  if (
+    auditKeyEscrow.state !== "RELEASED" ||
+    auditKeyHistoryLength !== 4 ||
+    auditKeyChainVerified !== true ||
+    auditKeyWrongKeyVerified !== false ||
+    auditKeyNoKeyVerified !== false ||
+    auditKeyTamperedVerified !== false ||
+    auditKeyTamperedNote !== DEMO_AUDIT_KEY_TAMPERED_NOTE ||
+    auditKeyRecheckVerified !== true ||
+    auditKeyEscrow.history[0].prevHash !== GENESIS_PREV_HASH ||
+    auditKeyEscrow.history.some(
+      (entry, i) =>
+        i > 0 &&
+        entry.prevHash !== auditKeyEscrow.history[i - 1].hash,
+    )
+  ) {
+    throw new Error(
+      "demo fixture broken: verifyHistoryChain auditKey does not match the pinned shape (the correct key verifies the intact keyed chain, a wrong key and no key both fail closed, a rewritten middle entry fails even under the correct key, and the escrow's own history is untouched)",
+    );
+  }
+  lines.push(
+    "",
+    "Keyed audit chain (verifyHistoryChain with EscrowOptions.auditKey on a branch escrow):",
+    `  escrow ${auditKeyEscrow.id} (auditKey set): FUND 10630 -> FUNDED, SUBMIT_MILESTONE -> MILESTONE_SUBMITTED, VERIFY_PASS -> VERIFIED, RELEASE -> RELEASED on fixed timestamps (${auditKeyHistoryLength} entries, every hash an HMAC-SHA256 link under the pinned key)`,
+    `  verifyHistoryChain(history, auditKey): ${auditKeyChainVerified} (the correct key recomputes every HMAC link)`,
+    `  verifyHistoryChain(history, wrong key): ${auditKeyWrongKeyVerified} (a wrong key recomputes nothing — fail-closed)`,
+    `  verifyHistoryChain(history) without a key: ${auditKeyNoKeyVerified} (a keyed chain never verifies keylessly — the two modes fail closed against each other)`,
+    `  tampered copy: SUBMIT_MILESTONE note rewritten to "${auditKeyTamperedNote}" — verifyHistoryChain(tampered, auditKey): ${auditKeyTamperedVerified} (tamper detected even for the key holder: the stored HMAC no longer recomputes)`,
+    `  original history after the tamper check: verifyHistoryChain: ${auditKeyRecheckVerified} (detached copy — the escrow's own history is untouched; the demo key is a printed placeholder, not a real secret)`,
+  );
+
   return {
     escrow,
     report,
@@ -5283,6 +5502,13 @@ export async function runDemo(): Promise<DemoResult> {
     verifyEvidenceRecordedEvidence,
     verifyEvidenceDefaultEscrow,
     verifyEvidenceDefaultState,
+    auditKeyEscrow,
+    auditKeyChainVerified,
+    auditKeyWrongKeyVerified,
+    auditKeyNoKeyVerified,
+    auditKeyTamperedVerified,
+    auditKeyTamperedNote,
+    auditKeyHistoryLength,
     lines,
   };
 }

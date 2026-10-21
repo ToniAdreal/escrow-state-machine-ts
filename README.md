@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 693 tests, all local
+npm test   # 695 tests, all local
 ```
 
 ## Quickstart
@@ -197,7 +197,13 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   without the key. Verification is fail-closed across modes (a keyed
   chain needs its key via `verifyHistoryChain(history, key)` /
   `Escrow.fromJSON(snapshot, { auditKey })`; an unkeyed chain rejects a
-  supplied key), and the key is never written into snapshots.
+  supplied key), and the key is never written into snapshots. The CLI
+  demo (`npm run demo`) walks the keyed mode end to end on a branch
+  escrow: the correct key verifies the HMAC-chained history, a wrong
+  key and no key both fail closed, and a detached copy with a rewritten
+  middle entry fails even under the correct key. The demo's key is a
+  fixed printed placeholder, not a real secret — key management stays
+  the caller's problem, exactly as in a real deployment.
   `FUND` accepts an optional `amount`
   argument — it is validated as a finite non-negative number at the dispatch
   boundary (anything else throws) and recorded on the audit entry; passing an
@@ -752,7 +758,7 @@ and an empty batch yields an all-zero summary.
 
 ## Reproducibility
 
-`npm test` runs 693 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 695 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

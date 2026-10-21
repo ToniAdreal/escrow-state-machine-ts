@@ -18,6 +18,31 @@ version changes.
 
 ### Added
 
+- CLI demo coverage for the keyed audit chain: a
+  fresh branch escrow (DEMO-ESC-019, constructed with
+  the pinned `auditKey`) is driven on fixed timestamps
+  through the full lifecycle (FUND / SUBMIT_MILESTONE /
+  VERIFY_PASS / RELEASE, 4 entries), and
+  `verifyHistoryChain` is exercised in every shape —
+  the correct key verifies the HMAC-SHA256-chained
+  history; a wrong key returns `false`; no key returns
+  `false` (the keyed and unkeyed modes fail closed
+  against each other); and a detached copy whose
+  middle (SUBMIT_MILESTONE) entry's note is rewritten
+  returns `false` even under the correct key, with the
+  escrow's own history still verifying afterwards.
+  The entry is honest about the limit: both demo keys
+  are printed placeholders, not real secrets, and key
+  management stays the caller's problem — the key is
+  per-instance configuration and is never written
+  into snapshots. All shapes are asserted outside the
+  printing against hand-pinned expectations, and an
+  independent re-verification in the demo tests drives
+  fresh keyed and unkeyed escrows through the same
+  shapes and agrees. `DemoResult` exposes the branch
+  escrow, the four verdicts, the tampered note, and
+  the history length. Demo and tests only; no library
+  behavior change.
 - CLI demo coverage for the verify-evidence gate: two
   fresh branch escrows (DEMO-ESC-017 with
   `requireVerifyEvidence: true` and DEMO-ESC-018 with

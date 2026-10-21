@@ -11,6 +11,16 @@ import {
   DEMO_APPROVAL_LOG_SECOND_AT,
   DEMO_APPROVAL_LOG_WINDOW_MS,
   DEMO_ARBITRATION_AT,
+  DEMO_AUDIT_KEY,
+  DEMO_AUDIT_KEY_ESCROW_ID,
+  DEMO_AUDIT_KEY_FUND_AT,
+  DEMO_AUDIT_KEY_RELEASE_AT,
+  DEMO_AUDIT_KEY_SUBMIT_AT,
+  DEMO_AUDIT_KEY_SUBMIT_NOTE,
+  DEMO_AUDIT_KEY_TAMPERED_NOTE,
+  DEMO_AUDIT_KEY_VERIFY_AT,
+  DEMO_AUDIT_KEY_VERIFY_EVIDENCE,
+  DEMO_AUDIT_WRONG_KEY,
   DEMO_DEDUPE_CLEAR_EVENT_ID,
   DEMO_DEDUPE_CLEAR_START_MS,
   DEMO_DEDUPE_SNAPSHOT_ENTRIES,
@@ -136,6 +146,7 @@ import {
 } from "../src/demo.js";
 import {
   Escrow,
+  GENESIS_PREV_HASH,
   SettlementEventDedupe,
   allowedEvents,
   assertNonNegativeMoney,
@@ -2466,12 +2477,11 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
       "  VERIFY_PASS without expectedSeq: -> VERIFIED, seq 2 -> 3 (omitting the guard preserves the pre-guard behavior)",
     ),
   );
-  // verifyEvidence tail: the closing segment drives
-  // two branch escrows through the evidence gate — an
+  // verifyEvidence tail: that segment drives two
+  // branch escrows through the evidence gate — an
   // evidence-free VERIFY_PASS is refused on the strict
   // escrow, the same dispatch with evidence passes,
-  // and a default escrow is unchanged; the demo ends
-  // on the pre-gate-behavior line.
+  // and a default escrow is unchanged.
   assert.match(out, /Verify evidence gate \(EscrowOptions\.requireVerifyEvidence on branch escrows\):/);
   assert.ok(
     out.includes(
@@ -2483,11 +2493,33 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
       `  VERIFY_PASS with evidence "${DEMO_VERIFY_EVIDENCE_REF}": -> VERIFIED, evidence recorded verbatim on the audit entry (the library records the caller's reference; it does not verify the oracle or proof itself)`,
     ),
   );
+  // auditKey tail: the closing segment drives a keyed
+  // branch escrow through the HMAC audit chain — the
+  // correct key verifies, a wrong key and no key fail
+  // closed, and a rewritten middle entry fails even
+  // for the key holder; the demo ends on the recheck
+  // line.
+  assert.match(out, /Keyed audit chain \(verifyHistoryChain with EscrowOptions\.auditKey on a branch escrow\):/);
+  assert.ok(
+    out.includes(
+      `  verifyHistoryChain(history, auditKey): true (the correct key recomputes every HMAC link)`,
+    ),
+  );
+  assert.ok(
+    out.includes(
+      `  verifyHistoryChain(history, wrong key): false (a wrong key recomputes nothing — fail-closed)`,
+    ),
+  );
+  assert.ok(
+    out.includes(
+      `  tampered copy: SUBMIT_MILESTONE note rewritten to "${DEMO_AUDIT_KEY_TAMPERED_NOTE}" — verifyHistoryChain(tampered, auditKey): false (tamper detected even for the key holder: the stored HMAC no longer recomputes)`,
+    ),
+  );
   assert.ok(
     out
       .trimEnd()
       .endsWith(
-        `  escrow ${DEMO_VERIFY_EVIDENCE_DEFAULT_ESCROW_ID} (default, flag off): VERIFY_PASS without evidence -> VERIFIED (omitting the flag preserves the pre-gate behavior)`,
+        `  original history after the tamper check: verifyHistoryChain: true (detached copy — the escrow's own history is untouched; the demo key is a printed placeholder, not a real secret)`,
       ),
   );
 });
@@ -4463,8 +4495,8 @@ test("demo shows quorum revoke: a revoked vote drops below threshold and a re-ap
   assert.equal(probe.approvalCount(), 2);
   // The segment follows the onError segment and prints
   // its lines verbatim; the AbortSignal segment follows
-  // it (and the expectedSeq and verifyEvidence segments
-  // close the demo after that).
+  // it (and the expectedSeq, verifyEvidence, and
+  // auditKey segments close the demo after that).
   const revokeAt = text.indexOf(
     "Quorum revoke (Quorum.revoke() — a signer changes their vote):",
   );
@@ -4730,8 +4762,8 @@ test("demo shows dispatch expectedSeq optimistic concurrency: matching pins adva
   assert.equal(probe.history.length, 3);
 
   // The segment follows the abort segment and prints
-  // its lines verbatim; the verifyEvidence segment
-  // closes the demo after it.
+  // its lines verbatim; the verifyEvidence and
+  // auditKey segments follow it.
   const abortAt = text.indexOf(
     "Webhook delivery abort (deliverSettlementWebhook with an AbortSignal, scripted fake fetch, zero network):",
   );
@@ -4879,10 +4911,9 @@ test("demo shows requireVerifyEvidence gate: an evidence-free VERIFY_PASS is ref
   assert.equal(probeDefault.dispatch("VERIFY_PASS"), "VERIFIED");
   assert.ok(!("evidence" in probeDefault.history[2]));
 
-  // The segment closes the demo: it follows the
-  // expectedSeq segment, prints its lines verbatim,
-  // and its pre-gate-behavior line is the demo's last
-  // line.
+  // The segment follows the expectedSeq segment and
+  // prints its lines verbatim; the auditKey segment
+  // closes the demo after it.
   const expectedSeqAt = text.indexOf(
     "Optimistic concurrency (dispatch expectedSeq guard on a branch escrow):",
   );
@@ -4901,9 +4932,12 @@ test("demo shows requireVerifyEvidence gate: an evidence-free VERIFY_PASS is ref
   ]) {
     assert.ok(text.includes(line), `missing verifyEvidence line: ${line}`);
   }
-  assert.equal(
-    lines[lines.length - 1],
-    `  escrow ${DEMO_VERIFY_EVIDENCE_DEFAULT_ESCROW_ID} (default, flag off): VERIFY_PASS without evidence -> VERIFIED (omitting the flag preserves the pre-gate behavior)`,
+  const auditKeyAt = text.indexOf(
+    "Keyed audit chain (verifyHistoryChain with EscrowOptions.auditKey on a branch escrow):",
+  );
+  assert.ok(
+    auditKeyAt > verifyEvidenceAt,
+    "auditKey segment must follow the verifyEvidence segment",
   );
 });
 
@@ -4913,6 +4947,9 @@ test("demo verifyEvidence segment is deterministic: two runs print byte-identica
       ls.indexOf(
         "Verify evidence gate (EscrowOptions.requireVerifyEvidence on branch escrows):",
       ),
+      ls.indexOf(
+        "Keyed audit chain (verifyHistoryChain with EscrowOptions.auditKey on a branch escrow):",
+      ) - 1,
     );
   const a = await runDemo();
   const b = await runDemo();
@@ -4932,4 +4969,180 @@ test("demo verifyEvidence segment is deterministic: two runs print byte-identica
     a.verifyEvidenceHistoryLengthAfterReject,
     b.verifyEvidenceHistoryLengthAfterReject,
   );
+});
+
+test("demo shows verifyHistoryChain auditKey keyed chain: the correct key verifies, a wrong key and no key fail closed, and a rewritten middle entry fails even for the key holder", async () => {
+  const {
+    auditKeyEscrow,
+    auditKeyChainVerified,
+    auditKeyWrongKeyVerified,
+    auditKeyNoKeyVerified,
+    auditKeyTamperedVerified,
+    auditKeyTamperedNote,
+    auditKeyHistoryLength,
+    lines,
+  } = await runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned fixture shape: the pinned keys are the
+  // exact placeholder strings the demo constructs its
+  // keyed escrow with, and the tampered note is the
+  // pinned rewrite of the SUBMIT_MILESTONE note.
+  assert.equal(DEMO_AUDIT_KEY, "demo-audit-key-019-not-a-real-secret");
+  assert.equal(DEMO_AUDIT_WRONG_KEY, "demo-audit-key-wrong-not-a-real-secret");
+  assert.equal(
+    DEMO_AUDIT_KEY_TAMPERED_NOTE,
+    "Deliverable URLs + IPFS metadata hash (rewritten)",
+  );
+
+  // The four shapes: the correct key verifies, a wrong
+  // key and no key both fail closed, and a rewritten
+  // middle entry fails even under the correct key.
+  assert.equal(auditKeyChainVerified, true);
+  assert.equal(auditKeyWrongKeyVerified, false);
+  assert.equal(auditKeyNoKeyVerified, false);
+  assert.equal(auditKeyTamperedVerified, false);
+  assert.equal(auditKeyTamperedNote, DEMO_AUDIT_KEY_TAMPERED_NOTE);
+  assert.equal(auditKeyHistoryLength, 4);
+  assert.equal(auditKeyEscrow.id, DEMO_AUDIT_KEY_ESCROW_ID);
+  assert.equal(auditKeyEscrow.state, "RELEASED");
+  assert.deepEqual(
+    auditKeyEscrow.history.map((e) => [e.seq, e.event, e.at]),
+    [
+      [1, "FUND", DEMO_AUDIT_KEY_FUND_AT],
+      [2, "SUBMIT_MILESTONE", DEMO_AUDIT_KEY_SUBMIT_AT],
+      [3, "VERIFY_PASS", DEMO_AUDIT_KEY_VERIFY_AT],
+      [4, "RELEASE", DEMO_AUDIT_KEY_RELEASE_AT],
+    ],
+  );
+  assert.equal(auditKeyEscrow.history[0].prevHash, GENESIS_PREV_HASH);
+  for (let i = 1; i < auditKeyEscrow.history.length; i++) {
+    assert.equal(
+      auditKeyEscrow.history[i].prevHash,
+      auditKeyEscrow.history[i - 1].hash,
+    );
+  }
+  for (const entry of auditKeyEscrow.history) {
+    assert.match(entry.hash ?? "", /^[0-9a-f]{64}$/);
+  }
+  assert.equal(
+    auditKeyEscrow.history[2].evidence,
+    DEMO_AUDIT_KEY_VERIFY_EVIDENCE,
+  );
+  // The escrow's own history still verifies after the
+  // tamper check — the tamper copy was detached.
+  assert.equal(verifyHistoryChain(auditKeyEscrow.history, DEMO_AUDIT_KEY), true);
+
+  // Independent re-verification: a fresh keyed escrow
+  // driven by hand through the same shapes agrees —
+  // the correct key verifies, a wrong key and no key
+  // fail closed, a tampered copy fails under the
+  // correct key, and an unkeyed escrow over identical
+  // content produces different hashes and rejects the
+  // key (fail-closed in the other direction too).
+  const probe = new Escrow("probe-audit-key-demo", {
+    auditKey: DEMO_AUDIT_KEY,
+  });
+  probe.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "sponsor",
+    at: DEMO_AUDIT_KEY_FUND_AT,
+  });
+  probe.dispatch("SUBMIT_MILESTONE", DEMO_AUDIT_KEY_SUBMIT_NOTE, undefined, {
+    actor: "creator",
+    at: DEMO_AUDIT_KEY_SUBMIT_AT,
+  });
+  probe.dispatch("VERIFY_PASS", "KPIs validated by oracle", undefined, {
+    actor: "oracle",
+    at: DEMO_AUDIT_KEY_VERIFY_AT,
+    evidence: DEMO_AUDIT_KEY_VERIFY_EVIDENCE,
+  });
+  probe.dispatch("RELEASE", "Verification passed — release funds", undefined, {
+    actor: "system",
+    at: DEMO_AUDIT_KEY_RELEASE_AT,
+  });
+  assert.deepEqual(
+    probe.history.map((e) => e.hash),
+    auditKeyEscrow.history.map((e) => e.hash),
+  );
+  assert.equal(verifyHistoryChain(probe.history, DEMO_AUDIT_KEY), true);
+  assert.equal(verifyHistoryChain(probe.history, DEMO_AUDIT_WRONG_KEY), false);
+  assert.equal(verifyHistoryChain(probe.history), false);
+  const probeTampered = probe.history.map((e) => ({ ...e }));
+  probeTampered[1] = { ...probeTampered[1], note: DEMO_AUDIT_KEY_TAMPERED_NOTE };
+  assert.equal(verifyHistoryChain(probeTampered, DEMO_AUDIT_KEY), false);
+  assert.equal(verifyHistoryChain(probe.history, DEMO_AUDIT_KEY), true);
+  const probePlain = new Escrow("probe-audit-key-demo");
+  probePlain.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "sponsor",
+    at: DEMO_AUDIT_KEY_FUND_AT,
+  });
+  probePlain.dispatch("SUBMIT_MILESTONE", DEMO_AUDIT_KEY_SUBMIT_NOTE, undefined, {
+    actor: "creator",
+    at: DEMO_AUDIT_KEY_SUBMIT_AT,
+  });
+  probePlain.dispatch("VERIFY_PASS", "KPIs validated by oracle", undefined, {
+    actor: "oracle",
+    at: DEMO_AUDIT_KEY_VERIFY_AT,
+    evidence: DEMO_AUDIT_KEY_VERIFY_EVIDENCE,
+  });
+  probePlain.dispatch("RELEASE", "Verification passed — release funds", undefined, {
+    actor: "system",
+    at: DEMO_AUDIT_KEY_RELEASE_AT,
+  });
+  assert.notEqual(probePlain.history[0].hash, probe.history[0].hash);
+  assert.equal(verifyHistoryChain(probePlain.history), true);
+  assert.equal(verifyHistoryChain(probePlain.history, DEMO_AUDIT_KEY), false);
+
+  // The segment closes the demo: it follows the
+  // verifyEvidence segment, prints its lines verbatim,
+  // and its recheck line is the demo's last line.
+  const verifyEvidenceAt = text.indexOf(
+    "Verify evidence gate (EscrowOptions.requireVerifyEvidence on branch escrows):",
+  );
+  const auditKeyAt = text.indexOf(
+    "Keyed audit chain (verifyHistoryChain with EscrowOptions.auditKey on a branch escrow):",
+  );
+  assert.ok(
+    auditKeyAt > verifyEvidenceAt,
+    "auditKey segment must follow the verifyEvidence segment",
+  );
+  for (const line of [
+    `  escrow ${DEMO_AUDIT_KEY_ESCROW_ID} (auditKey set): FUND 10630 -> FUNDED, SUBMIT_MILESTONE -> MILESTONE_SUBMITTED, VERIFY_PASS -> VERIFIED, RELEASE -> RELEASED on fixed timestamps (4 entries, every hash an HMAC-SHA256 link under the pinned key)`,
+    `  verifyHistoryChain(history, auditKey): true (the correct key recomputes every HMAC link)`,
+    `  verifyHistoryChain(history, wrong key): false (a wrong key recomputes nothing — fail-closed)`,
+    `  verifyHistoryChain(history) without a key: false (a keyed chain never verifies keylessly — the two modes fail closed against each other)`,
+    `  tampered copy: SUBMIT_MILESTONE note rewritten to "${DEMO_AUDIT_KEY_TAMPERED_NOTE}" — verifyHistoryChain(tampered, auditKey): false (tamper detected even for the key holder: the stored HMAC no longer recomputes)`,
+    `  original history after the tamper check: verifyHistoryChain: true (detached copy — the escrow's own history is untouched; the demo key is a printed placeholder, not a real secret)`,
+  ]) {
+    assert.ok(text.includes(line), `missing auditKey line: ${line}`);
+  }
+  assert.equal(
+    lines[lines.length - 1],
+    `  original history after the tamper check: verifyHistoryChain: true (detached copy — the escrow's own history is untouched; the demo key is a printed placeholder, not a real secret)`,
+  );
+});
+
+test("demo auditKey segment is deterministic: two runs print byte-identical auditKey lines", async () => {
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf(
+        "Keyed audit chain (verifyHistoryChain with EscrowOptions.auditKey on a branch escrow):",
+      ),
+    );
+  const a = await runDemo();
+  const b = await runDemo();
+  const segA = segment(a.lines);
+  // Header + the lifecycle line + the correct-key line
+  // + the wrong-key line + the no-key line + the
+  // tamper line + the recheck line; every value is
+  // derived from the fixed fixtures alone, so no
+  // normalization is needed.
+  assert.equal(segA.length, 7);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.equal(a.auditKeyChainVerified, b.auditKeyChainVerified);
+  assert.equal(a.auditKeyWrongKeyVerified, b.auditKeyWrongKeyVerified);
+  assert.equal(a.auditKeyNoKeyVerified, b.auditKeyNoKeyVerified);
+  assert.equal(a.auditKeyTamperedVerified, b.auditKeyTamperedVerified);
+  assert.equal(a.auditKeyTamperedNote, b.auditKeyTamperedNote);
+  assert.equal(a.auditKeyHistoryLength, b.auditKeyHistoryLength);
 });
