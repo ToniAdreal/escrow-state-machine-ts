@@ -18,6 +18,26 @@ version changes.
 
 ### Added
 
+- Benchmark coverage for the settlement-webhook
+  secret-rotation verification path:
+  `verifySettlementWebhook` with the rotation candidate
+  set `{ secrets: [new, old] }` over the fixed webhook
+  fixture signed with the OLD secret (fixed timestamp /
+  `eventId`), so the matching candidate is the second
+  one tried and every iteration pays one failed HMAC
+  trial before the match — checked to return exactly
+  `true` on every iteration. Outside the timed loop, a
+  candidate pair in which neither secret matches is
+  pinned to return `false` (all-mismatch fails closed,
+  no throw) and an empty `secrets` array is pinned to
+  throw the exact `secrets must be a non-empty array`
+  configuration error. This separates the rotation-window
+  receiver cost from the single-secret verify row, which
+  never exercises a candidate list. The README
+  Benchmarks table was refreshed from one real run and
+  gained the
+  `verifySettlementWebhook (secrets rotation, 2 candidates)`
+  row.
 - Benchmark coverage for the quorum approval-expiry
   path: the counting views (`approvalCount()` /
   `hasQuorum()` / `approvals()`) of a fresh 5/9 quorum
