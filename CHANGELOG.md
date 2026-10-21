@@ -18,6 +18,25 @@ version changes.
 
 ### Added
 
+- CLI demo coverage for settlement-webhook secret
+  rotation: the main escrow's signed webhook (signed with
+  the demo secret, playing the old secret) is re-verified
+  under the rotation candidate set
+  `{ secrets: [new, old] }` — the old-signed body verifies,
+  a twin signed with the rotated-in secret over the
+  identical payload (same fixed `now` / `eventId`) verifies
+  too, a twin signed with an unrelated secret is refused
+  (`false`, no throw — all-mismatch fails closed), and an
+  empty `secrets` array throws the pinned
+  `secrets must be a non-empty array` configuration error.
+  All four shapes are asserted outside the printing against
+  hand-pinned expectations, and an independent
+  re-verification in the demo tests rebuilds the twins by
+  hand and agrees. `DemoResult` exposes all three verdicts
+  and the thrown error message; the demo tests pin the
+  segment's lines and its order between the freshness and
+  dedupe sections. Demo and tests only; no library
+  behavior change.
 - CLI demo coverage for `deliverSettlementWebhook`
   caller cancellation: the main escrow's signed webhook is
   delivered with an `AbortSignal` in two shapes — a

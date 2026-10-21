@@ -12,7 +12,15 @@
  * exactly at its inclusive boundary it passes, past the window the
  * still-valid signature is refused fail-closed, and a payload whose
  * `at` runs ahead of the receiver's clock beyond the skew bound is
- * refused too. The receiver side then runs
+ * refused too. That same webhook is then re-verified under secret
+ * rotation (`{ secrets: [newSecret, oldSecret] }`): the main
+ * webhook — signed with the demo secret, which plays the old
+ * secret — verifies, a twin signed with the rotated-in secret over
+ * the identical payload (same fixed `now` / `eventId`) verifies
+ * too, a twin signed with an unrelated secret is refused (`false`,
+ * no throw — all-mismatch fails closed), and an empty `secrets`
+ * array throws the pinned configuration error instead of silently
+ * passing. The receiver side then runs
  * that webhook's `eventId` through `SettlementEventDedupe` on a fixed
  * clock: the first delivery is new (booked), an immediate redelivery
  * is a duplicate (skipped), and after the clock advances by exactly
@@ -445,6 +453,37 @@ export const DEMO_WEBHOOK_FRESHNESS_EXPIRED_NOW_MS =
   DEMO_DEDUPE_START_MS + 2 * DEMO_WEBHOOK_FRESHNESS_MAX_AGE_MS;
 export const DEMO_WEBHOOK_FRESHNESS_FUTURE_NOW_MS =
   DEMO_DEDUPE_START_MS - 2 * DEMO_WEBHOOK_FRESHNESS_MAX_FUTURE_SKEW_MS;
+
+/**
+ * Webhook secret-rotation fixtures: the receiver-side rotation
+ * window on the main webhook. {@link DEMO_WEBHOOK_SECRET} plays
+ * the OLD secret — the main webhook above is signed with it — and
+ * this constant is the NEW secret rotated in: a twin of the main
+ * webhook is built over the identical payload (same fixed
+ * `now` / `eventId`, so the body bytes are byte-identical and
+ * only the signature differs) signed with the new secret. Both
+ * signatures must verify under
+ * `{ secrets: [newSecret, oldSecret] }` — the rotation form of
+ * `verifySettlementWebhook()` (src/webhooks.ts) in which the
+ * first matching candidate wins and all-mismatch fails closed.
+ * A third twin signed with the unrelated secret below must NOT
+ * verify under that candidate set (`false`, never a throw), and
+ * an empty `secrets` array must throw exactly
+ * {@link DEMO_WEBHOOK_ROTATION_EMPTY_SECRETS_ERROR} — a caller
+ * configuration error, never a silent pass. All three secrets
+ * carry the same placeholder status as
+ * {@link DEMO_WEBHOOK_SECRET}: printed in the source, NOT real
+ * credentials. Hand-pinned expectations, cross-checked against
+ * test/webhookSecretRotation.test.ts, which pins the same four
+ * shapes. Fixed secrets, fixed timestamps: no network, no
+ * randomness, no wall clock.
+ */
+export const DEMO_WEBHOOK_ROTATION_NEW_SECRET =
+  "whsec_demo_settlement_notifications_rotated_not_a_real_secret";
+export const DEMO_WEBHOOK_ROTATION_UNRELATED_SECRET =
+  "whsec_demo_settlement_notifications_unrelated_not_a_real_secret";
+export const DEMO_WEBHOOK_ROTATION_EMPTY_SECRETS_ERROR =
+  "cannot verify settlement webhook: secrets must be a non-empty array";
 
 /** Fixed fixture for the dispute branch: a second escrow, same deposit. */
 export const DEMO_DISPUTE_ESCROW_ID = "DEMO-ESC-002";
@@ -1316,6 +1355,36 @@ export interface DemoResult {
    * the injected `now` under the 5-minute skew bound: `false`.
    */
   webhookFreshnessFutureSkewExceeded: boolean;
+  /**
+   * Rotation verdict on the main webhook (signed with
+   * {@link DEMO_WEBHOOK_SECRET}, the old secret) under the
+   * rotation candidate set
+   * `{ secrets: [DEMO_WEBHOOK_ROTATION_NEW_SECRET, DEMO_WEBHOOK_SECRET] }`:
+   * `true` — the old secret still verifies inside the window.
+   */
+  webhookRotationOldVerified: boolean;
+  /**
+   * Rotation verdict on a twin of the main webhook signed with
+   * {@link DEMO_WEBHOOK_ROTATION_NEW_SECRET} over the identical
+   * payload under the same candidate set: `true` — the new
+   * secret verifies too.
+   */
+  webhookRotationNewVerified: boolean;
+  /**
+   * Rotation verdict on a twin signed with
+   * {@link DEMO_WEBHOOK_ROTATION_UNRELATED_SECRET} under the
+   * same candidate set: `false` — all-mismatch fails closed,
+   * without throwing.
+   */
+  webhookRotationUnrelatedVerified: boolean;
+  /**
+   * Error message of verifying the main webhook with an empty
+   * `secrets` array: exactly
+   * {@link DEMO_WEBHOOK_ROTATION_EMPTY_SECRETS_ERROR} — an empty
+   * candidate set is a caller configuration error, never a
+   * silent pass.
+   */
+  webhookRotationEmptySecretsError: string;
   /**
    * Receiver-side dedupe store after the demo's three deliveries of
    * the main webhook's `eventId` (new, duplicate, new-after-TTL):
@@ -2220,6 +2289,81 @@ export async function runDemo(): Promise<DemoResult> {
     `  boundary: now at exactly +${DEMO_WEBHOOK_FRESHNESS_BOUNDARY_NOW_MS - DEMO_DEDUPE_START_MS} ms = maxAgeMs — verifySettlementWebhook: ${webhookFreshnessBoundary} (inclusive boundary — only a larger age fails)`,
     `  expired: now at +${DEMO_WEBHOOK_FRESHNESS_EXPIRED_NOW_MS - DEMO_DEDUPE_START_MS} ms — verifySettlementWebhook: ${webhookFreshnessExpired} (signature still valid, but the replay window has closed — fail-closed)`,
     `  sender clock ahead: payload at is ${DEMO_DEDUPE_START_MS - DEMO_WEBHOOK_FRESHNESS_FUTURE_NOW_MS} ms ahead of now, maxFutureSkewMs ${DEMO_WEBHOOK_FRESHNESS_MAX_FUTURE_SKEW_MS} ms — verifySettlementWebhook: ${webhookFreshnessFutureSkewExceeded} (future skew beyond the bound)`,
+  );
+
+  // --- Webhook secret rotation: the { secrets: [new, old] } window ---
+  // Freshness bounds WHEN a signed notification may be replayed;
+  // rotation is the receiver's other operational move: rolling the
+  // HMAC secret without dropping notifications signed just before
+  // the roll. The main webhook above is signed with
+  // DEMO_WEBHOOK_SECRET, which plays the OLD secret here. Two twins
+  // are built over the identical payload (same fixed now/eventId,
+  // so the body bytes are byte-identical and only the signature
+  // differs): one signed with the rotated-in NEW secret, one with
+  // an UNRELATED secret. Under the candidate set
+  // `{ secrets: [new, old] }` the old-signed and new-signed bodies
+  // both verify (the first matching candidate wins), the
+  // unrelated-signed body returns false without throwing
+  // (all-mismatch fails closed), and an empty candidate set throws
+  // the pinned configuration error instead of silently passing.
+  // All four shapes are asserted outside the printing.
+  const webhookRotationOpts = {
+    secrets: [DEMO_WEBHOOK_ROTATION_NEW_SECRET, DEMO_WEBHOOK_SECRET],
+  };
+  const webhookRotationOldVerified = verifySettlementWebhook(
+    webhookBody,
+    webhook.signature,
+    webhookRotationOpts,
+  );
+  const webhookRotationNewWebhook = buildSettlementWebhook(report, {
+    secret: DEMO_WEBHOOK_ROTATION_NEW_SECRET,
+    now: DEMO_WEBHOOK_AT,
+    eventId: DEMO_WEBHOOK_EVENT_ID,
+  });
+  const webhookRotationNewVerified = verifySettlementWebhook(
+    JSON.stringify(webhookRotationNewWebhook.payload),
+    webhookRotationNewWebhook.signature,
+    webhookRotationOpts,
+  );
+  const webhookRotationUnrelatedWebhook = buildSettlementWebhook(report, {
+    secret: DEMO_WEBHOOK_ROTATION_UNRELATED_SECRET,
+    now: DEMO_WEBHOOK_AT,
+    eventId: DEMO_WEBHOOK_EVENT_ID,
+  });
+  const webhookRotationUnrelatedVerified = verifySettlementWebhook(
+    JSON.stringify(webhookRotationUnrelatedWebhook.payload),
+    webhookRotationUnrelatedWebhook.signature,
+    webhookRotationOpts,
+  );
+  let webhookRotationEmptySecretsError = "";
+  try {
+    verifySettlementWebhook(webhookBody, webhook.signature, { secrets: [] });
+  } catch (err) {
+    webhookRotationEmptySecretsError =
+      err instanceof Error ? err.message : String(err);
+  }
+  if (
+    JSON.stringify(webhookRotationNewWebhook.payload) !== webhookBody ||
+    JSON.stringify(webhookRotationUnrelatedWebhook.payload) !== webhookBody ||
+    webhookRotationNewWebhook.signature === webhook.signature ||
+    webhookRotationUnrelatedWebhook.signature === webhook.signature ||
+    webhookRotationOldVerified !== true ||
+    webhookRotationNewVerified !== true ||
+    webhookRotationUnrelatedVerified !== false ||
+    webhookRotationEmptySecretsError !==
+      DEMO_WEBHOOK_ROTATION_EMPTY_SECRETS_ERROR
+  ) {
+    throw new Error(
+      "demo fixture broken: webhook secret rotation does not match the pinned shape (the old-signed and new-signed bodies verify under { secrets: [new, old] }, the unrelated-signed body is refused without throwing, and an empty secrets array throws the pinned configuration error)",
+    );
+  }
+  lines.push(
+    "",
+    "Webhook secret rotation (verifySettlementWebhook { secrets: [new, old] } on the main webhook):",
+    `  signed with the old secret (the main webhook): verifySettlementWebhook { secrets: [new, old] }: ${webhookRotationOldVerified} (the old secret still verifies inside the rotation window)`,
+    `  signed with the new secret (identical payload, same fixed at / eventId): verifySettlementWebhook { secrets: [new, old] }: ${webhookRotationNewVerified} (the rotated-in secret verifies too)`,
+    `  signed with an unrelated secret: verifySettlementWebhook { secrets: [new, old] }: ${webhookRotationUnrelatedVerified} (no candidate matches — fail-closed, returns false without throwing)`,
+    `  empty candidate set: verifySettlementWebhook { secrets: [] } throws "${webhookRotationEmptySecretsError}" (a caller configuration error, never a silent pass)`,
   );
 
   // --- Receiver dedupe: the same eventId delivered three times ---
@@ -4545,6 +4689,10 @@ export async function runDemo(): Promise<DemoResult> {
     webhookFreshnessExpired,
     webhookFreshnessMaxFutureSkewMs: DEMO_WEBHOOK_FRESHNESS_MAX_FUTURE_SKEW_MS,
     webhookFreshnessFutureSkewExceeded,
+    webhookRotationOldVerified,
+    webhookRotationNewVerified,
+    webhookRotationUnrelatedVerified,
+    webhookRotationEmptySecretsError,
     webhookDedupe,
     retryAfterParsed,
     disputeEscrow,

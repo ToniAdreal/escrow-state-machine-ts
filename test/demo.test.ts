@@ -114,6 +114,9 @@ import {
   DEMO_WEBHOOK_FRESHNESS_MAX_AGE_MS,
   DEMO_WEBHOOK_FRESHNESS_MAX_FUTURE_SKEW_MS,
   DEMO_WEBHOOK_FRESHNESS_WITHIN_NOW_MS,
+  DEMO_WEBHOOK_ROTATION_EMPTY_SECRETS_ERROR,
+  DEMO_WEBHOOK_ROTATION_NEW_SECRET,
+  DEMO_WEBHOOK_ROTATION_UNRELATED_SECRET,
   DEMO_WEBHOOK_SECRET,
 } from "../src/demo.js";
 import {
@@ -121,6 +124,7 @@ import {
   SettlementEventDedupe,
   allowedEvents,
   assertNonNegativeMoney,
+  buildSettlementWebhook,
   createQuorum,
   deliverSettlementWebhook,
   depositAmountFromHistory,
@@ -405,6 +409,122 @@ test("demo lines print the webhook freshness window section", async () => {
   const freshnessAt = text.indexOf("Webhook freshness window (verifySettlementWebhook");
   const dedupeAt = text.indexOf("Receiver dedupe (SettlementEventDedupe");
   assert.ok(webhookAt < freshnessAt && freshnessAt < dedupeAt);
+});
+
+test("demo shows webhook secret rotation: old and new secrets verify, unrelated fails closed, empty secrets throws", async () => {
+  const {
+    report,
+    webhook,
+    webhookRotationOldVerified,
+    webhookRotationNewVerified,
+    webhookRotationUnrelatedVerified,
+    webhookRotationEmptySecretsError,
+  } = await runDemo();
+
+  // Hand-pinned fixture shape: the demo secret plays the old
+  // secret, the rotation constants are distinct placeholder
+  // secrets, and the empty-set error is the pinned config error
+  // from src/webhooks.ts.
+  assert.notEqual(DEMO_WEBHOOK_ROTATION_NEW_SECRET, DEMO_WEBHOOK_SECRET);
+  assert.notEqual(
+    DEMO_WEBHOOK_ROTATION_UNRELATED_SECRET,
+    DEMO_WEBHOOK_ROTATION_NEW_SECRET,
+  );
+  assert.notEqual(DEMO_WEBHOOK_ROTATION_UNRELATED_SECRET, DEMO_WEBHOOK_SECRET);
+  assert.equal(
+    DEMO_WEBHOOK_ROTATION_EMPTY_SECRETS_ERROR,
+    "cannot verify settlement webhook: secrets must be a non-empty array",
+  );
+
+  // The four shapes: old-signed passes, new-signed passes,
+  // unrelated-signed fails closed, empty set throws.
+  assert.equal(webhookRotationOldVerified, true);
+  assert.equal(webhookRotationNewVerified, true);
+  assert.equal(webhookRotationUnrelatedVerified, false);
+  assert.equal(
+    webhookRotationEmptySecretsError,
+    DEMO_WEBHOOK_ROTATION_EMPTY_SECRETS_ERROR,
+  );
+
+  // Independent re-verification: twins rebuilt by hand over the
+  // identical payload (same fixed now / eventId) carry
+  // byte-identical bodies and different signatures, and the
+  // verdicts agree under the same candidate set.
+  const body = JSON.stringify(webhook.payload);
+  const rotationOpts = {
+    secrets: [DEMO_WEBHOOK_ROTATION_NEW_SECRET, DEMO_WEBHOOK_SECRET],
+  };
+  const newTwin = buildSettlementWebhook(report, {
+    secret: DEMO_WEBHOOK_ROTATION_NEW_SECRET,
+    now: DEMO_WEBHOOK_AT,
+    eventId: DEMO_WEBHOOK_EVENT_ID,
+  });
+  assert.equal(JSON.stringify(newTwin.payload), body);
+  assert.notEqual(newTwin.signature, webhook.signature);
+  assert.equal(
+    verifySettlementWebhook(body, webhook.signature, rotationOpts),
+    true,
+  );
+  assert.equal(
+    verifySettlementWebhook(body, newTwin.signature, rotationOpts),
+    true,
+  );
+  const unrelatedTwin = buildSettlementWebhook(report, {
+    secret: DEMO_WEBHOOK_ROTATION_UNRELATED_SECRET,
+    now: DEMO_WEBHOOK_AT,
+    eventId: DEMO_WEBHOOK_EVENT_ID,
+  });
+  assert.equal(JSON.stringify(unrelatedTwin.payload), body);
+  assert.equal(
+    verifySettlementWebhook(body, unrelatedTwin.signature, rotationOpts),
+    false,
+  );
+  assert.throws(
+    () => verifySettlementWebhook(body, webhook.signature, { secrets: [] }),
+    new RegExp(
+      DEMO_WEBHOOK_ROTATION_EMPTY_SECRETS_ERROR.replace(
+        /[.*+?^${}()|[\]\\]/g,
+        "\\$&",
+      ),
+    ),
+  );
+});
+
+test("demo lines print the webhook secret rotation section", async () => {
+  const { lines } = await runDemo();
+  const text = lines.join("\n");
+
+  assert.match(
+    text,
+    /Webhook secret rotation \(verifySettlementWebhook \{ secrets: \[new, old\] \} on the main webhook\):/,
+  );
+  assert.ok(
+    text.includes(
+      "  signed with the old secret (the main webhook): verifySettlementWebhook { secrets: [new, old] }: true (the old secret still verifies inside the rotation window)",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  signed with the new secret (identical payload, same fixed at / eventId): verifySettlementWebhook { secrets: [new, old] }: true (the rotated-in secret verifies too)",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  signed with an unrelated secret: verifySettlementWebhook { secrets: [new, old] }: false (no candidate matches — fail-closed, returns false without throwing)",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  empty candidate set: verifySettlementWebhook { secrets: [] } throws "${DEMO_WEBHOOK_ROTATION_EMPTY_SECRETS_ERROR}" (a caller configuration error, never a silent pass)`,
+    ),
+  );
+  // The rotation section sits between the freshness section and
+  // the receiver dedupe section — it re-verifies the same
+  // notification under the receiver's candidate set.
+  const freshnessAt = text.indexOf("Webhook freshness window (verifySettlementWebhook");
+  const rotationAt = text.indexOf("Webhook secret rotation (verifySettlementWebhook");
+  const dedupeAt = text.indexOf("Receiver dedupe (SettlementEventDedupe");
+  assert.ok(freshnessAt < rotationAt && rotationAt < dedupeAt);
 });
 
 test("demo receiver dedupe counts the main webhook eventId new, duplicate, then new after the TTL", async () => {
