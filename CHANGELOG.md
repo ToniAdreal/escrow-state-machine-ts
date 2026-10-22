@@ -18,6 +18,24 @@ version changes.
 
 ### Added
 
+- New benchmark path for the `deliverSettlementWebhook`
+  `maxRetryDelayMs` retry-delay clamp: a counting fake global
+  `fetch` answers 429 with `Retry-After: 31536000` — a one-year
+  hint a faulty or hostile server could send — first and 200
+  second, and every iteration delivers with `maxRetryDelayMs: 0`
+  and checks the result is exactly `{ status: 200, attempts: 2 }`
+  after exactly two fetch calls, so the hint is parsed and then
+  clamped to zero by `Math.min` and the retry is immediate (the
+  run measured ~1321.86 µs/op, dominated by the zero-delay
+  timer). An illegal `maxRetryDelayMs` of -1 is pinned once
+  outside the timed loop to its exact configuration error before
+  any request, and a hint-less 500-then-200 script pinned to the
+  exponential-backoff fallback shape. No real network, no
+  randomness, no real waiting and no wall clock. The
+  `deliverSettlementWebhook (maxRetryDelayMs clamp, 429 hint)`
+  row joins the README benchmark table, with the whole table
+  refreshed from one real run.
+
 - CLI demo coverage for the settlement-webhook
   per-attempt `timeoutMs` bound: the main escrow's
   signed webhook is delivered three more times against
