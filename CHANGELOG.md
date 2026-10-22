@@ -18,6 +18,31 @@ version changes.
 
 ### Added
 
+- New benchmark path for the `maxDeposit` deposit cap:
+  a fresh capped escrow (`maxDeposit: 10630`, the golden
+  deposit as the cap) is rebuilt on every iteration and
+  funded in two dispatches on fixed timestamps — an
+  initial FUND of 7,000 at the fixed base instant and a
+  3,630 top-up one second later — landing the locked
+  total exactly on the cap, checked for the FUNDED
+  state, a history of exactly two entries, and the two
+  pinned amounts summing to the cap (the run measured
+  ~73,202 ops/sec, ~13.66 µs/op for this row). Outside
+  the timed loop, a FUND one cent over the cap is
+  pinned to throw the exact error `deposit cap
+  exceeded: locked 10630 + new funding 0.01 would
+  exceed maxDeposit 10630` and to leave state and
+  history unchanged entry for entry, a FUND without an
+  amount is pinned to stay uncapped even at the cap
+  (it carries no money and contributes nothing to the
+  locked total, so a later one-cent FUND still reports
+  the same locked total), and an escrow without the
+  option is pinned to keep the pre-cap behavior. No
+  network, no randomness and no wall clock. The
+  `maxDeposit FUND (deposit cap, funds to cap)` row
+  joins the README benchmark table, with the whole
+  table refreshed from one real run.
+
 - New benchmark path for the `requireVerifyEvidence`
   evidence gate: a fresh strict escrow is rebuilt on every
   iteration (FUND of the golden 10,630 at the fixed base
