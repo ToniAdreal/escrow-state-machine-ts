@@ -18,6 +18,26 @@ version changes.
 
 ### Added
 
+- New benchmark path for the settlement report
+  `releasePath` settlement path: `buildSettlementReport`
+  over the fixed released history (built on fixed
+  timestamps) is checked on every iteration for outcome
+  `released` and `releasePath` verbatim
+  `VERIFY_PASS → RELEASE` (the run measured ~52,452
+  ops/sec, ~19.06 µs/op for this row). Outside the timed
+  loop, the rendered line
+  `Outcome: released (via VERIFY_PASS → RELEASE)` is
+  pinned, a refunded report is pinned to carry no
+  `releasePath` field at all, its webhook serialization
+  is pinned to contain no `releasePath` key, and the
+  released webhook's key order is pinned to the
+  canonical order with `releasePath` between `outcome`
+  and `deposit`. No network, no randomness and no
+  wall clock. The
+  `buildSettlementReport releasePath (released report)`
+  row joins the README benchmark table, with the whole
+  table refreshed from one real run.
+
 - The CLI demo now shows a dedicated stale patrol over five
   further escrows screened by `staleEscrows` alone on the
   demo's fixed `now` under a patrol `maxAgeByState` map
