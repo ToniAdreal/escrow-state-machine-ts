@@ -18,6 +18,30 @@ version changes.
 
 ### Added
 
+- New benchmark path for the `dispatch` `expectedSeq`
+  optimistic-concurrency guard: a fresh escrow is rebuilt
+  on every iteration and driven on fixed timestamps —
+  FUND of the golden 10,630 at the fixed base instant and
+  SUBMIT_MILESTONE one second later, so the history holds
+  exactly two entries — then `dispatch("VERIFY_PASS")`
+  with `expectedSeq: 2` is checked for the VERIFIED
+  state, a history grown by exactly one entry (2 -> 3),
+  and the appended entry pinned field for field (the run
+  measured ~39,197 ops/sec, ~25.51 µs/op for this row).
+  Outside the timed loop, a stale `expectedSeq` is
+  pinned to throw the exact error `dispatch conflict:
+  expected seq 1 but escrow is at seq 2` and to leave
+  state and history unchanged entry for entry, an
+  empty-history escrow is pinned to advance with
+  `expectedSeq: 0`, illegal values (-1 and 1.5) are
+  pinned to their exact configuration errors, and a
+  dispatch without `expectedSeq` is pinned to keep the
+  pre-guard behavior. No network, no randomness and no
+  wall clock. The
+  `dispatch expectedSeq (optimistic concurrency)` row
+  joins the README benchmark table, with the whole
+  table refreshed from one real run.
+
 - New benchmark path for the `maxDeposit` deposit cap:
   a fresh capped escrow (`maxDeposit: 10630`, the golden
   deposit as the cap) is rebuilt on every iteration and
