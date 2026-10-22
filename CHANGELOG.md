@@ -18,6 +18,29 @@ version changes.
 
 ### Added
 
+- New benchmark path for the `requireVerifyEvidence`
+  evidence gate: a fresh strict escrow is rebuilt on every
+  iteration (FUND of the golden 10,630 at the fixed base
+  instant, SUBMIT_MILESTONE one second later), then
+  `dispatch("VERIFY_PASS")` with the pinned evidence
+  reference is checked for the VERIFIED state, a history
+  grown by exactly one entry (2 -> 3), and the evidence
+  recorded verbatim on the appended entry (the run
+  measured ~34,889 ops/sec, ~28.66 µs/op for this row).
+  Outside the timed loop, an evidence-free VERIFY_PASS is
+  pinned to throw the exact gate error and to leave state
+  and history unchanged entry for entry before the same
+  escrow passes with evidence, a default escrow is pinned
+  to keep the pre-gate evidence-free behavior, and a
+  non-boolean flag value is pinned to its exact
+  constructor configuration error. The library records
+  the caller's evidence reference; it does not verify
+  the attestation behind it. No network, no randomness
+  and no wall clock. The
+  `requireVerifyEvidence VERIFY_PASS (evidence gate)` row
+  joins the README benchmark table, with the whole table
+  refreshed from one real run.
+
 - New benchmark path for the `deliverSettlementWebhook`
   `maxRetryDelayMs` retry-delay clamp: a counting fake global
   `fetch` answers 429 with `Retry-After: 31536000` — a one-year
