@@ -18,6 +18,28 @@ version changes.
 
 ### Added
 
+- CLI demo coverage for the settlement-webhook
+  per-attempt `timeoutMs` bound: the main escrow's
+  signed webhook is delivered three more times against
+  scripted fake global `fetch` seams — a hanging fake
+  (it only ever rejects when its request signal aborts)
+  with the pinned short `timeoutMs` of 50 ms and
+  `retries: 0` fails the delivery after exactly 1
+  attempt with the exact error `webhook delivery to
+  https://hooks.example.com/settlement-timeout failed
+  after 1 attempt: webhook delivery timed out after
+  50ms` and exactly 1 fetch call; `timeoutMs: 0` throws
+  the exact configuration error `cannot deliver
+  settlement webhook: timeoutMs must be a positive
+  number, got 0` before any request (0 fetch calls);
+  and a generous 5000 ms timeout over an immediately
+  200 fake resolves the unchanged success shape
+  `{ status: 200, attempts: 1 }`. Honest limit: the
+  timeout wait is the object under test itself and is
+  the pinned short duration — no elapsed-time
+  (wall-clock) assertion is made and no duration is
+  printed, so the demo output stays byte-identical
+  across runs. Zero real network, zero randomness.
 - Benchmark coverage for the settlement-webhook
   pre-aborted `AbortSignal` delivery path:
   `deliverSettlementWebhook` with a pre-aborted

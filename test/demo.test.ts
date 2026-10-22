@@ -119,6 +119,13 @@ import {
   DEMO_SUBSCRIBE_SUBMIT_AT,
   DEMO_SUBSCRIBE_VERIFY_AT,
   DEMO_SUBSCRIBE_VERIFY_EVIDENCE,
+  DEMO_TIMEOUT_DELIVERY_ERROR,
+  DEMO_TIMEOUT_GENEROUS_MS,
+  DEMO_TIMEOUT_INVALID_ERROR,
+  DEMO_TIMEOUT_MS,
+  DEMO_TIMEOUT_OK_URL,
+  DEMO_TIMEOUT_TIMED_OUT_ERROR,
+  DEMO_TIMEOUT_URL,
   DEMO_TRANSITION_TABLE_EDGE_COUNT,
   DEMO_TRANSITION_TABLE_JSON_BYTES,
   DEMO_UNEXPIRABLE_DEADLINE,
@@ -2493,12 +2500,11 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
       `  VERIFY_PASS with evidence "${DEMO_VERIFY_EVIDENCE_REF}": -> VERIFIED, evidence recorded verbatim on the audit entry (the library records the caller's reference; it does not verify the oracle or proof itself)`,
     ),
   );
-  // auditKey tail: the closing segment drives a keyed
+  // auditKey tail: that segment drives a keyed
   // branch escrow through the HMAC audit chain — the
   // correct key verifies, a wrong key and no key fail
   // closed, and a rewritten middle entry fails even
-  // for the key holder; the demo ends on the recheck
-  // line.
+  // for the key holder.
   assert.match(out, /Keyed audit chain \(verifyHistoryChain with EscrowOptions\.auditKey on a branch escrow\):/);
   assert.ok(
     out.includes(
@@ -2515,11 +2521,28 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
       `  tampered copy: SUBMIT_MILESTONE note rewritten to "${DEMO_AUDIT_KEY_TAMPERED_NOTE}" — verifyHistoryChain(tampered, auditKey): false (tamper detected even for the key holder: the stored HMAC no longer recomputes)`,
     ),
   );
+  // timeout tail: the closing segment delivers the
+  // signed webhook against a hanging fake fetch — the
+  // pinned short timeout fails the delivery after one
+  // attempt, an illegal timeoutMs throws before any
+  // fetch, and a generous timeout succeeds unchanged;
+  // the demo ends on the per-attempt-bound rule line.
+  assert.match(out, /Webhook delivery timeout \(deliverSettlementWebhook timeoutMs via hanging fake fetch, zero network\):/);
+  assert.ok(
+    out.includes(
+      `  timed out: endpoint ${DEMO_TIMEOUT_URL} never answers (the hanging fake fetch only rejects on abort), timeoutMs ${DEMO_TIMEOUT_MS} ms, retries 0 — delivery fails "${DEMO_TIMEOUT_DELIVERY_ERROR}": fake fetch called 1 time(s), exactly 1 attempt`,
+    ),
+  );
+  assert.ok(
+    out.includes(
+      `  illegal timeoutMs 0: delivery throws "${DEMO_TIMEOUT_INVALID_ERROR}" before any request: fake fetch called 0 time(s)`,
+    ),
+  );
   assert.ok(
     out
       .trimEnd()
       .endsWith(
-        `  original history after the tamper check: verifyHistoryChain: true (detached copy — the escrow's own history is untouched; the demo key is a printed placeholder, not a real secret)`,
+        "  a timeout is a per-attempt bound, handled by the retry policy like any network error: the pinned short wait above is the object under test itself — no elapsed time is asserted or printed",
       ),
   );
 });
@@ -4495,8 +4518,9 @@ test("demo shows quorum revoke: a revoked vote drops below threshold and a re-ap
   assert.equal(probe.approvalCount(), 2);
   // The segment follows the onError segment and prints
   // its lines verbatim; the AbortSignal segment follows
-  // it (and the expectedSeq, verifyEvidence, and
-  // auditKey segments close the demo after that).
+  // it (and the expectedSeq, verifyEvidence,
+  // auditKey, and timeout segments close the demo
+  // after that).
   const revokeAt = text.indexOf(
     "Quorum revoke (Quorum.revoke() — a signer changes their vote):",
   );
@@ -4762,8 +4786,8 @@ test("demo shows dispatch expectedSeq optimistic concurrency: matching pins adva
   assert.equal(probe.history.length, 3);
 
   // The segment follows the abort segment and prints
-  // its lines verbatim; the verifyEvidence and
-  // auditKey segments follow it.
+  // its lines verbatim; the verifyEvidence, auditKey,
+  // and timeout segments follow it.
   const abortAt = text.indexOf(
     "Webhook delivery abort (deliverSettlementWebhook with an AbortSignal, scripted fake fetch, zero network):",
   );
@@ -4912,8 +4936,8 @@ test("demo shows requireVerifyEvidence gate: an evidence-free VERIFY_PASS is ref
   assert.ok(!("evidence" in probeDefault.history[2]));
 
   // The segment follows the expectedSeq segment and
-  // prints its lines verbatim; the auditKey segment
-  // closes the demo after it.
+  // prints its lines verbatim; the auditKey and
+  // timeout segments follow it.
   const expectedSeqAt = text.indexOf(
     "Optimistic concurrency (dispatch expectedSeq guard on a branch escrow):",
   );
@@ -5093,9 +5117,9 @@ test("demo shows verifyHistoryChain auditKey keyed chain: the correct key verifi
   assert.equal(verifyHistoryChain(probePlain.history), true);
   assert.equal(verifyHistoryChain(probePlain.history, DEMO_AUDIT_KEY), false);
 
-  // The segment closes the demo: it follows the
-  // verifyEvidence segment, prints its lines verbatim,
-  // and its recheck line is the demo's last line.
+  // The segment follows the verifyEvidence segment
+  // and prints its lines verbatim; the timeout
+  // segment closes the demo after it.
   const verifyEvidenceAt = text.indexOf(
     "Verify evidence gate (EscrowOptions.requireVerifyEvidence on branch escrows):",
   );
@@ -5116,9 +5140,12 @@ test("demo shows verifyHistoryChain auditKey keyed chain: the correct key verifi
   ]) {
     assert.ok(text.includes(line), `missing auditKey line: ${line}`);
   }
-  assert.equal(
-    lines[lines.length - 1],
-    `  original history after the tamper check: verifyHistoryChain: true (detached copy — the escrow's own history is untouched; the demo key is a printed placeholder, not a real secret)`,
+  const timeoutAt = text.indexOf(
+    "Webhook delivery timeout (deliverSettlementWebhook timeoutMs via hanging fake fetch, zero network):",
+  );
+  assert.ok(
+    timeoutAt > auditKeyAt,
+    "timeout segment must follow the auditKey segment",
   );
 });
 
@@ -5128,6 +5155,9 @@ test("demo auditKey segment is deterministic: two runs print byte-identical audi
       ls.indexOf(
         "Keyed audit chain (verifyHistoryChain with EscrowOptions.auditKey on a branch escrow):",
       ),
+      ls.indexOf(
+        "Webhook delivery timeout (deliverSettlementWebhook timeoutMs via hanging fake fetch, zero network):",
+      ) - 1,
     );
   const a = await runDemo();
   const b = await runDemo();
@@ -5145,4 +5175,147 @@ test("demo auditKey segment is deterministic: two runs print byte-identical audi
   assert.equal(a.auditKeyTamperedVerified, b.auditKeyTamperedVerified);
   assert.equal(a.auditKeyTamperedNote, b.auditKeyTamperedNote);
   assert.equal(a.auditKeyHistoryLength, b.auditKeyHistoryLength);
+});
+
+test("demo shows deliverSettlementWebhook timeoutMs: a hanging endpoint times out after one attempt, timeoutMs 0 throws before any fetch, and a generous timeout succeeds unchanged", async () => {
+  const {
+    webhook,
+    timeoutDeliveryError,
+    timeoutDeliveryFetchCalls,
+    timeoutInvalidError,
+    timeoutInvalidFetchCalls,
+    timeoutOkResult,
+    timeoutOkFetchCalls,
+    lines,
+  } = await runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned fixture shape: the pinned timeout values
+  // and error texts are the exact strings src/webhooks.ts
+  // produces — written out here, never derived by calling
+  // the delivery itself. test/webhookDelivery.test.ts pins
+  // the same timeout and configuration shapes.
+  assert.equal(DEMO_TIMEOUT_MS, 50);
+  assert.equal(DEMO_TIMEOUT_GENEROUS_MS, 5000);
+  assert.equal(DEMO_TIMEOUT_TIMED_OUT_ERROR, "webhook delivery timed out after 50ms");
+  assert.equal(DEMO_TIMEOUT_DELIVERY_ERROR, `webhook delivery to ${DEMO_TIMEOUT_URL} failed after 1 attempt: ${DEMO_TIMEOUT_TIMED_OUT_ERROR}`);
+  assert.equal(DEMO_TIMEOUT_INVALID_ERROR, "cannot deliver settlement webhook: timeoutMs must be a positive number, got 0");
+
+  // The three shapes: timed-out failure after exactly 1
+  // fetch, illegal value throws with zero fetches, and a
+  // generous timeout resolves the unchanged success shape.
+  assert.equal(timeoutDeliveryError, DEMO_TIMEOUT_DELIVERY_ERROR);
+  assert.equal(timeoutDeliveryFetchCalls, 1);
+  assert.equal(timeoutInvalidError, DEMO_TIMEOUT_INVALID_ERROR);
+  assert.equal(timeoutInvalidFetchCalls, 0);
+  assert.deepEqual(timeoutOkResult, { status: 200, attempts: 1 });
+  assert.equal(timeoutOkFetchCalls, 1);
+
+  // Independent re-verification: the same three shapes
+  // driven by hand against the demo's own webhook agree.
+  // No elapsed-time assertion anywhere — the timeout wait
+  // is the object under test, pinned short.
+  const originalFetch = globalThis.fetch;
+  let probeTimeoutCalls = 0;
+  const probeHangingFetch: typeof fetch = async (_input, init) => {
+    probeTimeoutCalls += 1;
+    return new Promise<Response>((_resolve, reject) => {
+      const signal = init?.signal;
+      if (signal === null || signal === undefined) {
+        reject(new Error("probe hanging fetch received no request signal"));
+        return;
+      }
+      if (signal.aborted) {
+        reject(new Error("probe hanging fetch aborted"));
+        return;
+      }
+      signal.addEventListener("abort", () => reject(new Error("probe hanging fetch aborted")), { once: true });
+    });
+  };
+  globalThis.fetch = probeHangingFetch;
+  try {
+    await assert.rejects(
+      () => deliverSettlementWebhook(DEMO_TIMEOUT_URL, webhook, { timeoutMs: DEMO_TIMEOUT_MS, retries: 0 }),
+      new Error(DEMO_TIMEOUT_DELIVERY_ERROR),
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(probeTimeoutCalls, 1);
+  let probeInvalidCalls = 0;
+  globalThis.fetch = async () => {
+    probeInvalidCalls += 1;
+    return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+  };
+  try {
+    await assert.rejects(
+      () => deliverSettlementWebhook(DEMO_TIMEOUT_URL, webhook, { timeoutMs: 0, retries: 0 }),
+      new Error(DEMO_TIMEOUT_INVALID_ERROR),
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(probeInvalidCalls, 0);
+  let probeOkCalls = 0;
+  globalThis.fetch = async () => {
+    probeOkCalls += 1;
+    return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+  };
+  try {
+    assert.deepEqual(
+      await deliverSettlementWebhook(DEMO_TIMEOUT_OK_URL, webhook, { timeoutMs: DEMO_TIMEOUT_GENEROUS_MS, retries: 0 }),
+      { status: 200, attempts: 1 },
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(probeOkCalls, 1);
+
+  // The segment closes the demo: it follows the auditKey
+  // segment, prints its lines verbatim, and its
+  // per-attempt-bound rule line is the demo's last line.
+  const auditKeyAt = text.indexOf(
+    "Keyed audit chain (verifyHistoryChain with EscrowOptions.auditKey on a branch escrow):",
+  );
+  const timeoutAt = text.indexOf(
+    "Webhook delivery timeout (deliverSettlementWebhook timeoutMs via hanging fake fetch, zero network):",
+  );
+  assert.ok(timeoutAt > auditKeyAt, "timeout segment must follow the auditKey segment");
+  for (const line of [
+    `  timed out: endpoint ${DEMO_TIMEOUT_URL} never answers (the hanging fake fetch only rejects on abort), timeoutMs ${DEMO_TIMEOUT_MS} ms, retries 0 — delivery fails "${DEMO_TIMEOUT_DELIVERY_ERROR}": fake fetch called 1 time(s), exactly 1 attempt`,
+    `  illegal timeoutMs 0: delivery throws "${DEMO_TIMEOUT_INVALID_ERROR}" before any request: fake fetch called 0 time(s)`,
+    `  generous timeout: endpoint ${DEMO_TIMEOUT_OK_URL} answers 200 immediately, timeoutMs ${DEMO_TIMEOUT_GENEROUS_MS} ms — result: status 200, attempts 1 (the success shape is unchanged under a generous timeout), fake fetch called 1 time(s)`,
+    "  a timeout is a per-attempt bound, handled by the retry policy like any network error: the pinned short wait above is the object under test itself — no elapsed time is asserted or printed",
+  ]) {
+    assert.ok(text.includes(line), `missing timeout line: ${line}`);
+  }
+  assert.equal(
+    lines[lines.length - 1],
+    "  a timeout is a per-attempt bound, handled by the retry policy like any network error: the pinned short wait above is the object under test itself — no elapsed time is asserted or printed",
+  );
+});
+
+test("demo timeout segment is deterministic: two runs print byte-identical timeout lines", async () => {
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf(
+        "Webhook delivery timeout (deliverSettlementWebhook timeoutMs via hanging fake fetch, zero network):",
+      ),
+    );
+  const a = await runDemo();
+  const b = await runDemo();
+  const segA = segment(a.lines);
+  // Header + the timed-out line + the illegal line + the
+  // generous line + the rule line; every printed value is
+  // derived from the fixed fixtures alone and no duration
+  // is printed, so no normalization is needed — the real
+  // pinned timeout wait leaves no trace in the output.
+  assert.equal(segA.length, 5);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.equal(a.timeoutDeliveryError, b.timeoutDeliveryError);
+  assert.equal(a.timeoutDeliveryFetchCalls, b.timeoutDeliveryFetchCalls);
+  assert.equal(a.timeoutInvalidError, b.timeoutInvalidError);
+  assert.equal(a.timeoutInvalidFetchCalls, b.timeoutInvalidFetchCalls);
+  assert.deepEqual(a.timeoutOkResult, b.timeoutOkResult);
+  assert.equal(a.timeoutOkFetchCalls, b.timeoutOkFetchCalls);
 });

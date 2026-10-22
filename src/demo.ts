@@ -1389,6 +1389,60 @@ export const DEMO_AUDIT_KEY_SUBMIT_NOTE =
 export const DEMO_AUDIT_KEY_TAMPERED_NOTE =
   "Deliverable URLs + IPFS metadata hash (rewritten)";
 
+/**
+ * Webhook timeout fixtures for the final closing segment:
+ * the main escrow's signed webhook is delivered three
+ * more times while the per-attempt `timeoutMs` bound of
+ * `DeliverWebhookOptions` (src/webhooks.ts) is exercised
+ * in every shape. Hand-pinned expectations — written from
+ * the documented `deliverSettlementWebhook()` timeout
+ * semantics there (each attempt is aborted after
+ * `timeoutMs`; a timeout surfaces as
+ * `webhook delivery timed out after <timeoutMs>ms` and is
+ * then handled by the retry policy, so with `retries: 0`
+ * the delivery fails after exactly 1 attempt with that
+ * text as its last cause; an illegal `timeoutMs` throws
+ * the pinned configuration error before any request is
+ * made), never derived by calling the delivery itself,
+ * and cross-checked against test/webhookDelivery.test.ts,
+ * which pins the same timeout and configuration shapes:
+ * - hanging fake with `timeoutMs`
+ *   {@link DEMO_TIMEOUT_MS} and `retries: 0`: the delivery
+ *   throws exactly {@link DEMO_TIMEOUT_DELIVERY_ERROR}
+ *   and the hanging fake fetch is called exactly 1 time —
+ *   it only ever rejects when its request signal aborts,
+ *   so the pinned timeout is what ends the attempt
+ * - `timeoutMs: 0`: the delivery throws exactly
+ *   {@link DEMO_TIMEOUT_INVALID_ERROR} and the counting
+ *   fake fetch is called exactly 0 times
+ * - generous `timeoutMs`
+ *   {@link DEMO_TIMEOUT_GENEROUS_MS} with an immediately
+ *   200 fake fetch: the delivery resolves exactly
+ *   `{status: 200, attempts: 1}` — the result shape is
+ *   unchanged under a generous timeout
+ * Both endpoints are example.com URLs that are never
+ * really fetched (scripted fakes on `globalThis` for this
+ * segment only, the original restored afterwards). The
+ * timeout wait itself is the object under test and is the
+ * pinned short {@link DEMO_TIMEOUT_MS}: no elapsed-time
+ * (wall-clock) assertion is made anywhere in the segment,
+ * and the printed lines carry no duration, so the output
+ * stays byte-identical across runs. Zero real network,
+ * zero randomness.
+ */
+export const DEMO_TIMEOUT_URL =
+  "https://hooks.example.com/settlement-timeout";
+export const DEMO_TIMEOUT_OK_URL =
+  "https://hooks.example.com/settlement-timeout-ok";
+export const DEMO_TIMEOUT_MS = 50;
+export const DEMO_TIMEOUT_GENEROUS_MS = 5000;
+export const DEMO_TIMEOUT_TIMED_OUT_ERROR =
+  "webhook delivery timed out after 50ms";
+export const DEMO_TIMEOUT_DELIVERY_ERROR =
+  "webhook delivery to https://hooks.example.com/settlement-timeout failed after 1 attempt: webhook delivery timed out after 50ms";
+export const DEMO_TIMEOUT_INVALID_ERROR =
+  "cannot deliver settlement webhook: timeoutMs must be a positive number, got 0";
+
 const steps: Array<{
   event: EscrowEvent;
   actor: string;
@@ -2412,6 +2466,44 @@ export interface DemoResult {
   auditKeyTamperedNote: string;
   /** History length of the keyed escrow: exactly 4. */
   auditKeyHistoryLength: number;
+  /**
+   * Error message of delivering the main webhook to a
+   * hanging endpoint with `timeoutMs`
+   * {@link DEMO_TIMEOUT_MS} and `retries: 0`: exactly
+   * {@link DEMO_TIMEOUT_DELIVERY_ERROR} — the pinned
+   * per-attempt timeout text as the last cause after
+   * exactly 1 attempt.
+   */
+  timeoutDeliveryError: string;
+  /**
+   * Hanging fake-fetch call count of the timed-out
+   * delivery: exactly 1 — one attempt, no retries.
+   */
+  timeoutDeliveryFetchCalls: number;
+  /**
+   * Error message of delivering with `timeoutMs: 0`:
+   * exactly {@link DEMO_TIMEOUT_INVALID_ERROR} — a caller
+   * configuration error, thrown before any request.
+   */
+  timeoutInvalidError: string;
+  /**
+   * Fake-fetch call count of the illegal-timeout
+   * delivery: exactly 0 — validation precedes fetching.
+   */
+  timeoutInvalidFetchCalls: number;
+  /**
+   * Result of delivering with the generous
+   * {@link DEMO_TIMEOUT_GENEROUS_MS} timeout to an
+   * immediately-200 fake: exactly
+   * `{status: 200, attempts: 1}` — the unchanged success
+   * shape.
+   */
+  timeoutOkResult: WebhookDeliveryResult;
+  /**
+   * Fake-fetch call count of the generous-timeout
+   * delivery: exactly 1.
+   */
+  timeoutOkFetchCalls: number;
   lines: string[];
 }
 
@@ -5349,6 +5441,134 @@ export async function runDemo(): Promise<DemoResult> {
     `  original history after the tamper check: verifyHistoryChain: ${auditKeyRecheckVerified} (detached copy — the escrow's own history is untouched; the demo key is a printed placeholder, not a real secret)`,
   );
 
+  // --- Webhook delivery timeout: deliverSettlementWebhook timeoutMs (final closing) ---
+  // Every delivery segment above answered promptly (or
+  // was cancelled by the caller): a SLOW endpoint that
+  // never answers — the failure the per-attempt
+  // `timeoutMs` bound exists for — lived only in the
+  // unit tests. Here the main escrow's signed webhook is
+  // delivered three more times against scripted fake
+  // `fetch` seams installed on `globalThis` for this
+  // segment only (the original restored afterwards).
+  // Shape one hangs: the fake only ever rejects when its
+  // request signal aborts, so with the pinned short
+  // `timeoutMs` and `retries: 0` the per-attempt timeout
+  // is the only thing that can end the attempt — the
+  // delivery fails after exactly 1 attempt with the
+  // pinned timeout text as its last cause, and the fake
+  // is called exactly once. Shape two is configuration:
+  // `timeoutMs: 0` throws the pinned configuration error
+  // before any request, with the counting fake never
+  // called. Shape three is the control: under the
+  // generous pinned timeout an immediately-200 fake
+  // delivers successfully with the unchanged
+  // `{status: 200, attempts: 1}` shape. Hand-pinned
+  // expectations (see the fixture comment above),
+  // asserted HERE, outside the printing: a delivery that
+  // hung past its timeout, retried despite `retries: 0`,
+  // fetched despite the illegal value, or changed its
+  // success shape would fail the demo itself, not just a
+  // test. Honest limit: the timeout wait is the object
+  // under test and is the pinned short duration — no
+  // elapsed-time (wall-clock) assertion is made, and no
+  // duration is printed, so the output stays
+  // byte-identical across runs. Zero real network, zero
+  // randomness.
+  let timeoutDeliveryFetchCalls = 0;
+  const timeoutHangingFetch: typeof fetch = async (_input, init) => {
+    timeoutDeliveryFetchCalls += 1;
+    return new Promise<Response>((_resolve, reject) => {
+      const signal = init?.signal;
+      if (signal === null || signal === undefined) {
+        reject(new Error("demo hanging fetch received no request signal"));
+        return;
+      }
+      if (signal.aborted) {
+        reject(new Error("demo hanging fetch aborted"));
+        return;
+      }
+      signal.addEventListener(
+        "abort",
+        () => reject(new Error("demo hanging fetch aborted")),
+        { once: true },
+      );
+    });
+  };
+  const originalFetchForTimeout = globalThis.fetch;
+  let timeoutDeliveryError = "";
+  globalThis.fetch = timeoutHangingFetch;
+  try {
+    await deliverSettlementWebhook(DEMO_TIMEOUT_URL, webhook, {
+      timeoutMs: DEMO_TIMEOUT_MS,
+      retries: 0,
+    });
+  } catch (err) {
+    timeoutDeliveryError = err instanceof Error ? err.message : String(err);
+  } finally {
+    globalThis.fetch = originalFetchForTimeout;
+  }
+  let timeoutInvalidFetchCalls = 0;
+  const timeoutCountingFetch: typeof fetch = async () => {
+    timeoutInvalidFetchCalls += 1;
+    return new Response("{}", {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  const originalFetchForTimeoutInvalid = globalThis.fetch;
+  let timeoutInvalidError = "";
+  globalThis.fetch = timeoutCountingFetch;
+  try {
+    await deliverSettlementWebhook(DEMO_TIMEOUT_URL, webhook, {
+      timeoutMs: 0,
+      retries: 0,
+    });
+  } catch (err) {
+    timeoutInvalidError = err instanceof Error ? err.message : String(err);
+  } finally {
+    globalThis.fetch = originalFetchForTimeoutInvalid;
+  }
+  let timeoutOkFetchCalls = 0;
+  const timeoutOkFetch: typeof fetch = async () => {
+    timeoutOkFetchCalls += 1;
+    return new Response("{}", {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  const originalFetchForTimeoutOk = globalThis.fetch;
+  let timeoutOkResult: WebhookDeliveryResult;
+  globalThis.fetch = timeoutOkFetch;
+  try {
+    timeoutOkResult = await deliverSettlementWebhook(DEMO_TIMEOUT_OK_URL, webhook, {
+      timeoutMs: DEMO_TIMEOUT_GENEROUS_MS,
+      retries: 0,
+    });
+  } finally {
+    globalThis.fetch = originalFetchForTimeoutOk;
+  }
+  if (
+    timeoutDeliveryError !== DEMO_TIMEOUT_DELIVERY_ERROR ||
+    timeoutDeliveryFetchCalls !== 1 ||
+    timeoutInvalidError !== DEMO_TIMEOUT_INVALID_ERROR ||
+    timeoutInvalidFetchCalls !== 0 ||
+    timeoutOkResult.status !== 200 ||
+    timeoutOkResult.attempts !== 1 ||
+    timeoutOkFetchCalls !== 1
+  ) {
+    throw new Error(
+      "demo fixture broken: deliverSettlementWebhook timeoutMs does not match the pinned shape (hanging fetch with the pinned short timeout and retries 0 fails after exactly 1 attempt with the pinned timeout text and exactly 1 fetch call, timeoutMs 0 throws the pinned configuration error with zero fetch calls, and a generous timeout over an immediate 200 resolves {status: 200, attempts: 1} after exactly 1 fetch call)",
+    );
+  }
+  lines.push(
+    "",
+    "Webhook delivery timeout (deliverSettlementWebhook timeoutMs via hanging fake fetch, zero network):",
+    `  timed out: endpoint ${DEMO_TIMEOUT_URL} never answers (the hanging fake fetch only rejects on abort), timeoutMs ${DEMO_TIMEOUT_MS} ms, retries 0 — delivery fails "${timeoutDeliveryError}": fake fetch called ${timeoutDeliveryFetchCalls} time(s), exactly 1 attempt`,
+    `  illegal timeoutMs 0: delivery throws "${timeoutInvalidError}" before any request: fake fetch called ${timeoutInvalidFetchCalls} time(s)`,
+    `  generous timeout: endpoint ${DEMO_TIMEOUT_OK_URL} answers 200 immediately, timeoutMs ${DEMO_TIMEOUT_GENEROUS_MS} ms — result: status ${timeoutOkResult.status}, attempts ${timeoutOkResult.attempts} (the success shape is unchanged under a generous timeout), fake fetch called ${timeoutOkFetchCalls} time(s)`,
+    "  a timeout is a per-attempt bound, handled by the retry policy like any network error: the pinned short wait above is the object under test itself — no elapsed time is asserted or printed",
+  );
+
   return {
     escrow,
     report,
@@ -5509,6 +5729,12 @@ export async function runDemo(): Promise<DemoResult> {
     auditKeyTamperedVerified,
     auditKeyTamperedNote,
     auditKeyHistoryLength,
+    timeoutDeliveryError,
+    timeoutDeliveryFetchCalls,
+    timeoutInvalidError,
+    timeoutInvalidFetchCalls,
+    timeoutOkResult,
+    timeoutOkFetchCalls,
     lines,
   };
 }
