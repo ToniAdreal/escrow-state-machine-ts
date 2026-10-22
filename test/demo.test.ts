@@ -82,6 +82,16 @@ import {
   DEMO_PARSED_HISTORY_TAMPER_ERROR,
   DEMO_PARSED_HISTORY_TAMPERED_NOTE,
   DEMO_PARSED_HISTORY_TAMPERED_SEQ,
+  DEMO_PATROL_EXACT_ESCROW_ID,
+  DEMO_PATROL_EXACT_FUND_AT,
+  DEMO_PATROL_NO_HISTORY_ESCROW_ID,
+  DEMO_PATROL_STALE_CONFIG_ERROR,
+  DEMO_PATROL_STALE_ESCROW_ID,
+  DEMO_PATROL_STALE_FUND_AT,
+  DEMO_PATROL_TERMINAL_ESCROW_ID,
+  DEMO_PATROL_TERMINAL_RELEASE_AT,
+  DEMO_PATROL_UNMAPPED_ESCROW_ID,
+  DEMO_PATROL_UNMAPPED_VERIFY_AT,
   DEMO_PENDING_ESCROW_ID,
   DEMO_PRO_FEE_BPS,
   DEMO_QUORUM_APPROVAL_ATS,
@@ -1248,6 +1258,137 @@ test("demo lines print the watchdog screening section after the batch webhooks",
   );
   const watchdogAt = text.indexOf("Watchdog screening (stale dwell axis");
   assert.ok(webhooksAt < watchdogAt);
+});
+
+test("demo stale patrol selects only the long-stuck FUNDED escrow and notifies it without dispatching", async () => {
+  const {
+    patrolEscrows,
+    patrolStaleSelected,
+    patrolStaleActionResults,
+    patrolStaleNotifiedIds,
+    patrolStaleConfigError,
+  } = await runDemo();
+
+  // Patrol batch in fixture order: stale, exactly-at-budget,
+  // terminal, no-history, unmapped-state.
+  assert.deepEqual(
+    patrolEscrows.map((e) => e.id),
+    [
+      DEMO_PATROL_STALE_ESCROW_ID,
+      DEMO_PATROL_EXACT_ESCROW_ID,
+      DEMO_PATROL_TERMINAL_ESCROW_ID,
+      DEMO_PATROL_NO_HISTORY_ESCROW_ID,
+      DEMO_PATROL_UNMAPPED_ESCROW_ID,
+    ],
+  );
+  assert.deepEqual(
+    patrolEscrows.map((e) => e.state),
+    ["FUNDED", "FUNDED", "RELEASED", "CREATED", "VERIFIED"],
+  );
+  assert.deepEqual(
+    patrolEscrows.map((e) => e.history.length),
+    [1, 1, 4, 0, 3],
+  );
+  assert.equal(patrolEscrows[0].history[0].at, DEMO_PATROL_STALE_FUND_AT);
+  assert.equal(patrolEscrows[1].history[0].at, DEMO_PATROL_EXACT_FUND_AT);
+  // Exactly at the 7-day budget is not stale (strictly past only):
+  // the exact escrow's dwell equals the budget to the millisecond.
+  assert.equal(
+    Date.parse(DEMO_STALE_NOW) - Date.parse(DEMO_PATROL_EXACT_FUND_AT),
+    DEMO_STALE_MAX_AGE_MS,
+  );
+  assert.equal(
+    patrolEscrows[2].history[patrolEscrows[2].history.length - 1].at,
+    DEMO_PATROL_TERMINAL_RELEASE_AT,
+  );
+  assert.equal(
+    patrolEscrows[4].history[patrolEscrows[4].history.length - 1].at,
+    DEMO_PATROL_UNMAPPED_VERIFY_AT,
+  );
+  // Only the stale escrow is selected, by identity.
+  assert.deepEqual(
+    patrolStaleSelected.map((e) => e.id),
+    [DEMO_PATROL_STALE_ESCROW_ID],
+  );
+  assert.equal(patrolStaleSelected[0], patrolEscrows[0]);
+  // The notify-only executor attempted exactly the selection, acted,
+  // recorded the id, and dispatched nothing (states/history above
+  // are the post-run values).
+  assert.equal(patrolStaleActionResults.length, 1);
+  assert.equal(patrolStaleActionResults[0].escrow, patrolEscrows[0]);
+  assert.equal(patrolStaleActionResults[0].acted, true);
+  assert.equal(patrolStaleActionResults[0].error, undefined);
+  assert.deepEqual(patrolStaleNotifiedIds, [DEMO_PATROL_STALE_ESCROW_ID]);
+  // Unknown state names in the budget map fail fast with the exact
+  // pinned configuration error.
+  assert.equal(patrolStaleConfigError, DEMO_PATROL_STALE_CONFIG_ERROR);
+  assert.equal(
+    patrolStaleConfigError,
+    'invalid maxAgeByState: unknown state "BOGUS"',
+  );
+});
+
+test("demo lines print the stale patrol section after the deadline watchdog", async () => {
+  const { lines } = await runDemo();
+  const text = lines.join("\n");
+
+  assert.match(
+    text,
+    /Stale patrol \(staleEscrows \/ maxAgeByState screening, notify-only action\):/,
+  );
+  assert.ok(
+    text.includes(
+      `  fixed now: ${DEMO_STALE_NOW} — patrol budgets: CREATED 7 days, FUNDED 7 days, RELEASED 7 days (VERIFIED has no budget; dwell from the last history entry, strictly past the budget)`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  DEMO-ESC-020: state FUNDED, entered 2026-02-20T09:00:00.000Z, dwell 17 days — stale: true",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  DEMO-ESC-021: state FUNDED, entered 2026-03-02T09:00:00.000Z, dwell 7 days — stale: false",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  DEMO-ESC-022: state RELEASED, entered 2026-02-15T09:00:00.000Z, dwell 22 days — stale: false",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  DEMO-ESC-023: state CREATED, no history (no measurable dwell) — stale: false",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  DEMO-ESC-024: state VERIFIED, entered 2026-02-15T09:00:00.000Z, dwell 22 days — stale: false",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  staleEscrows selection: [DEMO-ESC-020] — exactly-at-budget (DEMO-ESC-021), terminal (DEMO-ESC-022), no-history (DEMO-ESC-023) and unmapped-state (DEMO-ESC-024) escrows are not selected",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  actOnStaleEscrows (action: notify the parties, dispatch nothing): 1 attempted",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  DEMO-ESC-020: acted true — notified, escrow unchanged at FUNDED",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  invalid patrol configuration fails fast: staleEscrows with an unknown state name throws ${DEMO_PATROL_STALE_CONFIG_ERROR} before any escrow is read`,
+    ),
+  );
+  const deadlineAt = text.indexOf("Deadline watchdog (expiredEscrows");
+  const patrolAt = text.indexOf("Stale patrol (staleEscrows");
+  assert.ok(deadlineAt < patrolAt);
 });
 
 test("demo deadline watchdog expires the expirable escrow, isolates the VERIFIED one, and never attempts the stale-only one", async () => {

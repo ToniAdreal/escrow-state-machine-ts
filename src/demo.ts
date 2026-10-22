@@ -82,7 +82,16 @@
  * honest caveat: the executor dispatches EXPIRE with no pinned
  * `at`, so its audit entries carry the dispatch-time wall clock;
  * the demo prints no timestamp for those entries, so its printed
- * output stays byte-identical across runs. The demo then prints an
+ * output stays byte-identical across runs. A stale-patrol section
+ * then screens five more escrows with `staleEscrows` alone under a
+ * patrol budget map (CREATED / FUNDED / RELEASED at 7 days, VERIFIED
+ * unmapped): only the long-stuck FUNDED escrow is selected — the
+ * exactly-at-budget, terminal, no-history and unmapped-state escrows
+ * are each excluded for a different pinned reason — and a
+ * notify-only `actOnStaleEscrows` action records it without
+ * dispatching anything; an unknown state name in the map is shown
+ * failing fast with the exact `invalid maxAgeByState` error. The
+ * demo then prints an
  * allowed-events listing: `allowedEvents(state)` is run
  * over all 8 states in transition-table order and printed as a
  * one-line-per-state overview — the query an escrow-list UI or a
@@ -639,6 +648,50 @@ export const DEMO_EXPIRABLE_DEADLINE = "2026-03-08T12:00:00.000Z";
 export const DEMO_DEADLINE_STALE_ESCROW_ID = "DEMO-ESC-009";
 export const DEMO_DEADLINE_STALE_FUND_AT = "2026-02-20T09:00:00.000Z";
 export const DEMO_DEADLINE_STALE_DEADLINE = "2026-04-01T09:00:00.000Z";
+
+/**
+ * Stale-patrol fixtures (backlog #506): five further escrows screened
+ * by `staleEscrows` alone on the SAME fixed `now` (DEMO_STALE_NOW)
+ * under a patrol budget map that deliberately covers three states —
+ * CREATED, FUNDED and RELEASED, each 7 days — while VERIFIED carries
+ * no budget at all. Hand-computed expectations (dwell is `now` minus
+ * the last history entry's `at`; stale only when STRICTLY past the
+ * budget):
+ * - DEMO-ESC-020 (stale): FUNDED at 2026-02-20T09:00 — dwell 17 days
+ *   > the 7-day FUNDED budget, so it is the ONLY selection.
+ * - DEMO-ESC-021 (exactly at budget): FUNDED at 2026-03-02T09:00 —
+ *   dwell exactly 7 days; exactly at the budget is NOT stale.
+ * - DEMO-ESC-022 (terminal): RELEASED, last entry at
+ *   2026-02-15T09:00 — dwell 22 days and RELEASED even carries a
+ *   patrol budget, but terminal states are never stale.
+ * - DEMO-ESC-023 (no history): a fresh CREATED escrow that was never
+ *   dispatched — CREATED carries a patrol budget, but with no history
+ *   there is no measurable dwell, so it is never stale.
+ * - DEMO-ESC-024 (unmapped state): VERIFIED, last entry at
+ *   2026-02-15T09:00 — dwell 22 days, but VERIFIED is absent from the
+ *   patrol map (no budget = no staleness), so it is never stale.
+ * The patrol disposition is a notify-only action through
+ * `actOnStaleEscrows` (recording the notified ids, dispatching
+ * nothing), so every patrol escrow keeps its state and history.
+ * A separate fail-fast check calls `staleEscrows` with an unknown
+ * state name in the map and pins the exact configuration error.
+ */
+export const DEMO_PATROL_STALE_ESCROW_ID = "DEMO-ESC-020";
+export const DEMO_PATROL_STALE_FUND_AT = "2026-02-20T09:00:00.000Z";
+export const DEMO_PATROL_EXACT_ESCROW_ID = "DEMO-ESC-021";
+export const DEMO_PATROL_EXACT_FUND_AT = "2026-03-02T09:00:00.000Z";
+export const DEMO_PATROL_TERMINAL_ESCROW_ID = "DEMO-ESC-022";
+export const DEMO_PATROL_TERMINAL_FUND_AT = "2026-02-10T09:00:00.000Z";
+export const DEMO_PATROL_TERMINAL_SUBMIT_AT = "2026-02-12T09:00:00.000Z";
+export const DEMO_PATROL_TERMINAL_VERIFY_AT = "2026-02-14T09:00:00.000Z";
+export const DEMO_PATROL_TERMINAL_RELEASE_AT = "2026-02-15T09:00:00.000Z";
+export const DEMO_PATROL_NO_HISTORY_ESCROW_ID = "DEMO-ESC-023";
+export const DEMO_PATROL_UNMAPPED_ESCROW_ID = "DEMO-ESC-024";
+export const DEMO_PATROL_UNMAPPED_FUND_AT = "2026-02-10T09:00:00.000Z";
+export const DEMO_PATROL_UNMAPPED_SUBMIT_AT = "2026-02-12T09:00:00.000Z";
+export const DEMO_PATROL_UNMAPPED_VERIFY_AT = "2026-02-15T09:00:00.000Z";
+export const DEMO_PATROL_STALE_CONFIG_ERROR =
+  'invalid maxAgeByState: unknown state "BOGUS"';
 
 /**
  * Overdue-judgement fixtures for the closing section: one further
@@ -1718,6 +1771,37 @@ export interface DemoResult {
    * the first entry's error did not block the second.
    */
   deadlineExpireResults: ExpireOverdueResult[];
+  /**
+   * The five stale-patrol escrows (backlog #506), in patrol order
+   * (stale, exactly-at-budget, terminal, no-history, unmapped):
+   * FUNDED, FUNDED, RELEASED, CREATED, VERIFIED — the notify-only
+   * patrol action dispatched nothing, so states and histories are
+   * exactly as constructed.
+   */
+  patrolEscrows: Escrow[];
+  /**
+   * `staleEscrows` selection over {@link DemoResult.patrolEscrows}
+   * under the patrol budgets (CREATED / FUNDED / RELEASED, 7 days
+   * each) on the fixed demo `now`: just the stale FUNDED escrow —
+   * exactly-at-budget, terminal, no-history and unmapped-state
+   * escrows are all excluded, each for a different pinned reason.
+   */
+  patrolStaleSelected: Escrow[];
+  /**
+   * Per-escrow outcomes of `actOnStaleEscrows` running the
+   * notify-only patrol action over the patrol batch: one entry, for
+   * the stale escrow, acted true.
+   */
+  patrolStaleActionResults: StaleEscrowActionResult[];
+  /** Ids the notify-only patrol action recorded, in action order: just the stale escrow's id. */
+  patrolStaleNotifiedIds: string[];
+  /**
+   * Exact error of `staleEscrows` called with an unknown state name
+   * in the budget map (`invalid maxAgeByState: unknown state
+   * "BOGUS"`) — configuration is validated fail-fast before any
+   * escrow is read.
+   */
+  patrolStaleConfigError: string;
   /** `allowedEvents(state)` for every state, in transition-table order. */
   allowedEventsByState: Array<{ state: EscrowState; events: EscrowEvent[] }>;
   /** `allowedEvents` for the main escrow's RELEASED state — the empty list. */
@@ -3354,6 +3438,162 @@ export async function runDemo(): Promise<DemoResult> {
   lines.push(
     `  deadline vs stale on the same batch: expired [${deadlineExpiredSelected.map((e) => e.id).join(", ")}], stale [${deadlineStaleSelected.map((e) => e.id).join(", ")}] — different axes, different subsets (absolute deadline vs dwell in the current state)`,
     `  non-expired escrows untouched: ${deadlineStaleEscrow.id} still ${deadlineStaleEscrow.state}`,
+  );
+
+  // --- Stale patrol: staleEscrows / maxAgeByState edge forms ---
+  // A dedicated patrol over five further escrows on the same fixed
+  // `now`, screened by `staleEscrows` ALONE under a patrol budget map
+  // (CREATED / FUNDED / RELEASED at 7 days each; VERIFIED deliberately
+  // absent) — see the fixture comment above for the hand-computed
+  // expectations. Exactly one escrow is stale; the other four are each
+  // excluded for a different pinned reason (exactly at the budget,
+  // terminal, no history, unmapped state). The disposition is a
+  // notify-only action through actOnStaleEscrows: it records the
+  // notified ids and dispatches nothing, so the patrol changes no
+  // escrow. A fail-fast check then pins the exact configuration error
+  // for an unknown state name in the map.
+  const patrolStaleEscrow = new Escrow(DEMO_PATROL_STALE_ESCROW_ID);
+  patrolStaleEscrow.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "sponsor",
+    at: DEMO_PATROL_STALE_FUND_AT,
+  });
+  const patrolExactEscrow = new Escrow(DEMO_PATROL_EXACT_ESCROW_ID);
+  patrolExactEscrow.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "sponsor",
+    at: DEMO_PATROL_EXACT_FUND_AT,
+  });
+  const patrolTerminalEscrow = new Escrow(DEMO_PATROL_TERMINAL_ESCROW_ID);
+  patrolTerminalEscrow.dispatch(
+    "FUND",
+    "Deposit locked (wire received)",
+    10630,
+    { actor: "sponsor", at: DEMO_PATROL_TERMINAL_FUND_AT },
+  );
+  patrolTerminalEscrow.dispatch(
+    "SUBMIT_MILESTONE",
+    "Deliverable URLs + IPFS metadata hash",
+    undefined,
+    { actor: "creator", at: DEMO_PATROL_TERMINAL_SUBMIT_AT },
+  );
+  patrolTerminalEscrow.dispatch(
+    "VERIFY_PASS",
+    "KPIs validated by oracle",
+    undefined,
+    {
+      actor: "oracle",
+      at: DEMO_PATROL_TERMINAL_VERIFY_AT,
+      evidence: "demo-oracle-attestation-patrol",
+    },
+  );
+  patrolTerminalEscrow.dispatch(
+    "RELEASE",
+    "Verification passed — release funds",
+    undefined,
+    { actor: "system", at: DEMO_PATROL_TERMINAL_RELEASE_AT },
+  );
+  const patrolNoHistoryEscrow = new Escrow(DEMO_PATROL_NO_HISTORY_ESCROW_ID);
+  const patrolUnmappedEscrow = new Escrow(DEMO_PATROL_UNMAPPED_ESCROW_ID);
+  patrolUnmappedEscrow.dispatch(
+    "FUND",
+    "Deposit locked (wire received)",
+    10630,
+    { actor: "sponsor", at: DEMO_PATROL_UNMAPPED_FUND_AT },
+  );
+  patrolUnmappedEscrow.dispatch(
+    "SUBMIT_MILESTONE",
+    "Deliverable URLs + IPFS metadata hash",
+    undefined,
+    { actor: "creator", at: DEMO_PATROL_UNMAPPED_SUBMIT_AT },
+  );
+  patrolUnmappedEscrow.dispatch(
+    "VERIFY_PASS",
+    "KPIs validated by oracle",
+    undefined,
+    {
+      actor: "oracle",
+      at: DEMO_PATROL_UNMAPPED_VERIFY_AT,
+      evidence: "demo-oracle-attestation-patrol",
+    },
+  );
+  const patrolEscrows = [
+    patrolStaleEscrow,
+    patrolExactEscrow,
+    patrolTerminalEscrow,
+    patrolNoHistoryEscrow,
+    patrolUnmappedEscrow,
+  ];
+  const patrolMaxAgeByState = {
+    CREATED: DEMO_STALE_MAX_AGE_MS,
+    FUNDED: DEMO_STALE_MAX_AGE_MS,
+    RELEASED: DEMO_STALE_MAX_AGE_MS,
+  };
+  const patrolStaleSelected = staleEscrows(
+    patrolEscrows,
+    patrolMaxAgeByState,
+    staleNow,
+  );
+  const patrolStaleNotifiedIds: string[] = [];
+  const patrolStaleActionResults = actOnStaleEscrows(
+    patrolEscrows,
+    (e) => {
+      patrolStaleNotifiedIds.push(e.id);
+    },
+    patrolMaxAgeByState,
+    staleNow,
+  );
+  let patrolStaleConfigError = "";
+  try {
+    staleEscrows(patrolEscrows, { BOGUS: 1000 } as never, staleNow);
+  } catch (err) {
+    patrolStaleConfigError = err instanceof Error ? err.message : String(err);
+  }
+  if (
+    patrolStaleSelected.length !== 1 ||
+    patrolStaleSelected[0] !== patrolStaleEscrow ||
+    patrolStaleActionResults.length !== 1 ||
+    patrolStaleActionResults[0].escrow !== patrolStaleEscrow ||
+    patrolStaleActionResults[0].acted !== true ||
+    patrolStaleActionResults[0].error !== undefined ||
+    patrolStaleNotifiedIds.length !== 1 ||
+    patrolStaleNotifiedIds[0] !== DEMO_PATROL_STALE_ESCROW_ID ||
+    patrolStaleConfigError !== DEMO_PATROL_STALE_CONFIG_ERROR ||
+    patrolEscrows.map((e) => e.state).join(",") !==
+      "FUNDED,FUNDED,RELEASED,CREATED,VERIFIED" ||
+    patrolEscrows.map((e) => e.history.length).join(",") !== "1,1,4,0,3"
+  ) {
+    throw new Error(
+      "demo fixture broken: stale patrol does not have the pinned shape (only the stale FUNDED escrow selected and notified; exactly-at-budget, terminal, no-history and unmapped escrows excluded; unknown-state config error pinned)",
+    );
+  }
+  const patrolSelectedIds = new Set(patrolStaleSelected.map((e) => e.id));
+  lines.push(
+    "",
+    "Stale patrol (staleEscrows / maxAgeByState screening, notify-only action):",
+    `  fixed now: ${DEMO_STALE_NOW} — patrol budgets: CREATED 7 days, FUNDED 7 days, RELEASED 7 days (VERIFIED has no budget; dwell from the last history entry, strictly past the budget)`,
+  );
+  for (const patrolEscrow of patrolEscrows) {
+    const lastEntry = patrolEscrow.history[patrolEscrow.history.length - 1];
+    const dwellText =
+      lastEntry === undefined
+        ? "no history (no measurable dwell)"
+        : `entered ${lastEntry.at}, dwell ${(staleNowMs - Date.parse(lastEntry.at)) / DEMO_STALE_DAY_MS} days`;
+    lines.push(
+      `  ${patrolEscrow.id}: state ${patrolEscrow.state}, ${dwellText} — stale: ${patrolSelectedIds.has(patrolEscrow.id)}`,
+    );
+  }
+  lines.push(
+    `  staleEscrows selection: [${patrolStaleSelected.map((e) => e.id).join(", ")}] — exactly-at-budget (${DEMO_PATROL_EXACT_ESCROW_ID}), terminal (${DEMO_PATROL_TERMINAL_ESCROW_ID}), no-history (${DEMO_PATROL_NO_HISTORY_ESCROW_ID}) and unmapped-state (${DEMO_PATROL_UNMAPPED_ESCROW_ID}) escrows are not selected`,
+    `  actOnStaleEscrows (action: notify the parties, dispatch nothing): ${patrolStaleActionResults.length} attempted`,
+  );
+  for (const result of patrolStaleActionResults) {
+    lines.push(
+      result.acted
+        ? `  ${result.escrow.id}: acted true — notified, escrow unchanged at ${result.escrow.state}`
+        : `  ${result.escrow.id}: acted false — error: ${result.error}`,
+    );
+  }
+  lines.push(
+    `  invalid patrol configuration fails fast: staleEscrows with an unknown state name throws ${patrolStaleConfigError} before any escrow is read`,
   );
 
   // --- Allowed-events listing: allowedEvents over all 8 states ---
@@ -5611,6 +5851,11 @@ export async function runDemo(): Promise<DemoResult> {
     deadlineExpiredSelected,
     deadlineStaleSelected,
     deadlineExpireResults,
+    patrolEscrows,
+    patrolStaleSelected,
+    patrolStaleActionResults,
+    patrolStaleNotifiedIds,
+    patrolStaleConfigError,
     allowedEventsByState,
     mainEscrowAllowedEvents,
     tracedDepositAmount,

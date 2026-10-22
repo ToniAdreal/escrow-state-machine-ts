@@ -18,6 +18,32 @@ version changes.
 
 ### Added
 
+- The CLI demo now shows a dedicated stale patrol over five
+  further escrows screened by `staleEscrows` alone on the
+  demo's fixed `now` under a patrol `maxAgeByState` map
+  (CREATED / FUNDED / RELEASED at 7 days each, VERIFIED
+  deliberately unmapped): only the FUNDED escrow stuck for
+  17 days is selected, while four escrows are each excluded
+  for a different pinned reason — one exactly at its 7-day
+  budget (staleness is strictly past the budget), one
+  RELEASED terminal escrow whose last entry is 22 days old
+  (terminal states are never stale, even with a budget in
+  the map), one CREATED escrow with no history (no
+  measurable dwell), and one VERIFIED escrow 22 days into
+  its state with no budget in the map (no budget = no
+  staleness). The selection is asserted outside the printing
+  against the hand-pinned expectation, `actOnStaleEscrows`
+  then runs a notify-only action over it (one attempted,
+  acted true, the notified id recorded, nothing dispatched
+  — every patrol escrow keeps its state and history), and
+  an unknown state name in the map is shown failing fast
+  with the exact error `invalid maxAgeByState: unknown
+  state "BOGUS"` before any escrow is read. `DemoResult`
+  gains the patrol batch, selection, action results,
+  notified ids and config-error fields; the demo tests grow
+  by two (699 total). Fixed timestamps throughout, zero
+  network, zero randomness.
+
 - New benchmark path for the settlement webhook
   `timeoutMs` per-attempt timeout: the fixed signed
   webhook is delivered with `timeoutMs: 10` and
