@@ -18,6 +18,35 @@ version changes.
 
 ### Added
 
+- New benchmark path for the settlement webhook
+  `timeoutMs` per-attempt timeout: the fixed signed
+  webhook is delivered with `timeoutMs: 10` and
+  `retries: 0` through a hanging fake global `fetch`
+  (the fake only ever rejects when its request signal
+  aborts, so the pinned short timeout is the only thing
+  that can end the attempt), checked on every iteration
+  to reject with the exact error `webhook delivery to
+  https://settlement.example.com/hooks/settlement failed
+  after 1 attempt: webhook delivery timed out after
+  10ms`, the annotated attempt count 1, and exactly one
+  fetch call (the run measured ~96.3 ops/sec,
+  ~10389.31 µs/op for this row — the pinned 10 ms wait
+  dominates it by design). Outside the timed loop, an
+  illegal `timeoutMs` of 0 is pinned to throw the exact
+  configuration error `cannot deliver settlement
+  webhook: timeoutMs must be a positive number, got 0`
+  before any request at zero fetch calls, and a generous
+  `timeoutMs` of 5000 over an immediate 200 is pinned
+  to keep the normal `{ status: 200, attempts: 1 }`
+  success shape after exactly one fetch. Honest limit:
+  the timeout wait itself is the object under test and
+  is the pinned short 10 ms — no elapsed-time
+  (wall-clock) assertion is made anywhere. No network
+  and no randomness. The
+  `deliverSettlementWebhook (timeoutMs timeout)` row
+  joins the README benchmark table, with the whole
+  table refreshed from one real run.
+
 - New benchmark path for the `dispatch` `expectedSeq`
   optimistic-concurrency guard: a fresh escrow is rebuilt
   on every iteration and driven on fixed timestamps —
