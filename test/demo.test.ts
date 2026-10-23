@@ -23,6 +23,13 @@ import {
   DEMO_AUDIT_WRONG_KEY,
   DEMO_DEDUPE_CLEAR_EVENT_ID,
   DEMO_DEDUPE_CLEAR_START_MS,
+  DEMO_DEPOSIT_CAP_ESCROW_ID,
+  DEMO_DEPOSIT_CAP_FIRST_FUND_AMOUNT,
+  DEMO_DEPOSIT_CAP_LOCKED_TOTAL,
+  DEMO_DEPOSIT_CAP_MAX,
+  DEMO_DEPOSIT_CAP_OVERFUND_AMOUNT,
+  DEMO_DEPOSIT_CAP_OVERFUND_ERROR,
+  DEMO_DEPOSIT_CAP_TOPUP_AMOUNT,
   DEMO_DEDUPE_CAPACITY_EVENT_IDS,
   DEMO_DEDUPE_CAPACITY_INVALID_MAX_ENTRIES_ERROR,
   DEMO_DEDUPE_CAPACITY_MAX_ENTRIES,
@@ -3442,9 +3449,7 @@ test("demo money guard segment is deterministic: two runs print byte-identical g
       ls.indexOf(
         "Money guard (assertNonNegativeMoney on the shared amount boundary):",
       ),
-      ls.indexOf(
-        "Subscription notifications (Escrow.subscribe on a branch escrow):",
-      ) - 1,
+      ls.indexOf("Deposit cap (maxDeposit risk control):") - 1,
     );
   const a = await runDemo();
   const b = await runDemo();
@@ -3465,6 +3470,103 @@ test("demo money guard segment is deterministic: two runs print byte-identical g
       b.moneyGuardRejections[i].message,
     );
   }
+});
+
+test("demo shows the deposit cap: an over-cap FUND is rejected with the pinned error and zero history residue, a boundary top-up lands exactly on the cap", async () => {
+  const {
+    depositCapEscrow,
+    depositCapLockedTotal,
+    depositCapOverfundError,
+    lines,
+  } = await runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned expectations — written out here from the
+  // documented deposit-cap semantics in src/stateMachine.ts
+  // (`round2(funded + amount) > round2(cap)` throws), never
+  // derived by constructing the capped escrow to produce them.
+  // test/maxDeposit.test.ts pins the same semantics independently
+  // (cent-precision, zero residue, boundary allowed).
+  assert.equal(DEMO_DEPOSIT_CAP_ESCROW_ID, "demo-cap");
+  assert.equal(DEMO_DEPOSIT_CAP_MAX, 10000);
+  assert.equal(DEMO_DEPOSIT_CAP_FIRST_FUND_AMOUNT, 9000);
+  assert.equal(DEMO_DEPOSIT_CAP_OVERFUND_AMOUNT, 2000);
+  assert.equal(DEMO_DEPOSIT_CAP_TOPUP_AMOUNT, 1000);
+  assert.equal(DEMO_DEPOSIT_CAP_LOCKED_TOTAL, 10000);
+  assert.equal(
+    DEMO_DEPOSIT_CAP_OVERFUND_ERROR,
+    "deposit cap exceeded: locked 9000 + new funding 2000 would exceed maxDeposit 10000",
+  );
+
+  // The demo asserts the same things internally (a guard that
+  // silently passed an over-cap FUND would fail the demo itself);
+  // the DemoResult fields echo the segment's outcome.
+  assert.equal(depositCapEscrow.id, DEMO_DEPOSIT_CAP_ESCROW_ID);
+  assert.equal(depositCapEscrow.state, "FUNDED");
+  assert.equal(depositCapEscrow.history.length, 2);
+  assert.equal(depositCapLockedTotal, DEMO_DEPOSIT_CAP_LOCKED_TOTAL);
+  assert.equal(depositCapOverfundError, DEMO_DEPOSIT_CAP_OVERFUND_ERROR);
+  // Zero residue: the rejected over-cap attempt is the second FUND
+  // in the segment, but history holds only the two accepted ones —
+  // a FUND whose amount carries no money beyond the cap leaves no
+  // audit entry.
+  const fundEntries = depositCapEscrow.history.filter(
+    (entry) => entry.event === "FUND",
+  );
+  assert.equal(fundEntries.length, 2);
+  assert.equal(fundEntries[0].amount, 9000);
+  assert.equal(fundEntries[1].amount, 1000);
+
+  // The segment follows the money-guard segment (a different risk
+  // control: boundary shape check vs per-instance cap) and precedes
+  // the subscription segment; it prints its lines verbatim.
+  const capAt = text.indexOf("Deposit cap (maxDeposit risk control):");
+  assert.ok(
+    capAt >
+      text.indexOf(
+        "Money guard (assertNonNegativeMoney on the shared amount boundary):",
+      ),
+    "deposit-cap segment must follow the money-guard segment",
+  );
+  assert.ok(
+    capAt <
+      text.indexOf(
+        "Subscription notifications (Escrow.subscribe on a branch escrow):",
+      ),
+    "deposit-cap segment must precede the subscription segment",
+  );
+  for (const line of [
+    "  cap: 10000 — FUND 9000 accepted (locked 9000)",
+    '  rejected: FUND 2000 -> "deposit cap exceeded: locked 9000 + new funding 2000 would exceed maxDeposit 10000" — history unchanged, locked still 9000',
+    "  accepted: FUND 1000 -> locked 10000 (exactly on cap passes, cent-precision comparison)",
+  ]) {
+    assert.ok(text.includes(line), `missing deposit-cap line: ${line}`);
+  }
+});
+
+test("demo deposit cap segment is deterministic: two runs print byte-identical cap lines", async () => {
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf("Deposit cap (maxDeposit risk control):"),
+      ls.indexOf(
+        "Subscription notifications (Escrow.subscribe on a branch escrow):",
+      ) - 1,
+    );
+  const a = await runDemo();
+  const b = await runDemo();
+  const segA = segment(a.lines);
+  // Header + accepted line + rejected line + boundary line; every
+  // value is derived from the fixed fixtures alone (timestamps
+  // injected), so no normalization is needed.
+  assert.equal(segA.length, 4);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.equal(a.depositCapLockedTotal, b.depositCapLockedTotal);
+  assert.equal(a.depositCapOverfundError, b.depositCapOverfundError);
+  assert.equal(a.depositCapEscrow.state, b.depositCapEscrow.state);
+  assert.equal(
+    a.depositCapEscrow.history.length,
+    b.depositCapEscrow.history.length,
+  );
 });
 
 test("demo shows subscription notifications: listener receives the first two dispatches matching history, then nothing after idempotent unsubscribe", async () => {

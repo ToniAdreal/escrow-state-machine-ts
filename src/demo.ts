@@ -220,6 +220,14 @@
  * illegal money stopped at the boundary, before any
  * accounting sees it; both sides are asserted outside the
  * printing against hand-pinned expectations.
+ * The demo then shows a deposit-cap segment: a separate
+ * risk control (`EscrowOptions.maxDeposit`) — a branch
+ * escrow capped at 10000 accepts FUND 9000, rejects an
+ * over-cap FUND 2000 with the exact `deposit cap exceeded`
+ * wording and zero history residue, then accepts a
+ * boundary top-up of 1000 that lands exactly on the cap
+ * (cent-precision comparison); all three outcomes are
+ * asserted against hand-pinned fixtures.
  * The demo then shows a subscription segment:
  * a branch escrow carries one fixed collecting listener
  * subscribed via `Escrow.subscribe()` — the fan-out seam
@@ -881,6 +889,41 @@ export const DEMO_MONEY_GUARD_LEGAL_AMOUNTS: readonly number[] = [
   0, 0.01, 10630, 1000000.25,
 ];
 export const DEMO_MONEY_GUARD_ILLEGAL_AMOUNTS: readonly number[] = [-1, NaN];
+
+/**
+ * Deposit-cap fixtures for the closing segment: a separate risk
+ * control from the money guard above. `EscrowOptions.maxDeposit`
+ * caps the total locked deposit at cent precision — a FUND dispatch
+ * that would push the running locked total (sum of all FUND amounts)
+ * above the cap throws a `deposit cap exceeded` error and appends
+ * nothing (zero history residue). Hand-pinned expectations — written
+ * from the documented semantics in src/stateMachine.ts
+ * (deposit-cap block: `round2(funded + amount) > round2(cap)`
+ * throws) and cross-checked against test/maxDeposit.test.ts, never
+ * derived by running the cap check itself:
+ * - a branch escrow ("demo-cap") constructed with maxDeposit 10000
+ * - FUND 9000 (initial instalment) is accepted: state FUNDED,
+ *   history length 1, locked total 9000
+ * - FUND 2000 (second instalment) is rejected with exactly
+ *   {@link DEMO_DEPOSIT_CAP_OVERFUND_ERROR}: history stays at
+ *   length 1 (no residue), locked total stays 9000
+ * - FUND 1000 (boundary top-up) is accepted: locked total 10000,
+ *   exactly on the cap passes (cent-precision comparison)
+ * All dispatch timestamps are injected so the printed audit trail
+ * stays byte-identical across runs. The segment is pure: no
+ * network, no randomness, no wall clock.
+ */
+export const DEMO_DEPOSIT_CAP_ESCROW_ID = "demo-cap";
+export const DEMO_DEPOSIT_CAP_MAX = 10000;
+export const DEMO_DEPOSIT_CAP_FIRST_FUND_AT = "2026-03-10T09:00:00.000Z";
+export const DEMO_DEPOSIT_CAP_FIRST_FUND_AMOUNT = 9000;
+export const DEMO_DEPOSIT_CAP_OVERFUND_AT = "2026-03-10T09:01:00.000Z";
+export const DEMO_DEPOSIT_CAP_OVERFUND_AMOUNT = 2000;
+export const DEMO_DEPOSIT_CAP_OVERFUND_ERROR =
+  "deposit cap exceeded: locked 9000 + new funding 2000 would exceed maxDeposit 10000";
+export const DEMO_DEPOSIT_CAP_TOPUP_AT = "2026-03-10T09:02:00.000Z";
+export const DEMO_DEPOSIT_CAP_TOPUP_AMOUNT = 1000;
+export const DEMO_DEPOSIT_CAP_LOCKED_TOTAL = 10000;
 
 /**
  * Subscription fixtures for the closing segment: one further
@@ -2172,6 +2215,29 @@ export interface DemoResult {
    * ({@link DEMO_MONEY_GUARD_ERROR}).
    */
   moneyGuardRejections: Array<{ value: number; message: string }>;
+  /**
+   * The closing deposit-cap segment's branch escrow
+   * ({@link DEMO_DEPOSIT_CAP_ESCROW_ID}, `maxDeposit` pinned at
+   * {@link DEMO_DEPOSIT_CAP_MAX}), after all three fixed
+   * dispatches ran: FUNDED with 2 history entries — the
+   * over-cap attempt left no audit residue.
+   */
+  depositCapEscrow: Escrow;
+  /**
+   * Locked total on {@link DemoResult.depositCapEscrow} after the
+   * segment: {@link DEMO_DEPOSIT_CAP_LOCKED_TOTAL} — the
+   * boundary top-up landed exactly on the cap (cent-precision
+   * comparison), and the rejected attempt contributed nothing.
+   */
+  depositCapLockedTotal: number;
+  /**
+   * The exact error message the rejected over-cap FUND dispatch
+   * threw ({@link DEMO_DEPOSIT_CAP_OVERFUND_ERROR}), hand-pinned
+   * from the documented deposit-cap wording in
+   * src/stateMachine.ts and cross-checked against
+   * test/maxDeposit.test.ts.
+   */
+  depositCapOverfundError: string;
   /**
    * The closing segment's branch escrow
    * ({@link DEMO_SUBSCRIBE_ESCROW_ID}), after all three fixed
@@ -4791,7 +4857,116 @@ export async function runDemo(): Promise<DemoResult> {
     ),
   );
 
-  // --- Subscription notifications: Escrow.subscribe (closing) ---
+  // --- Deposit cap (maxDeposit risk control, closing) ---
+  // A separate risk control from the money guard above: the cap is a
+  // per-instance constructor configuration, not a boundary shape
+  // check. A branch escrow is constructed with maxDeposit 10000, so
+  // a FUND that would push the running locked total (sum of all FUND
+  // amounts, compared at cent precision per the library's money
+  // model) above the cap throws and appends nothing — the rejected
+  // attempt leaves zero history residue, mirroring the budget
+  // exhaustion semantics of the dataquest lifecycle. All three
+  // dispatches are asserted HERE, outside the printing, against the
+  // hand-pinned fixtures above: a guard that silently passed an
+  // over-cap FUND, or whose error wording drifted, would fail the
+  // demo itself, not just a test. The segment is pure: no network,
+  // no randomness, no wall clock (dispatch timestamps injected).
+  const depositCapEscrow = new Escrow(DEMO_DEPOSIT_CAP_ESCROW_ID, {
+    maxDeposit: DEMO_DEPOSIT_CAP_MAX,
+  });
+  depositCapEscrow.dispatch(
+    "FUND",
+    "Initial instalment",
+    DEMO_DEPOSIT_CAP_FIRST_FUND_AMOUNT,
+    { actor: "sponsor", at: DEMO_DEPOSIT_CAP_FIRST_FUND_AT },
+  );
+  if (depositCapEscrow.state !== "FUNDED") {
+    throw new Error(
+      "demo fixture broken: deposit-cap escrow did not reach FUNDED after the initial FUND",
+    );
+  }
+  // TypeScript narrows the `history` getter's length across checks, so
+  // each assertion reads its own snapshot into a local.
+  const depositCapAfterFirstLen = depositCapEscrow.history.length;
+  if (depositCapAfterFirstLen !== 1) {
+    throw new Error(
+      "demo fixture broken: deposit-cap escrow history is not 1 entry after the initial FUND",
+    );
+  }
+  const depositCapLockedAfterFirst = depositAmountFromHistory(
+    depositCapEscrow.history,
+  );
+  if (depositCapLockedAfterFirst !== DEMO_DEPOSIT_CAP_FIRST_FUND_AMOUNT) {
+    throw new Error(
+      "demo fixture broken: locked total is not 9000 after the initial FUND",
+    );
+  }
+  // The over-cap attempt: 9000 locked + 2000 new funding would exceed
+  // the 10000 cap. The error wording is pinned verbatim.
+  let depositCapOverfundError: string | undefined;
+  try {
+    depositCapEscrow.dispatch(
+      "FUND",
+      "Second instalment",
+      DEMO_DEPOSIT_CAP_OVERFUND_AMOUNT,
+      { actor: "sponsor", at: DEMO_DEPOSIT_CAP_OVERFUND_AT },
+    );
+  } catch (err) {
+    depositCapOverfundError =
+      err instanceof Error ? err.message : String(err);
+  }
+  if (depositCapOverfundError !== DEMO_DEPOSIT_CAP_OVERFUND_ERROR) {
+    throw new Error(
+      `demo fixture broken: over-cap FUND did not throw the pinned deposit cap exceeded error (got ${JSON.stringify(
+        depositCapOverfundError,
+      )})`,
+    );
+  }
+  // Zero residue: the rejected attempt appended nothing and changed
+  // neither the state nor the locked total.
+  const depositCapAfterRejectLen = depositCapEscrow.history.length;
+  if (depositCapAfterRejectLen !== 1) {
+    throw new Error(
+      "demo fixture broken: rejected over-cap FUND left history residue",
+    );
+  }
+  if (
+    depositAmountFromHistory(depositCapEscrow.history) !==
+    DEMO_DEPOSIT_CAP_FIRST_FUND_AMOUNT
+  ) {
+    throw new Error(
+      "demo fixture broken: locked total moved after the rejected over-cap FUND",
+    );
+  }
+  // Boundary top-up: 9000 locked + 1000 = exactly the cap — cent
+  // precision, so this passes.
+  depositCapEscrow.dispatch(
+    "FUND",
+    "Boundary top-up",
+    DEMO_DEPOSIT_CAP_TOPUP_AMOUNT,
+    { actor: "sponsor", at: DEMO_DEPOSIT_CAP_TOPUP_AT },
+  );
+  const depositCapLockedTotal = depositAmountFromHistory(
+    depositCapEscrow.history,
+  );
+  const depositCapAfterTopupLen = depositCapEscrow.history.length;
+  if (depositCapEscrow.state !== "FUNDED" || depositCapAfterTopupLen !== 2) {
+    throw new Error(
+      "demo fixture broken: deposit-cap escrow did not reach FUNDED with 2 history entries after the boundary top-up",
+    );
+  }
+  if (depositCapLockedTotal !== DEMO_DEPOSIT_CAP_LOCKED_TOTAL) {
+    throw new Error(
+      `demo fixture broken: locked total is not 10000 after the boundary top-up (got ${depositCapLockedTotal})`,
+    );
+  }
+  lines.push(
+    "",
+    "Deposit cap (maxDeposit risk control):",
+    `  cap: ${DEMO_DEPOSIT_CAP_MAX} — FUND ${DEMO_DEPOSIT_CAP_FIRST_FUND_AMOUNT} accepted (locked ${DEMO_DEPOSIT_CAP_FIRST_FUND_AMOUNT})`,
+    `  rejected: FUND ${DEMO_DEPOSIT_CAP_OVERFUND_AMOUNT} -> "${depositCapOverfundError}" — history unchanged, locked still ${DEMO_DEPOSIT_CAP_FIRST_FUND_AMOUNT}`,
+    `  accepted: FUND ${DEMO_DEPOSIT_CAP_TOPUP_AMOUNT} -> locked ${depositCapLockedTotal} (exactly on cap passes, cent-precision comparison)`,
+  );
   // dispatch() appends to the audit history and then fans out to
   // subscribers: the seam a reconciliation or notification side
   // wires into. A branch escrow carries one fixed collecting
@@ -6424,6 +6599,9 @@ export async function runDemo(): Promise<DemoResult> {
     transitionTableEdgeCount,
     moneyGuardLegalAmounts,
     moneyGuardRejections,
+    depositCapEscrow,
+    depositCapLockedTotal,
+    depositCapOverfundError,
     subscribeEscrow,
     subscribeNotifications,
     subscribeMatchesHistory,

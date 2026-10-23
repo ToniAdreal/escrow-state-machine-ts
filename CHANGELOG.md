@@ -18,6 +18,19 @@ version changes.
 
 ### Added
 
+- New demo segment "Deposit cap (maxDeposit risk control)": a branch
+  escrow (`demo-cap`, `maxDeposit: 10000`) accepts FUND 9000 (locked
+  9000), rejects an over-cap FUND 2000 with the exact pinned error
+  `deposit cap exceeded: locked 9000 + new funding 2000 would exceed
+  maxDeposit 10000` and zero history residue (state and locked total
+  unchanged), then accepts a boundary top-up of 1000 that lands
+  exactly on the cap (cent-precision comparison). All three outcomes
+  are asserted inside the demo against hand-pinned fixtures
+  (`DEMO_DEPOSIT_CAP_*`), `DemoResult` gains `depositCapEscrow`,
+  `depositCapLockedTotal`, and `depositCapOverfundError`, and two new
+  demo tests pin the printed lines and two-run byte-identical output.
+  README test count updated to the true 711.
+
 - New benchmark path `renderReport (refunded + expired, 2 reports)`:
   two fixed non-released reports rendered on every iteration — a
   refunded report over a 4-entry
