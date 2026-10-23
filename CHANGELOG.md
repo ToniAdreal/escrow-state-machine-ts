@@ -18,6 +18,27 @@ version changes.
 
 ### Added
 
+- New benchmark path `renderReport (refunded + expired, 2 reports)`:
+  two fixed non-released reports rendered on every iteration — a
+  refunded report over a 4-entry
+  FUND/SUBMIT_MILESTONE/DISPUTE/ARBITRATE_REFUND history (escrow
+  BENCH-RENDER-REFUND) and an expired report over a 2-entry
+  FUND/EXPIRE history (escrow BENCH-RENDER-EXPIRE). Each carries the
+  full deposit refunded (sponsor inflow = outflow = 10,630, every party
+  net 0, no `releasePath`, balanced, the `Audit:` window line verbatim)
+  and both rendered texts are checked against hand-written expected
+  lines — header / outcome, the deposit formula line, the sponsor and
+  creator rows, the balanced totals line, the `Audit:` window line —
+  with the released-only oracle-fee note line pinned absent, so a drift
+  in the refunded/expired ledger shapes fails the bench instead of
+  silently re-timing a changed output. A mutation probe (corrupting the
+  hand-pinned creator net row expectation to a non-0 value) fails the
+  bench at fixture load with the exact self-check error, confirming the
+  pin is live. The run measured ~522.2 ops/sec (~1,914.88 µs/op) for
+  this row. The new row joins the README benchmark table, with the
+  whole table refreshed from the same real run. No network, no
+  randomness, no wall clock.
+
 - New benchmark path for `dispatch` with `idempotencyKey`: on a
   fresh escrow rebuilt every iteration, FUND of the golden 10630
   with a fresh key k1 at the base instant, the same FUND with k1
