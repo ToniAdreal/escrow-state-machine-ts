@@ -18,6 +18,32 @@ version changes.
 
 ### Added
 
+- New benchmark path for the settlement webhook fan-out
+  per-endpoint `timeoutMs` override:
+  `deliverSettlementWebhookToMany` to 3 fixed endpoints where
+  one pins its own tiny `timeoutMs` (10 ms, retries 0) and hangs
+  — the fake `fetch` installed on `globalThis` only rejects its
+  request when the per-attempt timer aborts — while the other two
+  answer 200 immediately under the call-level `timeoutMs: 5000`.
+  Every iteration checks the results keep input order, the slow
+  endpoint fails with the pinned timeout text (`webhook delivery
+  to https://slow.example.com/hooks/settlement failed after 1
+  attempt: webhook delivery timed out after 10ms`,
+  `attempts: 1`), and the two fast endpoints keep the normal
+  success shape (the run measured ~95.7 ops/sec,
+  ~10452.04 µs/op for this row — the pinned 10 ms timeout wait
+  itself is the object under test, so no elapsed-time assertion
+  is made anywhere). Outside the timed loop, an illegal
+  per-endpoint `timeoutMs` (0) is pinned to fail only its own
+  endpoint with the exact configuration error and `attempts` 0
+  (zero fetch calls), and the same three endpoints without
+  overrides are pinned to keep the normal fan-out success shape
+  (the override is opt-in, the pre-override behavior
+  unchanged). No network, no randomness and no wall clock. The
+  `deliverSettlementWebhookToMany (per-endpoint timeoutMs
+  override)` row joins the README benchmark table, with the
+  whole table refreshed from one real run.
+
 - New benchmark path for the settlement report
   `releasePath` settlement path: `buildSettlementReport`
   over the fixed released history (built on fixed

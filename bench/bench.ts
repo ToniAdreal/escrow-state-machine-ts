@@ -879,6 +879,27 @@
  *      key, and the released webhook's key order is pinned to
  *      the canonical order (releasePath between outcome and
  *      deposit). Fixed timestamps, no network, no randomness.
+ *  54. settlement webhook fan-out per-endpoint `timeoutMs` override
+ *      — `deliverSettlementWebhookToMany()` to 3 fixed endpoints
+ *      where one endpoint pins its own tiny `timeoutMs` (10 ms,
+ *      retries 0) and hangs — the fake `fetch` installed on
+ *      `globalThis` only rejects its request when the per-attempt
+ *      timer aborts — while the other two answer 200 immediately
+ *      under the call-level `timeoutMs: 5000`. Every iteration
+ *      checks the results keep input order, the slow endpoint
+ *      fails with the pinned timeout text and `attempts: 1`, and
+ *      the two fast endpoints keep the normal success shape. This
+ *      is the per-endpoint timeout isolation the plain fan-out row
+ *      never exercises: the override fails only its own endpoint
+ *      and never slows or fails the others. Outside the timed
+ *      loop, an illegal per-endpoint `timeoutMs` (0) is pinned to
+ *      fail only its own endpoint with the exact configuration
+ *      error and `attempts` 0 (zero fetch calls), and the same
+ *      three endpoints without overrides are pinned to keep the
+ *      normal fan-out success shape. Honest limit: the timeout
+ *      wait itself is the object under test at the pinned short
+ *      10 ms — no elapsed-time assertion is made anywhere. No
+ *      network, no randomness.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -2184,6 +2205,252 @@ for (const [i, endpoint] of FANOUT_ENDPOINTS.entries()) {
   if (!call || !verifySettlementWebhook(call.body, call.signature, endpoint.secret)) {
     throw new Error(
       `benchmark fixture failed: fan-out endpoint ${i} signature does not verify`,
+    );
+  }
+}
+
+// Fan-out per-endpoint `timeoutMs` override fixture:
+// `deliverSettlementWebhookToMany` resolves each endpoint's timeout
+// from `endpoint.timeoutMs ?? opts.timeoutMs` (the `SettlementWebhookEndpoint.timeoutMs`
+// per-endpoint override), and an endpoint that fails — retries
+// exhausted, or a pre-flight configuration failure — is reported as
+// that endpoint's own `{ ok: false, attempts, error }` result: it
+// never fails or delays the other endpoints. Three fixed endpoints:
+// one pins a tiny per-endpoint `timeoutMs` override (10 ms, retries
+// 0) and hangs — the fake `fetch` installed on `globalThis` only
+// ever rejects its request when the per-attempt timer aborts,
+// exactly like the single-target timeout fixture — while the other
+// two answer 200 immediately under the call-level `timeoutMs: 5000`.
+// The timed runner pins, on every iteration, that results keep input
+// order, that the slow endpoint fails with the pinned timeout text,
+// and that the two fast endpoints keep the normal success shape —
+// this is the per-endpoint timeout isolation the plain fan-out row
+// never exercises. Honest limit: the pinned 10 ms timeout wait is
+// the object under test on every timed iteration — no elapsed-time
+// (wall-clock) assertion is made anywhere. No network, no
+// randomness.
+const FANOUT_TIMEOUT_ENDPOINT_URL =
+  "https://slow.example.com/hooks/settlement";
+const FANOUT_TIMEOUT_ENDPOINTS: SettlementWebhookEndpoint[] = [
+  {
+    url: FANOUT_TIMEOUT_ENDPOINT_URL,
+    secret: "bench-fanout-timeout-secret-slow",
+    timeoutMs: 10,
+    retries: 0,
+  },
+  {
+    url: "https://fast-a.example.com/hooks/settlement",
+    secret: "bench-fanout-timeout-secret-fast-a",
+  },
+  {
+    url: "https://fast-b.example.com/hooks/settlement",
+    secret: "bench-fanout-timeout-secret-fast-b",
+  },
+];
+const FANOUT_TIMEOUT_ERROR =
+  `webhook delivery to ${FANOUT_TIMEOUT_ENDPOINT_URL} failed after 1 attempt: ` +
+  "webhook delivery timed out after 10ms";
+const FANOUT_TIMEOUT_CALL_OPTS = {
+  now: WEBHOOK_NOW,
+  eventId: WEBHOOK_EVENT_ID,
+  retries: 0,
+  backoffMs: 0,
+  timeoutMs: 5000,
+};
+let fanoutTimeoutCalls: Array<{
+  url: string;
+  body: string;
+  signature: string;
+}> = [];
+const fanoutTimeoutFetch: typeof fetch = async (input, init) => {
+  fanoutTimeoutCalls.push({
+    url: String(input),
+    body: String(init?.body ?? ""),
+    signature: String(new Headers(init?.headers).get("x-signature") ?? ""),
+  });
+  if (String(input) === FANOUT_TIMEOUT_ENDPOINT_URL) {
+    // The slow endpoint: hangs until the per-attempt timeout aborts
+    // the request (the only thing that can end this attempt).
+    return new Promise<Response>((_resolve, reject) => {
+      const signal = init?.signal;
+      if (signal === null || signal === undefined) {
+        reject(
+          new Error("benchmark hanging fetch received no request signal"),
+        );
+        return;
+      }
+      if (signal.aborted) {
+        reject(new Error("benchmark hanging fetch aborted"));
+        return;
+      }
+      signal.addEventListener(
+        "abort",
+        () => reject(new Error("benchmark hanging fetch aborted")),
+        { once: true },
+      );
+    });
+  }
+  return new Response("{}", {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+};
+
+function checkFanoutTimeoutResult(
+  out: Awaited<ReturnType<typeof deliverSettlementWebhookToMany>>,
+  why: string,
+): void {
+  const [slow, fastA, fastB] = out.results;
+  if (
+    out.results.length !== FANOUT_TIMEOUT_ENDPOINTS.length ||
+    slow.url !== FANOUT_TIMEOUT_ENDPOINT_URL ||
+    fastA.url !== FANOUT_TIMEOUT_ENDPOINTS[1].url ||
+    fastB.url !== FANOUT_TIMEOUT_ENDPOINTS[2].url ||
+    slow.ok !== false ||
+    slow.attempts !== 1 ||
+    slow.error !== FANOUT_TIMEOUT_ERROR ||
+    fastA.ok !== true ||
+    fastA.attempts !== 1 ||
+    fastA.status !== 200 ||
+    fastB.ok !== true ||
+    fastB.attempts !== 1 ||
+    fastB.status !== 200 ||
+    out.delivered !== 2 ||
+    out.failed !== 1 ||
+    fanoutTimeoutCalls.filter((c) => c.url === FANOUT_TIMEOUT_ENDPOINT_URL)
+      .length !== 1 ||
+    fanoutTimeoutCalls.filter(
+      (c) => c.url === FANOUT_TIMEOUT_ENDPOINTS[1].url,
+    ).length !== 1 ||
+    fanoutTimeoutCalls.filter(
+      (c) => c.url === FANOUT_TIMEOUT_ENDPOINTS[2].url,
+    ).length !== 1
+  ) {
+    throw new Error(`benchmark self-check failed: ${why}`);
+  }
+}
+
+async function runFanoutTimeoutDelivery() {
+  fanoutTimeoutCalls = [];
+  globalThis.fetch = fanoutTimeoutFetch;
+  const out = await deliverSettlementWebhookToMany(
+    report,
+    FANOUT_TIMEOUT_ENDPOINTS,
+    FANOUT_TIMEOUT_CALL_OPTS,
+  );
+  checkFanoutTimeoutResult(
+    out,
+    "deliverSettlementWebhookToMany per-endpoint timeoutMs override",
+  );
+}
+
+// One-time fixture validation (outside the timed loop): the timed
+// runner re-checks all of it on every iteration.
+await runFanoutTimeoutDelivery();
+
+// Illegal per-endpoint override (outside the timed loop, never
+// timed): `timeoutMs: 0` on one endpoint must fail only that
+// endpoint — the pinned configuration error, `attempts` exactly 0
+// (the delivery layer rejects the merged options before any
+// request), zero fetch calls for it — while the other two endpoints
+// deliver normally.
+{
+  const illegalEndpoints: SettlementWebhookEndpoint[] = [
+    {
+      url: FANOUT_TIMEOUT_ENDPOINT_URL,
+      secret: "bench-fanout-timeout-secret-slow",
+      timeoutMs: 0,
+      retries: 0,
+    },
+    {
+      url: "https://fast-a.example.com/hooks/settlement",
+      secret: "bench-fanout-timeout-secret-fast-a",
+    },
+    {
+      url: "https://fast-b.example.com/hooks/settlement",
+      secret: "bench-fanout-timeout-secret-fast-b",
+    },
+  ];
+  let illegalCalls = 0;
+  const illegalFetch: typeof fetch = async () => {
+    illegalCalls++;
+    return new Response("{}", {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  globalThis.fetch = illegalFetch;
+  const out = await deliverSettlementWebhookToMany(
+    report,
+    illegalEndpoints,
+    FANOUT_TIMEOUT_CALL_OPTS,
+  );
+  const [slow, fastA, fastB] = out.results;
+  if (
+    out.results.length !== 3 ||
+    slow.ok !== false ||
+    slow.attempts !== 0 ||
+    slow.error !==
+      "cannot deliver settlement webhook: timeoutMs must be a positive number, got 0" ||
+    fastA.ok !== true ||
+    fastB.ok !== true ||
+    out.delivered !== 2 ||
+    out.failed !== 1 ||
+    illegalCalls !== 2
+  ) {
+    throw new Error(
+      "benchmark fixture failed: deliverSettlementWebhookToMany per-endpoint timeoutMs illegal override shape",
+    );
+  }
+}
+
+// No-override fan-out shape (outside the timed loop, never timed):
+// the same three endpoints with no per-endpoint overrides deliver
+// normally — the per-endpoint override is opt-in, the pre-override
+// fan-out behavior is unchanged.
+{
+  const noOverrideEndpoints: SettlementWebhookEndpoint[] = [
+    {
+      url: "https://slow.example.com/hooks/settlement",
+      secret: "bench-fanout-timeout-secret-slow",
+    },
+    {
+      url: "https://fast-a.example.com/hooks/settlement",
+      secret: "bench-fanout-timeout-secret-fast-a",
+    },
+    {
+      url: "https://fast-b.example.com/hooks/settlement",
+      secret: "bench-fanout-timeout-secret-fast-b",
+    },
+  ];
+  let noOverrideCalls = 0;
+  const noOverrideFetch: typeof fetch = async () => {
+    noOverrideCalls++;
+    return new Response("{}", {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  globalThis.fetch = noOverrideFetch;
+  const out = await deliverSettlementWebhookToMany(
+    report,
+    noOverrideEndpoints,
+    FANOUT_TIMEOUT_CALL_OPTS,
+  );
+  if (
+    out.delivered !== 3 ||
+    out.failed !== 0 ||
+    out.results.some(
+      (r, i) =>
+        !r.ok ||
+        r.attempts !== 1 ||
+        r.status !== 200 ||
+        r.url !== noOverrideEndpoints[i].url,
+    ) ||
+    noOverrideCalls !== 3
+  ) {
+    throw new Error(
+      "benchmark fixture failed: deliverSettlementWebhookToMany no-override fan-out shape",
     );
   }
 }
@@ -5597,6 +5864,12 @@ async function benchDeliverSettlementWebhookTimeout(): Promise<number> {
   }, ITERATIONS);
 }
 
+async function benchDeliverSettlementWebhookToManyTimeout(): Promise<number> {
+  return measureAsync(async () => {
+    await runFanoutTimeoutDelivery();
+  }, ITERATIONS);
+}
+
 function benchSettlementEventDedupe(): number {
   const hitsBefore = dedupe.stats().hits;
   const ops = measure(() => {
@@ -6435,7 +6708,7 @@ console.log("escrow-state-machine-ts benchmark");
 console.log(`Node: ${process.version} on ${process.platform}/${process.arch}`);
 console.log(`CPU: ${cpus()[0]?.model ?? "unknown"}`);
 console.log(
-  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); settlement batch summary over that batch's 4 pre-built results (3 reports + 1 error); settlement batch webhooks over that same batch (3 signed webhooks with distinct deterministic eventIds bench-batch-event-1..3 plus the 1 forwarded per-item error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release); quorum of 9 signers with threshold 5 on a fixed injected clock, approved one vote at a time to the threshold; settlement webhook fan-out to 4 endpoints through a fake global fetch (immediate 200, no network); settlement webhook single-target delivery (deliverSettlementWebhook to 1 fixed endpoint through a fake global fetch — immediate 200, no network, backoffMs 0 — checked for result {status: 200, attempts: 1}, exactly one captured call, and a captured X-Signature equal to the buildSettlementWebhook signature and verifiable over the captured body on every iteration, with a persistent-500 retry-exhaustion error — failed after 3 attempts at retries 2 — pinned once outside the timed loop); settlement event dedupe duplicate hits cycling over 1,000 pre-recorded eventIds under a fixed injected clock; settlement event dedupe restore from a 1,000-entry JSON-round-tripped snapshot under a fixed injected clock (all entries live at load, default TTL and capacity, observability counters restarting at zero); settlement event dedupe snapshot export from a 1,001-entry dedupe (1,000 live ids plus one entry aged exactly to its TTL boundary, so it is excluded) under a stepped fixed injected clock, checked entry for entry against hand-pinned expectations on every iteration, with a detached-copy mutation and the empty-store export pinned once outside the timed loop; settlement event dedupe clear (SettlementEventDedupe.clear) over a fresh 1,000-id dedupe rebuilt on every iteration under a fixed injected clock (1,000 first sightings plus 1 duplicate hit before the clear, so the reported numbers include the fixture-rebuild cost — prefill plus clear), self-checked on every iteration for an all-zero size and stats right after the clear and the first id recording as a new event again, with an empty-dedupe clear no-op check outside the timed loop; settlement event dedupe stats (SettlementEventDedupe.stats) over a fixed 7-record dedupe under an injectable clock that advances only during fixture construction (60-second TTL, capacity 6 — one id LRU-evicted during construction and one id expired at the stats instant, 5 live ids), self-checked on every iteration for the hand-pinned snapshot {size: 5, hits: 1, misses: 7, evictions: 1} where size counts only the live ids, with a detached-copy mutation check and an empty-dedupe all-zero check outside the timed loop; Escrow.fromHistory replay over the same detached 4-entry history, self-checked per iteration for the rebuilt id and state and the full history entry for entry (hashes included, compared field-wise and through the canonical NDJSON serializer, because rehydration normalizes entry key order), with a detached tampered copy (FUND amount altered from 10630 to 10631) rejected with the hash-chain error outside the timed loop; watchdog screening over a fixed mixed batch of 100 escrows (40 hand-counted expired, 70 hand-counted stale under FUNDED 7d / MILESTONE_SUBMITTED 30d budgets) at a fixed screening instant; watchdog execution (expireOverdueEscrows / actOnStaleEscrows with an EXPIRE-dispatch action) over fresh rebuilds of that same 100-escrow batch on every iteration because the executors mutate their inputs (40 of 40 expire attempts and 70 of 70 stale actions succeed — both selected states carry an EXPIRE edge); quorum snapshot restore from a persisted (JSON round-tripped) snapshot of the 9-signer / threshold-5 quorum carrying 7 recorded approvals; settleRelease netting over 4 fixed representative inputs (golden 10630 at 500 bps, 1000 at 500 bps with 100 credits, large gross 1000000 at 250 bps with 1250.25 credits, rounding edge 10 at 125 bps) checked against hand-computed proFee/net on every iteration; parseRetryAfter over a fixed 11-value corpus (delay-seconds, fractional and whitespace-padded values, zero, future and past HTTP-dates, signed numbers, a garbage string, null and undefined) against one injected fixed now, every result checked against hand-pinned expectations on every iteration; depositAmountFromHistory over a fixed 4-shape corpus (a single FUND of the golden 10630, a two-FUND top-up sequence summing to 12630, a FUND recorded without an amount, and an empty no-FUND history) checked against hand-pinned totals and exact fail-fast error messages on every iteration; renderReport rendering of the fixed golden released report (deposit 10630, released via VERIFY_PASS -> RELEASE, 4 party rows) checked against hand-written expected lines (header/outcome, deposit formula, creator net row) on every iteration; allowedEvents over all 8 states of the transition table (one pass = every state queried once in declaration order — CREATED, FUNDED, MILESTONE_SUBMITTED, VERIFIED, DISPUTED, RELEASED, REFUNDED, EXPIRED — with each result checked against its hand-pinned expected event list in declaration order, the three terminal states expecting the empty list) on every iteration; calculateDeposit over a fixed 3-shape corpus (the golden vector pool 10000 / base 600 / complexity 1.0 / loyalty 30 / oracle 60 -> deposit 10630, a complexity 1.5 case -> deposit 6190, and a large-pool 1000000 case -> deposit 1005375) checked against hand-computed adjustedBaseFee and deposit expectations on every iteration; arbitration dispatch (dispatchArbitration with outcome \"refund\", rebuilding a DISPUTED escrow from its fixed 2-entry history prefix via Escrow.fromHistory and a threshold-reached 5/9 quorum via createQuorum on every iteration — rebuild cost inside the timed region — pinned to a fixed audit timestamp, checked for the REFUNDED terminal state, exactly one appended ARBITRATE_REFUND entry, and its \"quorum 5/5\" note on every iteration; isOverdue over a fixed 4-case corpus (past-deadline FUNDED, future-deadline FUNDED, deadline-less FUNDED, and past-deadline terminal RELEASED escrows) checked against hand-pinned booleans (true/false/false/false) against one injected fixed now on every iteration; assertNonNegativeMoney over a fixed legal corpus (0, 0.01, the golden 10630, and 1000000.25) checked to pass without throwing on every iteration, with the illegal corpus (negative, NaN, Infinity, -Infinity, a numeric string, undefined, and null — each throwing the exact message \"amount must be a finite non-negative number\") asserted once outside the timed loop and never timed); transitionTableJson (fixed no-arg transition-table JSON export, parsed back and checked against hand-pinned expectations — 14 edges, first CREATED/FUND/FUNDED, release edge VERIFIED/RELEASE/RELEASED at index 10, last DISPUTED/ARBITRATE_REFUND/REFUNDED, per-edge key order from,event,to, and a single trailing newline — on every iteration); stateDiagram (fixed no-arg Mermaid rendering, checked against hand-pinned expectations — 21 lines, all 14 edge lines written out in full in declaration order, the start line pinning CREATED, the 3 terminal lines RELEASED/REFUNDED/EXPIRED, and all 8 states present — on every iteration); readmeDiagramInSync (fixed no-arg README diagram sync check — reads only this repo's README.md, regenerates the diagram, and checks the exact block is embedded, checked against the hand-pinned expectation true on every iteration); subscribe (full lifecycle, 1 collecting listener) over the same full 4-dispatch lifecycle on a fresh escrow per iteration, self-checked per iteration against the hand-written (event, from, to) sequence and the escrow's own history entry for entry, with unsubscribe and throwing-listener isolation checks outside the timed loop; subscribe onError error routing (1 pinned throwing listener + collecting onError) over a fixed 3-dispatch short chain (FUND, SUBMIT_MILESTONE, VERIFY_PASS to VERIFIED) on a fresh escrow per iteration, self-checked per iteration that every dispatch succeeded, the history holds exactly 3 entries, and the reports match the hand-pinned expectations report for report (pinned message plus event / from / to context, first report FUND CREATED -> FUNDED), with a throwing-onError-swallowed probe and a non-function onError pinned to its exact rejection message outside the timed loop; hash-chain verification (verifyHistoryChain) over the same fixed 4-entry history, self-checked per iteration for the genesis link (the first entry's prevHash is GENESIS_PREV_HASH) and every successor link (each entry's prevHash equals its predecessor's hash), with a detached tampered copy (the middle SUBMIT_MILESTONE entry gaining a note it never carried) returning false outside the timed loop; snapshot round-trip (Escrow.fromJSON restoring the fixed toJSON snapshot of the same full lifecycle escrow carrying the fixed deadline 2026-01-31T00:00:00.000Z, checked on every iteration for the restored id, state, and deadline and the full history entry for entry — hash chain included — and for a re-export identical to the source snapshot, with the serialized snapshot text additionally restored unchanged after a JSON.parse/stringify round-trip once outside the timed loop); standalone history parsing (parseEscrowHistory over the JSON-serialized text of that same fixed 4-entry RELEASED history, parsed back from the text and validated standalone — no Escrow instance — on every iteration, checked entry for entry against the original history, hash / prevHash chain included, field-wise and through the canonical NDJSON serializer, with a detached tampered text — the middle SUBMIT_MILESTONE entry's note rewritten and re-serialized — rejected with the exact hash-chain error once outside the timed loop and the original text still parsing afterwards); single-step transition dispatch (benchTransition restoring the fixed FUNDED snapshot — 1 FUND entry, golden 10630 at the base instant — on every iteration and dispatching one SUBMIT_MILESTONE step pinned at BASE + 1s, checked on every iteration for the one-step state advance FUNDED -> MILESTONE_SUBMITTED, exactly one appended entry, and a gap-free seq continuation, with an exhaustive pure-transition check over all 8 states x 9 events — 14 legal edges returning their hand-pinned targets, every other pair throwing the exact invalid-transition message, including the illegal RELEASE dispatch from FUNDED — asserted once outside the timed loop); transitionTable (fixed no-arg pure transition-table object construction, checked against hand-pinned 14 edges in declaration order on every iteration, spot-checked against the transitionTableJson edge set via the shared pinned first / release / last edges, with the full edge set compared to the parsed JSON edge set and a pinned non-existent CREATED/RELEASE/RELEASED edge confirmed absent exhaustively once outside the timed loop); deadline write cycle (setDeadline + clearDeadline on one shared FUNDED escrow — set via a Date to 2026-01-31 and read back pinned, overwritten via a string to 2026-05-01 and read back pinned, then cleared to undefined so the escrow returns to its initial deadline-less state for the next iteration, with state and history checked unchanged on every iteration, and, outside the timed loop, illegal-input rejection — invalid deadline: not-a-date and invalid deadline: Invalid Date — pinned to leave any stored value untouched, non-canonical input pinned to its normalized canonical form, and a terminal RELEASED probe pinned to store a past deadline yet never judge overdue); quorum revoke cycle (fresh 5/9 quorum on a fixed injected clock — approve dao-1..dao-5 to the threshold, revoke dao-3 to drop to 4/5 below the threshold, then re-approve dao-3 to return to 5/5, with approvalCount/hasQuorum/approvals checked against hand-pinned expectations at every stage and the re-approved signer returning last in approvals order, and unknown-signer / not-approved revoke rejections — unknown quorum signer: \"mallory\" and cannot revoke: signer \"dao-6\" has not approved — pinned once outside the timed loop); quorum snapshot export (snapshot() over the fixed 9-signer / threshold-5 quorum carrying 7 recorded approvals on a stepped fixed clock — dao-1..dao-7 at BASE + 0..6s — checked on every iteration against hand-pinned envelope expectations: v 1 in the pinned key order v,threshold,signers,approvals, threshold 5, the 9 signers in config order, no maxApprovalAgeMs key, and the 7 approval entries in record order with their pinned canonical timestamps, with a detached-copy mutation pinned to leave a re-export unchanged and the JSON-round-tripped export pinned to restore via restoreQuorum into a quorum re-exporting the group-14 persisted snapshot byte-for-byte, both once outside the timed loop); quorum maxApprovalAgeMs expiry (counting views on a fresh 5/9 quorum with a 60-second window on an advancing injected clock — approvals staggered at BASE, BASE + 30s and BASE + 60s checked while all five count with dao-1 exactly at the inclusive boundary, then expiring one at a time as the clock crosses each window with dao-2 pinned at its own boundary, the audit log pinned at its full 5 entries throughout, and the two expired signers re-approving to restore the quorum with the log grown to 7 — on every iteration, with the fully-expired log retention and the re-approval fresh timestamp pinned once outside the timed loop); settlement webhook secret-rotation verification (verifySettlementWebhook with { secrets: [new, old] } over the old-signed fixed webhook \u2014 the matching candidate is second, so every iteration pays one failed HMAC trial before the match \u2014 checked exactly true on every iteration, with an all-mismatch candidate pair pinned to false and an empty secrets array pinned to its exact configuration error, both once outside the timed loop); settlement webhook maxAgeMs freshness verification (verifySettlementWebhook with { secrets: [secret], maxAgeMs: 300000, now: at + 120s } over the fixed webhook — the injected now is pinned inside the 300,000 ms window, so the freshness gate runs after the signature match on every iteration — checked exactly true on every iteration, with an over-age payload pinned to false, a payload aged exactly to the inclusive boundary pinned to true, and an illegal maxAgeMs of -1 pinned to its exact configuration error, all once outside the timed loop); keyed audit-chain verification (verifyHistoryChain with the pinned auditKey over a fixed 4-entry HMAC-chained history — the same lifecycle, id, and fixed timestamps as the unkeyed fixture, so the two chains differ only in hash function — checked exactly true on every iteration with the genesis and successor links pinned, with a wrong key, no key, and a detached tampered copy (the middle entry gaining a note it never carried) all pinned to false outside the timed loop); settlement webhook maxFutureSkewMs future-skew verification (verifySettlementWebhook with { secrets: [secret], maxFutureSkewMs: 300000, now: at - 120s } over the fixed webhook — the injected now is pinned 120 s before the payload timestamp, so the payload sits in the future inside the 300,000 ms skew window and the freshness gate runs after the signature match on every iteration — checked exactly true on every iteration, with an over-skew payload pinned to false, a payload skewed exactly to the inclusive boundary pinned to true, both bounds set together pinned to reject on each side while a payload inside both windows still verifies, and an illegal maxFutureSkewMs of -1 pinned to its exact configuration error, all once outside the timed loop); settlement webhook pre-aborted delivery (deliverSettlementWebhook with a pre-aborted AbortSignal over the fixed webhook through a counting fake global fetch — rejected with the exact error webhook delivery aborted and the fetch call count pinned at exactly zero on every iteration, with a non-AbortSignal signal value pinned to its exact configuration error before any request and a never-aborting signal pinned to the normal {status: 200, attempts: 1} delivery after exactly one fetch, both once outside the timed loop); settlement webhook maxRetryDelayMs-clamped delivery (deliverSettlementWebhook with maxRetryDelayMs 0 over the fixed webhook through a fake global fetch — first answer 429 with Retry-After 31536000, second answer 200 — checked for result {status: 200, attempts: 2} and exactly two fetch calls on every iteration, the one-year hint clamped to 0 so no real sleep ever happens, with an illegal maxRetryDelayMs of -1 pinned to its exact configuration error before any request and a hint-less 500-then-200 script pinned to the exponential-backoff fallback shape, both once outside the timed loop); requireVerifyEvidence VERIFY_PASS (strict escrow with requireVerifyEvidence: true rebuilt fresh on every iteration — FUND of the golden 10630 at BASE and SUBMIT_MILESTONE at BASE + 1s, so the rebuild cost is inside the timed region — then VERIFY_PASS with the pinned evidence reference at BASE + 2s, checked on every iteration for the VERIFIED state, a history grown by exactly one entry (2 -> 3), and the appended entry carrying the pinned evidence verbatim, with an evidence-free VERIFY_PASS pinned once outside the timed loop to throw the exact gate error and leave state and history unchanged entry for entry before the same escrow passes with evidence, a default escrow pinned to keep the pre-gate evidence-free behavior with no evidence field on its entry, and a non-boolean flag value pinned to its exact constructor configuration error); maxDeposit capped funding (fresh escrow with maxDeposit pinned to the golden 10630 rebuilt on every iteration — FUND 7000 at BASE and a 3630 top-up at BASE + 1s landing exactly on the cap — checked on every iteration for the FUNDED state, exactly two history entries, and the two pinned FUND amounts summing to the cap, with a one-cent-over FUND pinned once outside the timed loop to throw the exact cap error and leave state and history unchanged entry for entry, a FUND without an amount pinned to stay uncapped at the cap and contribute nothing to the locked total, and an uncapped escrow pinned to keep the pre-cap behavior; dispatch expectedSeq optimistic-concurrency dispatch (fresh 2-entry escrow rebuilt on every iteration — FUND of the golden 10630 at BASE and SUBMIT_MILESTONE at BASE + 1s — then VERIFY_PASS with expectedSeq 2 at BASE + 2s, checked on every iteration for the VERIFIED state, a history grown by exactly one entry (2 -> 3), and the appended entry pinned field for field, with a stale expectedSeq pinned once outside the timed loop to throw the exact conflict error and leave state and history unchanged entry for entry, an empty-history expectedSeq 0 pinned to advance, illegal -1 / 1.5 values pinned to their exact configuration errors, and a guard-free dispatch pinned to keep the pre-guard behavior); settlement webhook timeoutMs timeout delivery (deliverSettlementWebhook with timeoutMs 10 and retries 0 over the fixed webhook through a hanging fake global fetch — the fake only rejects on abort, so the pinned short timeout is the only thing that ends the attempt — rejected with the exact error webhook delivery to the single endpoint failed after 1 attempt: webhook delivery timed out after 10ms, annotated attempts 1, after exactly one fetch call on every iteration; the timeout wait itself is the object under test at the pinned short 10 ms and no elapsed-time assertion is made, with an illegal timeoutMs of 0 pinned once outside the timed loop to throw its exact configuration error before any request at zero fetch calls and a generous timeoutMs of 5000 over an immediate 200 pinned to the normal {status: 200, attempts: 1} success shape after exactly one fetch); buildSettlementReport releasePath (buildSettlementReport over the fixed released history on every iteration — outcome released and releasePath VERIFY_PASS → RELEASE checked verbatim, with the rendered via line pinned once outside the timed loop, and a refunded report pinned outside the timed loop to carry no releasePath field, its webhook serialization pinned to contain no releasePath key, and the released webhook key order pinned to the canonical order with releasePath between outcome and deposit)",
+  "Fixture: one escrow, full CREATED -> RELEASED lifecycle (4 hash-chained audit entries), golden deposit 10630; settlement webhook HMAC-SHA256 with fixed secret/timestamp/eventId; batch of 4 settlement-report inputs (released/refunded/released, 4 entries each, plus 1 mismatched input expected to land as a per-item error); settlement batch summary over that batch's 4 pre-built results (3 reports + 1 error); settlement batch webhooks over that same batch (3 signed webhooks with distinct deterministic eventIds bench-batch-event-1..3 plus the 1 forwarded per-item error); NDJSON text exported from a fixed 8-entry staged-funding history (5 FUND dispatches summing to 10630, then milestone/verify/release); quorum of 9 signers with threshold 5 on a fixed injected clock, approved one vote at a time to the threshold; settlement webhook fan-out to 4 endpoints through a fake global fetch (immediate 200, no network); settlement webhook single-target delivery (deliverSettlementWebhook to 1 fixed endpoint through a fake global fetch — immediate 200, no network, backoffMs 0 — checked for result {status: 200, attempts: 1}, exactly one captured call, and a captured X-Signature equal to the buildSettlementWebhook signature and verifiable over the captured body on every iteration, with a persistent-500 retry-exhaustion error — failed after 3 attempts at retries 2 — pinned once outside the timed loop); settlement webhook fan-out per-endpoint `timeoutMs` override (deliverSettlementWebhookToMany to 3 endpoints — one hanging under a pinned 10 ms per-endpoint timeoutMs override, two answering 200 under the call-level 5000 ms — through a fake global fetch, no network, result order and per-endpoint outcomes checked on every iteration, with the illegal 0 override and no-override shapes pinned once outside the timed loop); settlement event dedupe duplicate hits cycling over 1,000 pre-recorded eventIds under a fixed injected clock; settlement event dedupe restore from a 1,000-entry JSON-round-tripped snapshot under a fixed injected clock (all entries live at load, default TTL and capacity, observability counters restarting at zero); settlement event dedupe snapshot export from a 1,001-entry dedupe (1,000 live ids plus one entry aged exactly to its TTL boundary, so it is excluded) under a stepped fixed injected clock, checked entry for entry against hand-pinned expectations on every iteration, with a detached-copy mutation and the empty-store export pinned once outside the timed loop; settlement event dedupe clear (SettlementEventDedupe.clear) over a fresh 1,000-id dedupe rebuilt on every iteration under a fixed injected clock (1,000 first sightings plus 1 duplicate hit before the clear, so the reported numbers include the fixture-rebuild cost — prefill plus clear), self-checked on every iteration for an all-zero size and stats right after the clear and the first id recording as a new event again, with an empty-dedupe clear no-op check outside the timed loop; settlement event dedupe stats (SettlementEventDedupe.stats) over a fixed 7-record dedupe under an injectable clock that advances only during fixture construction (60-second TTL, capacity 6 — one id LRU-evicted during construction and one id expired at the stats instant, 5 live ids), self-checked on every iteration for the hand-pinned snapshot {size: 5, hits: 1, misses: 7, evictions: 1} where size counts only the live ids, with a detached-copy mutation check and an empty-dedupe all-zero check outside the timed loop; Escrow.fromHistory replay over the same detached 4-entry history, self-checked per iteration for the rebuilt id and state and the full history entry for entry (hashes included, compared field-wise and through the canonical NDJSON serializer, because rehydration normalizes entry key order), with a detached tampered copy (FUND amount altered from 10630 to 10631) rejected with the hash-chain error outside the timed loop; watchdog screening over a fixed mixed batch of 100 escrows (40 hand-counted expired, 70 hand-counted stale under FUNDED 7d / MILESTONE_SUBMITTED 30d budgets) at a fixed screening instant; watchdog execution (expireOverdueEscrows / actOnStaleEscrows with an EXPIRE-dispatch action) over fresh rebuilds of that same 100-escrow batch on every iteration because the executors mutate their inputs (40 of 40 expire attempts and 70 of 70 stale actions succeed — both selected states carry an EXPIRE edge); quorum snapshot restore from a persisted (JSON round-tripped) snapshot of the 9-signer / threshold-5 quorum carrying 7 recorded approvals; settleRelease netting over 4 fixed representative inputs (golden 10630 at 500 bps, 1000 at 500 bps with 100 credits, large gross 1000000 at 250 bps with 1250.25 credits, rounding edge 10 at 125 bps) checked against hand-computed proFee/net on every iteration; parseRetryAfter over a fixed 11-value corpus (delay-seconds, fractional and whitespace-padded values, zero, future and past HTTP-dates, signed numbers, a garbage string, null and undefined) against one injected fixed now, every result checked against hand-pinned expectations on every iteration; depositAmountFromHistory over a fixed 4-shape corpus (a single FUND of the golden 10630, a two-FUND top-up sequence summing to 12630, a FUND recorded without an amount, and an empty no-FUND history) checked against hand-pinned totals and exact fail-fast error messages on every iteration; renderReport rendering of the fixed golden released report (deposit 10630, released via VERIFY_PASS -> RELEASE, 4 party rows) checked against hand-written expected lines (header/outcome, deposit formula, creator net row) on every iteration; allowedEvents over all 8 states of the transition table (one pass = every state queried once in declaration order — CREATED, FUNDED, MILESTONE_SUBMITTED, VERIFIED, DISPUTED, RELEASED, REFUNDED, EXPIRED — with each result checked against its hand-pinned expected event list in declaration order, the three terminal states expecting the empty list) on every iteration; calculateDeposit over a fixed 3-shape corpus (the golden vector pool 10000 / base 600 / complexity 1.0 / loyalty 30 / oracle 60 -> deposit 10630, a complexity 1.5 case -> deposit 6190, and a large-pool 1000000 case -> deposit 1005375) checked against hand-computed adjustedBaseFee and deposit expectations on every iteration; arbitration dispatch (dispatchArbitration with outcome \"refund\", rebuilding a DISPUTED escrow from its fixed 2-entry history prefix via Escrow.fromHistory and a threshold-reached 5/9 quorum via createQuorum on every iteration — rebuild cost inside the timed region — pinned to a fixed audit timestamp, checked for the REFUNDED terminal state, exactly one appended ARBITRATE_REFUND entry, and its \"quorum 5/5\" note on every iteration; isOverdue over a fixed 4-case corpus (past-deadline FUNDED, future-deadline FUNDED, deadline-less FUNDED, and past-deadline terminal RELEASED escrows) checked against hand-pinned booleans (true/false/false/false) against one injected fixed now on every iteration; assertNonNegativeMoney over a fixed legal corpus (0, 0.01, the golden 10630, and 1000000.25) checked to pass without throwing on every iteration, with the illegal corpus (negative, NaN, Infinity, -Infinity, a numeric string, undefined, and null — each throwing the exact message \"amount must be a finite non-negative number\") asserted once outside the timed loop and never timed); transitionTableJson (fixed no-arg transition-table JSON export, parsed back and checked against hand-pinned expectations — 14 edges, first CREATED/FUND/FUNDED, release edge VERIFIED/RELEASE/RELEASED at index 10, last DISPUTED/ARBITRATE_REFUND/REFUNDED, per-edge key order from,event,to, and a single trailing newline — on every iteration); stateDiagram (fixed no-arg Mermaid rendering, checked against hand-pinned expectations — 21 lines, all 14 edge lines written out in full in declaration order, the start line pinning CREATED, the 3 terminal lines RELEASED/REFUNDED/EXPIRED, and all 8 states present — on every iteration); readmeDiagramInSync (fixed no-arg README diagram sync check — reads only this repo's README.md, regenerates the diagram, and checks the exact block is embedded, checked against the hand-pinned expectation true on every iteration); subscribe (full lifecycle, 1 collecting listener) over the same full 4-dispatch lifecycle on a fresh escrow per iteration, self-checked per iteration against the hand-written (event, from, to) sequence and the escrow's own history entry for entry, with unsubscribe and throwing-listener isolation checks outside the timed loop; subscribe onError error routing (1 pinned throwing listener + collecting onError) over a fixed 3-dispatch short chain (FUND, SUBMIT_MILESTONE, VERIFY_PASS to VERIFIED) on a fresh escrow per iteration, self-checked per iteration that every dispatch succeeded, the history holds exactly 3 entries, and the reports match the hand-pinned expectations report for report (pinned message plus event / from / to context, first report FUND CREATED -> FUNDED), with a throwing-onError-swallowed probe and a non-function onError pinned to its exact rejection message outside the timed loop; hash-chain verification (verifyHistoryChain) over the same fixed 4-entry history, self-checked per iteration for the genesis link (the first entry's prevHash is GENESIS_PREV_HASH) and every successor link (each entry's prevHash equals its predecessor's hash), with a detached tampered copy (the middle SUBMIT_MILESTONE entry gaining a note it never carried) returning false outside the timed loop; snapshot round-trip (Escrow.fromJSON restoring the fixed toJSON snapshot of the same full lifecycle escrow carrying the fixed deadline 2026-01-31T00:00:00.000Z, checked on every iteration for the restored id, state, and deadline and the full history entry for entry — hash chain included — and for a re-export identical to the source snapshot, with the serialized snapshot text additionally restored unchanged after a JSON.parse/stringify round-trip once outside the timed loop); standalone history parsing (parseEscrowHistory over the JSON-serialized text of that same fixed 4-entry RELEASED history, parsed back from the text and validated standalone — no Escrow instance — on every iteration, checked entry for entry against the original history, hash / prevHash chain included, field-wise and through the canonical NDJSON serializer, with a detached tampered text — the middle SUBMIT_MILESTONE entry's note rewritten and re-serialized — rejected with the exact hash-chain error once outside the timed loop and the original text still parsing afterwards); single-step transition dispatch (benchTransition restoring the fixed FUNDED snapshot — 1 FUND entry, golden 10630 at the base instant — on every iteration and dispatching one SUBMIT_MILESTONE step pinned at BASE + 1s, checked on every iteration for the one-step state advance FUNDED -> MILESTONE_SUBMITTED, exactly one appended entry, and a gap-free seq continuation, with an exhaustive pure-transition check over all 8 states x 9 events — 14 legal edges returning their hand-pinned targets, every other pair throwing the exact invalid-transition message, including the illegal RELEASE dispatch from FUNDED — asserted once outside the timed loop); transitionTable (fixed no-arg pure transition-table object construction, checked against hand-pinned 14 edges in declaration order on every iteration, spot-checked against the transitionTableJson edge set via the shared pinned first / release / last edges, with the full edge set compared to the parsed JSON edge set and a pinned non-existent CREATED/RELEASE/RELEASED edge confirmed absent exhaustively once outside the timed loop); deadline write cycle (setDeadline + clearDeadline on one shared FUNDED escrow — set via a Date to 2026-01-31 and read back pinned, overwritten via a string to 2026-05-01 and read back pinned, then cleared to undefined so the escrow returns to its initial deadline-less state for the next iteration, with state and history checked unchanged on every iteration, and, outside the timed loop, illegal-input rejection — invalid deadline: not-a-date and invalid deadline: Invalid Date — pinned to leave any stored value untouched, non-canonical input pinned to its normalized canonical form, and a terminal RELEASED probe pinned to store a past deadline yet never judge overdue); quorum revoke cycle (fresh 5/9 quorum on a fixed injected clock — approve dao-1..dao-5 to the threshold, revoke dao-3 to drop to 4/5 below the threshold, then re-approve dao-3 to return to 5/5, with approvalCount/hasQuorum/approvals checked against hand-pinned expectations at every stage and the re-approved signer returning last in approvals order, and unknown-signer / not-approved revoke rejections — unknown quorum signer: \"mallory\" and cannot revoke: signer \"dao-6\" has not approved — pinned once outside the timed loop); quorum snapshot export (snapshot() over the fixed 9-signer / threshold-5 quorum carrying 7 recorded approvals on a stepped fixed clock — dao-1..dao-7 at BASE + 0..6s — checked on every iteration against hand-pinned envelope expectations: v 1 in the pinned key order v,threshold,signers,approvals, threshold 5, the 9 signers in config order, no maxApprovalAgeMs key, and the 7 approval entries in record order with their pinned canonical timestamps, with a detached-copy mutation pinned to leave a re-export unchanged and the JSON-round-tripped export pinned to restore via restoreQuorum into a quorum re-exporting the group-14 persisted snapshot byte-for-byte, both once outside the timed loop); quorum maxApprovalAgeMs expiry (counting views on a fresh 5/9 quorum with a 60-second window on an advancing injected clock — approvals staggered at BASE, BASE + 30s and BASE + 60s checked while all five count with dao-1 exactly at the inclusive boundary, then expiring one at a time as the clock crosses each window with dao-2 pinned at its own boundary, the audit log pinned at its full 5 entries throughout, and the two expired signers re-approving to restore the quorum with the log grown to 7 — on every iteration, with the fully-expired log retention and the re-approval fresh timestamp pinned once outside the timed loop); settlement webhook secret-rotation verification (verifySettlementWebhook with { secrets: [new, old] } over the old-signed fixed webhook \u2014 the matching candidate is second, so every iteration pays one failed HMAC trial before the match \u2014 checked exactly true on every iteration, with an all-mismatch candidate pair pinned to false and an empty secrets array pinned to its exact configuration error, both once outside the timed loop); settlement webhook maxAgeMs freshness verification (verifySettlementWebhook with { secrets: [secret], maxAgeMs: 300000, now: at + 120s } over the fixed webhook — the injected now is pinned inside the 300,000 ms window, so the freshness gate runs after the signature match on every iteration — checked exactly true on every iteration, with an over-age payload pinned to false, a payload aged exactly to the inclusive boundary pinned to true, and an illegal maxAgeMs of -1 pinned to its exact configuration error, all once outside the timed loop); keyed audit-chain verification (verifyHistoryChain with the pinned auditKey over a fixed 4-entry HMAC-chained history — the same lifecycle, id, and fixed timestamps as the unkeyed fixture, so the two chains differ only in hash function — checked exactly true on every iteration with the genesis and successor links pinned, with a wrong key, no key, and a detached tampered copy (the middle entry gaining a note it never carried) all pinned to false outside the timed loop); settlement webhook maxFutureSkewMs future-skew verification (verifySettlementWebhook with { secrets: [secret], maxFutureSkewMs: 300000, now: at - 120s } over the fixed webhook — the injected now is pinned 120 s before the payload timestamp, so the payload sits in the future inside the 300,000 ms skew window and the freshness gate runs after the signature match on every iteration — checked exactly true on every iteration, with an over-skew payload pinned to false, a payload skewed exactly to the inclusive boundary pinned to true, both bounds set together pinned to reject on each side while a payload inside both windows still verifies, and an illegal maxFutureSkewMs of -1 pinned to its exact configuration error, all once outside the timed loop); settlement webhook pre-aborted delivery (deliverSettlementWebhook with a pre-aborted AbortSignal over the fixed webhook through a counting fake global fetch — rejected with the exact error webhook delivery aborted and the fetch call count pinned at exactly zero on every iteration, with a non-AbortSignal signal value pinned to its exact configuration error before any request and a never-aborting signal pinned to the normal {status: 200, attempts: 1} delivery after exactly one fetch, both once outside the timed loop); settlement webhook maxRetryDelayMs-clamped delivery (deliverSettlementWebhook with maxRetryDelayMs 0 over the fixed webhook through a fake global fetch — first answer 429 with Retry-After 31536000, second answer 200 — checked for result {status: 200, attempts: 2} and exactly two fetch calls on every iteration, the one-year hint clamped to 0 so no real sleep ever happens, with an illegal maxRetryDelayMs of -1 pinned to its exact configuration error before any request and a hint-less 500-then-200 script pinned to the exponential-backoff fallback shape, both once outside the timed loop); requireVerifyEvidence VERIFY_PASS (strict escrow with requireVerifyEvidence: true rebuilt fresh on every iteration — FUND of the golden 10630 at BASE and SUBMIT_MILESTONE at BASE + 1s, so the rebuild cost is inside the timed region — then VERIFY_PASS with the pinned evidence reference at BASE + 2s, checked on every iteration for the VERIFIED state, a history grown by exactly one entry (2 -> 3), and the appended entry carrying the pinned evidence verbatim, with an evidence-free VERIFY_PASS pinned once outside the timed loop to throw the exact gate error and leave state and history unchanged entry for entry before the same escrow passes with evidence, a default escrow pinned to keep the pre-gate evidence-free behavior with no evidence field on its entry, and a non-boolean flag value pinned to its exact constructor configuration error); maxDeposit capped funding (fresh escrow with maxDeposit pinned to the golden 10630 rebuilt on every iteration — FUND 7000 at BASE and a 3630 top-up at BASE + 1s landing exactly on the cap — checked on every iteration for the FUNDED state, exactly two history entries, and the two pinned FUND amounts summing to the cap, with a one-cent-over FUND pinned once outside the timed loop to throw the exact cap error and leave state and history unchanged entry for entry, a FUND without an amount pinned to stay uncapped at the cap and contribute nothing to the locked total, and an uncapped escrow pinned to keep the pre-cap behavior; dispatch expectedSeq optimistic-concurrency dispatch (fresh 2-entry escrow rebuilt on every iteration — FUND of the golden 10630 at BASE and SUBMIT_MILESTONE at BASE + 1s — then VERIFY_PASS with expectedSeq 2 at BASE + 2s, checked on every iteration for the VERIFIED state, a history grown by exactly one entry (2 -> 3), and the appended entry pinned field for field, with a stale expectedSeq pinned once outside the timed loop to throw the exact conflict error and leave state and history unchanged entry for entry, an empty-history expectedSeq 0 pinned to advance, illegal -1 / 1.5 values pinned to their exact configuration errors, and a guard-free dispatch pinned to keep the pre-guard behavior); settlement webhook timeoutMs timeout delivery (deliverSettlementWebhook with timeoutMs 10 and retries 0 over the fixed webhook through a hanging fake global fetch — the fake only rejects on abort, so the pinned short timeout is the only thing that ends the attempt — rejected with the exact error webhook delivery to the single endpoint failed after 1 attempt: webhook delivery timed out after 10ms, annotated attempts 1, after exactly one fetch call on every iteration; the timeout wait itself is the object under test at the pinned short 10 ms and no elapsed-time assertion is made, with an illegal timeoutMs of 0 pinned once outside the timed loop to throw its exact configuration error before any request at zero fetch calls and a generous timeoutMs of 5000 over an immediate 200 pinned to the normal {status: 200, attempts: 1} success shape after exactly one fetch); buildSettlementReport releasePath (buildSettlementReport over the fixed released history on every iteration — outcome released and releasePath VERIFY_PASS → RELEASE checked verbatim, with the rendered via line pinned once outside the timed loop, and a refunded report pinned outside the timed loop to carry no releasePath field, its webhook serialization pinned to contain no releasePath key, and the released webhook key order pinned to the canonical order with releasePath between outcome and deposit)",
 );
 console.log(`Iterations per op: ${ITERATIONS} (after ${WARMUP} warmup)`);
 console.log("");
@@ -6468,6 +6741,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "quorum revoke cycle (5 of 9, revoke + re-approve)", ops: benchQuorumRevokeCycle() },
   { path: "quorum maxApprovalAgeMs expiry (5 of 9, 60s window)", ops: benchQuorumApprovalExpiry() },
   { path: "deliverSettlementWebhookToMany (4 endpoints)", ops: await benchDeliverSettlementWebhookToMany() },
+  { path: "deliverSettlementWebhookToMany (per-endpoint timeoutMs override)", ops: await benchDeliverSettlementWebhookToManyTimeout() },
   { path: "deliverSettlementWebhook (single endpoint)", ops: await benchDeliverSettlementWebhook() },
   { path: "deliverSettlementWebhook (pre-aborted signal)", ops: await benchDeliverSettlementWebhookPreAborted() },
   { path: "deliverSettlementWebhook (maxRetryDelayMs clamp, 429 hint)", ops: await benchDeliverSettlementWebhookMaxRetryDelayClamp() },
