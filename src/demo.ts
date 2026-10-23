@@ -308,6 +308,16 @@
  * (there the recorded ids survive, here they are dropped
  * on purpose); all sides are asserted outside the
  * printing against hand-pinned expectations.
+ * The demo then shows a dedupe capacity-eviction
+ * segment: a `SettlementEventDedupe` with a tiny
+ * `maxEntries: 3` on a fixed clock records four fixed
+ * eventIds — the fourth distinct id forces the LRU
+ * eviction of the oldest entry (counted in
+ * `stats().evictions`), and the evicted id counts as a
+ * new event when seen again, evicting the next oldest in
+ * turn; `maxEntries: 0` is rejected at construction with
+ * the exact configuration error; all sides are asserted
+ * outside the printing against hand-pinned expectations.
  * The demo then shows a subscribe `onError`
  * error-routing segment: a branch escrow subscribes one
  * pinned throwing listener with a collecting `onError`,
@@ -1137,6 +1147,60 @@ export const DEMO_DEDUPE_SNAPSHOT_TAMPERED_ERROR =
  */
 export const DEMO_DEDUPE_CLEAR_EVENT_ID = "evt_demo_dedupe_clear_001";
 export const DEMO_DEDUPE_CLEAR_START_MS = DEMO_DEDUPE_START_MS;
+
+/**
+ * Dedupe capacity-eviction fixtures for the segment after
+ * the dedupe clear segment: a `SettlementEventDedupe` on a
+ * fixed clock (starting at {@link DEMO_DEDUPE_START_MS},
+ * the webhook's own `at`, under the same 1-hour TTL the
+ * receiver-dedupe segments above use) is built with a tiny
+ * `maxEntries: 3`, recording four fixed eventIds: the
+ * fourth record forces the LRU eviction of the oldest
+ * entry, and the evicted id then counts as a new event
+ * when seen again. A `maxEntries: 0` construction is
+ * rejected with the pinned configuration error.
+ * Hand-pinned expectations — written from the documented
+ * `checkAndRecord` / `prune` / constructor semantics in
+ * src/webhooks.ts (LRU eviction of the least-recently-seen
+ * id when the store is at capacity, evictions counted in
+ * `stats().evictions`, non-positive maxEntries rejected at
+ * construction), never derived by calling the dedupe
+ * itself, and cross-checked against
+ * test/settlementEventDedupe.test.ts, whose capacity case
+ * pins the same shape (full store, oldest evicted, evicted
+ * id new again, invalid maxEntries rejected):
+ * - the four fixed ids' first `checkAndRecord` verdicts
+ *   are all `false` (new events); an immediate re-record
+ *   of the first id before the store fills is `true`
+ *   (duplicate, and its LRU recency is refreshed)
+ * - the full call order is
+ *   `[false, true, false, false, false, false]` —
+ *   the fifth call (fourth distinct id) evicts the
+ *   oldest id, the sixth call re-records the evicted id
+ *   and is a new event (`false`), evicting the next
+ *   oldest
+ * - `stats()` after the fifth call is exactly
+ *   `{size: 3, hits: 1, misses: 4, evictions: 1}`;
+ *   after the sixth call exactly
+ *   `{size: 3, hits: 1, misses: 5, evictions: 2}`
+ * - `new SettlementEventDedupe({ maxEntries: 0 })`
+ *   throws exactly
+ *   {@link DEMO_DEDUPE_CAPACITY_INVALID_MAX_ENTRIES_ERROR}
+ * The clock never advances inside the segment, so every
+ * id stays inside its TTL and the evictions shown are
+ * capacity evictions only — no TTL expiry, no wall clock,
+ * no randomness, no network.
+ */
+export const DEMO_DEDUPE_CAPACITY_MAX_ENTRIES = 3;
+export const DEMO_DEDUPE_CAPACITY_EVENT_IDS = [
+  "evt_demo_dedupe_cap_001",
+  "evt_demo_dedupe_cap_002",
+  "evt_demo_dedupe_cap_003",
+  "evt_demo_dedupe_cap_004",
+] as const;
+export const DEMO_DEDUPE_CAPACITY_START_MS = DEMO_DEDUPE_START_MS;
+export const DEMO_DEDUPE_CAPACITY_INVALID_MAX_ENTRIES_ERROR =
+  "SettlementEventDedupe: maxEntries must be a positive integer";
 
 /**
  * Subscribe onError fixtures for the final closing segment:
@@ -2296,6 +2360,50 @@ export interface DemoResult {
    * counting restarted from zero after the clear.
    */
   dedupeClearStatsAfterRerecord: SettlementEventDedupeStats;
+  /**
+   * The dedupe-capacity segment's dedupe (maxEntries 3 on
+   * a fixed clock), after the segment's six
+   * `checkAndRecord` calls: 3 live entries, with the two
+   * oldest ids evicted during the segment.
+   */
+  dedupeCapacityDedupe: SettlementEventDedupe;
+  /**
+   * `checkAndRecord` verdicts of the capacity segment's
+   * six calls, in call order: `[false, true, false,
+   * false, false, false]` — the fourth distinct id
+   * evicts the oldest, and the evicted id then counts as
+   * a new event when seen again (evicting the next
+   * oldest).
+   */
+  dedupeCapacityVerdicts: boolean[];
+  /**
+   * `stats()` of the capacity segment's dedupe captured
+   * after the fifth call (the fourth distinct id,
+   * triggering the first eviction): exactly
+   * `{size: 3, hits: 1, misses: 4, evictions: 1}`.
+   */
+  dedupeCapacityStatsAfterEviction: SettlementEventDedupeStats;
+  /**
+   * `checkAndRecord` verdict of the capacity segment's
+   * dedupe for the evicted id after its eviction: `false`
+   * — the eviction reopened the window for that id, and
+   * the call re-recorded it.
+   */
+  dedupeCapacityEvictedRerecord: boolean;
+  /**
+   * `stats()` of the capacity segment's dedupe captured
+   * after the final call: exactly
+   * `{size: 3, hits: 1, misses: 5, evictions: 2}` —
+   * capacity stayed 3, the two oldest ids were evicted.
+   */
+  dedupeCapacityStatsFinal: SettlementEventDedupeStats;
+  /**
+   * Error message of constructing a
+   * `SettlementEventDedupe` with `maxEntries: 0`:
+   * exactly
+   * {@link DEMO_DEDUPE_CAPACITY_INVALID_MAX_ENTRIES_ERROR}.
+   */
+  dedupeCapacityInvalidMaxEntriesError: string;
   /**
    * The final closing segment's branch escrow
    * ({@link DEMO_ONERROR_ESCROW_ID}), after its three
@@ -4976,6 +5084,90 @@ export async function runDemo(): Promise<DemoResult> {
     `  same eventId after clear — checkAndRecord: ${dedupeClearRerecord} (new event again, recorded — the reset reopened the window on purpose); stats after re-record: size ${dedupeClearStatsAfterRerecord.size}, hits ${dedupeClearStatsAfterRerecord.hits}, misses ${dedupeClearStatsAfterRerecord.misses}, evictions ${dedupeClearStatsAfterRerecord.evictions} (counting restarts from zero)`,
   );
 
+  // --- Dedupe capacity eviction: maxEntries LRU eviction ---
+  // The snapshot segment carried recorded ids across a
+  // restart, the clear segment reset them on purpose; this
+  // segment shows the third memory bound of the dedupe:
+  // the capacity limit. A dedupe with a tiny
+  // `maxEntries: 3` on the same fixed clock records four
+  // fixed eventIds in order: the fourth distinct id
+  // forces the LRU eviction of the oldest entry (its
+  // eviction is counted in `stats().evictions`), and when
+  // the evicted id is seen again it counts as a new event
+  // — an eviction reopens the dedupe window for that id,
+  // which is exactly the memory-vs-duplication trade-off
+  // a receiver operator must understand at capacity.
+  // An immediate re-record of the first id before the
+  // store fills is a duplicate (its LRU recency is
+  // refreshed); a `maxEntries: 0` construction is
+  // rejected with the exact configuration error.
+  // Hand-pinned expectations (see the fixture comment
+  // above), asserted HERE, outside the printing: call
+  // order [new, duplicate, new, new, new (evicts the
+  // oldest), new again (the evicted id, evicting the next
+  // oldest)] with stats `{size: 3, hits: 1, misses: 4,
+  // evictions: 1}` after the fifth call and `{size: 3,
+  // hits: 1, misses: 5, evictions: 2}` after the sixth —
+  // a different eviction order, a miscounted eviction, or
+  // an accepted maxEntries: 0 would fail the demo itself,
+  // not just a test. The clock never advances, so every
+  // id stays inside its TTL and the evictions shown are
+  // capacity evictions only — zero network, zero
+  // randomness, no wall clock.
+  const dedupeCapacityDedupe = new SettlementEventDedupe({
+    ttlMs: DEMO_DEDUPE_TTL_MS,
+    maxEntries: DEMO_DEDUPE_CAPACITY_MAX_ENTRIES,
+    now: () => DEMO_DEDUPE_CAPACITY_START_MS,
+  });
+  const [capId1, capId2, capId3, capId4] = DEMO_DEDUPE_CAPACITY_EVENT_IDS;
+  const dedupeCapacityVerdicts: boolean[] = [
+    dedupeCapacityDedupe.checkAndRecord(capId1), // new
+    dedupeCapacityDedupe.checkAndRecord(capId1), // duplicate
+    dedupeCapacityDedupe.checkAndRecord(capId2), // new
+    dedupeCapacityDedupe.checkAndRecord(capId3), // new (store now full: 3)
+    dedupeCapacityDedupe.checkAndRecord(capId4), // new — evicts capId1
+  ];
+  const dedupeCapacityStatsAfterEviction = dedupeCapacityDedupe.stats();
+  const dedupeCapacityEvictedRerecord =
+    dedupeCapacityDedupe.checkAndRecord(capId1); // new again — evicts capId2
+  dedupeCapacityVerdicts.push(dedupeCapacityEvictedRerecord);
+  const dedupeCapacityStatsFinal = dedupeCapacityDedupe.stats();
+  let dedupeCapacityInvalidMaxEntriesError = "";
+  try {
+    new SettlementEventDedupe({ maxEntries: 0 });
+  } catch (err) {
+    dedupeCapacityInvalidMaxEntriesError =
+      err instanceof Error ? err.message : String(err);
+  }
+  if (
+    dedupeCapacityVerdicts.length !== 6 ||
+    dedupeCapacityVerdicts.join(",") !== "false,true,false,false,false,false" ||
+    dedupeCapacityStatsAfterEviction.size !== 3 ||
+    dedupeCapacityStatsAfterEviction.hits !== 1 ||
+    dedupeCapacityStatsAfterEviction.misses !== 4 ||
+    dedupeCapacityStatsAfterEviction.evictions !== 1 ||
+    dedupeCapacityEvictedRerecord !== false ||
+    dedupeCapacityStatsFinal.size !== 3 ||
+    dedupeCapacityStatsFinal.hits !== 1 ||
+    dedupeCapacityStatsFinal.misses !== 5 ||
+    dedupeCapacityStatsFinal.evictions !== 2 ||
+    dedupeCapacityDedupe.size !== 3 ||
+    dedupeCapacityInvalidMaxEntriesError !==
+      DEMO_DEDUPE_CAPACITY_INVALID_MAX_ENTRIES_ERROR
+  ) {
+    throw new Error(
+      "demo fixture broken: SettlementEventDedupe capacity eviction does not match the pinned shape (four distinct ids under maxEntries 3 with the oldest evicted at the fourth id and the evicted id new again when seen once more, stats 3/1/4/1 then 3/1/5/2, maxEntries 0 rejected with the pinned configuration error)",
+    );
+  }
+  lines.push(
+    "",
+    "Dedupe capacity eviction (SettlementEventDedupe maxEntries — bounded memory at the receiver):",
+    `  dedupe (fixed clock ${DEMO_WEBHOOK_AT}, TTL ${DEMO_DEDUPE_TTL_MS} ms, maxEntries ${DEMO_DEDUPE_CAPACITY_MAX_ENTRIES}): eventId ${capId1} — checkAndRecord: ${dedupeCapacityVerdicts[0]} (new event), again: ${dedupeCapacityVerdicts[1]} (duplicate); eventIds ${capId2}, ${capId3} — checkAndRecord: ${dedupeCapacityVerdicts[2]}, ${dedupeCapacityVerdicts[3]} (new events; the store is now full at 3)`,
+    `  eventId ${capId4} — checkAndRecord: ${dedupeCapacityVerdicts[4]} (new event; capacity exceeded, oldest entry ${capId1} evicted by LRU); stats: size ${dedupeCapacityStatsAfterEviction.size}, hits ${dedupeCapacityStatsAfterEviction.hits}, misses ${dedupeCapacityStatsAfterEviction.misses}, evictions ${dedupeCapacityStatsAfterEviction.evictions}`,
+    `  evicted eventId ${capId1} seen again — checkAndRecord: ${dedupeCapacityEvictedRerecord} (new event again — the eviction reopened its dedupe window, the next oldest entry ${capId2} evicted in turn); stats: size ${dedupeCapacityStatsFinal.size}, hits ${dedupeCapacityStatsFinal.hits}, misses ${dedupeCapacityStatsFinal.misses}, evictions ${dedupeCapacityStatsFinal.evictions} (bounded memory, visible in the counters)`,
+    `  invalid capacity rejected: new SettlementEventDedupe({ maxEntries: 0 }) throws "${dedupeCapacityInvalidMaxEntriesError}"`,
+  );
+
   // --- Subscribe onError routing: subscribe(listener, { onError }) (final closing) ---
   // The subscription segment above used a well-behaved
   // collecting listener; the error path never ran. Here a
@@ -5926,6 +6118,12 @@ export async function runDemo(): Promise<DemoResult> {
     dedupeClearSizeAfterClear,
     dedupeClearRerecord,
     dedupeClearStatsAfterRerecord,
+    dedupeCapacityDedupe,
+    dedupeCapacityVerdicts,
+    dedupeCapacityStatsAfterEviction,
+    dedupeCapacityEvictedRerecord,
+    dedupeCapacityStatsFinal,
+    dedupeCapacityInvalidMaxEntriesError,
     onErrorEscrow,
     onErrorReports,
     onErrorProbeEscrow,

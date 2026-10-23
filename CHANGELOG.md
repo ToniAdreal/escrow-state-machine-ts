@@ -18,6 +18,25 @@ version changes.
 
 ### Added
 
+- New demo segment for the receiver-side dedupe capacity
+  bound: a `SettlementEventDedupe` with `maxEntries: 3` on a
+  fixed clock records four fixed eventIds — the fourth
+  distinct id forces the LRU eviction of the oldest entry
+  (counted in `stats().evictions`), and the evicted id
+  counts as a new event when seen again, evicting the next
+  oldest in turn — pinning verdict order
+  `[false, true, false, false, false, false]` and stats
+  `{size: 3, hits: 1, misses: 4, evictions: 1}` after the
+  first eviction and `{size: 3, hits: 1, misses: 5,
+  evictions: 2}` after the re-record; a
+  `maxEntries: 0` construction is pinned to throw exactly
+  `SettlementEventDedupe: maxEntries must be a positive
+  integer`. The segment sits between the dedupe clear
+  segment and the subscribe onError segment, every id stays
+  inside its TTL (the evictions shown are capacity
+  evictions only), and zero network, zero randomness and
+  no wall clock enter it. README test count 699 → 701.
+
 - New benchmark path for the settlement webhook fan-out
   per-endpoint `timeoutMs` override:
   `deliverSettlementWebhookToMany` to 3 fixed endpoints where

@@ -23,6 +23,10 @@ import {
   DEMO_AUDIT_WRONG_KEY,
   DEMO_DEDUPE_CLEAR_EVENT_ID,
   DEMO_DEDUPE_CLEAR_START_MS,
+  DEMO_DEDUPE_CAPACITY_EVENT_IDS,
+  DEMO_DEDUPE_CAPACITY_INVALID_MAX_ENTRIES_ERROR,
+  DEMO_DEDUPE_CAPACITY_MAX_ENTRIES,
+  DEMO_DEDUPE_CAPACITY_START_MS,
   DEMO_DEDUPE_SNAPSHOT_ENTRIES,
   DEMO_DEDUPE_SNAPSHOT_EVENT_IDS,
   DEMO_DEDUPE_SNAPSHOT_START_MS,
@@ -2562,6 +2566,25 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
       `  same eventId after clear — checkAndRecord: false (new event again, recorded — the reset reopened the window on purpose); stats after re-record: size 1, hits 0, misses 1, evictions 0 (counting restarts from zero)`,
     ),
   );
+  // Dedupe capacity segment: the segment after the clear
+  // segment shows the capacity bound — maxEntries 3, the
+  // fourth distinct id evicts the oldest by LRU, the
+  // evicted id counts as new again, and maxEntries 0 is
+  // rejected at construction.
+  assert.match(
+    out,
+    /Dedupe capacity eviction \(SettlementEventDedupe maxEntries — bounded memory at the receiver\):/,
+  );
+  assert.ok(
+    out.includes(
+      `  eventId ${DEMO_DEDUPE_CAPACITY_EVENT_IDS[3]} — checkAndRecord: false (new event; capacity exceeded, oldest entry ${DEMO_DEDUPE_CAPACITY_EVENT_IDS[0]} evicted by LRU); stats: size 3, hits 1, misses 4, evictions 1`,
+    ),
+  );
+  assert.ok(
+    out.includes(
+      `  invalid capacity rejected: new SettlementEventDedupe({ maxEntries: 0 }) throws "${DEMO_DEDUPE_CAPACITY_INVALID_MAX_ENTRIES_ERROR}"`,
+    ),
+  );
   // Subscribe onError tail: that segment routes a
   // throwing listener's errors to onError — 3 reports with
   // dispatch contexts, a throwing onError swallowed on the
@@ -4359,7 +4382,7 @@ test("demo shows dedupe clear reset: clear drops the recorded id and zeroes the 
       "Dedupe clear reset (SettlementEventDedupe.clear() — explicit window reset):",
     ),
     lines.indexOf(
-      "Subscribe onError error routing (Escrow.subscribe(listener, { onError }) on a branch escrow):",
+      "Dedupe capacity eviction (SettlementEventDedupe maxEntries — bounded memory at the receiver):",
     ) - 1,
   );
   assert.equal(
@@ -4375,7 +4398,7 @@ test("demo dedupe clear segment is deterministic: two runs print byte-identical 
         "Dedupe clear reset (SettlementEventDedupe.clear() — explicit window reset):",
       ),
       ls.indexOf(
-        "Subscribe onError error routing (Escrow.subscribe(listener, { onError }) on a branch escrow):",
+        "Dedupe capacity eviction (SettlementEventDedupe maxEntries — bounded memory at the receiver):",
       ) - 1,
     );
   const a = await runDemo();
@@ -4395,6 +4418,150 @@ test("demo dedupe clear segment is deterministic: two runs print byte-identical 
   assert.deepEqual(
     a.dedupeClearStatsAfterRerecord,
     b.dedupeClearStatsAfterRerecord,
+  );
+});
+
+test("demo shows dedupe capacity eviction: maxEntries 3 evicts the oldest id by LRU, and the evicted id counts as a new event when seen again", async () => {
+  const {
+    dedupeCapacityDedupe,
+    dedupeCapacityVerdicts,
+    dedupeCapacityStatsAfterEviction,
+    dedupeCapacityEvictedRerecord,
+    dedupeCapacityStatsFinal,
+    dedupeCapacityInvalidMaxEntriesError,
+    lines,
+  } = await runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned expectations — written out here from the
+  // documented checkAndRecord / prune semantics in
+  // src/webhooks.ts (a full store evicts the
+  // least-recently-seen id, evictions counted in
+  // stats().evictions; non-positive maxEntries rejected
+  // at construction), never derived by calling the dedupe
+  // to produce them. test/settlementEventDedupe.test.ts
+  // pins the same shape independently (full store, oldest
+  // evicted, evicted id new again, invalid maxEntries
+  // rejected).
+  assert.equal(DEMO_DEDUPE_CAPACITY_MAX_ENTRIES, 3);
+  assert.equal(DEMO_DEDUPE_CAPACITY_START_MS, Date.parse(DEMO_WEBHOOK_AT));
+  assert.deepEqual(dedupeCapacityVerdicts, [
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+  ]);
+  assert.deepEqual(dedupeCapacityStatsAfterEviction, {
+    size: 3,
+    hits: 1,
+    misses: 4,
+    evictions: 1,
+  });
+  assert.equal(dedupeCapacityEvictedRerecord, false);
+  assert.deepEqual(dedupeCapacityStatsFinal, {
+    size: 3,
+    hits: 1,
+    misses: 5,
+    evictions: 2,
+  });
+  assert.equal(dedupeCapacityDedupe.size, 3);
+  assert.equal(
+    dedupeCapacityInvalidMaxEntriesError,
+    DEMO_DEDUPE_CAPACITY_INVALID_MAX_ENTRIES_ERROR,
+  );
+  // Independent cross-check: a fresh maxEntries-3 dedupe
+  // through the library entry points reproduces the same
+  // shape — the demo segment is not self-certifying.
+  const [c1, c2, c3, c4] = DEMO_DEDUPE_CAPACITY_EVENT_IDS;
+  const probe = new SettlementEventDedupe({
+    ttlMs: DEMO_DEDUPE_TTL_MS,
+    maxEntries: DEMO_DEDUPE_CAPACITY_MAX_ENTRIES,
+    now: () => DEMO_DEDUPE_CAPACITY_START_MS,
+  });
+  assert.equal(probe.checkAndRecord(c1), false);
+  assert.equal(probe.checkAndRecord(c1), true);
+  assert.equal(probe.checkAndRecord(c2), false);
+  assert.equal(probe.checkAndRecord(c3), false);
+  assert.equal(probe.checkAndRecord(c4), false);
+  assert.deepEqual(probe.stats(), dedupeCapacityStatsAfterEviction);
+  assert.equal(probe.checkAndRecord(c1), false);
+  assert.deepEqual(probe.stats(), dedupeCapacityStatsFinal);
+  assert.throws(
+    () => new SettlementEventDedupe({ maxEntries: 0 }),
+    new RegExp(
+      DEMO_DEDUPE_CAPACITY_INVALID_MAX_ENTRIES_ERROR.replace(
+        /[.*+?^${}()|[\]\\]/g,
+        "\\$&",
+      ),
+    ),
+  );
+  // The segment follows the dedupe clear segment and
+  // precedes the closing onError segment; it prints its
+  // lines verbatim, and its rejection line is the
+  // segment's last line.
+  const capacityAt = text.indexOf(
+    "Dedupe capacity eviction (SettlementEventDedupe maxEntries — bounded memory at the receiver):",
+  );
+  assert.ok(
+    capacityAt >
+      text.indexOf(
+        "Dedupe clear reset (SettlementEventDedupe.clear() — explicit window reset):",
+      ),
+    "dedupe capacity segment must follow the dedupe clear segment",
+  );
+  for (const line of [
+    `  dedupe (fixed clock ${DEMO_WEBHOOK_AT}, TTL ${DEMO_DEDUPE_TTL_MS} ms, maxEntries 3): eventId ${c1} — checkAndRecord: false (new event), again: true (duplicate); eventIds ${c2}, ${c3} — checkAndRecord: false, false (new events; the store is now full at 3)`,
+    `  eventId ${c4} — checkAndRecord: false (new event; capacity exceeded, oldest entry ${c1} evicted by LRU); stats: size 3, hits 1, misses 4, evictions 1`,
+    `  evicted eventId ${c1} seen again — checkAndRecord: false (new event again — the eviction reopened its dedupe window, the next oldest entry ${c2} evicted in turn); stats: size 3, hits 1, misses 5, evictions 2 (bounded memory, visible in the counters)`,
+    `  invalid capacity rejected: new SettlementEventDedupe({ maxEntries: 0 }) throws "${DEMO_DEDUPE_CAPACITY_INVALID_MAX_ENTRIES_ERROR}"`,
+  ]) {
+    assert.ok(text.includes(line), `missing dedupe capacity line: ${line}`);
+  }
+  const capacitySegment = lines.slice(
+    lines.indexOf(
+      "Dedupe capacity eviction (SettlementEventDedupe maxEntries — bounded memory at the receiver):",
+    ),
+    lines.indexOf(
+      "Subscribe onError error routing (Escrow.subscribe(listener, { onError }) on a branch escrow):",
+    ) - 1,
+  );
+  assert.equal(
+    capacitySegment[capacitySegment.length - 1],
+    `  invalid capacity rejected: new SettlementEventDedupe({ maxEntries: 0 }) throws "${DEMO_DEDUPE_CAPACITY_INVALID_MAX_ENTRIES_ERROR}"`,
+  );
+});
+
+test("demo dedupe capacity segment is deterministic: two runs print byte-identical capacity lines", async () => {
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf(
+        "Dedupe capacity eviction (SettlementEventDedupe maxEntries — bounded memory at the receiver):",
+      ),
+      ls.indexOf(
+        "Subscribe onError error routing (Escrow.subscribe(listener, { onError }) on a branch escrow):",
+      ) - 1,
+    );
+  const a = await runDemo();
+  const b = await runDemo();
+  const segA = segment(a.lines);
+  // Header + the record line + the eviction line + the
+  // re-record line + the rejection line; every value is
+  // derived from the fixed fixtures alone, so no
+  // normalization is needed.
+  assert.equal(segA.length, 5);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(a.dedupeCapacityVerdicts, b.dedupeCapacityVerdicts);
+  assert.deepEqual(
+    a.dedupeCapacityStatsAfterEviction,
+    b.dedupeCapacityStatsAfterEviction,
+  );
+  assert.equal(a.dedupeCapacityEvictedRerecord, b.dedupeCapacityEvictedRerecord);
+  assert.deepEqual(a.dedupeCapacityStatsFinal, b.dedupeCapacityStatsFinal);
+  assert.equal(
+    a.dedupeCapacityInvalidMaxEntriesError,
+    b.dedupeCapacityInvalidMaxEntriesError,
   );
 });
 
