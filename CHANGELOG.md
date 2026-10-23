@@ -63,6 +63,28 @@ version changes.
   override)` row joins the README benchmark table, with the
   whole table refreshed from one real run.
 
+- New benchmark path for the settlement report audit time
+  window: `buildSettlementReport` over the fixed released
+  history (built on fixed timestamps) is checked on every
+  iteration for the three audit time-window fields verbatim —
+  `eventCount` 4, `firstEventAt` `2026-01-01T00:00:00.000Z`,
+  and `lastEventAt` `2026-01-01T00:00:03.000Z` (the run
+  measured ~40,629 ops/sec, ~24.61 µs/op for this row). Outside the
+  timed loop, the golden released report's rendered
+  `Audit: 4 events, 2026-01-01T00:00:00.000Z → 2026-01-01T00:00:03.000Z`
+  line is pinned word for word, and the degenerate empty-history
+  shape (`eventCount` 0, no `firstEventAt` / `lastEventAt` at all —
+  the public API fail-fasts on empty histories by design, so the
+  shape is pinned via a hand-built report object) is pinned to
+  render exactly `Audit: 0 events` with the arrow span omitted. A
+  mutation probe (corrupting the pinned `firstEventAt` expectation)
+  fails the bench at fixture load, confirming the pin is live. No
+  network, no randomness and no wall clock. The
+  `buildSettlementReport audit window
+  (eventCount/firstEventAt/lastEventAt)` row joins the README
+  benchmark table, with the whole table refreshed from one real
+  run.
+
 - New benchmark path for the settlement report
   `releasePath` settlement path: `buildSettlementReport`
   over the fixed released history (built on fixed
