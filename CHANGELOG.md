@@ -18,6 +18,27 @@ version changes.
 
 ### Added
 
+- New benchmark path for `dispatch` with `idempotencyKey`: on a
+  fresh escrow rebuilt every iteration, FUND of the golden 10630
+  with a fresh key k1 at the base instant, the same FUND with k1
+  again (the duplicate delivery — the same state returned, the
+  history untouched at exactly 1 entry, no seq advance), then
+  SUBMIT_MILESTONE with a fresh key k2 (the run measured
+  ~17,068 ops/sec, ~58.59 µs/op for this row). Every iteration
+  checks both k1 dispatches returning FUNDED, the pinned
+  SUBMIT_MILESTONE entry field for field, a history of exactly 2
+  entries, and an intact hash chain. Outside the timed loop, a
+  cross-event key reuse (a SUBMIT_MILESTONE reusing the FUND key)
+  is pinned to the same no-op, and a failed (negative-amount)
+  dispatch is pinned to consume no key — the same key retries
+  successfully after the input is fixed. A mutation probe
+  (corrupting the pinned history-length expectation) fails the
+  bench at fixture load, confirming the pin is live. No network,
+  no randomness and no wall clock. The
+  `dispatch idempotencyKey (key hit/miss)` row joins the README
+  benchmark table, with the whole table refreshed from one real
+  run.
+
 - New demo segment for staged top-up funding: a separate escrow
   (DEMO-ESC-025) is funded in two instalments — the golden 10630
   first, then a 2000 top-up on the FUNDED self-loop — so
