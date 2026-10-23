@@ -18,6 +18,25 @@ version changes.
 
 ### Added
 
+- New demo segment for staged top-up funding: a separate escrow
+  (DEMO-ESC-025) is funded in two instalments — the golden 10630
+  first, then a 2000 top-up on the FUNDED self-loop — so
+  `depositAmountFromHistory` traces 12630 from the two FUND audit
+  entries alone, and the escrow then walks SUBMIT_MILESTONE ->
+  VERIFY_PASS -> RELEASE and is settled at 500 bps with no
+  referral credits, pinning pro fee 631.50 and net 11998.50 with
+  conservation, plus the released report's four party nets
+  (sponsor −12630 / creator +11998.50 / platform +631.50 /
+  referrer 0, inflows 12630, outflows 12630, balanced). The
+  single-FUND golden path never showed staged funding — the
+  payment reality top-ups model — and the summation the audit
+  trail corroborates is asserted by the demo itself (hand-pinned)
+  before printing; the segment sits between the settlement-split
+  and NDJSON round-trip segments, the main chain is untouched,
+  and `DemoResult` gains `topupEscrow`, `topupTracedDeposit`,
+  `topupSettlement` and `topupReport`. Zero network, zero
+  randomness, fixed timestamps. README test count 703 → 705.
+
 - New demo segment for the `calculateDeposit` fee-breakdown
   intermediate: the deposit preview line inlines
   `base × multiplier` as a bare product, so this segment shows

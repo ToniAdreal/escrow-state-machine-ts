@@ -145,6 +145,10 @@ import {
   DEMO_TIMEOUT_OK_URL,
   DEMO_TIMEOUT_TIMED_OUT_ERROR,
   DEMO_TIMEOUT_URL,
+  DEMO_TOPUP_DEPOSIT,
+  DEMO_TOPUP_ESCROW_ID,
+  DEMO_TOPUP_NET,
+  DEMO_TOPUP_PRO_FEE,
   DEMO_TRANSITION_TABLE_EDGE_COUNT,
   DEMO_TRANSITION_TABLE_JSON_BYTES,
   DEMO_UNEXPIRABLE_DEADLINE,
@@ -5704,4 +5708,139 @@ test("demo fee-breakdown segment is deterministic: two runs print byte-identical
   assert.deepEqual(segA, segment(b.lines));
   assert.deepEqual(a.depositBreakdown, b.depositBreakdown);
   assert.deepEqual(a.fractionalDepositBreakdown, b.fractionalDepositBreakdown);
+});
+
+test("demo shows staged top-up: two FUND instalments settle to a 12630 deposit with conserved party nets", async () => {
+  const {
+    topupEscrow,
+    topupTracedDeposit,
+    topupSettlement,
+    topupReport,
+    lines,
+  } = await runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned expectations — written out here from
+  // src/stateMachine.ts's FUNDED self-loop, src/settlementReport.ts's
+  // FUND-total corroboration, and src/settlement.ts's settleRelease
+  // arithmetic on the pinned inputs, never derived by calling the
+  // functions themselves. Independent cross-checks below re-derive
+  // them the caller-visible way.
+  assert.equal(DEMO_TOPUP_ESCROW_ID, "DEMO-ESC-025");
+  assert.equal(DEMO_TOPUP_DEPOSIT, 12630);
+  assert.equal(DEMO_TOPUP_PRO_FEE, 631.5);
+  assert.equal(DEMO_TOPUP_NET, 11998.5);
+  assert.equal(topupEscrow.id, DEMO_TOPUP_ESCROW_ID);
+  assert.equal(topupEscrow.state, "RELEASED");
+  assert.equal(topupEscrow.history.length, 5);
+  const [fundOne, fundTwo] = topupEscrow.history;
+  assert.deepEqual(
+    [fundOne.event, fundOne.from, fundOne.to, fundOne.amount],
+    ["FUND", "CREATED", "FUNDED", 10630],
+  );
+  assert.deepEqual(
+    [fundTwo.event, fundTwo.from, fundTwo.to, fundTwo.amount],
+    ["FUND", "FUNDED", "FUNDED", 2000],
+  );
+  assert.equal(topupTracedDeposit, 12630);
+  assert.deepEqual(topupSettlement, {
+    gross: 12630,
+    proFee: 631.5,
+    referralCredits: 0,
+    net: 11998.5,
+  });
+  // Conservation on the pure split and on the released report.
+  assert.equal(
+    topupSettlement.net + topupSettlement.proFee + topupSettlement.referralCredits,
+    12630,
+  );
+  assert.equal(topupReport.outcome, "released");
+  assert.equal(topupReport.balanced, true);
+  assert.equal(topupReport.totalInflow, 12630);
+  assert.equal(topupReport.totalOutflow, 12630);
+  assert.deepEqual(topupReport.settlement, topupSettlement);
+  const byParty = Object.fromEntries(
+    topupReport.parties.map((p) => [p.party, p.net]),
+  );
+  assert.equal(byParty.sponsor, -12630);
+  assert.equal(byParty.creator, 11998.5);
+  assert.equal(byParty.platform, 631.5);
+  assert.equal(byParty.referrer, 0);
+  assert.equal(byParty.sponsor + byParty.creator + byParty.platform + byParty.referrer, 0);
+  // Independent cross-checks: the caller-visible APIs reproduce the
+  // demo's numbers on the same fixtures.
+  assert.equal(depositAmountFromHistory(topupEscrow.history), 12630);
+  assert.deepEqual(
+    settleRelease({ gross: 12630, proFeeBps: DEMO_PRO_FEE_BPS }),
+    topupSettlement,
+  );
+  // The segment follows the settlement-split segment and precedes
+  // the closing NDJSON round-trip segment, printing all six
+  // detail lines verbatim — and the main chain's own numbers are
+  // untouched by the new escrow.
+  const header =
+    "Staged top-up (a separate escrow, funded in two instalments — the main chain untouched):";
+  const topupAt = text.indexOf(header);
+  assert.ok(topupAt !== -1, "staged top-up segment must be printed");
+  assert.ok(
+    topupAt >
+      text.indexOf(
+        "Settlement split (settleRelease on the main escrow deposit):",
+      ),
+    "staged top-up segment must follow the settlement-split segment",
+  );
+  assert.ok(
+    topupAt <
+      text.indexOf(
+        "Audit history NDJSON round-trip (historyToNdjson / historyFromNdjson on the main escrow history):",
+      ),
+    "staged top-up segment must precede the NDJSON round-trip segment",
+  );
+  assert.ok(
+    text.includes(
+      `  escrow ${DEMO_TOPUP_ESCROW_ID}: FUND 10630 (seq 1, CREATED -> FUNDED) + FUND 2000 (seq 2, FUNDED -> FUNDED, the top-up self-loop) — two FUND audit entries in one trail`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  depositAmountFromHistory -> 12630 (the sum of every FUND amount; the report corroborates against the caller's deposit 12630 at cent precision)",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  then SUBMIT_MILESTONE -> VERIFY_PASS -> RELEASE: final state RELEASED (5 audit entries)`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  settleRelease(gross 12630, proFeeBps 500, referralCredits 0) -> net 11998.5, proFee 631.5",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  conservation: net 11998.5 + proFee 631.5 + referralCredits 0 = 12630 — equals gross 12630 (every part of the staged deposit is accounted for)",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  released report party nets: sponsor -12630 / creator 11998.5 / platform 631.5 / referrer 0 — inflows 12630, outflows 12630, balanced true",
+    ),
+  );
+});
+
+test("demo staged top-up segment is deterministic: two runs print byte-identical segment lines", async () => {
+  const header =
+    "Staged top-up (a separate escrow, funded in two instalments — the main chain untouched):";
+  const segment = (ls: string[]) =>
+    ls.slice(ls.indexOf(header), ls.indexOf(header) + 7);
+  const a = await runDemo();
+  const b = await runDemo();
+  // Header + the six detail lines; every printed value is derived
+  // from the pinned fixtures alone, so no normalization is needed.
+  const segA = segment(a.lines);
+  assert.equal(segA.length, 7);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.equal(a.topupTracedDeposit, b.topupTracedDeposit);
+  assert.deepEqual(a.topupSettlement, b.topupSettlement);
+  assert.deepEqual(a.topupReport, b.topupReport);
 });

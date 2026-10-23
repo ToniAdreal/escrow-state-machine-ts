@@ -114,6 +114,19 @@
  * referral credits, the three parts summing back to the deposit
  * exactly — the same split the settlement report above was built
  * on, shown as the pure function's own input and output.
+ * The demo then shows a staged top-up segment: a separate escrow
+ * (DEMO-ESC-025) is funded in two instalments — the golden 10,630
+ * first, then a 2,000 top-up on the FUNDED self-loop the state
+ * machine has carried since the top-up feature landed — so
+ * `depositAmountFromHistory` traces 12,630 from the two FUND audit
+ * entries alone, and the escrow then walks the same happy path to
+ * RELEASED and is settled at 500 bps: pro fee 631.50, net
+ * 11,998.50, and the released report's four party nets (sponsor
+ * −12,630 / creator +11,998.50 / platform +631.50 / referrer 0)
+ * conserving the deposit exactly. Staged funding is the payment
+ * reality the single-FUND golden path never shows; the deposit
+ * summation the audit trail corroborates is asserted outside the
+ * printing, hand-pinned, and the main escrow's chain is untouched.
  * The demo then shows an audit-history NDJSON round-trip
  * segment: the main escrow's history is exported with
  * `historyToNdjson` (one JSON entry per line, seq order) and read
@@ -1585,6 +1598,54 @@ export const DEMO_TIMEOUT_DELIVERY_ERROR =
 export const DEMO_TIMEOUT_INVALID_ERROR =
   "cannot deliver settlement webhook: timeoutMs must be a positive number, got 0";
 
+/**
+ * Staged top-up fixtures for the demo's staged-funding segment: a
+ * separate escrow (DEMO-ESC-025) funded in two instalments rather
+ * than once. Hand-pinned expectations — written from
+ * src/stateMachine.ts (FUND on FUNDED is the self-loop the top-up
+ * feature added: from == to == FUNDED), from
+ * src/settlementReport.ts's `depositAmountFromHistory` (the sum of
+ * every FUND amount in the audit trail — here the two instalments,
+ * 10630 + 2000), and from src/settlement.ts's documented
+ * arithmetic (proFee = round2(gross * bps / 10000);
+ * net = round2(gross - proFee - referralCredits)), never derived by
+ * calling the functions themselves, and cross-checked against
+ * test/topup.test.ts (the self-loop shape) and
+ * test/fundTotalCentsComparison.test.ts (the FUND-total corroboration
+ * the report build requires):
+ * - 10630 + 2000 = 12630 — the deposit `depositAmountFromHistory`
+ *   traces from the two FUND entries, and the fee inputs below are
+ *   built so `calculateDeposit` yields exactly 12630 as well, so
+ *   the report's FUND-total check corroborates
+ * - gross 12630 at 500 bps -> proFee round2(12630 × 500 / 10000)
+ *   = 631.50; referralCredits 0 -> net round2(12630 − 631.50)
+ *   = 11998.50
+ * - released-report party nets: sponsor −12630 / creator +11998.50 /
+ *   platform +631.50 / referrer 0 — the four nets sum to zero and
+ *   the inflows sum to the deposit (conservation)
+ * Every timestamp is a fixed literal: no network, no randomness,
+ * no wall clock.
+ */
+export const DEMO_TOPUP_ESCROW_ID = "DEMO-ESC-025";
+export const DEMO_TOPUP_FEE_INPUTS: FeeInputs = {
+  creatorPool: 12000,
+  baseFee: 600,
+  complexityMultiplier: 1.0,
+  loyaltyDiscount: 30,
+  oracleFee: 60,
+};
+export const DEMO_TOPUP_FIRST_FUND_AT = "2026-03-04T09:00:00.000Z";
+export const DEMO_TOPUP_FIRST_FUND_AMOUNT = 10630;
+export const DEMO_TOPUP_SECOND_FUND_AT = "2026-03-05T09:00:00.000Z";
+export const DEMO_TOPUP_SECOND_FUND_AMOUNT = 2000;
+export const DEMO_TOPUP_DEPOSIT = 12630;
+export const DEMO_TOPUP_PRO_FEE = 631.5;
+export const DEMO_TOPUP_NET = 11998.5;
+export const DEMO_TOPUP_SUBMIT_AT = "2026-03-06T12:30:00.000Z";
+export const DEMO_TOPUP_VERIFY_AT = "2026-03-07T08:15:00.000Z";
+export const DEMO_TOPUP_VERIFY_EVIDENCE = "demo-oracle-attestation-topup";
+export const DEMO_TOPUP_RELEASE_AT = "2026-03-07T08:16:00.000Z";
+
 const steps: Array<{
   event: EscrowEvent;
   actor: string;
@@ -1919,6 +1980,36 @@ export interface DemoResult {
    * function on this same deposit).
    */
   releaseSettlement: Settlement;
+  /**
+   * The staged top-up escrow (DEMO-ESC-025) after the segment's
+   * chain ran: funded twice (the golden 10630, then the 2000
+   * top-up on the FUNDED self-loop), then SUBMIT_MILESTONE ->
+   * VERIFY_PASS -> RELEASE — RELEASED with 5 audit entries.
+   */
+  topupEscrow: Escrow;
+  /**
+   * Deposit traced from the top-up escrow's audit history alone by
+   * `depositAmountFromHistory`: the sum of the two FUND amounts,
+   * {@link DEMO_TOPUP_DEPOSIT} (12630) — the staged-funding
+   * deposit the report build corroborates.
+   */
+  topupTracedDeposit: number;
+  /**
+   * Pure settlement split of the staged deposit by
+   * `settleRelease` at {@link DEMO_PRO_FEE_BPS} with no referral
+   * credits: gross 12630, proFee 631.5, referralCredits 0, net
+   * 11998.5 — the same split the top-up settlement report below
+   * was built on.
+   */
+  topupSettlement: Settlement;
+  /**
+   * Released settlement report of the staged top-up escrow: the
+   * four party nets (sponsor −12630 / creator +11998.50 /
+   * platform +631.50 / referrer 0) conserve the deposit exactly
+   * — inflows sum to 12630 and every part of the deposit is
+   * accounted for.
+   */
+  topupReport: SettlementReport;
   /**
    * NDJSON export of the main escrow's audit history by
    * `historyToNdjson`: 4 lines, one JSON entry per line in seq
@@ -3923,6 +4014,165 @@ export async function runDemo(): Promise<DemoResult> {
     `  main escrow ${escrow.id}: settleRelease(gross ${releaseSettlement.gross}, proFeeBps ${DEMO_PRO_FEE_BPS}, referralCredits ${releaseSettlement.referralCredits}) -> net ${releaseSettlement.net}, proFee ${releaseSettlement.proFee}`,
     `  conservation: net ${releaseSettlement.net} + proFee ${releaseSettlement.proFee} + referralCredits ${releaseSettlement.referralCredits} = ${releaseSplitSum} — equals gross ${releaseSettlement.gross}, the main escrow deposit (every part of the deposit is accounted for)`,
     `  cross-check: the settlement report above is this same split — creator net ${releaseSettlement.net} (= net), platform net ${releaseSettlement.proFee} (= proFee), referrer net ${releaseSettlement.referralCredits} (= referralCredits)`,
+  );
+
+  // --- Staged top-up: two FUND instalments, then the happy path (closing) ---
+  // The golden path above funds once. Real escrows are often funded
+  // in instalments, and the FUNDED self-loop (#43) plus
+  // depositAmountFromHistory's sum-of-every-FUND semantics exist for
+  // exactly that — but the demo never walked the path. This segment
+  // is a separate escrow (DEMO-ESC-025) and never touches the main
+  // chain: 10630 first, then a 2,000 top-up on the FUNDED self-loop,
+  // then SUBMIT_MILESTONE -> VERIFY_PASS -> RELEASE, settled at
+  // DEMO_PRO_FEE_BPS with no referral credits.
+  // Hand-pinned expectations — written out here from the
+  // documented semantics (stateMachine.ts's FUNDED self-loop,
+  // settlementReport.ts's FUND-total corroboration, settlement.ts's
+  // settleRelease arithmetic), never derived by calling the
+  // functions themselves (the demo tests cross-check the same
+  // numbers against test/topup.test.ts's self-loop shape and
+  // test/fundTotalCentsComparison.test.ts's corroboration shape):
+  //   FUND 10630 (seq 1, CREATED -> FUNDED) +
+  //   FUND 2000 (seq 2, FUNDED -> FUNDED, the top-up edge)
+  //   -> depositAmountFromHistory = 12630
+  //   calculateDeposit on DEMO_TOPUP_FEE_INPUTS -> deposit 12630
+  //   (so the report's FUND-total check corroborates, cent-exact)
+  //   settleRelease(gross 12630, 500 bps) ->
+  //     proFee round2(12630 × 500 / 10000) = 631.5,
+  //     net round2(12630 − 631.5 − 0) = 11998.5
+  //   released report party nets: sponsor −12630 (outflow 12630) /
+  //     creator +11998.5 (inflow net) / platform +631.5 (inflow
+  //     proFee) / referrer 0 — inflows 12630, outflows 12630,
+  //     the four nets summing to zero (conservation)
+  // All dispatches carry fixed `at` literals — no wall clock, no
+  // randomness, no network.
+  const topupFees = calculateDeposit(DEMO_TOPUP_FEE_INPUTS);
+  if (topupFees.deposit !== DEMO_TOPUP_DEPOSIT) {
+    throw new Error(
+      "demo fixture broken: top-up fee inputs do not yield the pinned deposit 12630",
+    );
+  }
+  const topupEscrow = new Escrow(DEMO_TOPUP_ESCROW_ID);
+  const topupSteps: Array<{
+    event: EscrowEvent;
+    actor: string;
+    note: string;
+    at: string;
+    amount?: number;
+    evidence?: string;
+  }> = [
+    {
+      event: "FUND",
+      actor: "sponsor",
+      note: "Deposit locked — first instalment",
+      at: DEMO_TOPUP_FIRST_FUND_AT,
+      amount: DEMO_TOPUP_FIRST_FUND_AMOUNT,
+    },
+    {
+      event: "FUND",
+      actor: "sponsor",
+      note: "Staged top-up — second instalment",
+      at: DEMO_TOPUP_SECOND_FUND_AT,
+      amount: DEMO_TOPUP_SECOND_FUND_AMOUNT,
+    },
+    {
+      event: "SUBMIT_MILESTONE",
+      actor: "creator",
+      note: "Deliverable URLs + IPFS metadata hash",
+      at: DEMO_TOPUP_SUBMIT_AT,
+    },
+    {
+      event: "VERIFY_PASS",
+      actor: "oracle",
+      note: "KPIs validated by oracle",
+      at: DEMO_TOPUP_VERIFY_AT,
+      evidence: DEMO_TOPUP_VERIFY_EVIDENCE,
+    },
+    {
+      event: "RELEASE",
+      actor: "system",
+      note: "Verification passed — release funds",
+      at: DEMO_TOPUP_RELEASE_AT,
+    },
+  ];
+  for (const { event, actor, note, at, amount, evidence } of topupSteps) {
+    topupEscrow.dispatch(event, note, amount, { actor, at, evidence });
+  }
+  if (topupEscrow.state !== "RELEASED" || topupEscrow.history.length !== 5) {
+    throw new Error(
+      "demo fixture broken: top-up escrow did not reach RELEASED with 5 audit entries",
+    );
+  }
+  const [topupFundOne, topupFundTwo] = topupEscrow.history;
+  if (
+    topupFundOne.event !== "FUND" ||
+    topupFundOne.from !== "CREATED" ||
+    topupFundOne.to !== "FUNDED" ||
+    topupFundOne.amount !== DEMO_TOPUP_FIRST_FUND_AMOUNT ||
+    topupFundTwo.event !== "FUND" ||
+    topupFundTwo.from !== "FUNDED" ||
+    topupFundTwo.to !== "FUNDED" ||
+    topupFundTwo.amount !== DEMO_TOPUP_SECOND_FUND_AMOUNT
+  ) {
+    throw new Error(
+      "demo fixture broken: top-up FUND audit entries do not pin the staged shape (10630 then 2000 on the FUNDED self-loop)",
+    );
+  }
+  const topupTracedDeposit = depositAmountFromHistory(topupEscrow.history);
+  if (topupTracedDeposit !== DEMO_TOPUP_DEPOSIT) {
+    throw new Error(
+      "demo fixture broken: depositAmountFromHistory on the top-up history is not the pinned 12630",
+    );
+  }
+  const topupSettlement = settleRelease({
+    gross: topupTracedDeposit,
+    proFeeBps: DEMO_PRO_FEE_BPS,
+  });
+  if (
+    topupSettlement.gross !== DEMO_TOPUP_DEPOSIT ||
+    topupSettlement.proFee !== DEMO_TOPUP_PRO_FEE ||
+    topupSettlement.referralCredits !== 0 ||
+    topupSettlement.net !== DEMO_TOPUP_NET ||
+    topupSettlement.net + topupSettlement.proFee + topupSettlement.referralCredits !==
+      DEMO_TOPUP_DEPOSIT
+  ) {
+    throw new Error(
+      "demo fixture broken: settleRelease on the staged deposit does not pin proFee 631.5 / net 11998.5 with conservation",
+    );
+  }
+  const topupReport = buildSettlementReport({
+    escrowId: topupEscrow.id,
+    history: topupEscrow.history,
+    finalState: topupEscrow.state,
+    deposit: topupFees,
+    settlement: { proFeeBps: DEMO_PRO_FEE_BPS },
+  });
+  const topupByParty = Object.fromEntries(
+    topupReport.parties.map((p) => [p.party, p.net]),
+  );
+  if (
+    topupReport.outcome !== "released" ||
+    topupReport.balanced !== true ||
+    topupByParty.sponsor !== -DEMO_TOPUP_DEPOSIT ||
+    topupByParty.creator !== DEMO_TOPUP_NET ||
+    topupByParty.platform !== DEMO_TOPUP_PRO_FEE ||
+    topupByParty.referrer !== 0 ||
+    topupReport.totalInflow !== DEMO_TOPUP_DEPOSIT ||
+    topupReport.totalOutflow !== DEMO_TOPUP_DEPOSIT
+  ) {
+    throw new Error(
+      "demo fixture broken: top-up released report party nets do not pin sponsor -12630 / creator 11998.5 / platform 631.5 / referrer 0 with conservation",
+    );
+  }
+  lines.push(
+    "",
+    "Staged top-up (a separate escrow, funded in two instalments — the main chain untouched):",
+    `  escrow ${topupEscrow.id}: FUND ${DEMO_TOPUP_FIRST_FUND_AMOUNT} (seq 1, CREATED -> FUNDED) + FUND ${DEMO_TOPUP_SECOND_FUND_AMOUNT} (seq 2, FUNDED -> FUNDED, the top-up self-loop) — two FUND audit entries in one trail`,
+    `  depositAmountFromHistory -> ${topupTracedDeposit} (the sum of every FUND amount; the report corroborates against the caller's deposit ${topupFees.deposit} at cent precision)`,
+    `  then SUBMIT_MILESTONE -> VERIFY_PASS -> RELEASE: final state ${topupEscrow.state} (${topupEscrow.history.length} audit entries)`,
+    `  settleRelease(gross ${topupSettlement.gross}, proFeeBps ${DEMO_PRO_FEE_BPS}, referralCredits ${topupSettlement.referralCredits}) -> net ${topupSettlement.net}, proFee ${topupSettlement.proFee}`,
+    `  conservation: net ${topupSettlement.net} + proFee ${topupSettlement.proFee} + referralCredits ${topupSettlement.referralCredits} = ${topupSettlement.net + topupSettlement.proFee + topupSettlement.referralCredits} — equals gross ${topupSettlement.gross} (every part of the staged deposit is accounted for)`,
+    `  released report party nets: sponsor ${topupByParty.sponsor} / creator ${topupByParty.creator} / platform ${topupByParty.platform} / referrer ${topupByParty.referrer} — inflows ${topupReport.totalInflow}, outflows ${topupReport.totalOutflow}, balanced ${topupReport.balanced}`,
   );
 
   // --- Audit history NDJSON round-trip: historyToNdjson /
@@ -6147,6 +6397,10 @@ export async function runDemo(): Promise<DemoResult> {
     tracedDepositAmount,
     noFundDepositError,
     releaseSettlement,
+    topupEscrow,
+    topupTracedDeposit,
+    topupSettlement,
+    topupReport,
     historyNdjson,
     historyNdjsonLineCount,
     historyNdjsonFirstLine,
