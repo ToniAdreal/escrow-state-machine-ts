@@ -61,6 +61,11 @@ import {
   DEMO_FANOUT_AT,
   DEMO_FANOUT_ENDPOINTS,
   DEMO_FANOUT_EVENT_ID,
+  DEMO_FEE_FRACTIONAL_ADJUSTED_BASE_FEE,
+  DEMO_FEE_FRACTIONAL_DEPOSIT,
+  DEMO_FEE_FRACTIONAL_INPUTS,
+  DEMO_FEE_GOLDEN_ADJUSTED_BASE_FEE,
+  DEMO_FEE_GOLDEN_DEPOSIT,
   DEMO_FRESH_ESCROW_ID,
   DEMO_FRESH_FUND_AT,
   DEMO_MONEY_GUARD_ERROR,
@@ -5626,4 +5631,77 @@ test("demo timeout segment is deterministic: two runs print byte-identical timeo
   assert.equal(a.timeoutInvalidFetchCalls, b.timeoutInvalidFetchCalls);
   assert.deepEqual(a.timeoutOkResult, b.timeoutOkResult);
   assert.equal(a.timeoutOkFetchCalls, b.timeoutOkFetchCalls);
+});
+
+test("demo shows the adjustedBaseFee fee-breakdown segment with pinned expectations", async () => {
+  const {
+    lines,
+    depositBreakdown,
+    fractionalFeeInputs,
+    fractionalDepositBreakdown,
+  } = await runDemo();
+  const text = lines.join("\n");
+
+  // The segment header names the intermediate the deposit preview
+  // line inlines as a bare product.
+  assert.ok(
+    text.includes(
+      "Fee breakdown (calculateDeposit adjustedBaseFee — the intermediate the preview line inlines as a bare product):",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  golden 1.0x: inputs { pool 10000, base 600, mult 1, loyalty 30, oracle 60 } -> adjustedBaseFee = round2(600 × 1) = 600; deposit = round2(10000 + 600 − 30 + 60) = 10630 (equals the components sum, exactly)",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  fractional 1.25x: inputs { pool 10000, base 599.99, mult 1.25, loyalty 30, oracle 60 } -> raw 599.99 × 1.25 = 749.9875, round2 -> adjustedBaseFee = 749.99; deposit = round2(10000 + 749.99 − 30 + 60) = 10779.99 (equals the components sum, exactly)",
+    ),
+  );
+
+  // DemoResult fields mirror the pinned fixtures, independently of
+  // the printed lines: the hand-pinned expectations the demo
+  // itself asserts against before printing.
+  assert.deepEqual(
+    depositBreakdown.adjustedBaseFee,
+    DEMO_FEE_GOLDEN_ADJUSTED_BASE_FEE,
+  );
+  assert.deepEqual(depositBreakdown.deposit, DEMO_FEE_GOLDEN_DEPOSIT);
+  assert.deepEqual(fractionalFeeInputs, DEMO_FEE_FRACTIONAL_INPUTS);
+  assert.deepEqual(
+    fractionalDepositBreakdown.adjustedBaseFee,
+    DEMO_FEE_FRACTIONAL_ADJUSTED_BASE_FEE,
+  );
+  assert.deepEqual(
+    fractionalDepositBreakdown.deposit,
+    DEMO_FEE_FRACTIONAL_DEPOSIT,
+  );
+
+  // Position: the breakdown elaborates the deposit preview, and the
+  // audit trail's dispatch steps only start afterwards.
+  const previewAt = text.indexOf("Deposit preview:");
+  const breakdownAt = text.indexOf(
+    "Fee breakdown (calculateDeposit adjustedBaseFee",
+  );
+  const dispatchAt = text.indexOf("FUND");
+  assert.ok(previewAt !== -1 && breakdownAt !== -1 && dispatchAt !== -1);
+  assert.ok(previewAt < breakdownAt && breakdownAt < dispatchAt);
+});
+
+test("demo fee-breakdown segment is deterministic: two runs print byte-identical segment lines", async () => {
+  const header =
+    "Fee breakdown (calculateDeposit adjustedBaseFee — the intermediate the preview line inlines as a bare product):";
+  const segment = (ls: string[]) =>
+    ls.slice(ls.indexOf(header), ls.indexOf(header) + 3);
+  const a = await runDemo();
+  const b = await runDemo();
+  // Header + the golden line + the fractional line; every printed
+  // value is derived from the pinned fixtures alone, so no
+  // normalization is needed.
+  const segA = segment(a.lines);
+  assert.equal(segA.length, 3);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(a.depositBreakdown, b.depositBreakdown);
+  assert.deepEqual(a.fractionalDepositBreakdown, b.fractionalDepositBreakdown);
 });

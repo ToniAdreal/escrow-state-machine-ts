@@ -18,6 +18,23 @@ version changes.
 
 ### Added
 
+- New demo segment for the `calculateDeposit` fee-breakdown
+  intermediate: the deposit preview line inlines
+  `base × multiplier` as a bare product, so this segment shows
+  the README formula field by field — the golden vector pins
+  `adjustedBaseFee = round2(600 × 1) = 600` with deposit 10630
+  as the exact sum of its components, and a second pinned
+  fractional-multiplier vector (base 599.99 × 1.25, raw product
+  749.9875) pins `adjustedBaseFee = 749.99` with deposit 10779.99
+  as the exact components sum, exercising the `round2`
+  rounding on the intermediate. The demo itself asserts every
+  pinned field before printing (a changed formula or rounding
+  regression fails the demo, not just a test), the segment sits
+  between the deposit preview and the dispatch steps, and
+  `DemoResult` gains `depositBreakdown`, `fractionalFeeInputs`
+  and `fractionalDepositBreakdown`. Zero network, zero
+  randomness, fixed inputs. README test count 701 → 703.
+
 - New demo segment for the receiver-side dedupe capacity
   bound: a `SettlementEventDedupe` with `maxEntries: 3` on a
   fixed clock records four fixed eventIds — the fourth

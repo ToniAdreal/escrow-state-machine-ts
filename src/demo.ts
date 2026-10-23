@@ -400,6 +400,8 @@ import {
   type EscrowSnapshot,
   type EscrowState,
   type ExpireOverdueResult,
+  type FeeBreakdown,
+  type FeeInputs,
   type Quorum,
   type QuorumConfig,
   type QuorumSnapshot,
@@ -1201,6 +1203,29 @@ export const DEMO_DEDUPE_CAPACITY_EVENT_IDS = [
 export const DEMO_DEDUPE_CAPACITY_START_MS = DEMO_DEDUPE_START_MS;
 export const DEMO_DEDUPE_CAPACITY_INVALID_MAX_ENTRIES_ERROR =
   "SettlementEventDedupe: maxEntries must be a positive integer";
+
+/**
+ * Fee-breakdown fixtures for the `adjustedBaseFee` demo segment: the
+ * portfolio golden vector's pinned intermediate (`round2(600 × 1) =
+ * 600`, deposit 10630) plus a fractional-multiplier vector whose raw
+ * product 599.99 × 1.25 = 749.9875 exercises the `round2` rounding on
+ * the intermediate. Hand-pinned expectations — written from the
+ * documented formula in src/feeCalculator.ts:
+ *   adjustedBaseFee = round2(baseFee × complexityMultiplier)
+ *   deposit = round2(creatorPool + adjustedBaseFee − loyaltyDiscount + oracleFee)
+ * The demo itself asserts every field below, outside the printing.
+ */
+export const DEMO_FEE_GOLDEN_ADJUSTED_BASE_FEE = 600;
+export const DEMO_FEE_GOLDEN_DEPOSIT = 10630;
+export const DEMO_FEE_FRACTIONAL_INPUTS: FeeInputs = {
+  creatorPool: 10000,
+  baseFee: 599.99,
+  complexityMultiplier: 1.25,
+  loyaltyDiscount: 30,
+  oracleFee: 60,
+};
+export const DEMO_FEE_FRACTIONAL_ADJUSTED_BASE_FEE = 749.99;
+export const DEMO_FEE_FRACTIONAL_DEPOSIT = 10779.99;
 
 /**
  * Subscribe onError fixtures for the final closing segment:
@@ -2696,6 +2721,25 @@ export interface DemoResult {
    * delivery: exactly 1.
    */
   timeoutOkFetchCalls: number;
+  /**
+   * The `FeeBreakdown` of the portfolio golden vector
+   * (pool 10000, base 600, multiplier 1.0x, loyalty 30,
+   * oracle 60): `adjustedBaseFee` 600, `deposit` 10630 —
+   * the intermediate the deposit preview line inlines as
+   * a bare product, shown here field by field.
+   */
+  depositBreakdown: FeeBreakdown;
+  /**
+   * The pinned `FeeInputs` of the fractional-multiplier
+   * vector: base 599.99 × 1.25 — raw product 749.9875 —
+   * exercising the `round2` rounding on the intermediate.
+   */
+  fractionalFeeInputs: FeeInputs;
+  /**
+   * The `FeeBreakdown` of the fractional vector:
+   * `adjustedBaseFee` 749.99, `deposit` 10779.99.
+   */
+  fractionalDepositBreakdown: FeeBreakdown;
   lines: string[];
 }
 
@@ -2719,6 +2763,53 @@ export async function runDemo(): Promise<DemoResult> {
     `Deposit preview: ${fees.deposit} (pool ${fees.creatorPool} + base ${fees.baseFee}×${fees.complexityMultiplier} − loyalty ${fees.loyaltyDiscount} + oracle ${fees.oracleFee})`,
     "",
   ];
+
+  // --- Fee breakdown: the adjustedBaseFee intermediate (payments) ---
+  // The preview line above inlines `base × multiplier` as a bare
+  // product, but the README's fee formula names the rounded
+  // intermediate `adjustedBaseFee = round2(baseFee ×
+  // complexityMultiplier)` (src/feeCalculator.ts) and the reader can
+  // never match the README formula to the breakdown's fields one by
+  // one from the preview alone. This segment calls `calculateDeposit`
+  // twice: the portfolio golden vector (multiplier 1.0x, no rounding
+  // exercised) and a pinned fractional-multiplier vector (1.25x, raw
+  // product 599.99 × 1.25 = 749.9875, so `round2` actually rounds).
+  // Hand-pinned expectations (see the fixture comment above),
+  // asserted HERE, outside the printing: the golden breakdown's
+  // `adjustedBaseFee` is exactly 600 and its `deposit` is exactly the
+  // sum of its components (10630); the fractional breakdown's
+  // `adjustedBaseFee` is exactly 749.99 and its `deposit` is exactly
+  // the sum of its components (10779.99) — a changed formula, a
+  // rounding regression, or an input drift would fail the demo
+  // itself, not just a test. All inputs pinned, no wall clock, no
+  // randomness, no network.
+  const fractionalFees = calculateDeposit(DEMO_FEE_FRACTIONAL_INPUTS);
+  if (
+    fees.adjustedBaseFee !== DEMO_FEE_GOLDEN_ADJUSTED_BASE_FEE ||
+    fees.deposit !== DEMO_FEE_GOLDEN_DEPOSIT ||
+    fees.creatorPool +
+      fees.adjustedBaseFee -
+      fees.loyaltyDiscount +
+      fees.oracleFee !==
+      fees.deposit ||
+    fractionalFees.adjustedBaseFee !== DEMO_FEE_FRACTIONAL_ADJUSTED_BASE_FEE ||
+    fractionalFees.deposit !== DEMO_FEE_FRACTIONAL_DEPOSIT ||
+    fractionalFees.creatorPool +
+      fractionalFees.adjustedBaseFee -
+      fractionalFees.loyaltyDiscount +
+      fractionalFees.oracleFee !==
+      fractionalFees.deposit
+  ) {
+    throw new Error(
+      "demo fixture broken: calculateDeposit fee breakdown does not match the pinned shape (golden adjustedBaseFee 600 with deposit 10630 as the exact components sum; fractional 1.25x adjustedBaseFee 749.99 with deposit 10779.99 as the exact components sum)",
+    );
+  }
+  lines.push(
+    "",
+    "Fee breakdown (calculateDeposit adjustedBaseFee — the intermediate the preview line inlines as a bare product):",
+    `  golden 1.0x: inputs { pool ${fees.creatorPool}, base ${fees.baseFee}, mult ${fees.complexityMultiplier}, loyalty ${fees.loyaltyDiscount}, oracle ${fees.oracleFee} } -> adjustedBaseFee = round2(600 × 1) = ${fees.adjustedBaseFee}; deposit = round2(${fees.creatorPool} + ${fees.adjustedBaseFee} − ${fees.loyaltyDiscount} + ${fees.oracleFee}) = ${fees.deposit} (equals the components sum, exactly)`,
+    `  fractional 1.25x: inputs { pool ${fractionalFees.creatorPool}, base ${fractionalFees.baseFee}, mult ${fractionalFees.complexityMultiplier}, loyalty ${fractionalFees.loyaltyDiscount}, oracle ${fractionalFees.oracleFee} } -> raw 599.99 × 1.25 = 749.9875, round2 -> adjustedBaseFee = ${fractionalFees.adjustedBaseFee}; deposit = round2(${fractionalFees.creatorPool} + ${fractionalFees.adjustedBaseFee} − ${fractionalFees.loyaltyDiscount} + ${fractionalFees.oracleFee}) = ${fractionalFees.deposit} (equals the components sum, exactly)`,
+  );
 
   for (const { event, actor, note, at, amount, evidence } of steps) {
     const from = escrow.state;
@@ -6004,6 +6095,9 @@ export async function runDemo(): Promise<DemoResult> {
   return {
     escrow,
     report,
+    depositBreakdown: fees,
+    fractionalFeeInputs: DEMO_FEE_FRACTIONAL_INPUTS,
+    fractionalDepositBreakdown: fractionalFees,
     historyChainVerified,
     tamperedChainVerified,
     tamperedFundAmount,
