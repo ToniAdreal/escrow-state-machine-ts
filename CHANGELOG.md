@@ -16,6 +16,23 @@ version changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- `expireOverdueEscrows` now pins the screening `now` as the `at` of
+  every `EXPIRE` audit entry it dispatches
+  (`dispatch("EXPIRE", undefined, undefined, { at: now })`): a fixed
+  screening instant yields identical entries across the batch and across
+  replays — the dispatch-time wall clock no longer leaks into the audit
+  history, closing the honest caveat the demo documented in its source.
+  Pinning inherits dispatch's no-backward-clock rule: a `now` earlier
+  than an escrow's last history entry lands as per-escrow
+  `{ expired: false, error }` and the batch continues (this is the
+  documented behavior of the pinned `at`). JSDoc, README Deadlines
+  section and demo walkthrough updated; the stale caveats in the demo
+  source and tests were replaced with a pinned-`at` assertion
+  (`expireEntry.at === DEMO_STALE_NOW`). `test/expireOverdueAt.test.ts`
+  (10 cases).
+
 ### Added
 
 - `deliverSettlementWebhook` refuses plaintext `http:` by default

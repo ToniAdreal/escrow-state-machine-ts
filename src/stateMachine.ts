@@ -1978,6 +1978,18 @@ export interface ExpireOverdueResult {
  * append-only history. Only overdue (non-terminal, past deadline) escrows
  * are attempted; the result has one entry per attempted escrow, in batch
  * order. The `now` default is the real clock, so unit tests pin it.
+ *
+ * The executor re-uses the SAME `now` as the audit timestamp of every
+ * `EXPIRE` it dispatches (`dispatch("EXPIRE", undefined, undefined,
+ * { at: now })`), so a fixed screening instant yields identical audit
+ * entries across escrows and across replays — the wall clock never
+ * leaks into the history. Pinning inherits dispatch's no-backward-clock
+ * rule: `now` must not be earlier than an escrow's last history entry,
+ * or that escrow lands as `{ expired: false, error: "invalid dispatch
+ * options: at … is earlier than the previous entry's at …" }` and the
+ * batch continues. This is deliberate: the pinned `now` is the
+ * screening instant, and an audit entry can never be older than the
+ * events it follows.
  */
 export function expireOverdueEscrows(
   escrows: readonly Escrow[],
@@ -1985,7 +1997,12 @@ export function expireOverdueEscrows(
 ): ExpireOverdueResult[] {
   return expiredEscrows(escrows, now).map((escrow) => {
     try {
-      escrow.dispatch("EXPIRE");
+      // Pin the screening `now` as the EXPIRE audit entry's `at`: every
+      // entry in the batch carries the same timestamp as the screening
+      // decision, so fixed-`now` tests and replays produce identical
+      // histories. dispatch's own no-backward-clock check still applies
+      // (a backdated `now` lands as a per-escrow error, batch continues).
+      escrow.dispatch("EXPIRE", undefined, undefined, { at: now });
       return { escrow, expired: true };
     } catch (err) {
       return {

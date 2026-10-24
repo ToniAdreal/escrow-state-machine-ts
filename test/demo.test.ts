@@ -1475,9 +1475,8 @@ test("demo deadline watchdog expires the expirable escrow, isolates the VERIFIED
   // History lengths: the failed attempt appended nothing (3 entries
   // stay 3), the successful expiry appended exactly the EXPIRE entry
   // (1 -> 2), and the never-attempted escrow is untouched (1).
-  // The EXPIRE entry's `at` is deliberately NOT asserted: the
-  // executor dispatches without a pinned `at`, so it carries the
-  // dispatch-time wall clock (see the demo fixture comment).
+  // The EXPIRE entry's `at` IS asserted: the executor pins the fixed
+  // screening `now` (DEMO_STALE_NOW), so it is deterministic.
   assert.deepEqual(
     deadlineEscrows.map((e) => e.history.length),
     [3, 2, 1],
@@ -1487,6 +1486,7 @@ test("demo deadline watchdog expires the expirable escrow, isolates the VERIFIED
   assert.equal(expireEntry.event, "EXPIRE");
   assert.equal(expireEntry.from, "FUNDED");
   assert.equal(expireEntry.to, "EXPIRED");
+  assert.equal(expireEntry.at, DEMO_STALE_NOW);
 });
 
 test("demo lines print the deadline watchdog section after the stale screening", async () => {

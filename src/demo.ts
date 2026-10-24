@@ -78,11 +78,11 @@
  * error without blocking the past-deadline FUNDED escrow after it,
  * which expires; the third escrow is stale-only (its deadline is
  * still ahead), so the deadline executor never attempts it — the
- * two watchdog axes pick disjoint subsets of this batch too. One
- * honest caveat: the executor dispatches EXPIRE with no pinned
- * `at`, so its audit entries carry the dispatch-time wall clock;
- * the demo prints no timestamp for those entries, so its printed
- * output stays byte-identical across runs. A stale-patrol section
+ * two watchdog axes pick disjoint subsets of this batch too. The
+ * executor pins the fixed screening `now` as each EXPIRE entry's `at`
+ * (no wall clock enters the audit history); the demo prints no
+ * timestamp for those entries, so its printed output stays
+ * byte-identical across runs. A stale-patrol section
  * then screens five more escrows with `staleEscrows` alone under a
  * patrol budget map (CREATED / FUNDED / RELEASED at 7 days, VERIFIED
  * unmapped): only the long-stuck FUNDED escrow is selected — the
@@ -665,10 +665,10 @@ export const DEMO_FRESH_DEADLINE = "2026-04-01T09:00:00.000Z";
  *   executor never attempts it.
  * Batch order is deliberate: the unexpirable escrow comes FIRST,
  * so its per-item error visibly does not abort the batch.
- * Caveat (see the file header): `expireOverdueEscrows` dispatches
- * EXPIRE without a pinned `at`, so the appended audit entry carries
- * the dispatch-time wall clock — the demo prints no timestamp for
- * it and its printed output stays byte-identical across runs.
+ * The executor pins the fixed screening `now` (DEMO_STALE_NOW) as the
+ * `at` of every EXPIRE audit entry it dispatches, so those entries are
+ * deterministic too — the demo prints no timestamp for them and its
+ * printed output stays byte-identical across runs.
  */
 export const DEMO_UNEXPIRABLE_ESCROW_ID = "DEMO-ESC-007";
 export const DEMO_UNEXPIRABLE_FUND_AT = "2026-03-02T09:00:00.000Z";
@@ -3705,10 +3705,9 @@ export async function runDemo(): Promise<DemoResult> {
   // pre-action batch. The executor then attempts exactly the
   // expired selection: the VERIFIED escrow has no EXPIRE edge, so
   // it lands as a per-item error and the batch continues to the
-  // FUNDED escrow after it, which expires. (The executor dispatches
-  // EXPIRE with no pinned `at` — its audit entries carry the
-  // dispatch-time wall clock, so no timestamp is printed for them;
-  // see the fixture comment.)
+  // FUNDED escrow after it, which expires. (The executor pins the
+  // fixed screening `now` as each EXPIRE entry's `at`, so no wall
+  // clock enters the audit history; see the fixture comment.)
   const unexpirableEscrow = new Escrow(DEMO_UNEXPIRABLE_ESCROW_ID);
   unexpirableEscrow.dispatch("FUND", "Deposit locked (wire received)", 10630, {
     actor: "sponsor",

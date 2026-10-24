@@ -146,10 +146,13 @@
  *      iteration checks result ids in batch order, the success
  *      flags, the absence of errors, the post-states, and the
  *      appended EXPIRE audit entries against those expectations.
- *      (The executors dispatch EXPIRE without an injectable audit
- *      timestamp, so the bench checks states / flags / history
- *      shape — never the appended entry's timestamp, and the
- *      selections themselves use only the injected fixed `now`.)
+ *      (The executor pins the injected fixed `now` as each EXPIRE
+ *      entry's `at`, so the bench could check timestamps — it
+ *      checks states / flags / history shape here, while the
+ *      production action `(e) => e.dispatch("EXPIRE")` used by the
+ *      stale executor still carries the wall clock, so timestamps
+ *      stay out of the shared check shape; the selections
+ *      themselves use only the injected fixed `now`.)
  *  17. settlement event dedupe snapshot restore —
  *      `SettlementEventDedupe.restore(snapshot)` rebuilding a
  *      receiver-side dedupe from a persisted snapshot (the JSON

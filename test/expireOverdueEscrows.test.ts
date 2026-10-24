@@ -19,27 +19,35 @@ import {
 const PAST = new Date("2026-01-01T00:00:00.000Z");
 const FUTURE = new Date("2027-01-01T00:00:00.000Z");
 const NOW = new Date("2026-06-01T00:00:00.000Z");
+// Fixture audit timestamps: pinned strictly before NOW, because
+// expireOverdueEscrows pins the screening `now` as each EXPIRE entry's
+// `at`, and dispatch rejects a backward-moving audit clock.
+const FUND_AT = new Date("2026-01-01T00:00:00.000Z");
+const SUBMIT_AT = new Date("2026-02-01T00:00:00.000Z");
+const VERIFY_AT = new Date("2026-03-01T00:00:00.000Z");
 
 function fundedWithDeadline(id: string, deadline: Date): Escrow {
   const escrow = new Escrow(id);
-  escrow.dispatch("FUND", "initial deposit", 1000);
+  escrow.dispatch("FUND", "initial deposit", 1000, { at: FUND_AT });
   escrow.setDeadline(deadline);
   return escrow;
 }
 
 function verifiedWithDeadline(id: string, deadline: Date): Escrow {
   const escrow = new Escrow(id);
-  escrow.dispatch("FUND", "initial deposit", 1000);
-  escrow.dispatch("SUBMIT_MILESTONE", "milestone done");
-  escrow.dispatch("VERIFY_PASS");
+  escrow.dispatch("FUND", "initial deposit", 1000, { at: FUND_AT });
+  escrow.dispatch("SUBMIT_MILESTONE", "milestone done", undefined, {
+    at: SUBMIT_AT,
+  });
+  escrow.dispatch("VERIFY_PASS", undefined, undefined, { at: VERIFY_AT });
   escrow.setDeadline(deadline);
   return escrow;
 }
 
 function disputedWithDeadline(id: string, deadline: Date): Escrow {
   const escrow = new Escrow(id);
-  escrow.dispatch("FUND", "initial deposit", 1000);
-  escrow.dispatch("DISPUTE", "buyer unhappy");
+  escrow.dispatch("FUND", "initial deposit", 1000, { at: FUND_AT });
+  escrow.dispatch("DISPUTE", "buyer unhappy", undefined, { at: SUBMIT_AT });
   escrow.setDeadline(deadline);
   return escrow;
 }
@@ -124,6 +132,9 @@ describe("expireOverdueEscrows", () => {
     assert.equal(last.event, "EXPIRE");
     assert.equal(last.from, "FUNDED");
     assert.equal(last.to, "EXPIRED");
+    // The EXPIRE entry's `at` is pinned to the screening `now`, not the
+    // wall clock — byte-identical across escrows and replays.
+    assert.equal(last.at, NOW.toISOString());
   });
 
   it("the injectable now controls which escrows count as overdue", () => {

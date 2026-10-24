@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 747 tests, all local
+npm test   # 757 tests, all local
 ```
 
 ## Quickstart
@@ -112,10 +112,10 @@ edge and lands as `{expired: false, error}` without blocking the
 past-deadline `FUNDED` escrow after it, which expires, while the
 stale-only escrow (deadline still ahead) is never attempted, so
 the deadline and stale axes pick disjoint subsets of this batch
-too. (One caveat the demo documents in its source: the executor
-dispatches `EXPIRE` without a pinned `at`, so those audit entries
-carry the dispatch-time wall clock; the demo prints no timestamp
-for them and its printed output stays deterministic.) The demo
+too. (The executor pins the fixed screening `now` as each `EXPIRE`
+entry's `at`, so the appended entries are deterministic too; the
+demo prints no timestamp for them and its printed output stays
+deterministic.) The demo
 then prints an allowed-events listing that runs
 `allowedEvents()` over all 8 states in transition-table order and
 prints one line per state — the query an escrow-list UI or a
@@ -304,6 +304,13 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   batch on the first such escrow — the executor records
   `{ expired: false, error: "invalid transition: EXPIRE from VERIFIED" }`
   for it and keeps going. Failed escrows are left untouched.
+  The executor pins the screening `now` as the `at` of every `EXPIRE`
+  entry it appends (`dispatch("EXPIRE", …, { at: now })`), so a fixed
+  screening instant produces identical audit entries across the batch
+  and across replays — the wall clock never leaks in. (Consequence:
+  `now` must not predate an escrow's last history entry; a backdated
+  `now` lands as a per-escrow `{expired: false, error}` and the batch
+  continues.)
   The deadline rides along in `toJSON()`/`fromJSON()` snapshots (a
   tampered or non-canonical deadline is rejected by snapshot validation).
   A distinct screening is `staleEscrows(escrows, maxAgeByState, now?)`:
@@ -770,7 +777,7 @@ and an empty batch yields an all-zero summary.
 
 ## Reproducibility
 
-`npm test` runs 747 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 757 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
