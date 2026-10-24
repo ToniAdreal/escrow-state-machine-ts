@@ -18,6 +18,18 @@ version changes.
 
 ### Added
 
+- Constructor `EscrowOptions` unknown-field fail-closed: `new Escrow(id,
+  opts)` now rejects any option key outside
+  `requireVerifyEvidence`/`maxDeposit`/`auditKey`/`rolePolicy` with
+  `invalid escrow options: unknown option "<name>"`, checked before any
+  field is consumed — a typo'd `maxDeposit` (e.g. `maxDepost`) can no
+  longer silently disable the deposit-cap risk control. Mirrors the
+  snapshot-side whitelist from #132 on the more dangerous side
+  (constructor options are live risk controls). `Escrow.fromJSON`'s
+  `opts` go through the same constructor, so the restore path is
+  covered too. `test/escrowOptionsUnknownFields.test.ts` (10 cases).
+  README test count updated to the true 739.
+
 - New demo segment "Deposit cap (maxDeposit risk control)": a branch
   escrow (`demo-cap`, `maxDeposit: 10000`) accepts FUND 9000 (locked
   9000), rejects an over-cap FUND 2000 with the exact pinned error

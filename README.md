@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 729 tests, all local
+npm test   # 739 tests, all local
 ```
 
 ## Quickstart
@@ -765,7 +765,7 @@ and an empty batch yields an all-zero summary.
 
 ## Reproducibility
 
-`npm test` runs 729 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 739 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

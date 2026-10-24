@@ -276,6 +276,25 @@ const SNAPSHOT_FIELDS = new Set([
 ]);
 
 /**
+ * Constructor option whitelist for `new Escrow(id, opts)` (fail-closed
+ * strict parsing). A field outside this set is rejected, never silently
+ * dropped: a typo'd `maxDeposit` (e.g. `maxDepost`) would otherwise parse
+ * as "no cap" and quietly disable the deposit-cap risk control. Mirrors
+ * the snapshot-side unknown-field rule from #132 (`SNAPSHOT_FIELDS`),
+ * but on the more dangerous side: constructor options are live risk
+ * controls (deposit cap, verify-evidence gate, audit key, RBAC), so a
+ * misspelled key is worse here than in a snapshot. `Escrow.fromJSON`
+ * funnels its `opts` through the same constructor, so the restore path
+ * gets the same protection.
+ */
+const ESCROW_OPTION_FIELDS = new Set([
+  "requireVerifyEvidence",
+  "maxDeposit",
+  "auditKey",
+  "rolePolicy",
+]);
+
+/**
  * Validate a snapshot's `idempotencyKeys` field into a deduped set.
  *
  * `undefined` means "no keys consumed" (the legacy shape). Otherwise the
@@ -1185,6 +1204,14 @@ export class Escrow {
     if (opts !== undefined) {
       if (typeof opts !== "object" || opts === null || Array.isArray(opts)) {
         throw new Error("invalid escrow options: opts must be an object");
+      }
+      // Unknown option fields fail closed (see ESCROW_OPTION_FIELDS),
+      // checked before any field is consumed so a typo is reported as
+      // itself, not as a missing-field default.
+      for (const key of Object.keys(opts)) {
+        if (!ESCROW_OPTION_FIELDS.has(key)) {
+          throw new Error(`invalid escrow options: unknown option "${key}"`);
+        }
       }
       if (
         opts.requireVerifyEvidence !== undefined &&
