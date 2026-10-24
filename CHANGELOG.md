@@ -1605,6 +1605,21 @@ version changes.
   the other demo repositories: open an issue, never include secrets or
   credentials, with webhook-signing, audit-hash-chain, and
   money-conservation reports especially welcome.
+- `dispatchArbitration` now forwards the full retry-safety surface:
+  `ArbitrationDispatchOptions` widens from `Pick<DispatchOptions,
+  "at" | "actor">` to include `idempotencyKey` and `expectedSeq`, both
+  passed straight through to `Escrow.dispatch`. A timed-out caller can
+  now retry the funds-terminal arbitration call with the same
+  `idempotencyKey` and get a pure no-op instead of
+  `invalid transition: ARBITRATE_RELEASE from RELEASED`. The key is
+  consumed only by a *successful* dispatch — the quorum gate throws
+  before the escrow is touched, so gathering the missing approvals and
+  retrying with the same key works. `expectedSeq` is checked first
+  inside dispatch (before the dedupe), so a stale seq is a loud
+  `dispatch conflict`, never a silent no-op. README FAQ multi-sig
+  options section and JSDoc updated with the guard ordering.
+  `test/arbitrationDispatchOptions.test.ts` (12 cases). README test
+  count updated to the true 769.
 
 ### Fixed
 

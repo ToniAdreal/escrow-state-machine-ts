@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 757 tests, all local
+npm test   # 769 tests, all local
 ```
 
 ## Quickstart
@@ -461,9 +461,16 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   approval is allowed and removes its entries. `src/arbitration.ts` wires the two together:
   `dispatchArbitration(escrow, quorum, outcome)` refuses to dispatch until
   `hasQuorum()` is true and auto-records `quorum <approvals>/<threshold>`
-  in the audit note; an optional final argument forwards an injectable
-  audit timestamp / actor to the arbitration entry (the same `at` /
-  `actor` the plain dispatch accepts). A quorum's collected approvals can survive a
+  in the audit note; an optional final argument forwards retry-safety
+  metadata to the arbitration entry — an injectable audit timestamp /
+  actor (the same `at` / `actor` the plain dispatch accepts) plus an
+  `idempotencyKey` (a repeated, e.g. timed-out, arbitration call with the
+  same key is a pure no-op instead of an `invalid transition` failure;
+  the key is consumed only by a *successful* dispatch — a below-threshold
+  rejection never "uses it up", so the caller can gather approvals and
+  retry) and an `expectedSeq` optimistic-concurrency guard (a stale seq
+  raises `dispatch conflict` loudly instead of no-op'ing through the
+  dedupe). A quorum's collected approvals can survive a
   process restart: `quorum.snapshot()` exports the full approval log
   plus the configuration it was collected under as plain JSON, and
   `restoreQuorum(config, snapshot)` restores it under strict
@@ -777,7 +784,7 @@ and an empty batch yields an all-zero summary.
 
 ## Reproducibility
 
-`npm test` runs 757 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 769 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

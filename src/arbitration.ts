@@ -25,16 +25,36 @@ import type { Quorum } from "./quorum.js";
 export type ArbitrationOutcome = "release" | "refund";
 
 /**
- * Audit metadata forwarded to the arbitration dispatch: the same
- * injectable timestamp (`at`) and caller-asserted actor (`actor`) the
- * plain `Escrow.dispatch` accepts (see {@link DispatchOptions}). The
- * arbitration entry was previously the one audit entry with no
- * injection point — its timestamp always came from the wall clock —
- * so deterministic logs/replays (and the CLI demo) could not pin it.
- * Validation is the dispatch's own: an invalid `at`/`actor` throws
- * before anything is appended.
+ * Audit metadata forwarded to the arbitration dispatch.
+ *
+ * The same injectable timestamp (`at`) and caller-asserted actor
+ * (`actor`) the plain `Escrow.dispatch` accepts (see
+ * {@link DispatchOptions}) — the arbitration entry was previously the
+ * one audit entry with no injection point, so deterministic logs/replays
+ * (and the CLI demo) could not pin it — plus the retry-safety fields:
+ *
+ * - `idempotencyKey`: a duplicate key makes a repeated arbitration
+ *   dispatch a pure no-op (returns the current state, appends nothing).
+ *   The key is consumed only when the arbitration dispatch itself
+ *   succeeds: a quorum-gated rejection throws before the escrow is ever
+ *   touched, so the caller can gather approvals and retry with the same
+ *   key without it being "used up".
+ * - `expectedSeq`: optimistic-concurrency guard. It is checked *first*
+ *   inside the escrow's dispatch — before the idempotency dedupe — so a
+ *   stale seq raises `dispatch conflict: expected seq <n> but escrow is
+ *   at seq <m>` instead of silently no-op'ing through the dedupe. A
+ *   guarded retry must therefore pin the seq the caller actually read;
+ *   a conflict is a pure rejection (no mutation, no key consumed).
+ *
+ * Validation is the dispatch's own: an invalid `at`/`actor`/
+ * `idempotencyKey`/`expectedSeq` throws before anything is appended.
+ * Note the guard ordering documented above — the quorum check itself
+ * always runs before option validation.
  */
-export type ArbitrationDispatchOptions = Pick<DispatchOptions, "at" | "actor">;
+export type ArbitrationDispatchOptions = Pick<
+  DispatchOptions,
+  "at" | "actor" | "idempotencyKey" | "expectedSeq"
+>;
 
 const OUTCOME_EVENTS: Record<ArbitrationOutcome, EscrowEvent> = {
   release: "ARBITRATE_RELEASE",
@@ -53,9 +73,16 @@ const OUTCOME_EVENTS: Record<ArbitrationOutcome, EscrowEvent> = {
  * - On success, dispatches `ARBITRATE_RELEASE` / `ARBITRATE_REFUND` and
  *   automatically records `quorum <approvals>/<threshold>` in the audit
  *   note (appended after the caller's own note when one is given).
- * - `opts` optionally forwards an injectable audit timestamp and/or
- *   actor to that dispatch (see {@link ArbitrationDispatchOptions});
- *   omitting it keeps the exact historical behavior.
+ * - `opts` optionally forwards retry-safety metadata to that dispatch
+ *   (see {@link ArbitrationDispatchOptions}): an injectable audit
+ *   timestamp and/or actor, an `idempotencyKey` that turns a repeated
+ *   (e.g. timed-out) arbitration call into a pure no-op instead of an
+ *   `invalid transition` failure, and/or an `expectedSeq` optimistic-
+ *   concurrency guard. The key is consumed only on a successful
+ *   dispatch — the quorum gate below runs first, so a below-threshold
+ *   rejection never "uses up" the key and the caller can gather
+ *   approvals and retry with the same key. Omitting `opts` keeps the
+ *   exact historical behavior.
  *
  * The escrow's own transition rules still apply: calling from a state
  * other than DISPUTED fails with the usual `invalid transition` error —
