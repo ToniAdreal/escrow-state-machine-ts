@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 769 tests, all local
+npm test   # 777 tests, all local
 ```
 
 ## Quickstart
@@ -590,7 +590,7 @@ if (dedupe.checkAndRecord(payload.eventId)) {
 // ... process the settlement exactly once
 ```
 
-For a whole batch, `buildSettlementWebhooks(buildSettlementReports(inputs), { secret })` pipes the batch report results straight into signed webhooks — one `{ escrowId, webhook }` per settled escrow, an `{ escrowId, error }` per failed entry (forwarded untouched, never blocking later entries), a shared secret and `now`, and a distinct `eventId` per settlement via `eventIdFactory` (default `crypto.randomUUID()`), so receivers deduplicating on `eventId` never drop a settlement as an apparent duplicate.
+For a whole batch, `buildSettlementWebhooks(buildSettlementReports(inputs), { secret })` pipes the batch report results straight into signed webhooks — one `{ escrowId, webhook }` per settled escrow, an `{ escrowId, error }` per failed entry (forwarded untouched, never blocking later entries), a shared secret and `now`, and a distinct `eventId` per settlement via `eventIdFactory` (default `crypto.randomUUID()`), so receivers deduplicating on `eventId` never drop a settlement as an apparent duplicate. A factory bug that repeats an `eventId` is caught in the batch itself: the later report fails as `{ escrowId, error }` with a `duplicate eventId` message, is never signed, and does not block later reports — only successfully signed ids are recorded, so a report whose build fails never claims its id.
 
 `checkAndRecord(eventId)` returns `false` on first sighting and `true`
 for a repeat within the TTL ("true = is a replay"); at exactly `ttlMs`
@@ -784,7 +784,7 @@ and an empty batch yields an all-zero summary.
 
 ## Reproducibility
 
-`npm test` runs 769 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 777 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

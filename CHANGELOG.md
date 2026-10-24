@@ -16,6 +16,24 @@ version changes.
 
 ## [Unreleased]
 
+### Added
+
+- `buildSettlementWebhooks` now detects a repeated `eventId` inside a
+  batch: the batch records the `eventId`s it has successfully signed,
+  and a later report whose factory returns an already-issued id fails
+  as `{ escrowId, error }` with
+  `duplicate eventId "<id>" in batch: eventIds must be unique within
+  a batch` — it is never signed, and later reports are still
+  attempted (per-item isolation). Only issued ids are recorded, so a
+  report whose build fails (empty/non-string factory value,
+  structurally broken report) never claims its id, and forwarded
+  error entries from `buildSettlementReports` consume no id.
+  Previously a factory bug (counter reset, fixed value) shipped two
+  signed webhooks under one `eventId`, and the receiver's
+  `SettlementEventDedupe` would drop the second settlement as an
+  apparent duplicate while the sender believed it delivered.
+  `test/settlementWebhooksBatch.test.ts` (8 cases).
+
 ### Fixed
 
 - `expireOverdueEscrows` now pins the screening `now` as the `at` of

@@ -212,6 +212,175 @@ test("a factory returning an empty eventId fails only that item", () => {
   assert.ok(batch[2].webhook);
 });
 
+test("a factory returning a duplicate eventId fails only the later item, unsigned", () => {
+  const results = buildSettlementReports([
+    inputsFor(released("bw-dup-1")),
+    inputsFor(refunded("bw-dup-2")),
+  ]);
+  const batch = buildSettlementWebhooks(results, {
+    secret: SECRET,
+    now: FIXED_NOW,
+    eventIdFactory: () => "evt-dup",
+  });
+
+  assert.ok(batch[0].webhook);
+  assert.equal(batch[0].webhook?.payload.eventId, "evt-dup");
+  assert.ok(
+    verifySettlementWebhook(batch[0].webhook!.payload, batch[0].webhook!.signature, SECRET),
+  );
+  assert.equal(batch[1].webhook, undefined);
+  assert.match(batch[1].error ?? "", /duplicate eventId "evt-dup" in batch/);
+});
+
+test("a duplicate in the middle does not block the report after it", () => {
+  const results = buildSettlementReports([
+    inputsFor(released("bw-mid-1")),
+    inputsFor(refunded("bw-mid-2")),
+    inputsFor(released("bw-mid-3")),
+  ]);
+  const ids = ["evt-a", "evt-a", "evt-b"];
+  let n = 0;
+  const batch = buildSettlementWebhooks(results, {
+    secret: SECRET,
+    now: FIXED_NOW,
+    eventIdFactory: () => ids[n++],
+  });
+
+  assert.ok(batch[0].webhook);
+  assert.equal(batch[0].webhook?.payload.eventId, "evt-a");
+  assert.equal(batch[1].webhook, undefined);
+  assert.match(batch[1].error ?? "", /duplicate eventId "evt-a" in batch/);
+  assert.ok(batch[2].webhook);
+  assert.equal(batch[2].webhook?.payload.eventId, "evt-b");
+  assert.ok(
+    verifySettlementWebhook(batch[2].webhook!.payload, batch[2].webhook!.signature, SECRET),
+  );
+});
+
+test("a duplicate is still caught across a forwarded error entry (which consumes no eventId)", () => {
+  const open = new Escrow("bw-x-open");
+  open.dispatch("FUND");
+  const results = buildSettlementReports([
+    inputsFor(released("bw-x-1")),
+    inputsFor(open),
+    inputsFor(refunded("bw-x-2")),
+  ]);
+  assert.ok(results[1].error);
+  // The forwarded error entry never calls the factory, so the second
+  // attempted report draws the same "evt-x" as the first — a duplicate.
+  const batch = buildSettlementWebhooks(results, {
+    secret: SECRET,
+    now: FIXED_NOW,
+    eventIdFactory: () => "evt-x",
+  });
+
+  assert.ok(batch[0].webhook);
+  assert.equal(batch[1].webhook, undefined);
+  assert.equal(batch[1].error, results[1].error);
+  assert.equal(batch[2].webhook, undefined);
+  assert.match(batch[2].error ?? "", /duplicate eventId "evt-x" in batch/);
+});
+
+test("a failed build does not claim its eventId: a later report may reuse it", () => {
+  const good = buildSettlementReport(inputsFor(released("bw-reuse-good")));
+  const broken = { escrowId: "bw-reuse-broken" } as unknown as SettlementReport;
+  const batch = buildSettlementWebhooks(
+    [
+      { escrowId: "bw-reuse-broken", report: broken },
+      { escrowId: "bw-reuse-good", report: good },
+    ],
+    { secret: SECRET, now: FIXED_NOW, eventIdFactory: () => "evt-reuse" },
+  );
+
+  assert.equal(batch[0].webhook, undefined);
+  assert.ok(typeof batch[0].error === "string" && batch[0].error.length > 0);
+  assert.ok(!/duplicate eventId/.test(batch[0].error ?? ""));
+  assert.ok(batch[1].webhook);
+  assert.equal(batch[1].webhook?.payload.eventId, "evt-reuse");
+  assert.ok(
+    verifySettlementWebhook(batch[1].webhook!.payload, batch[1].webhook!.signature, SECRET),
+  );
+});
+
+test("an empty factory value does not claim its id, and a later valid duplicate is still caught", () => {
+  const results = buildSettlementReports([
+    inputsFor(released("bw-e-1")),
+    inputsFor(refunded("bw-e-2")),
+    inputsFor(released("bw-e-3")),
+  ]);
+  const ids = ["", "evt-valid", "evt-valid"];
+  let n = 0;
+  const batch = buildSettlementWebhooks(results, {
+    secret: SECRET,
+    now: FIXED_NOW,
+    eventIdFactory: () => ids[n++],
+  });
+
+  assert.equal(batch[0].webhook, undefined);
+  assert.match(batch[0].error ?? "", /'eventId' must be a non-empty string/);
+  assert.ok(batch[1].webhook);
+  assert.equal(batch[1].webhook?.payload.eventId, "evt-valid");
+  assert.equal(batch[2].webhook, undefined);
+  assert.match(batch[2].error ?? "", /duplicate eventId "evt-valid" in batch/);
+});
+
+test("all-distinct factory ids keep the previous batch behaviour exactly", () => {
+  const results = buildSettlementReports([
+    inputsFor(released("bw-ok-1")),
+    inputsFor(refunded("bw-ok-2")),
+    inputsFor(released("bw-ok-3")),
+  ]);
+  const batch = buildSettlementWebhooks(results, {
+    secret: SECRET,
+    now: FIXED_NOW,
+    eventIdFactory: counterFactory(),
+  });
+
+  assert.deepEqual(
+    batch.map((b) => b.webhook?.payload.eventId),
+    ["evt-1", "evt-2", "evt-3"],
+  );
+  for (const entry of batch) {
+    assert.ok(entry.webhook);
+    assert.equal(entry.error, undefined);
+    assert.ok(
+      verifySettlementWebhook(entry.webhook!.payload, entry.webhook!.signature, SECRET),
+    );
+  }
+});
+
+test("the duplicate error message is exact, including the offending id", () => {
+  const results = buildSettlementReports([
+    inputsFor(released("bw-exact-1")),
+    inputsFor(released("bw-exact-2")),
+  ]);
+  const batch = buildSettlementWebhooks(results, {
+    secret: SECRET,
+    now: FIXED_NOW,
+    eventIdFactory: () => "evt-exact",
+  });
+
+  assert.equal(
+    batch[1].error,
+    'duplicate eventId "evt-exact" in batch: eventIds must be unique within a batch',
+  );
+});
+
+test("a non-function eventIdFactory still throws call-level even for a duplicate-prone batch", () => {
+  const results = buildSettlementReports([
+    inputsFor(released("bw-nf-1")),
+    inputsFor(released("bw-nf-2")),
+  ]);
+  assert.throws(
+    () =>
+      buildSettlementWebhooks(results, {
+        secret: SECRET,
+        eventIdFactory: "evt-fixed" as unknown as () => string,
+      }),
+    /'eventIdFactory' must be a function/,
+  );
+});
+
 test("single build behaviour is unchanged (no batch wrapper involved)", () => {
   const report = buildSettlementReport(inputsFor(released("bw-single")));
   const single = buildSettlementWebhook(report, {

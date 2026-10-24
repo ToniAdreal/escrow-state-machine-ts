@@ -244,7 +244,12 @@ export interface BuildSettlementWebhooksOptions {
    * as apparent duplicates. A factory that returns a non-string or
    * empty value fails only that report (the single-build validation
    * runs per report); a non-function value is a call-level
-   * configuration error and throws.
+   * configuration error and throws. A factory that returns an `eventId`
+   * already issued earlier in the same batch is caught here, not by
+   * the receiver: that later report fails as `{ escrowId, error }`
+   * with a `duplicate eventId` message, is never signed, and does not
+   * block later reports (see the `eventId` semantics paragraph on
+   * {@link buildSettlementWebhooks}).
    */
   eventIdFactory?: () => string;
 }
@@ -290,6 +295,19 @@ export type BuildSettlementWebhooksResult =
  * elements are the generation strategy, the secret, and the `now`
  * timestamp, never the value. Each built webhook verifies under the
  * batch secret exactly as a single build does.
+ *
+ * Duplicate detection: the batch keeps the set of `eventId`s it has
+ * already issued (successfully signed) in this call. When the factory
+ * returns an `eventId` already in that set, that report is NOT signed
+ * and instead fails as `{ escrowId, error }` with
+ * `duplicate eventId "<id>" in batch: eventIds must be unique within
+ * a batch`, and later reports are still attempted — the per-item
+ * isolation above applies to duplicates too. Only issued ids are
+ * recorded: a report whose build fails (a non-string/empty factory
+ * value, a structurally broken report) never claims its `eventId`, so
+ * a later report may legitimately reuse that value. Forwarded error
+ * entries from `buildSettlementReports` never call the factory, so
+ * they consume no `eventId` and cannot mask a later duplicate.
  *
  * Pure: building never mutates any report, and this wrapper adds no
  * mutation of its own — the input list and its entries are only read.
@@ -337,6 +355,9 @@ export function buildSettlementWebhooks(
     );
   }
   const eventIdFactory = options.eventIdFactory ?? randomUUID;
+  // eventIds already issued (successfully signed) in this batch only:
+  // a failed build never claims its id, so a later report may reuse it.
+  const issuedEventIds = new Set<string>();
   return results.map((entry) => {
     const escrowId =
       entry !== null &&
@@ -354,11 +375,24 @@ export function buildSettlementWebhooks(
       return { escrowId, error: message };
     }
     try {
+      const eventId = eventIdFactory();
+      // A factory bug (counter reset, fixed value) must not ship two
+      // signed webhooks under one eventId: the receiver's dedupe would
+      // drop the second settlement as an apparent duplicate while the
+      // sender believes it delivered. The duplicate is never signed,
+      // and later entries are still attempted.
+      if (issuedEventIds.has(eventId)) {
+        return {
+          escrowId,
+          error: `duplicate eventId "${eventId}" in batch: eventIds must be unique within a batch`,
+        };
+      }
       const webhook = buildSettlementWebhook(entry.report, {
         secret: options.secret,
         now: options.now,
-        eventId: eventIdFactory(),
+        eventId,
       });
+      issuedEventIds.add(eventId);
       return { escrowId, webhook };
     } catch (err) {
       return {
