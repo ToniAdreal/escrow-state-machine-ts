@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 777 tests, all local
+npm test   # 787 tests, all local
 ```
 
 ## Quickstart
@@ -782,9 +782,21 @@ already cent-rounded figures from each report (aggregates are `round2`
 as well); error entries are counted but never enter the money totals,
 and an empty batch yields an all-zero summary.
 
+For bookkeeping imports, `renderReportCsv(report)` renders the same
+report as CSV — the machine-readable counterpart to `renderReport`'s
+human-readable text, so an importer never has to parse prose lines:
+header `escrowId,outcome,role,inflow,outflow,net`, one row per party in
+fixed sponsor/creator/platform/referrer order (zero-amount parties
+included, never silently absent), amounts at exactly two decimals with
+no thousands separators, and a final `TOTAL` row whose columns are the
+sums over the party rows. String fields follow RFC 4180 escaping
+(comma/quote/newline fields are quoted, inner quotes doubled), and the
+TOTAL row repeats the report's `escrowId`/`outcome` so imports can group
+rows back to their escrow.
+
 ## Reproducibility
 
-`npm test` runs 777 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 787 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

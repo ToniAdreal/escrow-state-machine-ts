@@ -428,6 +428,81 @@ function money(n: number): string {
   );
 }
 
+/**
+ * Format a money figure for CSV output: cent-rounded, exactly two decimals,
+ * and never thousands-separated (a `,` inside a number would be a column
+ * separator). A negative zero rounds to plain `0.00`, never `-0.00`.
+ */
+function csvMoney(n: number): string {
+  const v = round2(n);
+  return (v === 0 ? 0 : v).toFixed(2);
+}
+
+/**
+ * Escape one CSV field per RFC 4180: a field containing a comma, a double
+ * quote, or a line break is wrapped in double quotes, and each double quote
+ * inside it is doubled. Fields without those characters pass through bare.
+ */
+function csvField(value: string): string {
+  if (/[",\r\n]/.test(value)) {
+    return `"${value.replace(/"/g, '""')}"`;
+  }
+  return value;
+}
+
+/**
+ * Render the report as CSV for bookkeeping/reconciliation imports — the
+ * machine-readable counterpart to {@link renderReport}'s human-readable
+ * text, so callers never have to parse prose lines whose format may change.
+ *
+ * Shape (lines joined by `\n`, no trailing newline):
+ * - Header: `escrowId,outcome,role,inflow,outflow,net`.
+ * - One row per party in the report's party order (sponsor, creator,
+ *   platform, referrer), including zero-amount parties, so a row is never
+ *   silently absent from an import. Amounts are cent-rounded with exactly
+ *   two decimals, matching `renderReport`'s cent precision.
+ * - A final `TOTAL` row (`escrowId,outcome,TOTAL,...`) whose inflow/outflow/
+ *   net columns are the sums over the party rows above it — computed from
+ *   the rows themselves, not copied from the report's totals, so the CSV is
+ *   self-consistent even if a hand-built report's totals disagree.
+ *
+ * String fields are RFC 4180-escaped (today's ids/roles/outcomes contain no
+ * special characters; the escaping is pinned anyway so a future id carrying
+ * a comma or quote cannot silently shift columns).
+ */
+export function renderReportCsv(report: SettlementReport): string {
+  const lines: string[] = ["escrowId,outcome,role,inflow,outflow,net"];
+  let totalInflow = 0;
+  let totalOutflow = 0;
+  let totalNet = 0;
+  for (const p of report.parties) {
+    lines.push(
+      [
+        csvField(report.escrowId),
+        csvField(report.outcome),
+        csvField(p.party),
+        csvMoney(p.inflow),
+        csvMoney(p.outflow),
+        csvMoney(p.net),
+      ].join(","),
+    );
+    totalInflow = round2(totalInflow + p.inflow);
+    totalOutflow = round2(totalOutflow + p.outflow);
+    totalNet = round2(totalNet + p.net);
+  }
+  lines.push(
+    [
+      csvField(report.escrowId),
+      csvField(report.outcome),
+      "TOTAL",
+      csvMoney(totalInflow),
+      csvMoney(totalOutflow),
+      csvMoney(totalNet),
+    ].join(","),
+  );
+  return lines.join("\n");
+}
+
 /** Render the report as plain human-readable text. */
 export function renderReport(report: SettlementReport): string {
   const d = report.deposit;

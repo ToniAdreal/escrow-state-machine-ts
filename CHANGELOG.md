@@ -18,6 +18,14 @@ version changes.
 
 ### Added
 
+- `renderReportCsv(report)` renders a settlement report as CSV for
+  bookkeeping/reconciliation imports: header
+  `escrowId,outcome,role,inflow,outflow,net`, one row per party in fixed
+  sponsor/creator/platform/referrer order (zero-amount parties included),
+  amounts at exactly two decimals with no thousands separators, and a
+  final `TOTAL` row summing the party rows; string fields use RFC 4180
+  escaping. `test/settlementReportCsv.test.ts` (10 cases).
+
 - `buildSettlementWebhooks` now detects a repeated `eventId` inside a
   batch: the batch records the `eventId`s it has successfully signed,
   and a later report whose factory returns an already-issued id fails
