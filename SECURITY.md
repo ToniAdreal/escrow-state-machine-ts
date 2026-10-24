@@ -124,7 +124,13 @@ chain described below.
   only 429/5xx/network errors get retries, with a 429 `Retry-After` hint
   honored over the exponential backoff — the hint is clamped to
   `maxRetryDelayMs` (default 60s), so a runaway value cannot park the
-  delivery promise for longer than the cap.
+  delivery promise for longer than the cap. **Plaintext transport is
+  refused by default:** an `http:` endpoint URL throws before any request
+  unless the caller explicitly passes `allowInsecureHttp: true` — the
+  signed payload plus the `X-Signature` header are replayable over the
+  clear, so plaintext delivery is a real replay threat. Honest limit: the
+  refusal only blocks plaintext; it does not validate certificates or
+  pin TLS.
 
 ## Money precision (known limitation)
 

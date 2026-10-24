@@ -950,6 +950,17 @@ export interface DeliverWebhookOptions {
    * applies independently. Any non-`AbortSignal` value is a config error.
    */
   signal?: AbortSignal;
+  /**
+   * Explicit opt-in for plaintext `http://` delivery. Defaults to
+   * `false`: an `http:` endpoint URL is refused before any request is
+   * made, because the settlement payload (full amount breakdown) and the
+   * `X-Signature` header are trivially copyable — and replayable — over
+   * plaintext. Pass `true` for local development loopback servers or
+   * other endpoints you know are safe. `https:` URLs are never gated by
+   * this flag. Honest limit: the refusal only blocks plaintext; it does
+   * not validate certificates or pin TLS.
+   */
+  allowInsecureHttp?: boolean;
 }
 
 /** Result of a successful {@link deliverSettlementWebhook} call. */
@@ -1064,6 +1075,16 @@ function assertDeliverSignalType(signal: unknown): void {
   }
 }
 
+function assertDeliverAllowInsecureHttpType(value: unknown): void {
+  if (value !== undefined && typeof value !== "boolean") {
+    throw new Error(
+      `cannot deliver settlement webhook: allowInsecureHttp must be a boolean, got ${String(
+        value,
+      )}`,
+    );
+  }
+}
+
 /**
  * Validate the numeric delivery options (after defaults are applied).
  * Shared by {@link deliverSettlementWebhook} and the fan-out wrapper,
@@ -1138,6 +1159,13 @@ function assertDeliverOptionValues(
  * request to stop, never retried). Invalid options throw a
  * `cannot deliver settlement webhook: …` config error before any request
  * is made.
+ *
+ * Transport security: `http:` endpoint URLs are refused by default
+ * (`allowInsecureHttp` must be explicitly `true` to opt out) — the
+ * signed settlement payload plus the `X-Signature` header are replayable
+ * over plaintext, so delivery over the clear is a real replay threat.
+ * The refusal only blocks plaintext transport; it does not validate
+ * certificates or pin TLS.
  */
 export async function deliverSettlementWebhook(
   url: string,
@@ -1151,6 +1179,7 @@ export async function deliverSettlementWebhook(
   const signal = options.signal;
 
   assertDeliverSignalType(signal);
+  assertDeliverAllowInsecureHttpType(options.allowInsecureHttp);
   if (signal?.aborted) {
     // Pre-aborted: the caller asked to stop before we started. Zero HTTP
     // attempts, a clear error, no retry.
@@ -1176,6 +1205,17 @@ export async function deliverSettlementWebhook(
       `cannot deliver settlement webhook: unsupported protocol ${JSON.stringify(
         target.protocol,
       )} (http/https only)`,
+    );
+  }
+  if (target.protocol === "http:" && options.allowInsecureHttp !== true) {
+    // Plaintext transport: the signed settlement payload (full amount
+    // breakdown) plus the X-Signature header are copyable — and
+    // replayable — in the clear, exactly the gap #84 (redirect leak)
+    // left on the transport layer. Refuse before any request is made;
+    // the caller opts out explicitly for loopback/dev servers. https:
+    // endpoints are never gated by this flag.
+    throw new Error(
+      "cannot deliver settlement webhook: refusing to POST over plaintext http (pass allowInsecureHttp: true to opt out)",
     );
   }
 
@@ -1269,6 +1309,8 @@ export interface SettlementWebhookEndpoint {
   maxRetryDelayMs?: number;
   /** Per-endpoint override of the call-level `signal`. */
   signal?: AbortSignal;
+  /** Per-endpoint override of the call-level `allowInsecureHttp`. */
+  allowInsecureHttp?: boolean;
 }
 
 /** Options for {@link deliverSettlementWebhookToMany}. */
@@ -1369,6 +1411,7 @@ export async function deliverSettlementWebhookToMany(
   // (Per-endpoint overrides are validated per endpoint, inside the
   // fan-out, so a bad override fails only its own endpoint.)
   assertDeliverSignalType(opts.signal);
+  assertDeliverAllowInsecureHttpType(opts.allowInsecureHttp);
   assertDeliverOptionValues(opts, {
     retries: opts.retries ?? 3,
     backoffMs: opts.backoffMs ?? 1000,
@@ -1409,6 +1452,7 @@ export async function deliverSettlementWebhookToMany(
           timeoutMs: endpoint.timeoutMs ?? opts.timeoutMs,
           maxRetryDelayMs: endpoint.maxRetryDelayMs ?? opts.maxRetryDelayMs,
           signal: endpoint.signal ?? opts.signal,
+          allowInsecureHttp: endpoint.allowInsecureHttp ?? opts.allowInsecureHttp,
         });
         return { url, ok: true, attempts: result.attempts, status: result.status };
       } catch (err) {

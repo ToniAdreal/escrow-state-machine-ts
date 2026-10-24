@@ -123,7 +123,7 @@ test("pre-aborted signal throws immediately with zero HTTP attempts", async () =
   await withServer(okHandler, async (url, received) => {
     const started = Date.now();
     await assert.rejects(
-      () => deliverSettlementWebhook(url, signed, { signal: controller.signal }),
+      () => deliverSettlementWebhook(url, signed, { allowInsecureHttp: true,  signal: controller.signal }),
       /webhook delivery aborted/,
     );
     assert.equal(received(), 0, "no request may be made after a pre-abort");
@@ -148,7 +148,7 @@ test("abort during backoff ends the retry loop far before the backoff", async ()
     const started = Date.now();
     await assert.rejects(
       () =>
-        deliverSettlementWebhook(url, signed, {
+        deliverSettlementWebhook(url, signed, { allowInsecureHttp: true, 
           // Without an abort this would sleep 30s before retry 1.
           retries: 5,
           backoffMs: 30_000,
@@ -180,7 +180,7 @@ test("abort during an in-flight request rejects without retrying", async () => {
       const started = Date.now();
       await assert.rejects(
         () =>
-          deliverSettlementWebhook(url, signed, {
+          deliverSettlementWebhook(url, signed, { allowInsecureHttp: true, 
             retries: 3,
             backoffMs: 10,
             timeoutMs: 30_000,
@@ -215,7 +215,7 @@ test("abort on a retry attempt stops after the attempts already made", async () 
     async (url, received) => {
       await assert.rejects(
         () =>
-          deliverSettlementWebhook(url, signed, {
+          deliverSettlementWebhook(url, signed, { allowInsecureHttp: true, 
             retries: 3,
             backoffMs: 20,
             timeoutMs: 30_000,
@@ -251,7 +251,7 @@ test("abort during a Retry-After wait stops the loop", async () => {
       const started = Date.now();
       await assert.rejects(
         () =>
-          deliverSettlementWebhook(url, signed, {
+          deliverSettlementWebhook(url, signed, { allowInsecureHttp: true, 
             retries: 3,
             backoffMs: 10,
             timeoutMs: 2000,
@@ -273,7 +273,7 @@ test("a signal that never aborts leaves the normal path untouched", async () => 
   const signed = goldenWebhook();
   const controller = new AbortController();
   await withServer(okHandler, async (url, received) => {
-    const result = await deliverSettlementWebhook(url, signed, {
+    const result = await deliverSettlementWebhook(url, signed, { allowInsecureHttp: true, 
       signal: controller.signal,
     });
     assert.deepEqual(result, { status: 200, attempts: 1 });
@@ -293,7 +293,7 @@ test("retries still work when a signal is wired but never aborts", async () => {
       }
     },
     async (url, received) => {
-      const result = await deliverSettlementWebhook(url, signed, {
+      const result = await deliverSettlementWebhook(url, signed, { allowInsecureHttp: true, 
         retries: 3,
         backoffMs: 5,
         timeoutMs: 2000,
@@ -311,7 +311,7 @@ test("non-AbortSignal values are config errors before any request", async () => 
     for (const bad of [{}, "x", null, 123]) {
       await assert.rejects(
         () =>
-          deliverSettlementWebhook(url, signed, {
+          deliverSettlementWebhook(url, signed, { allowInsecureHttp: true, 
             signal: bad as unknown as AbortSignal,
           }),
         /cannot deliver settlement webhook: signal must be an AbortSignal/,

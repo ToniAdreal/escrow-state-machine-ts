@@ -121,7 +121,7 @@ test("two endpoints both 200: shared body, per-endpoint signatures, aggregate co
         { url: a.url, secret: SECRET_A },
         { url: b.url, secret: SECRET_B },
       ],
-      { backoffMs: 1, now: FIXED_NOW, eventId: "evt-fanout-1" },
+      { allowInsecureHttp: true,  backoffMs: 1, now: FIXED_NOW, eventId: "evt-fanout-1" },
     );
     assert.equal(out.delivered, 2);
     assert.equal(out.failed, 0);
@@ -159,7 +159,7 @@ test("secrets do not cross: A's secret cannot verify B's delivery", async () => 
         { url: a.url, secret: SECRET_A },
         { url: b.url, secret: SECRET_B },
       ],
-      { backoffMs: 1, now: FIXED_NOW },
+      { allowInsecureHttp: true,  backoffMs: 1, now: FIXED_NOW },
     );
     const [reqA] = a.received;
     const [reqB] = b.received;
@@ -181,7 +181,7 @@ test("one endpoint persistent 500, other succeeds: input order preserved, failur
         { url: a.url, secret: SECRET_A },
         { url: b.url, secret: SECRET_B },
       ],
-      { retries: 1, backoffMs: 1, now: FIXED_NOW },
+      { allowInsecureHttp: true,  retries: 1, backoffMs: 1, now: FIXED_NOW },
     );
     assert.equal(out.results.length, 2);
     assert.equal(out.results[0].url, a.url);
@@ -227,7 +227,7 @@ test("attempts are counted per endpoint independently", async () => {
         { url: a.url, secret: SECRET_A },
         { url: b.url, secret: SECRET_B },
       ],
-      { backoffMs: 1, now: FIXED_NOW },
+      { allowInsecureHttp: true,  backoffMs: 1, now: FIXED_NOW },
     );
     assert.deepEqual(out.results, [
       { url: a.url, ok: true, attempts: 3, status: 200 },
@@ -246,7 +246,7 @@ test("empty or non-array endpoints throw a configuration error before any reques
   const a = await startServer(ok200);
   try {
     await assert.rejects(
-      () => deliverSettlementWebhookToMany(goldenReport(), [], { now: FIXED_NOW }),
+      () => deliverSettlementWebhookToMany(goldenReport(), [], { allowInsecureHttp: true,  now: FIXED_NOW }),
       /cannot deliver settlement webhook to many endpoints: endpoints must be a non-empty array/,
     );
     await assert.rejects(
@@ -254,7 +254,7 @@ test("empty or non-array endpoints throw a configuration error before any reques
         deliverSettlementWebhookToMany(
           goldenReport(),
           undefined as unknown as [],
-          { now: FIXED_NOW },
+          { allowInsecureHttp: true,  now: FIXED_NOW },
         ),
       /endpoints must be a non-empty array/,
     );
@@ -272,7 +272,7 @@ test("invalid global delivery options throw before any request", async () => {
         deliverSettlementWebhookToMany(
           goldenReport(),
           [{ url: a.url, secret: SECRET_A }],
-          { retries: -1, now: FIXED_NOW },
+          { allowInsecureHttp: true,  retries: -1, now: FIXED_NOW },
         ),
       /cannot deliver settlement webhook: retries must be a non-negative integer/,
     );
@@ -291,7 +291,7 @@ test("invalid URL endpoint marks only itself failed with attempts 0", async () =
         { url: "not a url", secret: SECRET_A },
         { url: b.url, secret: SECRET_B },
       ],
-      { backoffMs: 1, now: FIXED_NOW },
+      { allowInsecureHttp: true,  backoffMs: 1, now: FIXED_NOW },
     );
     assert.equal(out.results[0].ok, false);
     assert.equal(out.results[0].attempts, 0, "no request was attempted");
@@ -315,7 +315,7 @@ test("empty-secret endpoint marks only itself failed with attempts 0", async () 
         { url: a.url, secret: "" },
         { url: b.url, secret: SECRET_B },
       ],
-      { backoffMs: 1, now: FIXED_NOW },
+      { allowInsecureHttp: true,  backoffMs: 1, now: FIXED_NOW },
     );
     assert.equal(out.results[0].ok, false);
     assert.equal(out.results[0].attempts, 0);
@@ -340,7 +340,7 @@ test("per-endpoint retries override applies only to that endpoint", async () => 
         { url: a.url, secret: SECRET_A, retries: 0 },
         { url: b.url, secret: SECRET_B },
       ],
-      { retries: 2, backoffMs: 1, now: FIXED_NOW },
+      { allowInsecureHttp: true,  retries: 2, backoffMs: 1, now: FIXED_NOW },
     );
     assert.equal(out.results[0].attempts, 1, "override: no retries");
     assert.equal(out.results[0].ok, false);
@@ -366,7 +366,7 @@ test("per-endpoint invalid override marks only itself failed with attempts 0", a
         { url: a.url, secret: SECRET_A, retries: -1 },
         { url: b.url, secret: SECRET_B },
       ],
-      { backoffMs: 1, now: FIXED_NOW },
+      { allowInsecureHttp: true,  backoffMs: 1, now: FIXED_NOW },
     );
     assert.equal(out.results[0].ok, false);
     assert.equal(out.results[0].attempts, 0);
@@ -394,7 +394,7 @@ test("400 endpoint is not retried and reports status 400 while the other succeed
         { url: a.url, secret: SECRET_A },
         { url: b.url, secret: SECRET_B },
       ],
-      { retries: 3, backoffMs: 1, now: FIXED_NOW },
+      { allowInsecureHttp: true,  retries: 3, backoffMs: 1, now: FIXED_NOW },
     );
     assert.equal(out.results[0].ok, false);
     assert.equal(out.results[0].attempts, 1);

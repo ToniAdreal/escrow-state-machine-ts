@@ -96,7 +96,7 @@ test("200 success: POSTs JSON with X-Signature matching buildSettlementWebhook",
       res.end("{}");
     },
     async (url, received) => {
-      const result = await deliverSettlementWebhook(url, signed);
+      const result = await deliverSettlementWebhook(url, signed, { allowInsecureHttp: true });
       assert.deepEqual(result, { status: 200, attempts: 1 });
       assert.equal(received.length, 1);
       const [req] = received;
@@ -126,7 +126,7 @@ test("retries 5xx with backoff: two 500s then 200 succeeds on attempt 3", async 
       }
     },
     async (url, received) => {
-      const result = await deliverSettlementWebhook(url, signed, {
+      const result = await deliverSettlementWebhook(url, signed, { allowInsecureHttp: true, 
         retries: 3,
         backoffMs: 5,
         timeoutMs: 5000,
@@ -151,7 +151,7 @@ test("400 is not retried", async () => {
     },
     async (url, received) => {
       await assert.rejects(
-        () => deliverSettlementWebhook(url, signed, { retries: 3, backoffMs: 1 }),
+        () => deliverSettlementWebhook(url, signed, { allowInsecureHttp: true,  retries: 3, backoffMs: 1 }),
         /failed with status 400 \(not retried\)/,
       );
       assert.equal(received.length, 1);
@@ -169,7 +169,7 @@ test("timeout throws a clear error after exhausting retries", async () => {
       const started = Date.now();
       await assert.rejects(
         () =>
-          deliverSettlementWebhook(url, signed, {
+          deliverSettlementWebhook(url, signed, { allowInsecureHttp: true, 
             retries: 1,
             backoffMs: 5,
             timeoutMs: 80,
@@ -195,7 +195,7 @@ test("persistent 500 exhausts retries then throws with the last status", async (
     async (url, received) => {
       await assert.rejects(
         () =>
-          deliverSettlementWebhook(url, signed, {
+          deliverSettlementWebhook(url, signed, { allowInsecureHttp: true, 
             retries: 2,
             backoffMs: 5,
             timeoutMs: 5000,
@@ -218,7 +218,7 @@ test("connection refused is retried as a network error", async () => {
   const signed = goldenWebhook();
   await assert.rejects(
     () =>
-      deliverSettlementWebhook(`http://127.0.0.1:${port}/webhook`, signed, {
+      deliverSettlementWebhook(`http://127.0.0.1:${port}/webhook`, signed, { allowInsecureHttp: true, 
         retries: 1,
         backoffMs: 1,
         timeoutMs: 2000,
@@ -231,27 +231,27 @@ test("invalid delivery options throw config errors before any request", async ()
   const signed = goldenWebhook();
   const deadUrl = "http://127.0.0.1:9/webhook";
   await assert.rejects(
-    () => deliverSettlementWebhook(deadUrl, signed, { retries: -1 }),
+    () => deliverSettlementWebhook(deadUrl, signed, { allowInsecureHttp: true,  retries: -1 }),
     /cannot deliver settlement webhook: retries must be a non-negative integer/,
   );
   await assert.rejects(
-    () => deliverSettlementWebhook(deadUrl, signed, { retries: 1.5 }),
+    () => deliverSettlementWebhook(deadUrl, signed, { allowInsecureHttp: true,  retries: 1.5 }),
     /cannot deliver settlement webhook: retries must be a non-negative integer/,
   );
   await assert.rejects(
-    () => deliverSettlementWebhook(deadUrl, signed, { backoffMs: -1 }),
+    () => deliverSettlementWebhook(deadUrl, signed, { allowInsecureHttp: true,  backoffMs: -1 }),
     /cannot deliver settlement webhook: backoffMs must be a non-negative number/,
   );
   await assert.rejects(
-    () => deliverSettlementWebhook(deadUrl, signed, { timeoutMs: 0 }),
+    () => deliverSettlementWebhook(deadUrl, signed, { allowInsecureHttp: true,  timeoutMs: 0 }),
     /cannot deliver settlement webhook: timeoutMs must be a positive number/,
   );
   await assert.rejects(
-    () => deliverSettlementWebhook("not a url", signed),
+    () => deliverSettlementWebhook("not a url", signed, { allowInsecureHttp: true }),
     /cannot deliver settlement webhook: invalid url/,
   );
   await assert.rejects(
-    () => deliverSettlementWebhook("ftp://example.com/hook", signed),
+    () => deliverSettlementWebhook("ftp://example.com/hook", signed, { allowInsecureHttp: true }),
     /cannot deliver settlement webhook: unsupported protocol/,
   );
 });
@@ -267,7 +267,7 @@ test("backoff between retries is exponential", async () => {
       const started = Date.now();
       await assert.rejects(
         () =>
-          deliverSettlementWebhook(url, signed, {
+          deliverSettlementWebhook(url, signed, { allowInsecureHttp: true, 
             retries: 2,
             backoffMs: 60,
             timeoutMs: 2000,
@@ -299,7 +299,7 @@ test("429 is retried: 429 then 200 succeeds on attempt 2", async () => {
       }
     },
     async (url, received) => {
-      const result = await deliverSettlementWebhook(url, signed, {
+      const result = await deliverSettlementWebhook(url, signed, { allowInsecureHttp: true, 
         retries: 3,
         backoffMs: 1,
         timeoutMs: 5000,
@@ -320,7 +320,7 @@ test("persistent 429 exhausts retries then throws with the last status", async (
     async (url, received) => {
       await assert.rejects(
         () =>
-          deliverSettlementWebhook(url, signed, {
+          deliverSettlementWebhook(url, signed, { allowInsecureHttp: true, 
             retries: 2,
             backoffMs: 1,
             timeoutMs: 5000,
@@ -346,7 +346,7 @@ test("429 Retry-After seconds are honored over backoff", async () => {
     },
     async (url, received) => {
       const started = Date.now();
-      const result = await deliverSettlementWebhook(url, signed, {
+      const result = await deliverSettlementWebhook(url, signed, { allowInsecureHttp: true, 
         retries: 3,
         // Backoff would wait ~1ms; Retry-After says 1s. The server wins.
         backoffMs: 1,
@@ -380,7 +380,7 @@ test("429 Retry-After HTTP-date is honored", async () => {
     },
     async (url, received) => {
       const started = Date.now();
-      const result = await deliverSettlementWebhook(url, signed, {
+      const result = await deliverSettlementWebhook(url, signed, { allowInsecureHttp: true, 
         retries: 3,
         backoffMs: 1,
         timeoutMs: 5000,
@@ -410,7 +410,7 @@ test("unparsable Retry-After falls back to exponential backoff", async () => {
     },
     async (url, received) => {
       const started = Date.now();
-      const result = await deliverSettlementWebhook(url, signed, {
+      const result = await deliverSettlementWebhook(url, signed, { allowInsecureHttp: true, 
         retries: 2,
         // Backoff sleeps: 50ms + 100ms = 150ms. A parsed "banana" would have
         // blown the schedule; falling back keeps delivery fast.
@@ -443,7 +443,7 @@ test("past Retry-After HTTP-date retries immediately (no backoff wait)", async (
     },
     async (url, received) => {
       const started = Date.now();
-      const result = await deliverSettlementWebhook(url, signed, {
+      const result = await deliverSettlementWebhook(url, signed, { allowInsecureHttp: true, 
         retries: 3,
         // A past date must not trigger a 2000ms backoff sleep.
         backoffMs: 2000,
@@ -521,7 +521,7 @@ test("301 redirect is not followed: throws immediately with one attempt", async 
   const signed = goldenWebhook();
   await withRedirectTarget(301, async (url, received, sinkHits) => {
     await assert.rejects(
-      () => deliverSettlementWebhook(url, signed, { retries: 3, backoffMs: 1 }),
+      () => deliverSettlementWebhook(url, signed, { allowInsecureHttp: true,  retries: 3, backoffMs: 1 }),
       /failed with status 301 \(not retried\)/,
     );
     // Exactly one request reached the webhook endpoint; the redirect target
@@ -535,7 +535,7 @@ test("302 redirect is not followed either", async () => {
   const signed = goldenWebhook();
   await withRedirectTarget(302, async (url, received, sinkHits) => {
     await assert.rejects(
-      () => deliverSettlementWebhook(url, signed, { retries: 3, backoffMs: 1 }),
+      () => deliverSettlementWebhook(url, signed, { allowInsecureHttp: true,  retries: 3, backoffMs: 1 }),
       /failed with status 302 \(not retried\)/,
     );
     assert.equal(received.length, 1);
@@ -547,7 +547,7 @@ test("307 redirect is not followed either", async () => {
   const signed = goldenWebhook();
   await withRedirectTarget(307, async (url, received, sinkHits) => {
     await assert.rejects(
-      () => deliverSettlementWebhook(url, signed, { retries: 3, backoffMs: 1 }),
+      () => deliverSettlementWebhook(url, signed, { allowInsecureHttp: true,  retries: 3, backoffMs: 1 }),
       /failed with status 307 \(not retried\)/,
     );
     assert.equal(received.length, 1);
@@ -562,7 +562,7 @@ test("a redirect that resolves to 200 is never reported as a success", async () 
     // attempts: 1 }` from the sink — a successful-delivery lie about a
     // third-party URL. It must throw instead.
     await assert.rejects(
-      () => deliverSettlementWebhook(url, signed),
+      () => deliverSettlementWebhook(url, signed, { allowInsecureHttp: true }),
       /failed with status 301 \(not retried\)/,
     );
     assert.equal(sinkHits(), 0);

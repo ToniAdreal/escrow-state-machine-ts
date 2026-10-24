@@ -18,6 +18,20 @@ version changes.
 
 ### Added
 
+- `deliverSettlementWebhook` refuses plaintext `http:` by default
+  (`DeliverWebhookOptions.allowInsecureHttp`, opt-in): an `http:`
+  endpoint URL throws `refusing to POST over plaintext http` before any
+  request is made — the signed payload plus the `X-Signature` header are
+  replayable over the clear, the remaining transport-layer gap after #84
+  closed the 3xx redirect leak. Check order is URL parse -> protocol
+  whitelist -> https gate; `https:` URLs are never gated; a non-boolean
+  opt-in is a config error. `deliverSettlementWebhookToMany` supports the
+  flag per endpoint (`SettlementWebhookEndpoint.allowInsecureHttp`
+  overrides the call-level value). Honest limit: the refusal only blocks
+  plaintext — no certificate validation, no TLS pinning (README Webhooks
+  and SECURITY.md say so). All loopback-http delivery tests opt in
+  explicitly; `test/webhookHttpsEnforcement.test.ts` (8 cases).
+
 - Constructor `EscrowOptions` unknown-field fail-closed: `new Escrow(id,
   opts)` now rejects any option key outside
   `requireVerifyEvidence`/`maxDeposit`/`auditKey`/`rolePolicy` with

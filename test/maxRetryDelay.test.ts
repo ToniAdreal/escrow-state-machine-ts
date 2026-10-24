@@ -72,7 +72,7 @@ test("429 with a runaway Retry-After is clamped by the default 60s cap", async (
   const stub = stubFetch([json(429, { "retry-after": "31536000" }), json(200)]);
   try {
     const start = Date.now();
-    const result = await deliverSettlementWebhook(URL, goldenWebhook());
+    const result = await deliverSettlementWebhook(URL, goldenWebhook(), { allowInsecureHttp: true });
     const elapsed = Date.now() - start;
     assert.deepEqual(result, { status: 200, attempts: 2 });
     assert.equal(stub.calls(), 2);
@@ -93,7 +93,7 @@ test("explicit smaller maxRetryDelayMs clamps the hint", async () => {
   const stub = stubFetch([json(429, { "retry-after": "31536000" }), json(200)]);
   try {
     const start = Date.now();
-    const result = await deliverSettlementWebhook(URL, goldenWebhook(), {
+    const result = await deliverSettlementWebhook(URL, goldenWebhook(), { allowInsecureHttp: true, 
       maxRetryDelayMs: 400,
     });
     const elapsed = Date.now() - start;
@@ -115,7 +115,7 @@ test("explicit larger maxRetryDelayMs is honored", async () => {
   const stub = stubFetch([json(429, { "retry-after": "31536000" }), json(200)]);
   try {
     const start = Date.now();
-    const result = await deliverSettlementWebhook(URL, goldenWebhook(), {
+    const result = await deliverSettlementWebhook(URL, goldenWebhook(), { allowInsecureHttp: true, 
       maxRetryDelayMs: 2_500,
     });
     const elapsed = Date.now() - start;
@@ -137,7 +137,7 @@ test("maxRetryDelayMs: 0 retries a hinted 429 immediately", async () => {
   const stub = stubFetch([json(429, { "retry-after": "31536000" }), json(200)]);
   try {
     const start = Date.now();
-    const result = await deliverSettlementWebhook(URL, goldenWebhook(), {
+    const result = await deliverSettlementWebhook(URL, goldenWebhook(), { allowInsecureHttp: true, 
       maxRetryDelayMs: 0,
     });
     const elapsed = Date.now() - start;
@@ -158,7 +158,7 @@ test("429 without a Retry-After hint still uses exponential backoff", async () =
   const stub = stubFetch([json(429), json(200)]);
   try {
     const start = Date.now();
-    const result = await deliverSettlementWebhook(URL, goldenWebhook(), {
+    const result = await deliverSettlementWebhook(URL, goldenWebhook(), { allowInsecureHttp: true, 
       backoffMs: 60,
       maxRetryDelayMs: 100_000,
     });
@@ -191,7 +191,7 @@ for (const { name, value } of badValues) {
     const stub = stubFetch([json(200)]);
     try {
       await assert.rejects(
-        deliverSettlementWebhook(URL, goldenWebhook(), {
+        deliverSettlementWebhook(URL, goldenWebhook(), { allowInsecureHttp: true, 
           maxRetryDelayMs: value as number,
         }),
         /cannot deliver settlement webhook: maxRetryDelayMs must be a non-negative number/,
@@ -210,7 +210,7 @@ test("a Retry-After HTTP-date far in the future is also clamped", async () => {
   ]);
   try {
     const start = Date.now();
-    const result = await deliverSettlementWebhook(URL, goldenWebhook(), {
+    const result = await deliverSettlementWebhook(URL, goldenWebhook(), { allowInsecureHttp: true, 
       maxRetryDelayMs: 300,
     });
     const elapsed = Date.now() - start;

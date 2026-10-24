@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 739 tests, all local
+npm test   # 747 tests, all local
 ```
 
 ## Quickstart
@@ -702,7 +702,12 @@ absent or unparsable value falls back to it. The honored hint is clamped to
 immediately without retrying, and redirects are never followed: a 3xx
 response is returned as-is (the signed payload is never re-posted to a
 third-party redirect target), surfacing as `failed with status 301 (not
-retried)` so the caller fixes the endpoint URL. When every attempt fails, the error reads
+retried)` so the caller fixes the endpoint URL. Plaintext `http:` endpoint
+URLs are refused by default with `refusing to POST over plaintext http`
+(the signed payload plus the `X-Signature` header are replayable over the
+clear): pass `allowInsecureHttp: true` to explicitly opt out for local
+loopback/dev servers; `https:` URLs are never gated, and the refusal does
+not validate certificates or pin TLS. When every attempt fails, the error reads
 `webhook delivery to <url> failed after <n> attempts: <last cause>`; a
 per-attempt timeout surfaces as `timed out after <timeoutMs>ms`. An optional
 `signal` (`AbortSignal`) aborts both the in-flight request and any pending
@@ -765,7 +770,7 @@ and an empty batch yields an all-zero summary.
 
 ## Reproducibility
 
-`npm test` runs 739 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 747 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
