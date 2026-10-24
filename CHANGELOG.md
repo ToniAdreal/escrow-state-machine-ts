@@ -1565,6 +1565,22 @@ version changes.
 
 ### Fixed
 
+- `calculateDeposit` now rejects non-finite deposit computations (backlog
+  #545): finite-but-huge inputs (e.g. `complexityMultiplier: 1e308`, which
+  passes the per-field finiteness guard) could overflow the intermediate
+  arithmetic to `Infinity`, and `round2(Infinity)` stays `Infinity` — the
+  old code only checked `deposit < 0` and returned
+  `{ deposit: Infinity }`, which would poison every downstream money sum
+  (settlement ledgers, webhook payloads). The new `!Number.isFinite(deposit)`
+  check fails fast with the explicit error
+  `deposit computation overflowed: inputs too large` (pure function, no
+  partial breakdown escapes). The negative-deposit guard keeps its own
+  error, so the two failure modes stay distinct. README "How precise is
+  the money math?" documents the rejection; eight new tests cover the
+  overflow via multiplier/creatorPool/baseFee, the exact error message,
+  large-but-finite deposits (1e15, 1e306) still accepted, and the golden
+  10630 vector unchanged. README test count updated to the true 729.
+
 - De-flaked the history parser fuzz timing guard: the per-call 50ms
   wall-clock assertion in `historyParserFuzz` shared the load-sensitive
   construction that failed for real in the sibling repos (a 101.6ms

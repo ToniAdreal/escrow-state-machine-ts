@@ -48,5 +48,13 @@ export function calculateDeposit(inputs: FeeInputs): FeeBreakdown {
     inputs.creatorPool + adjustedBaseFee - inputs.loyaltyDiscount + inputs.oracleFee,
   );
   if (deposit < 0) throw new Error("deposit would be negative");
+  // Overflow: finite-but-huge inputs (e.g. complexityMultiplier 1e308) can
+  // push the intermediate arithmetic past Number.MAX_VALUE, and
+  // round2(Infinity) is still Infinity. An infinite deposit would poison
+  // every downstream money sum (buildSettlementReport ledgers, webhook
+  // payloads), so fail fast with an explicit error instead of returning
+  // { deposit: Infinity }.
+  if (!Number.isFinite(deposit))
+    throw new Error("deposit computation overflowed: inputs too large");
   return { ...inputs, adjustedBaseFee, deposit };
 }
