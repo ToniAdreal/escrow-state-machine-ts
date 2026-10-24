@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 793 tests, all local
+npm test   # 799 tests, all local
 ```
 
 ## Quickstart
@@ -709,7 +709,13 @@ controller.abort(); // pending rejects with `webhook delivery aborted`, never re
 
 Semantics: the payload is POSTed as JSON with the `X-Signature` header,
 byte-identical to what `buildSettlementWebhook` signed so the receiver can
-verify it over the raw body. 2xx returns `{ status, attempts }`; 429, 5xx,
+verify it over the raw body. Every attempt also carries an `X-Event-Id`
+header equal to the payload's `eventId` (the same value on every retry),
+so a gateway can deduplicate on the header without parsing the body first.
+The header is a transport hint only — it is not covered by the signature,
+so a receiver must verify the signature and then trust the body's
+`eventId`, never the header, as the deduplication key. 2xx returns
+`{ status, attempts }`; 429, 5xx,
 and network errors (including timeouts) are retried with exponential backoff
 (retry n waits `backoffMs * 2^(n-1)`). A 429 `Retry-After` response header
 (delay seconds or an HTTP-date) takes precedence over the backoff; an
@@ -799,7 +805,7 @@ rows back to their escrow.
 
 ## Reproducibility
 
-`npm test` runs 793 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 799 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

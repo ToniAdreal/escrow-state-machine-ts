@@ -18,6 +18,14 @@ version changes.
 
 ### Added
 
+- `deliverSettlementWebhook` now sends an `X-Event-Id` header on every
+  attempt, equal to the payload's `eventId` (identical across retries;
+  fan-out endpoints each carry the shared logical event's id). The
+  header is a transport-layer deduplication hint only — it is not
+  covered by the signature, so receivers must verify the signature and
+  then trust the body's `eventId`, never the header.
+  `test/webhookEventIdHeader.test.ts` (6 cases).
+
 - `renderReportCsv(report)` renders a settlement report as CSV for
   bookkeeping/reconciliation imports: header
   `escrowId,outcome,role,inflow,outflow,net`, one row per party in fixed

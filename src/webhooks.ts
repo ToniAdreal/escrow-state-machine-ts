@@ -10,7 +10,8 @@
  *
  * Scope honesty (what this is NOT):
  * - Delivery is available via {@link deliverSettlementWebhook}: HTTP POST of
- *   the signed payload with the `X-Signature` header, a per-attempt timeout,
+ *   the signed payload with the `X-Signature` header plus an `X-Event-Id`
+ *   header carrying the payload's `eventId`, a per-attempt timeout,
  *   and exponential-backoff retries on 5xx, 429, and network errors (a 429
  *   `Retry-After` hint is honored; other 4xx are not retried). Multi-endpoint
  *   fan-out is available via {@link deliverSettlementWebhookToMany}.
@@ -1166,6 +1167,15 @@ function assertDeliverOptionValues(
 /**
  * POST the signed webhook to `url` as JSON with the `X-Signature` header.
  *
+ * Every attempt also carries an `X-Event-Id` header whose value is exactly
+ * the payload's `eventId` — the same value on every retry, since retries
+ * re-send the identical webhook. The header exists so a gateway or
+ * receiver that deduplicates on a header can do so without parsing the
+ * body first (and still can when body parsing fails). It is a transport
+ * hint only: it is NOT covered by the signature, which covers the body
+ * alone, so a receiver must still verify the signature and then trust
+ * the body's `eventId`, never the header, as the deduplication key.
+ *
  * The request body is byte-identical to what `buildSettlementWebhook`
  * signed, so the receiver can verify it over the raw bytes.
  *
@@ -1262,7 +1272,14 @@ export async function deliverSettlementWebhook(
     attempts = attempt + 1;
     let response: Response;
     try {
-      response = await postOnce(target, webhook.signature, body, timeoutMs, signal);
+      response = await postOnce(
+        target,
+        webhook.signature,
+        webhook.payload.eventId,
+        body,
+        timeoutMs,
+        signal,
+      );
     } catch (err) {
       if (signal?.aborted) {
         // The caller asked to stop: propagate the abort immediately,
@@ -1522,6 +1539,7 @@ export async function deliverSettlementWebhookToMany(
 async function postOnce(
   target: URL,
   signature: string,
+  eventId: string,
   body: string,
   timeoutMs: number,
   externalSignal?: AbortSignal,
@@ -1553,6 +1571,7 @@ async function postOnce(
       headers: {
         "content-type": "application/json",
         "X-Signature": signature,
+        "X-Event-Id": eventId,
       },
       body,
       signal: controller.signal,
