@@ -1956,6 +1956,16 @@ export interface ExpireOverdueResult {
   expired: boolean;
   /** Set when the EXPIRE dispatch threw; the message of the caught error. */
   error?: string;
+  /**
+   * The EXPIRE audit entry that the successful dispatch appended — a
+   * frozen, detached copy of the escrow's last history entry (the
+   * history getter returns frozen copies, so this is already the
+   * immutable audit record), so an expiry operations report can cite
+   * it (escrow id, from/to state, timestamp) without re-reading
+   * `escrow.history`. Present only when `expired` is true; failed
+   * dispatches leave this absent.
+   */
+  entry?: EscrowHistoryEntry;
 }
 
 /**
@@ -1972,6 +1982,11 @@ export interface ExpireOverdueResult {
  * whole batch on the first such escrow. This executor catches the error
  * per escrow (`expired: false, error: <message>`) and keeps going, so one
  * unexpirable escrow never blocks the rest of the batch.
+ *
+ * Successful outcomes also carry `entry` — a frozen, detached copy of
+ * the EXPIRE audit entry just appended — so a caller can write an
+ * expiry operations report (which escrow, from which state, when)
+ * without re-reading the escrow's history; failures omit it.
  *
  * Same semantics as the manual pattern: nothing auto-migrates. Expiry
  * only happens through an explicit, auditable dispatch that lands in the
@@ -2003,7 +2018,10 @@ export function expireOverdueEscrows(
       // histories. dispatch's own no-backward-clock check still applies
       // (a backdated `now` lands as a per-escrow error, batch continues).
       escrow.dispatch("EXPIRE", undefined, undefined, { at: now });
-      return { escrow, expired: true };
+      // The history getter returns frozen detached copies, so the last
+      // entry is already the immutable audit record of this dispatch.
+      const history = escrow.history;
+      return { escrow, expired: true, entry: history[history.length - 1] };
     } catch (err) {
       return {
         escrow,

@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 787 tests, all local
+npm test   # 793 tests, all local
 ```
 
 ## Quickstart
@@ -298,7 +298,10 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   overdue non-terminal ones in one line — it never mutates or dispatches.
   `expireOverdueEscrows(escrows)` goes one step further and performs the
   explicit `EXPIRE` dispatch per overdue escrow, returning per-escrow
-  `{ escrow, expired, error? }` outcomes. The executor exists because of a
+  `{ escrow, expired, error?, entry? }` outcomes — a successful outcome
+  also carries `entry`, a frozen detached copy of the appended EXPIRE
+  audit entry, so an expiry operations report can cite it without
+  re-reading `escrow.history`; failed outcomes leave it absent. The executor exists because of a
   real trap: `VERIFIED` (and `DISPUTED`) escrows have no `EXPIRE` edge in
   the transition table, so a naive hand-written loop aborts the whole
   batch on the first such escrow — the executor records
@@ -796,7 +799,7 @@ rows back to their escrow.
 
 ## Reproducibility
 
-`npm test` runs 787 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 793 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

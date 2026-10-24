@@ -26,6 +26,14 @@ version changes.
   final `TOTAL` row summing the party rows; string fields use RFC 4180
   escaping. `test/settlementReportCsv.test.ts` (10 cases).
 
+- `ExpireOverdueResult` now carries the appended EXPIRE audit entry on
+  success: `expireOverdueEscrows()` fills `entry` with a frozen,
+  detached copy of the escrow's last history entry (the history getter
+  already returns frozen copies), so an expiry operations report can
+  cite the entry without re-reading `escrow.history`; failed outcomes
+  leave the field absent, preserving the previous result shape.
+  `test/expireOverdueEntry.test.ts` (6 cases).
+
 - `buildSettlementWebhooks` now detects a repeated `eventId` inside a
   batch: the batch records the `eventId`s it has successfully signed,
   and a later report whose factory returns an already-issued id fails
