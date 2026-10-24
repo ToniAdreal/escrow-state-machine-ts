@@ -1293,7 +1293,9 @@ export class Escrow {
    * @param amount Optional deposit amount, accepted ONLY on FUND. Must be a
    *               finite non-negative number (NaN, ±Infinity, negatives, and
    *               non-numbers are rejected with a descriptive error). The
-   *               validated amount is recorded on the FUND history entry.
+   *               validated amount is rounded to cents (`round2`, the
+   *               library's money model) and recorded on the FUND history
+   *               entry — new dispatches never produce sub-cent amounts.
    *               When the escrow was constructed with a `maxDeposit`, a FUND
    *               whose amount would push the locked total above the cap
    *               throws a `deposit cap exceeded` error and appends nothing.
@@ -1511,6 +1513,18 @@ export class Escrow {
     }
     if (event === "FUND" && amount !== undefined) {
       assertNonNegativeMoney("amount", amount);
+      // Cents normalization (backlog #542): the money model is "all
+      // amounts are rounded to cents" (README FAQ / settlementReport),
+      // but FUND used to record the raw caller value verbatim — a 10.005
+      // FUND would land sub-cent in the audit trail and poison
+      // totalFundedAmount's sum (and disagree with calculateDeposit /
+      // settleRelease, which round their own outputs). Normalize here,
+      // after the money validation and before the cap check, so the cap
+      // comparison, the recorded entry, and the settlement math all see
+      // the same cent value. Legacy snapshots with sub-cent amounts are
+      // still accepted by the parsers (fromJSON/fromHistory/NDJSON);
+      // only new dispatches stop producing them.
+      amount = round2(amount);
     }
     // Deposit cap (payments risk control): the cap is checked after the
     // transition and amount validation, before anything is appended, so a

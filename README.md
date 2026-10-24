@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 711 tests, all local
+npm test   # 721 tests, all local
 ```
 
 ## Quickstart
@@ -470,9 +470,12 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   the approvals wired to real signatures.
 
 - **How precise is the money math?**
-  All amounts are rounded to cents (`round2`). Invariant tests assert fund
-  conservation within ±1 cent. This is not big-decimal arithmetic and has
-  not been audited.
+  All amounts are rounded to cents (`round2`). New `dispatch("FUND", …)`
+  amounts are normalized to cents at entry — no new dispatch can produce
+  a sub-cent amount in the audit trail (legacy snapshots with sub-cent
+  amounts are still accepted by the parsers, not re-normalized).
+  Invariant tests assert fund conservation within ±1 cent. This is not
+  big-decimal arithmetic and has not been audited.
 
 - **Can I use this in production?**
   No. `Escrow` is in-memory with no built-in store (snapshots are a JSON
@@ -758,7 +761,7 @@ and an empty batch yields an all-zero summary.
 
 ## Reproducibility
 
-`npm test` runs 711 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 721 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

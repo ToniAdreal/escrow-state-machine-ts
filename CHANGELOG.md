@@ -1574,6 +1574,15 @@ version changes.
   slowdown still fails while a single pause does not. Tests only; no
   behavior change.
 
+- FUND amounts are normalized to cents at dispatch (backlog #542):
+  `dispatch("FUND", …, amount)` now applies the library's `round2` after
+  `assertNonNegativeMoney` and before the deposit-cap check, so the recorded
+  audit entry, the cap comparison, and downstream settlement math all see
+  the same cent value — the README "all amounts are rounded to cents" claim
+  is now true at the dispatch boundary. Parsers (`fromJSON`/`fromHistory`/
+  NDJSON) still accept legacy sub-cent snapshots without re-normalizing
+  them.
+
 ## [0.1.0]
 
 The only version declared in `package.json`. Entries cover the commit
