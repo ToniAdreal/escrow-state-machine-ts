@@ -8,7 +8,7 @@
  * throw. An append-only history gives the "immutable operational audit log".
  */
 
-import { createHash, createHmac } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 
 export type EscrowState =
   | "CREATED"
@@ -861,6 +861,36 @@ function hashHistoryEntry(
 }
 
 /**
+ * Compare two hex digests in constant time. `timingSafeEqual` throws on
+ * length mismatch, and `Buffer.from(x, "hex")` silently drops non-hex
+ * characters, so both guards are applied explicitly: non-hex input, an
+ * odd-length digest, or a length mismatch is simply `false`, never a
+ * throw — a forged digest shape must fail verification, not crash the
+ * caller. Unkeyed chains keep plain `===` (tamper evidence, not a MAC);
+ * this helper exists for the keyed (HMAC) comparison only.
+ */
+function constantTimeHexEqual(
+  expected: string,
+  actual: string | undefined
+): boolean {
+  if (actual === undefined) return false;
+  if (
+    expected.length !== actual.length ||
+    expected.length % 2 !== 0 ||
+    !/^[0-9a-fA-F]+$/.test(expected) ||
+    !/^[0-9a-fA-F]+$/.test(actual)
+  ) {
+    return false;
+  }
+  const expectedBytes = Buffer.from(expected, "hex");
+  const actualBytes = Buffer.from(actual, "hex");
+  return (
+    expectedBytes.length === actualBytes.length &&
+    timingSafeEqual(expectedBytes, actualBytes)
+  );
+}
+
+/**
  * Verify the hash chain of an audit history. Returns `true` when the
  * chain is intact: every entry's `prevHash` matches the previous entry's
  * `hash` (genesis links to {@link GENESIS_PREV_HASH}) and every `hash`
@@ -880,6 +910,9 @@ function hashHistoryEntry(
  * chain returns `false` when a key is supplied (fail-closed both ways).
  * An invalid `key` value itself (empty, or not a string/Buffer) is a
  * caller configuration error and throws, mirroring the constructor.
+ * In keyed mode the stored MAC is compared in constant time, so an
+ * online verifier leaks no per-byte timing signal; unkeyed chains keep
+ * plain `===` (tamper evidence, not a MAC).
  *
  * Note: this checks integrity only, not structure. A re-sequenced or
  * structurally invalid history still needs parseEscrowSnapshot
@@ -900,9 +933,12 @@ export function verifyHistoryChain(
   for (const entry of history) {
     if (entry.prevHash !== expectedPrev) return false;
     const canonical = canonicalHistoryEntry(entry);
-    if (hashHistoryEntry(canonical, entry.prevHash, key) !== entry.hash) {
-      return false;
-    }
+    const expected = hashHistoryEntry(canonical, entry.prevHash, key);
+    const matches =
+      key === undefined
+        ? expected === entry.hash
+        : constantTimeHexEqual(expected, entry.hash);
+    if (!matches) return false;
     expectedPrev = entry.hash!;
   }
   return true;

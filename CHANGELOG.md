@@ -60,6 +60,17 @@ version changes.
 
 ### Fixed
 
+- `verifyHistoryChain` now compares keyed (HMAC) audit-chain digests in
+  constant time (`timingSafeEqual` with a length guard, via a new
+  `constantTimeHexEqual` helper), matching the webhook signature
+  verification in `src/webhooks.ts` and the dataquest-side fix (#541):
+  an online verifier no longer leaks a per-byte timing signal, and a
+  forged digest of the wrong shape (short, long, odd-length, empty, or
+  non-hex) fails verification instead of throwing. Unkeyed chains keep
+  plain `===` (tamper evidence, not a MAC). SECURITY.md keyed-chain
+  section documents the constant-time comparison.
+  `test/historyChainTimingSafe.test.ts` (9 cases).
+
 - `expireOverdueEscrows` now pins the screening `now` as the `at` of
   every `EXPIRE` audit entry it dispatches
   (`dispatch("EXPIRE", undefined, undefined, { at: now })`): a fixed

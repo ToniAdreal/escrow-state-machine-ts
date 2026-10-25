@@ -170,7 +170,10 @@ the JSON then requires the key as well as the data. Verification is
 fail-closed across modes: a keyed chain does not verify without the key or
 with the wrong one (`verifyHistoryChain(history, key)`,
 `Escrow.fromJSON(snapshot, { auditKey })`), and an unkeyed chain does not
-verify when a key is supplied. In keyed mode the residual risks move to
+verify when a key is supplied. In keyed mode the stored MAC is compared
+in constant time (`timingSafeEqual` with a length guard), so an online
+verifier leaks no per-byte timing signal; a forged digest of the wrong
+shape fails verification instead of throwing. In keyed mode the residual risks move to
 the key itself: anyone who obtains the key can rewrite the log and re-MAC
 it, so key generation, storage, and distribution are the caller's
 responsibility — the library never generates, stores, or transmits keys,
