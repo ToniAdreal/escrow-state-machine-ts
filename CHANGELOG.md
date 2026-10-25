@@ -18,6 +18,14 @@ version changes.
 
 ### Added
 
+- CLI demo settlement report JSON import segment (2026-10-25, backlog
+  #597): the demo now shows `parseSettlementReportJson` reading the
+  just-exported report JSON back — the parsed report deep-equals the
+  original and re-renders byte-identically — and a damaged copy with
+  the `parties` field removed rejected with `cannot parse settlement
+  report JSON: parties must be a non-empty array`, so a party-less
+  document never becomes a plausible-looking report. The import is
+  structural validation only, not a re-verification of the audit chain.
 - CLI demo `X-Event-Id` header segment (2026-10-25, backlog #594):
   the demo now shows the transport header `deliverSettlementWebhook`
   carries, over a real loopback server instead of a scripted fake —

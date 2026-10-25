@@ -404,6 +404,7 @@ import {
   isOverdue,
   parseEscrowHistory,
   parseRetryAfter,
+  parseSettlementReportJson,
   renderReport,
   renderReportCsv,
   renderReportJson,
@@ -1832,6 +1833,21 @@ export interface DemoResult {
    */
   reportJson: string;
   /**
+   * `parseSettlementReportJson(reportJson)` on the main settlement
+   * report: the same released report read back from its JSON form —
+   * deep-equal to `report` and re-rendering byte-identically through
+   * `renderReportJson`, as an independent object graph (mutating it
+   * never touches `report`).
+   */
+  reportJsonImported: SettlementReport;
+  /**
+   * The pinned rejection for a damaged report JSON whose `parties`
+   * field is missing: `cannot parse settlement report JSON: parties
+   * must be a non-empty array` — the import fails fast instead of
+   * returning a party-less report.
+   */
+  reportJsonDamagedError: string;
+  /**
    * `verifyHistoryChain` verdict on the main escrow's intact audit
    * history: `true` — every link recomputes, genesis-linked.
    */
@@ -3193,6 +3209,49 @@ export async function runDemo(): Promise<DemoResult> {
     `  ${reportJson}`,
     `  amounts are JSON numbers, not CSV strings: deposit ${parsedDeposit.deposit}, totalInflow ${parsedReport.totalInflow} (a consumer parses numbers, never two-decimal strings)`,
     `  illegal report rejected: totalInflow Infinity -> "${illegalReportError}" (the shape check fails fast instead of serializing Infinity as null)`,
+  );
+
+  // --- Settlement report as JSON, imported back: parseSettlementReportJson ---
+  // The JSON above is the export side; a caller that stored it must be
+  // able to read it back without hand-writing a parser per field. The
+  // import side applies exactly the same shape check in the other
+  // direction, so the demo asserts the full round-trip before printing
+  // it: parsing the exported JSON yields a report deep-equal to the
+  // original that re-renders byte-identically, and a damaged copy with
+  // the `parties` field removed is rejected with the pinned
+  // `cannot parse settlement report JSON: parties must be a non-empty
+  // array` message — a party-less document never becomes a
+  // plausible-looking report. The import is structural validation only,
+  // not a re-verification of the audit chain (that stays with
+  // verifyHistoryChain below); a hand-built document with internally
+  // consistent fields would parse, and the demo does not pretend
+  // otherwise.
+  const importedReport = parseSettlementReportJson(reportJson);
+  const importedReportJson = renderReportJson(importedReport);
+  const damagedParsed = JSON.parse(reportJson) as Record<string, unknown>;
+  delete damagedParsed.parties;
+  const damagedReportJson = JSON.stringify(damagedParsed);
+  let damagedReportError = "";
+  try {
+    parseSettlementReportJson(damagedReportJson);
+  } catch (error) {
+    damagedReportError = error instanceof Error ? error.message : String(error);
+  }
+  if (
+    JSON.stringify(importedReport) !== reportJson ||
+    importedReportJson !== reportJson ||
+    damagedReportError !==
+      "cannot parse settlement report JSON: parties must be a non-empty array"
+  ) {
+    throw new Error(
+      "demo fixture broken: parseSettlementReportJson on the main settlement report does not match the pinned shape (parsed JSON deep-equals the report and re-renders byte-identically, and a copy with the parties field missing is rejected with 'cannot parse settlement report JSON: parties must be a non-empty array')",
+    );
+  }
+  lines.push(
+    "",
+    "Settlement report as JSON, imported back (parseSettlementReportJson — the same released report, read back from storage):",
+    `  round-trip: parseSettlementReportJson(reportJson) deep-equals the report and re-renders byte-identically (escrowId ${importedReport.escrowId}, outcome ${importedReport.outcome})`,
+    `  damaged JSON rejected: parties field missing -> "${damagedReportError}" (the import fails fast instead of returning a party-less report)`,
   );
 
   // --- Audit hash chain: verifyHistoryChain on the history above ---
@@ -6906,6 +6965,8 @@ export async function runDemo(): Promise<DemoResult> {
     report,
     reportCsv,
     reportJson,
+    reportJsonImported: importedReport,
+    reportJsonDamagedError: damagedReportError,
     depositBreakdown: fees,
     fractionalFeeInputs: DEMO_FEE_FRACTIONAL_INPUTS,
     fractionalDepositBreakdown: fractionalFees,

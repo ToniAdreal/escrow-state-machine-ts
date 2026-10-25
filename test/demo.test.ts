@@ -203,6 +203,8 @@ import {
   isOverdue,
   parseEscrowHistory,
   parseRetryAfter,
+  parseSettlementReportJson,
+  renderReportJson,
   restoreQuorum,
   settleRelease,
   stateDiagram,
@@ -432,6 +434,71 @@ test("demo settlement JSON section is deterministic: two runs print the identica
     b.lines.slice(
       b.lines.indexOf(
         "Settlement report as JSON (renderReportJson — the same released report, for APIs and storage):",
+      ),
+      b.lines.indexOf("Audit hash chain (verifyHistoryChain on the main escrow history):"),
+    ),
+  );
+});
+
+test("demo imports the settlement report JSON back between the JSON section and the audit hash chain", async () => {
+  const { report, reportJson, reportJsonImported, reportJsonDamagedError, lines } =
+    await runDemo();
+  const text = lines.join("\n");
+
+  // The import is the inverse of the export above: the same released
+  // report, not a second report — deep-equal and re-rendering
+  // byte-identically, as an independent object graph.
+  assert.deepEqual(reportJsonImported, report);
+  assert.equal(renderReportJson(reportJsonImported), reportJson);
+  assert.notEqual(reportJsonImported, report);
+  assert.notEqual(reportJsonImported.parties[1], report.parties[1]);
+  reportJsonImported.parties[1].inflow = -1;
+  assert.equal(report.parties[1].inflow, 10098.5);
+  // The damaged copy (parties field missing) is rejected verbatim.
+  assert.equal(
+    reportJsonDamagedError,
+    "cannot parse settlement report JSON: parties must be a non-empty array",
+  );
+  // An independent re-parse of the same text agrees with the demo.
+  assert.deepEqual(parseSettlementReportJson(reportJson), report);
+  assert.match(
+    text,
+    /Settlement report as JSON, imported back \(parseSettlementReportJson — the same released report, read back from storage\):/,
+  );
+  assert.ok(
+    text.includes(
+      "  round-trip: parseSettlementReportJson(reportJson) deep-equals the report and re-renders byte-identically (escrowId DEMO-ESC-001, outcome released)",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      '  damaged JSON rejected: parties field missing -> "cannot parse settlement report JSON: parties must be a non-empty array" (the import fails fast instead of returning a party-less report)',
+    ),
+  );
+  // Position: the import follows the JSON export and precedes the
+  // hash chain that verifies the history the report was derived from.
+  const jsonAt = text.indexOf("Settlement report as JSON (renderReportJson");
+  const importedAt = text.indexOf("Settlement report as JSON, imported back");
+  const chainAt = text.indexOf("Audit hash chain (verifyHistoryChain");
+  assert.ok(jsonAt < importedAt && importedAt < chainAt);
+});
+
+test("demo settlement JSON import section is deterministic: two runs print the identical import lines", async () => {
+  const a = await runDemo();
+  const b = await runDemo();
+
+  assert.deepEqual(a.reportJsonImported, b.reportJsonImported);
+  assert.equal(a.reportJsonDamagedError, b.reportJsonDamagedError);
+  assert.deepEqual(
+    a.lines.slice(
+      a.lines.indexOf(
+        "Settlement report as JSON, imported back (parseSettlementReportJson",
+      ),
+      a.lines.indexOf("Audit hash chain (verifyHistoryChain on the main escrow history):"),
+    ),
+    b.lines.slice(
+      b.lines.indexOf(
+        "Settlement report as JSON, imported back (parseSettlementReportJson",
       ),
       b.lines.indexOf("Audit hash chain (verifyHistoryChain on the main escrow history):"),
     ),
