@@ -18,6 +18,14 @@ version changes.
 
 ### Added
 
+- The CLI demo now prints the main settlement report as CSV next to
+  its prose form: `renderReportCsv(report)` on the same released
+  report, with the demo asserting the header
+  `escrowId,outcome,role,inflow,outflow,net`, one row per party, and a
+  `TOTAL` row summing the party rows to the report totals before
+  printing — a mismatch fails the demo instead of printing an
+  inconsistent export. `test/demo.test.ts` (2 cases).
+
 - `renderReportJson(report)` renders a settlement report as JSON for
   programmatic consumers (bookkeeping APIs, databases): `JSON.stringify`
   of the report itself, carrying exactly the `SettlementReport` fields

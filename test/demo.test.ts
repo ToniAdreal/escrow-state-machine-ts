@@ -306,6 +306,63 @@ test("demo lines print the audit hash chain section between the settlement repor
   assert.ok(reportAt < chainAt && chainAt < webhookAt);
 });
 
+test("demo lines print the settlement report as CSV between the text report and the audit hash chain", async () => {
+  const { reportCsv, lines } = await runDemo();
+  const text = lines.join("\n");
+
+  // The CSV is the same released report, not a second report: header,
+  // one row per party in fixed order, and a TOTAL row summing them.
+  assert.equal(
+    reportCsv,
+    [
+      "escrowId,outcome,role,inflow,outflow,net",
+      "DEMO-ESC-001,released,sponsor,0.00,10630.00,-10630.00",
+      "DEMO-ESC-001,released,creator,10098.50,0.00,10098.50",
+      "DEMO-ESC-001,released,platform,531.50,0.00,531.50",
+      "DEMO-ESC-001,released,referrer,0.00,0.00,0.00",
+      "DEMO-ESC-001,released,TOTAL,10630.00,10630.00,0.00",
+    ].join("\n"),
+  );
+  assert.match(
+    text,
+    /Settlement report as CSV \(renderReportCsv — the same released report, for bookkeeping imports\):/,
+  );
+  assert.ok(text.includes("  DEMO-ESC-001,released,creator,10098.50,0.00,10098.50"));
+  assert.ok(text.includes("  DEMO-ESC-001,released,TOTAL,10630.00,10630.00,0.00"));
+  assert.ok(
+    text.includes(
+      "  TOTAL row check: inflow 10630.00 = report totalInflow 10630.00, outflow 10630.00 = report totalOutflow 10630.00, net 0.00 = party nets sum 0.00",
+    ),
+  );
+  // Position: the CSV follows the prose report and precedes the hash
+  // chain that verifies the history the report was derived from.
+  const reportAt = text.indexOf("Settlement report:");
+  const csvAt = text.indexOf("Settlement report as CSV (renderReportCsv");
+  const chainAt = text.indexOf("Audit hash chain (verifyHistoryChain");
+  assert.ok(reportAt < csvAt && csvAt < chainAt);
+});
+
+test("demo settlement CSV section is deterministic: two runs print the identical CSV", async () => {
+  const a = await runDemo();
+  const b = await runDemo();
+
+  assert.equal(a.reportCsv, b.reportCsv);
+  assert.deepEqual(
+    a.lines.slice(
+      a.lines.indexOf(
+        "Settlement report as CSV (renderReportCsv — the same released report, for bookkeeping imports):",
+      ),
+      a.lines.indexOf("Audit hash chain (verifyHistoryChain on the main escrow history):"),
+    ),
+    b.lines.slice(
+      b.lines.indexOf(
+        "Settlement report as CSV (renderReportCsv — the same released report, for bookkeeping imports):",
+      ),
+      b.lines.indexOf("Audit hash chain (verifyHistoryChain on the main escrow history):"),
+    ),
+  );
+});
+
 test("demo builds a settlement webhook from the report and self-verifies it", async () => {
   const { webhook, webhookVerified } = await runDemo();
 

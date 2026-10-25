@@ -404,6 +404,7 @@ import {
   parseEscrowHistory,
   parseRetryAfter,
   renderReport,
+  renderReportCsv,
   restoreQuorum,
   settleRelease,
   staleEscrows,
@@ -1763,6 +1764,14 @@ export interface DemoResult {
   escrow: Escrow;
   report: SettlementReport;
   /**
+   * `renderReportCsv(report)` on the main settlement report: the same
+   * released report as CSV — header
+   * `escrowId,outcome,role,inflow,outflow,net`, one row per party in
+   * fixed sponsor/creator/platform/referrer order, and a final `TOTAL`
+   * row whose inflow/outflow/net columns sum the party rows.
+   */
+  reportCsv: string;
+  /**
    * `verifyHistoryChain` verdict on the main escrow's intact audit
    * history: `true` — every link recomputes, genesis-linked.
    */
@@ -2993,6 +3002,40 @@ export async function runDemo(): Promise<DemoResult> {
   }
   lines.push("", "Settlement report:");
   lines.push(renderReport(report));
+
+  // --- Settlement report as CSV: renderReportCsv ---
+  // The prose report above is for humans; a bookkeeping import must
+  // never have to parse it. The same released report renders as CSV
+  // next to it, so a caller sees the header, the fixed party row
+  // order, and the TOTAL summary row in one place. The demo asserts the
+  // CSV's own shape before printing it: the header verbatim, one row
+  // per party plus header and TOTAL, and a TOTAL row whose three
+  // money columns equal the report's totals (inflow/outflow) and the
+  // party nets' sum — a mismatch fails the demo outright instead of
+  // printing a plausible-looking but inconsistent export.
+  const reportCsv = renderReportCsv(report);
+  const reportCsvLines = reportCsv.split("\n");
+  const reportCsvTotal = reportCsvLines[reportCsvLines.length - 1].split(",");
+  const reportCsvNetSum =
+    Math.round(report.parties.reduce((sum, p) => sum + p.net, 0) * 100) / 100;
+  if (
+    reportCsvLines[0] !== "escrowId,outcome,role,inflow,outflow,net" ||
+    reportCsvLines.length !== report.parties.length + 2 ||
+    reportCsvTotal[2] !== "TOTAL" ||
+    reportCsvTotal[3] !== report.totalInflow.toFixed(2) ||
+    reportCsvTotal[4] !== report.totalOutflow.toFixed(2) ||
+    reportCsvTotal[5] !== reportCsvNetSum.toFixed(2)
+  ) {
+    throw new Error(
+      "demo fixture broken: renderReportCsv on the main settlement report does not match the pinned shape (header escrowId,outcome,role,inflow,outflow,net, one row per party, and a TOTAL row summing the party rows to the report totals)",
+    );
+  }
+  lines.push(
+    "",
+    "Settlement report as CSV (renderReportCsv — the same released report, for bookkeeping imports):",
+    ...reportCsvLines.map((line) => `  ${line}`),
+    `  TOTAL row check: inflow ${reportCsvTotal[3]} = report totalInflow ${report.totalInflow.toFixed(2)}, outflow ${reportCsvTotal[4]} = report totalOutflow ${report.totalOutflow.toFixed(2)}, net ${reportCsvTotal[5]} = party nets sum ${reportCsvNetSum.toFixed(2)} (the CSV sums its own party rows — an importer reads columns, never the prose report above)`,
+  );
 
   // --- Audit hash chain: verifyHistoryChain on the history above ---
   // The settlement just printed is derived from this history, and the
@@ -6519,6 +6562,7 @@ export async function runDemo(): Promise<DemoResult> {
   return {
     escrow,
     report,
+    reportCsv,
     depositBreakdown: fees,
     fractionalFeeInputs: DEMO_FEE_FRACTIONAL_INPUTS,
     fractionalDepositBreakdown: fractionalFees,
