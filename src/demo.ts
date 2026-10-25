@@ -377,6 +377,7 @@
  * byte-identical output.
  */
 
+import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { readmeDiagramInSync } from "./diagram.js";
 import {
@@ -1074,6 +1075,58 @@ export const DEMO_SINGLE_DELIVERY_URL =
 export const DEMO_SINGLE_DELIVERY_SCRIPTED_STATUSES: readonly number[] = [
   500, 200,
 ];
+
+/**
+ * X-Event-Id header fixtures for the closing segment
+ * after the single-target delivery: the transport header
+ * `deliverSettlementWebhook()` carries on every attempt
+ * (see src/webhooks.ts — the header value is exactly the
+ * payload's `eventId`, identical on every retry, and it is
+ * a transport hint only, NOT covered by the signature).
+ * Hand-pinned expectations — written from those documented
+ * semantics, never derived by calling the delivery itself,
+ * and cross-checked against
+ * test/webhookEventIdHeader.test.ts, whose loopback cases
+ * pin the same shape (a 500-then-200 endpoint succeeds on
+ * the retry with the same header on both attempts; a
+ * fan-out carries one shared eventId, not one per
+ * endpoint):
+ * - the retry endpoint answers 500 on attempt 1 and 200
+ *   on attempt 2 -> the result is exactly
+ *   `{status: 200, attempts: 2}`, and both captured
+ *   requests carry `X-Event-Id` equal to the main
+ *   webhook's body eventId ({@link DEMO_WEBHOOK_EVENT_ID})
+ * - the fan-out delivers the main report as ONE logical
+ *   event ({@link DEMO_EVENT_ID_HEADER_FANOUT_EVENT_ID} /
+ *   {@link DEMO_EVENT_ID_HEADER_FANOUT_AT}) to two
+ *   loopback endpoints -> delivered 2 / failed 0, and
+ *   each endpoint's captured `X-Event-Id` equals that
+ *   shared body eventId (a fan-out that minted one
+ *   eventId per endpoint would break receiver dedupe)
+ * The endpoints are loopback paths, served by a real
+ * local HTTP server on an ephemeral port: unlike the
+ * scripted-fake delivery segments, this one proves the
+ * header survives a genuine HTTP round-trip. The port
+ * is never printed — only the paths — so the demo output
+ * stays byte-identical across runs. `allowInsecureHttp`
+ * is passed explicitly: loopback plaintext is a dev-only
+ * opt-out, never the default.
+ */
+export const DEMO_EVENT_ID_HEADER_RETRY_PATH = "/settlement-event-id-retry";
+export const DEMO_EVENT_ID_HEADER_RETRY_STATUSES: readonly number[] = [
+  500, 200,
+];
+export const DEMO_EVENT_ID_HEADER_FANOUT_PATHS: readonly string[] = [
+  "/settlement-event-id-a",
+  "/settlement-event-id-b",
+];
+export const DEMO_EVENT_ID_HEADER_FANOUT_EVENT_ID =
+  "evt_demo_event_id_fanout_001";
+export const DEMO_EVENT_ID_HEADER_FANOUT_AT = "2026-03-08T11:00:00.000Z";
+export const DEMO_EVENT_ID_HEADER_FANOUT_SECRET_A =
+  "demo-event-id-fanout-secret-a";
+export const DEMO_EVENT_ID_HEADER_FANOUT_SECRET_B =
+  "demo-event-id-fanout-secret-b";
 
 /**
  * 429 Retry-After delivery fixtures for the closing
@@ -2408,6 +2461,51 @@ export interface DemoResult {
    * over the wire bytes.
    */
   singleDeliverySignatureVerified: boolean;
+  /**
+   * Result of delivering the main escrow's signed webhook
+   * to the loopback retry endpoint with
+   * `deliverSettlementWebhook()`: exactly
+   * `{status: 200, attempts: 2}` — the loopback endpoint
+   * answered 500 first, so the delivery succeeded only
+   * after one genuine HTTP retry.
+   */
+  eventIdHeaderRetryResult: WebhookDeliveryResult;
+  /**
+   * The requests the loopback server captured during the
+   * X-Event-Id retry delivery, in attempt order: exactly
+   * 2, each carrying `X-Event-Id` equal to the main
+   * webhook's body eventId, with the raw body and its
+   * parsed eventId alongside for the header/body
+   * comparison the segment prints.
+   */
+  eventIdHeaderRetryCalls: Array<{
+    path: string;
+    status: number;
+    eventIdHeader: string;
+    body: string;
+    bodyEventId: string;
+  }>;
+  /**
+   * Aggregate fan-out outcome of delivering the main
+   * report via `deliverSettlementWebhookToMany` to the
+   * two loopback endpoints as ONE logical event: 2
+   * results in endpoint order, delivered 2 / failed 0 —
+   * every endpoint answered 200 on its first attempt.
+   */
+  eventIdHeaderFanoutResult: DeliverSettlementWebhookToManyResult;
+  /**
+   * The requests the loopback server captured during the
+   * X-Event-Id fan-out, in endpoint order: one per
+   * endpoint, each carrying `X-Event-Id` equal to the
+   * shared body eventId — the per-endpoint comparison
+   * the segment prints.
+   */
+  eventIdHeaderFanoutCalls: Array<{
+    path: string;
+    eventIdHeader: string;
+    body: string;
+    bodyEventId: string;
+  }>;
   /**
    * Result of delivering the main escrow's signed webhook
    * alone to {@link DEMO_RETRY_AFTER_DELIVERY_URL} with
@@ -5419,6 +5517,190 @@ export async function runDemo(): Promise<DemoResult> {
     `  wire check: ${singleDeliveryCalls.length} captured POSTs, bodies byte-identical across attempts and equal to the signed payload body; the X-Signature the endpoint received verifies over the captured body: verifySettlementWebhook: ${singleDeliverySignatureVerified ? "ok" : "FAILED"}`,
   );
 
+  // --- X-Event-Id header: deliverSettlementWebhook retry + fan-out (closing) ---
+  // The delivery segments so far prove the signature
+  // header (`X-Signature`) end to end, but no demo
+  // delivery ever showed the transport header that
+  // receivers deduplicate on: `X-Event-Id`. Here the
+  // main escrow's signed webhook is delivered for real
+  // over HTTP to a loopback server (ephemeral port,
+  // paths pinned below — the port itself is never
+  // printed, so the output stays byte-identical across
+  // runs). The loopback endpoint answers 500 on the
+  // first attempt and 200 on the retry, so the delivery
+  // resolves {status: 200, attempts: 2} through a
+  // genuine retry, not a scripted fake. Hand-pinned
+  // expectations (see the fixture comment above),
+  // asserted HERE, outside the printing: both captured
+  // requests carry X-Event-Id exactly equal to the
+  // body's eventId — the header does not drift across
+  // the retry — and the fan-out comparison below shows the
+  // same rule per endpoint: one logical event means one
+  // shared eventId, so each endpoint's header equals
+  // the shared body eventId rather than a per-endpoint
+  // value. A delivery that minted a fresh eventId per
+  // attempt or per endpoint would fail the demo
+  // itself. `backoffMs: 0` keeps the retry wait at zero
+  // and `allowInsecureHttp: true` is the explicit
+  // loopback opt-out (plaintext is refused by default).
+  const eventIdHeaderRetryCalls: Array<{
+    path: string;
+    status: number;
+    eventIdHeader: string;
+    body: string;
+    bodyEventId: string;
+  }> = [];
+  const eventIdHeaderFanoutCalls: Array<{
+    path: string;
+    eventIdHeader: string;
+    body: string;
+    bodyEventId: string;
+  }> = [];
+  const eventIdHeaderServer = createServer((req, res) => {
+    void (async () => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) {
+        chunks.push(chunk as Buffer);
+      }
+      const body = Buffer.concat(chunks).toString("utf8");
+      let bodyEventId = "";
+      try {
+        const parsed = JSON.parse(body) as { eventId?: unknown };
+        bodyEventId =
+          typeof parsed.eventId === "string" ? parsed.eventId : "";
+      } catch {
+        bodyEventId = "";
+      }
+      const eventIdHeader = String(req.headers["x-event-id"] ?? "");
+      if (req.url === DEMO_EVENT_ID_HEADER_RETRY_PATH) {
+        const status =
+          DEMO_EVENT_ID_HEADER_RETRY_STATUSES[
+            Math.min(
+              eventIdHeaderRetryCalls.length,
+              DEMO_EVENT_ID_HEADER_RETRY_STATUSES.length - 1,
+            )
+          ];
+        eventIdHeaderRetryCalls.push({
+          path: DEMO_EVENT_ID_HEADER_RETRY_PATH,
+          status,
+          eventIdHeader,
+          body,
+          bodyEventId,
+        });
+        res.writeHead(status, { "content-type": "application/json" });
+        res.end(status === 200 ? "{}" : "boom");
+        return;
+      }
+      if (
+        (DEMO_EVENT_ID_HEADER_FANOUT_PATHS as readonly string[]).includes(
+          req.url ?? "",
+        )
+      ) {
+        eventIdHeaderFanoutCalls.push({
+          path: req.url ?? "",
+          eventIdHeader,
+          body,
+          bodyEventId,
+        });
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end("{}");
+        return;
+      }
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end("{}");
+    })();
+  });
+  await new Promise<void>((resolve, reject) => {
+    eventIdHeaderServer.once("error", reject);
+    eventIdHeaderServer.listen(0, "127.0.0.1", () => resolve());
+  });
+  const eventIdHeaderAddress = eventIdHeaderServer.address();
+  if (
+    eventIdHeaderAddress === null ||
+    typeof eventIdHeaderAddress === "string"
+  ) {
+    eventIdHeaderServer.close();
+    throw new Error(
+      "demo fixture broken: X-Event-Id loopback server did not bind to a TCP port",
+    );
+  }
+  const eventIdHeaderBase = `http://127.0.0.1:${eventIdHeaderAddress.port}`;
+  let eventIdHeaderRetryResult: WebhookDeliveryResult;
+  let eventIdHeaderFanoutResult: DeliverSettlementWebhookToManyResult;
+  try {
+    eventIdHeaderRetryResult = await deliverSettlementWebhook(
+      `${eventIdHeaderBase}${DEMO_EVENT_ID_HEADER_RETRY_PATH}`,
+      webhook,
+      { backoffMs: 0, allowInsecureHttp: true },
+    );
+    eventIdHeaderFanoutResult = await deliverSettlementWebhookToMany(
+      report,
+      [
+        {
+          url: `${eventIdHeaderBase}${DEMO_EVENT_ID_HEADER_FANOUT_PATHS[0]}`,
+          secret: DEMO_EVENT_ID_HEADER_FANOUT_SECRET_A,
+        },
+        {
+          url: `${eventIdHeaderBase}${DEMO_EVENT_ID_HEADER_FANOUT_PATHS[1]}`,
+          secret: DEMO_EVENT_ID_HEADER_FANOUT_SECRET_B,
+        },
+      ],
+      {
+        now: DEMO_EVENT_ID_HEADER_FANOUT_AT,
+        eventId: DEMO_EVENT_ID_HEADER_FANOUT_EVENT_ID,
+        backoffMs: 0,
+        allowInsecureHttp: true,
+      },
+    );
+  } finally {
+    eventIdHeaderServer.closeAllConnections();
+    await new Promise<void>((resolve) => {
+      eventIdHeaderServer.close(() => resolve());
+    });
+  }
+  if (
+    eventIdHeaderRetryResult.status !== 200 ||
+    eventIdHeaderRetryResult.attempts !== 2 ||
+    eventIdHeaderRetryCalls.length !== 2 ||
+    eventIdHeaderRetryCalls.some(
+      (call, i) =>
+        call.path !== DEMO_EVENT_ID_HEADER_RETRY_PATH ||
+        call.status !== DEMO_EVENT_ID_HEADER_RETRY_STATUSES[i] ||
+        call.eventIdHeader !== DEMO_WEBHOOK_EVENT_ID ||
+        call.bodyEventId !== DEMO_WEBHOOK_EVENT_ID ||
+        call.body !== JSON.stringify(webhook.payload),
+    ) ||
+    eventIdHeaderFanoutResult.results.length !== 2 ||
+    eventIdHeaderFanoutResult.delivered !== 2 ||
+    eventIdHeaderFanoutResult.failed !== 0 ||
+    eventIdHeaderFanoutResult.results.some(
+      (result) =>
+        !result.ok || result.attempts !== 1 || result.status !== 200,
+    ) ||
+    eventIdHeaderFanoutCalls.length !== 2 ||
+    eventIdHeaderFanoutCalls.some(
+      (call, i) =>
+        call.path !== DEMO_EVENT_ID_HEADER_FANOUT_PATHS[i] ||
+        call.eventIdHeader !== DEMO_EVENT_ID_HEADER_FANOUT_EVENT_ID ||
+        call.bodyEventId !== DEMO_EVENT_ID_HEADER_FANOUT_EVENT_ID,
+    ) ||
+    eventIdHeaderFanoutCalls[0].body !== eventIdHeaderFanoutCalls[1].body
+  ) {
+    throw new Error(
+      "demo fixture broken: deliverSettlementWebhook X-Event-Id header does not match the pinned shape (loopback 500 then 200, result {status: 200, attempts: 2}, both attempts' X-Event-Id equal to the body eventId; fan-out 2 endpoints delivered / 0 failed, each endpoint's X-Event-Id equal to the shared body eventId, bodies byte-identical)",
+    );
+  }
+  lines.push(
+    "",
+    "Settlement webhook X-Event-Id header (deliverSettlementWebhook retry + fan-out over a loopback server):",
+    `  retry: the main escrow's signed webhook (body eventId ${DEMO_WEBHOOK_EVENT_ID}) delivered to ${DEMO_EVENT_ID_HEADER_RETRY_PATH} — attempt 1 answered 500, attempt 2 answered 200; result: status ${eventIdHeaderRetryResult.status}, attempts ${eventIdHeaderRetryResult.attempts} (succeeded after exactly one retry, backoffMs 0 — no real waiting)`,
+    `  retry wire check: ${eventIdHeaderRetryCalls.length} captured POSTs — the X-Event-Id header on attempt 1 and on the retry are both ${DEMO_WEBHOOK_EVENT_ID}, identical to each other and to the body eventId on both attempts`,
+    `  fan-out: the same report fanned out as one logical event (eventId ${DEMO_EVENT_ID_HEADER_FANOUT_EVENT_ID}, at ${DEMO_EVENT_ID_HEADER_FANOUT_AT}) — one shared body eventId, not one per endpoint:`,
+    `  ${DEMO_EVENT_ID_HEADER_FANOUT_PATHS[0]}: X-Event-Id ${DEMO_EVENT_ID_HEADER_FANOUT_EVENT_ID} = body eventId ${DEMO_EVENT_ID_HEADER_FANOUT_EVENT_ID}`,
+    `  ${DEMO_EVENT_ID_HEADER_FANOUT_PATHS[1]}: X-Event-Id ${DEMO_EVENT_ID_HEADER_FANOUT_EVENT_ID} = body eventId ${DEMO_EVENT_ID_HEADER_FANOUT_EVENT_ID}`,
+    "  note: the header is a transport hint only — it is NOT covered by the signature, so a receiver verifies the signature first and then trusts the body's eventId, never the header, as the deduplication key",
+  );
+
   // --- 429 Retry-After delivery: deliverSettlementWebhook (closing) ---
   // The Retry-After parsing segment above only ever
   // parsed hints on a fixed clock — its own text concedes
@@ -6727,6 +7009,10 @@ export async function runDemo(): Promise<DemoResult> {
     singleDeliveryResult,
     singleDeliveryCalls,
     singleDeliverySignatureVerified,
+    eventIdHeaderRetryResult,
+    eventIdHeaderRetryCalls,
+    eventIdHeaderFanoutResult,
+    eventIdHeaderFanoutCalls,
     retryAfterDeliveryResult,
     retryAfterDeliveryHintMs,
     retryAfterDeliveryCalls,

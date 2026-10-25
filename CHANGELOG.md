@@ -18,6 +18,17 @@ version changes.
 
 ### Added
 
+- CLI demo `X-Event-Id` header segment (2026-10-25, backlog #594):
+  the demo now shows the transport header `deliverSettlementWebhook`
+  carries, over a real loopback server instead of a scripted fake —
+  the main webhook delivered to a 500-then-200 endpoint succeeds
+  after exactly one retry with `X-Event-Id` identical to the body
+  `eventId` on both attempts, and a two-endpoint fan-out shows each
+  endpoint's header equal to the one shared body `eventId` (one
+  logical event, not one eventId per endpoint). The loopback port
+  is never printed, so demo output stays byte-identical across
+  runs; the header's transport-hint-only status (not covered by
+  the signature) is stated in the segment's note line.
 - Settlement report JSON round-trip import `parseSettlementReportJson`
   (2026-10-25, commit 734dcc4, backlog #591): the inverse of
   `renderReportJson`, applying the same structural shape check in the

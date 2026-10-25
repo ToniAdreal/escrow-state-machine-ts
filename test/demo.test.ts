@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import {
@@ -133,6 +134,11 @@ import {
   DEMO_RETRY_AFTER_NOW_MS,
   DEMO_SINGLE_DELIVERY_SCRIPTED_STATUSES,
   DEMO_SINGLE_DELIVERY_URL,
+  DEMO_EVENT_ID_HEADER_FANOUT_AT,
+  DEMO_EVENT_ID_HEADER_FANOUT_EVENT_ID,
+  DEMO_EVENT_ID_HEADER_FANOUT_PATHS,
+  DEMO_EVENT_ID_HEADER_RETRY_PATH,
+  DEMO_EVENT_ID_HEADER_RETRY_STATUSES,
   DEMO_SNAPSHOT_SERIALIZED_BYTES,
   DEMO_STALE_DAY_MS,
   DEMO_STALE_DEADLINE,
@@ -190,6 +196,7 @@ import {
   buildSettlementWebhook,
   createQuorum,
   deliverSettlementWebhook,
+  deliverSettlementWebhookToMany,
   depositAmountFromHistory,
   historyFromNdjson,
   historyToNdjson,
@@ -4158,8 +4165,9 @@ test("demo shows single-target delivery: deliverSettlementWebhook retries a scri
   // no later code can observe either fake.
   assert.equal(globalThis.fetch, originalFetch);
   // The segment follows the approval-log segment and
-  // precedes the 429 Retry-After delivery segment; it
-  // prints its lines verbatim, and its wire-check line is
+  // precedes the X-Event-Id header segment, which in
+  // turn precedes the 429 Retry-After delivery segment;
+  // it prints its lines verbatim, and its wire-check line is
   // the segment's last line.
   const deliveryAt = text.indexOf(
     "Single-target webhook delivery (deliverSettlementWebhook via scripted fake fetch, zero network):",
@@ -4180,7 +4188,7 @@ test("demo shows single-target delivery: deliverSettlementWebhook retries a scri
       "Single-target webhook delivery (deliverSettlementWebhook via scripted fake fetch, zero network):",
     ),
     lines.indexOf(
-      "429 Retry-After webhook delivery (deliverSettlementWebhook via scripted fake fetch, zero network):",
+      "Settlement webhook X-Event-Id header (deliverSettlementWebhook retry + fan-out over a loopback server):",
     ) - 1,
   );
   assert.equal(
@@ -4196,7 +4204,7 @@ test("demo single-target delivery segment is deterministic: two runs print byte-
         "Single-target webhook delivery (deliverSettlementWebhook via scripted fake fetch, zero network):",
       ),
       ls.indexOf(
-        "429 Retry-After webhook delivery (deliverSettlementWebhook via scripted fake fetch, zero network):",
+        "Settlement webhook X-Event-Id header (deliverSettlementWebhook retry + fan-out over a loopback server):",
       ) - 1,
     );
   const a = await runDemo();
@@ -4213,6 +4221,224 @@ test("demo single-target delivery segment is deterministic: two runs print byte-
   assert.equal(
     a.singleDeliverySignatureVerified,
     b.singleDeliverySignatureVerified,
+  );
+});
+
+test("demo shows X-Event-Id header: deliverSettlementWebhook retries over a loopback server with the same header on both attempts, and the fan-out carries the shared eventId per endpoint", async () => {
+  const {
+    webhook,
+    report,
+    eventIdHeaderRetryResult,
+    eventIdHeaderRetryCalls,
+    eventIdHeaderFanoutResult,
+    eventIdHeaderFanoutCalls,
+    lines,
+  } = await runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned expectations — written out here from the
+  // documented deliverSettlementWebhook() semantics in
+  // src/webhooks.ts (every attempt carries `X-Event-Id`
+  // exactly equal to the payload's `eventId`, identical
+  // on every retry; a fan-out builds one shared payload
+  // body, so every endpoint's header equals the one
+  // shared eventId), never derived by calling the
+  // delivery to produce them. test/webhookEventIdHeader.test.ts
+  // pins the same semantics independently (a 500-then-200
+  // loopback endpoint succeeds on the retry with the
+  // same header on both attempts; fan-out endpoints
+  // share one eventId).
+  assert.deepEqual(DEMO_EVENT_ID_HEADER_RETRY_STATUSES, [500, 200]);
+  assert.deepEqual(eventIdHeaderRetryResult, { status: 200, attempts: 2 });
+  assert.equal(eventIdHeaderRetryCalls.length, 2);
+  for (const [i, call] of eventIdHeaderRetryCalls.entries()) {
+    assert.equal(call.path, DEMO_EVENT_ID_HEADER_RETRY_PATH);
+    assert.equal(call.status, DEMO_EVENT_ID_HEADER_RETRY_STATUSES[i]);
+    assert.equal(call.eventIdHeader, DEMO_WEBHOOK_EVENT_ID);
+    assert.equal(call.bodyEventId, DEMO_WEBHOOK_EVENT_ID);
+    assert.equal(call.body, JSON.stringify(webhook.payload));
+  }
+  assert.equal(eventIdHeaderFanoutResult.results.length, 2);
+  assert.equal(eventIdHeaderFanoutResult.delivered, 2);
+  assert.equal(eventIdHeaderFanoutResult.failed, 0);
+  for (const result of eventIdHeaderFanoutResult.results) {
+    assert.equal(result.ok, true);
+    assert.equal(result.attempts, 1);
+    assert.equal(result.status, 200);
+  }
+  assert.equal(eventIdHeaderFanoutCalls.length, 2);
+  for (const [i, call] of eventIdHeaderFanoutCalls.entries()) {
+    assert.equal(call.path, DEMO_EVENT_ID_HEADER_FANOUT_PATHS[i]);
+    assert.equal(call.eventIdHeader, DEMO_EVENT_ID_HEADER_FANOUT_EVENT_ID);
+    assert.equal(call.bodyEventId, DEMO_EVENT_ID_HEADER_FANOUT_EVENT_ID);
+  }
+  assert.equal(
+    eventIdHeaderFanoutCalls[0].body,
+    eventIdHeaderFanoutCalls[1].body,
+  );
+  // Independent cross-check: a fresh loopback server
+  // through the library entry points reproduces the same
+  // shape — the demo segment is not self-certifying.
+  // The probe server answers 500 then 200 on the retry
+  // path and 200 on both fan-out paths, and is closed
+  // in the finally, exactly like the demo.
+  const probeRetryCalls: Array<{ eventIdHeader: string; body: string }> = [];
+  const probeFanoutCalls: Array<{ path: string; eventIdHeader: string }> = [];
+  const probeServer = createServer((req, res) => {
+    void (async () => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) {
+        chunks.push(chunk as Buffer);
+      }
+      const body = Buffer.concat(chunks).toString("utf8");
+      const eventIdHeader = String(req.headers["x-event-id"] ?? "");
+      if (req.url === "/probe-retry") {
+        probeRetryCalls.push({ eventIdHeader, body });
+        const status = probeRetryCalls.length === 1 ? 500 : 200;
+        res.writeHead(status, { "content-type": "application/json" });
+        res.end(status === 200 ? "{}" : "boom");
+        return;
+      }
+      probeFanoutCalls.push({ path: req.url ?? "", eventIdHeader });
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end("{}");
+    })();
+  });
+  await new Promise<void>((resolve, reject) => {
+    probeServer.once("error", reject);
+    probeServer.listen(0, "127.0.0.1", () => resolve());
+  });
+  const probeAddress = probeServer.address();
+  assert.ok(
+    probeAddress !== null && typeof probeAddress !== "string",
+    "probe server must bind to a TCP port",
+  );
+  const probeBase = `http://127.0.0.1:${probeAddress.port}`;
+  try {
+    const probeRetryResult = await deliverSettlementWebhook(
+      `${probeBase}/probe-retry`,
+      webhook,
+      { backoffMs: 0, allowInsecureHttp: true },
+    );
+    assert.deepEqual(probeRetryResult, { status: 200, attempts: 2 });
+    assert.equal(probeRetryCalls.length, 2);
+    for (const call of probeRetryCalls) {
+      assert.equal(call.eventIdHeader, DEMO_WEBHOOK_EVENT_ID);
+      assert.equal(call.body, JSON.stringify(webhook.payload));
+    }
+    const probeFanoutResult = await deliverSettlementWebhookToMany(
+      report,
+      [
+        { url: `${probeBase}/probe-a`, secret: "probe-secret-a" },
+        { url: `${probeBase}/probe-b`, secret: "probe-secret-b" },
+      ],
+      {
+        now: DEMO_EVENT_ID_HEADER_FANOUT_AT,
+        eventId: DEMO_EVENT_ID_HEADER_FANOUT_EVENT_ID,
+        backoffMs: 0,
+        allowInsecureHttp: true,
+      },
+    );
+    assert.equal(probeFanoutResult.delivered, 2);
+    assert.equal(probeFanoutResult.failed, 0);
+    assert.equal(probeFanoutCalls.length, 2);
+    for (const call of probeFanoutCalls) {
+      assert.equal(call.eventIdHeader, DEMO_EVENT_ID_HEADER_FANOUT_EVENT_ID);
+    }
+  } finally {
+    probeServer.closeAllConnections();
+    await new Promise<void>((resolve) => {
+      probeServer.close(() => resolve());
+    });
+  }
+  // The segment follows the single-target delivery
+  // segment and precedes the 429 Retry-After delivery
+  // segment; it prints its lines verbatim, and its
+  // note line is the segment's last line.
+  const headerAt = text.indexOf(
+    "Settlement webhook X-Event-Id header (deliverSettlementWebhook retry + fan-out over a loopback server):",
+  );
+  assert.ok(
+    headerAt >
+      text.indexOf(
+        "Single-target webhook delivery (deliverSettlementWebhook via scripted fake fetch, zero network):",
+      ),
+    "X-Event-Id header segment must follow the single-target delivery segment",
+  );
+  assert.ok(
+    headerAt <
+      text.indexOf(
+        "429 Retry-After webhook delivery (deliverSettlementWebhook via scripted fake fetch, zero network):",
+      ),
+    "X-Event-Id header segment must precede the 429 Retry-After delivery segment",
+  );
+  for (const line of [
+    `  retry: the main escrow's signed webhook (body eventId ${DEMO_WEBHOOK_EVENT_ID}) delivered to ${DEMO_EVENT_ID_HEADER_RETRY_PATH} — attempt 1 answered 500, attempt 2 answered 200; result: status 200, attempts 2 (succeeded after exactly one retry, backoffMs 0 — no real waiting)`,
+    `  retry wire check: 2 captured POSTs — the X-Event-Id header on attempt 1 and on the retry are both ${DEMO_WEBHOOK_EVENT_ID}, identical to each other and to the body eventId on both attempts`,
+    `  fan-out: the same report fanned out as one logical event (eventId ${DEMO_EVENT_ID_HEADER_FANOUT_EVENT_ID}, at ${DEMO_EVENT_ID_HEADER_FANOUT_AT}) — one shared body eventId, not one per endpoint:`,
+    `  ${DEMO_EVENT_ID_HEADER_FANOUT_PATHS[0]}: X-Event-Id ${DEMO_EVENT_ID_HEADER_FANOUT_EVENT_ID} = body eventId ${DEMO_EVENT_ID_HEADER_FANOUT_EVENT_ID}`,
+    `  ${DEMO_EVENT_ID_HEADER_FANOUT_PATHS[1]}: X-Event-Id ${DEMO_EVENT_ID_HEADER_FANOUT_EVENT_ID} = body eventId ${DEMO_EVENT_ID_HEADER_FANOUT_EVENT_ID}`,
+    "  note: the header is a transport hint only — it is NOT covered by the signature, so a receiver verifies the signature first and then trusts the body's eventId, never the header, as the deduplication key",
+  ]) {
+    assert.ok(text.includes(line), `missing X-Event-Id header line: ${line}`);
+  }
+  const headerSegment = lines.slice(
+    lines.indexOf(
+      "Settlement webhook X-Event-Id header (deliverSettlementWebhook retry + fan-out over a loopback server):",
+    ),
+    lines.indexOf(
+      "429 Retry-After webhook delivery (deliverSettlementWebhook via scripted fake fetch, zero network):",
+    ) - 1,
+  );
+  assert.equal(
+    headerSegment[headerSegment.length - 1],
+    "  note: the header is a transport hint only — it is NOT covered by the signature, so a receiver verifies the signature first and then trusts the body's eventId, never the header, as the deduplication key",
+  );
+});
+
+test("demo X-Event-Id header segment is deterministic: two runs print byte-identical header lines", async () => {
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf(
+        "Settlement webhook X-Event-Id header (deliverSettlementWebhook retry + fan-out over a loopback server):",
+      ),
+      ls.indexOf(
+        "429 Retry-After webhook delivery (deliverSettlementWebhook via scripted fake fetch, zero network):",
+      ) - 1,
+    );
+  const a = await runDemo();
+  const b = await runDemo();
+  const segA = segment(a.lines);
+  // Header + the retry line + the retry wire-check line
+  // + the fan-out line + two per-endpoint comparison
+  // lines + the note line; the loopback port is never
+  // printed, so no normalization is needed.
+  assert.equal(segA.length, 7);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(
+    a.eventIdHeaderRetryResult,
+    b.eventIdHeaderRetryResult,
+  );
+  assert.deepEqual(a.eventIdHeaderRetryCalls, b.eventIdHeaderRetryCalls);
+  // The fan-out result's per-endpoint URLs carry the
+  // run's ephemeral loopback port, so only the
+  // port-independent shape is compared across runs.
+  const fanoutShape = (r: typeof a.eventIdHeaderFanoutResult) => ({
+    delivered: r.delivered,
+    failed: r.failed,
+    results: r.results.map(({ ok, attempts, status }) => ({
+      ok,
+      attempts,
+      status,
+    })),
+  });
+  assert.deepEqual(
+    fanoutShape(a.eventIdHeaderFanoutResult),
+    fanoutShape(b.eventIdHeaderFanoutResult),
+  );
+  assert.deepEqual(
+    a.eventIdHeaderFanoutCalls,
+    b.eventIdHeaderFanoutCalls,
   );
 });
 
