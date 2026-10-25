@@ -363,6 +363,74 @@ test("demo settlement CSV section is deterministic: two runs print the identical
   );
 });
 
+test("demo lines print the settlement report as JSON between the CSV section and the audit hash chain", async () => {
+  const { report, reportJson, lines } = await runDemo();
+  const text = lines.join("\n");
+
+  // The JSON is the same released report, not a second report: exactly
+  // JSON.stringify of the report, with amounts as numbers — the CSV's
+  // two-decimal strings ("10098.50") must not appear as JSON values.
+  assert.equal(reportJson, JSON.stringify(report));
+  const parsed = JSON.parse(reportJson) as {
+    escrowId: string;
+    outcome: string;
+    deposit: { deposit: number };
+    parties: Array<{ party: string; net: number }>;
+    totalInflow: number;
+  };
+  assert.equal(parsed.escrowId, "DEMO-ESC-001");
+  assert.equal(parsed.outcome, "released");
+  assert.equal(typeof parsed.deposit.deposit, "number");
+  assert.equal(parsed.deposit.deposit, 10630);
+  assert.equal(parsed.parties[1].party, "creator");
+  assert.equal(parsed.parties[1].net, 10098.5);
+  assert.equal(typeof parsed.parties[1].net, "number");
+  assert.equal(parsed.totalInflow, 10630);
+  assert.match(
+    text,
+    /Settlement report as JSON \(renderReportJson — the same released report, for APIs and storage\):/,
+  );
+  assert.ok(text.includes('  {"escrowId":"DEMO-ESC-001"'));
+  assert.ok(text.includes('"net":10098.5'));
+  assert.ok(
+    text.includes(
+      "  amounts are JSON numbers, not CSV strings: deposit 10630, totalInflow 10630",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      '  illegal report rejected: totalInflow Infinity -> "cannot render settlement report as JSON: totalInflow must be a finite number"',
+    ),
+  );
+  // Position: the JSON follows the CSV and precedes the hash chain
+  // that verifies the history the report was derived from.
+  const csvAt = text.indexOf("Settlement report as CSV (renderReportCsv");
+  const jsonAt = text.indexOf("Settlement report as JSON (renderReportJson");
+  const chainAt = text.indexOf("Audit hash chain (verifyHistoryChain");
+  assert.ok(csvAt < jsonAt && jsonAt < chainAt);
+});
+
+test("demo settlement JSON section is deterministic: two runs print the identical JSON", async () => {
+  const a = await runDemo();
+  const b = await runDemo();
+
+  assert.equal(a.reportJson, b.reportJson);
+  assert.deepEqual(
+    a.lines.slice(
+      a.lines.indexOf(
+        "Settlement report as JSON (renderReportJson — the same released report, for APIs and storage):",
+      ),
+      a.lines.indexOf("Audit hash chain (verifyHistoryChain on the main escrow history):"),
+    ),
+    b.lines.slice(
+      b.lines.indexOf(
+        "Settlement report as JSON (renderReportJson — the same released report, for APIs and storage):",
+      ),
+      b.lines.indexOf("Audit hash chain (verifyHistoryChain on the main escrow history):"),
+    ),
+  );
+});
+
 test("demo builds a settlement webhook from the report and self-verifies it", async () => {
   const { webhook, webhookVerified } = await runDemo();
 

@@ -18,6 +18,15 @@ version changes.
 
 ### Added
 
+- The CLI demo now prints the main settlement report as JSON next to
+  its CSV form: `renderReportJson(report)` on the same released
+  report, with the demo asserting the parsed JSON matches the report
+  field for field with amounts as JSON numbers (not CSV strings) and
+  that a copy with a non-finite `totalInflow` is rejected with
+  `cannot render settlement report as JSON: …` before printing — a
+  mismatch fails the demo instead of printing an inconsistent export.
+  `test/demo.test.ts` (2 cases).
+
 - The CLI demo now prints the main settlement report as CSV next to
   its prose form: `renderReportCsv(report)` on the same released
   report, with the demo asserting the header

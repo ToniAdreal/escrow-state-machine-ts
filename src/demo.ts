@@ -405,6 +405,7 @@ import {
   parseRetryAfter,
   renderReport,
   renderReportCsv,
+  renderReportJson,
   restoreQuorum,
   settleRelease,
   staleEscrows,
@@ -1772,6 +1773,12 @@ export interface DemoResult {
    */
   reportCsv: string;
   /**
+   * `renderReportJson(report)` on the main settlement report: the same
+   * released report as JSON — exactly the `SettlementReport` fields,
+   * with amounts as JSON numbers (not the CSV's two-decimal strings).
+   */
+  reportJson: string;
+  /**
    * `verifyHistoryChain` verdict on the main escrow's intact audit
    * history: `true` — every link recomputes, genesis-linked.
    */
@@ -3035,6 +3042,59 @@ export async function runDemo(): Promise<DemoResult> {
     "Settlement report as CSV (renderReportCsv — the same released report, for bookkeeping imports):",
     ...reportCsvLines.map((line) => `  ${line}`),
     `  TOTAL row check: inflow ${reportCsvTotal[3]} = report totalInflow ${report.totalInflow.toFixed(2)}, outflow ${reportCsvTotal[4]} = report totalOutflow ${report.totalOutflow.toFixed(2)}, net ${reportCsvTotal[5]} = party nets sum ${reportCsvNetSum.toFixed(2)} (the CSV sums its own party rows — an importer reads columns, never the prose report above)`,
+  );
+
+  // --- Settlement report as JSON: renderReportJson ---
+  // The CSV above is for spreadsheet imports; an API or database wants
+  // the same report as typed JSON instead. The JSON form carries exactly
+  // the report's fields with amounts as numbers — a consumer parses
+  // 10098.5, never the string "10098.50" — and the shape check fails
+  // fast on a malformed report rather than serializing a non-finite
+  // amount as null. The demo asserts both properties before printing:
+  // the parsed JSON matches the report field for field with every money
+  // figure a number, and a copy with totalInflow set to Infinity is
+  // rejected with the pinned `cannot render settlement report as
+  // JSON: …` message (the backlog item's shorter quoted wording is
+  // stale; the real #579 message carries the full function name).
+  const reportJson = renderReportJson(report);
+  const parsedReport = JSON.parse(reportJson) as Record<string, unknown>;
+  const parsedParties = parsedReport.parties as Array<Record<string, unknown>>;
+  const parsedDeposit = parsedReport.deposit as Record<string, unknown>;
+  const amountsAreNumbers =
+    typeof parsedDeposit.deposit === "number" &&
+    Array.isArray(parsedParties) &&
+    parsedParties.length === report.parties.length &&
+    parsedParties.every(
+      (p) =>
+        typeof p.inflow === "number" &&
+        typeof p.outflow === "number" &&
+        typeof p.net === "number",
+    ) &&
+    typeof parsedReport.totalInflow === "number" &&
+    typeof parsedReport.totalOutflow === "number";
+  let illegalReportError = "";
+  try {
+    renderReportJson({ ...report, totalInflow: Number.POSITIVE_INFINITY });
+  } catch (error) {
+    illegalReportError = error instanceof Error ? error.message : String(error);
+  }
+  if (
+    parsedReport.escrowId !== report.escrowId ||
+    parsedReport.outcome !== report.outcome ||
+    !amountsAreNumbers ||
+    JSON.stringify(parsedReport) !== reportJson ||
+    !illegalReportError.startsWith("cannot render settlement report as JSON: ")
+  ) {
+    throw new Error(
+      "demo fixture broken: renderReportJson on the main settlement report does not match the pinned shape (parsed JSON equals the report with amounts as numbers, and a non-finite totalInflow is rejected with 'cannot render settlement report as JSON: …')",
+    );
+  }
+  lines.push(
+    "",
+    "Settlement report as JSON (renderReportJson — the same released report, for APIs and storage):",
+    `  ${reportJson}`,
+    `  amounts are JSON numbers, not CSV strings: deposit ${parsedDeposit.deposit}, totalInflow ${parsedReport.totalInflow} (a consumer parses numbers, never two-decimal strings)`,
+    `  illegal report rejected: totalInflow Infinity -> "${illegalReportError}" (the shape check fails fast instead of serializing Infinity as null)`,
   );
 
   // --- Audit hash chain: verifyHistoryChain on the history above ---
@@ -6563,6 +6623,7 @@ export async function runDemo(): Promise<DemoResult> {
     escrow,
     report,
     reportCsv,
+    reportJson,
     depositBreakdown: fees,
     fractionalFeeInputs: DEMO_FEE_FRACTIONAL_INPUTS,
     fractionalDepositBreakdown: fractionalFees,
