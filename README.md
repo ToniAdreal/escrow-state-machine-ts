@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 840 tests, all local
+npm test   # 853 tests, all local
 ```
 
 ## Quickstart
@@ -821,13 +821,24 @@ a bookkeeping API or database gets typed money figures rather than text
 to re-parse. A value that is not a report at all — or a money figure that
 is not finite — throws `cannot render settlement report as JSON: …`
 instead of serializing (plain `JSON.stringify` would silently turn
-`Infinity`/`NaN` into `null`). The three exports therefore cover three
+`Infinity`/`NaN` into `null`). `parseSettlementReportJson(text)` is the
+inverse for the receiving end of that hop: it applies exactly the same
+shape check in the other direction and throws
+`cannot parse settlement report JSON: …` on unparseable text, a
+non-report JSON value, an empty `escrowId`, an illegal `outcome`, an
+empty `parties` array, or a non-finite figure, so a report stored with
+`renderReportJson` comes back as a typed `SettlementReport` that
+re-renders byte-identically. The three exports therefore cover three
 audiences: `renderReport` for humans, `renderReportCsv` for spreadsheet
-imports, `renderReportJson` for APIs and storage.
+imports, `renderReportJson` for APIs and storage — and the import is
+structural validation only, not a re-verification of the audit chain:
+a hand-built document with consistent fields parses, and chain
+verification still belongs to `verifyHistoryChain` over the escrow's own
+history.
 
 ## Reproducibility
 
-`npm test` runs 840 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 853 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

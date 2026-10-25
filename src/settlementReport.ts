@@ -505,18 +505,24 @@ export function renderReportCsv(report: SettlementReport): string {
 
 /**
  * Validate the structural shape of a {@link SettlementReport} before it is
- * serialized. This is a shape check, not a re-derivation of the accounting:
- * the figures are trusted as the caller's (normally `buildSettlementReport`'s
- * output), but a value that is not a report at all — or a money figure that
- * is not a finite number — must fail loudly here rather than silently
- * degrading in transit. `JSON.stringify` turns `Infinity`/`NaN` into `null`
- * without complaint, so a non-finite amount would otherwise leave this
- * function as a plausible-looking `null` and corrupt a downstream import.
- * Every failure throws `cannot render settlement report as JSON: …`.
+ * serialized (or after it is parsed back). This is a shape check, not a
+ * re-derivation of the accounting: the figures are trusted as the caller's
+ * (normally `buildSettlementReport`'s output), but a value that is not a
+ * report at all — or a money figure that is not a finite number — must fail
+ * loudly here rather than silently degrading in transit. `JSON.stringify`
+ * turns `Infinity`/`NaN` into `null` without complaint, so a non-finite
+ * amount would otherwise leave this function as a plausible-looking `null`
+ * and corrupt a downstream import. Every failure throws
+ * `<prefix>: …`, where the prefix names the direction (`cannot render
+ * settlement report as JSON` when writing, `cannot parse settlement
+ * report JSON` when reading) so a failure's origin is unambiguous.
  */
-function assertReportShape(report: unknown): asserts report is SettlementReport {
+function assertReportShape(
+  report: unknown,
+  prefix = "cannot render settlement report as JSON",
+): asserts report is SettlementReport {
   const fail = (reason: string): never => {
-    throw new Error(`cannot render settlement report as JSON: ${reason}`);
+    throw new Error(`${prefix}: ${reason}`);
   };
   if (typeof report !== "object" || report === null || Array.isArray(report))
     fail("report must be a SettlementReport object");
@@ -531,7 +537,10 @@ function assertReportShape(report: unknown): asserts report is SettlementReport 
   if (typeof deposit.deposit !== "number" || !Number.isFinite(deposit.deposit))
     fail("deposit.deposit must be a finite number");
   for (const [key, value] of Object.entries(deposit)) {
-    if (typeof value === "number" && !Number.isFinite(value))
+    // Every FeeBreakdown field is a money figure: a null here is what a
+    // non-finite figure becomes after a plain JSON.stringify, so it must
+    // fail like Infinity does, not slip through as "not a number".
+    if (typeof value !== "number" || !Number.isFinite(value))
       fail(`deposit.${key} must be a finite number`);
   }
   if (!Array.isArray(r.parties) || r.parties.length === 0)
@@ -570,7 +579,8 @@ function assertReportShape(report: unknown): asserts report is SettlementReport 
     if (typeof r.settlement !== "object" || r.settlement === null || Array.isArray(r.settlement))
       fail("settlement must be a Settlement object when present");
     for (const [key, value] of Object.entries(r.settlement as Record<string, unknown>)) {
-      if (typeof value === "number" && !Number.isFinite(value))
+      // Every Settlement field is a money figure: same null rule as deposit.
+      if (typeof value !== "number" || !Number.isFinite(value))
         fail(`settlement.${key} must be a finite number`);
     }
   }
@@ -604,6 +614,48 @@ function assertReportShape(report: unknown): asserts report is SettlementReport 
 export function renderReportJson(report: SettlementReport): string {
   assertReportShape(report);
   return JSON.stringify(report);
+}
+
+/**
+ * Parse a {@link SettlementReport} back from JSON — the inverse of
+ * {@link renderReportJson}, for the receiving end of the API/storage hop:
+ * a caller that stored a report with `renderReportJson` gets a typed
+ * report back without hand-writing a parser for each field.
+ *
+ * The check is exactly the shape check `renderReportJson` applies, in the
+ * other direction: unparseable text, a JSON value that is not a report
+ * object, an empty `escrowId`, an illegal `outcome`, an empty `parties`
+ * array, an unknown party role, or a non-finite money figure (including
+ * `null`, which is what a non-finite figure becomes after a plain
+ * `JSON.stringify`, and `1e999`, which `JSON.parse` reads as `Infinity`)
+ * all throw `cannot parse settlement report JSON: …` instead of returning
+ * a plausible-looking half-report. A parsed report re-renders
+ * byte-identically through `renderReportJson`.
+ *
+ * Honest limit, shared with `renderReportJson`: this is structural
+ * validation only. Importing a report does not re-verify the audit chain
+ * it claims to summarize — a hand-built document with internally
+ * consistent fields passes, just as it would serialize. Chain
+ * verification still belongs to `verifyHistoryChain` over the escrow's own
+ * history, not to this import.
+ *
+ * Pure: the input string is only read, never mutated, and the returned
+ * report is a fresh object graph (a second parse of the same text yields
+ * an independent copy).
+ */
+export function parseSettlementReportJson(text: string): SettlementReport {
+  if (typeof text !== "string")
+    throw new Error("cannot parse settlement report JSON: input must be a JSON string");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    throw new Error(
+      `cannot parse settlement report JSON: invalid JSON: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  assertReportShape(parsed, "cannot parse settlement report JSON");
+  return parsed;
 }
 
 /** Render the report as plain human-readable text. */

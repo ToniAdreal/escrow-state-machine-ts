@@ -21,7 +21,7 @@ export { calculateDeposit } from "./feeCalculator.js";
 export type { FeeBreakdown, FeeInputs } from "./feeCalculator.js";
 export { settleRelease } from "./settlement.js";
 export type { Settlement, SettlementInputs } from "./settlement.js";
-export { buildSettlementReport, buildSettlementReports, depositAmountFromHistory, renderReport, renderReportCsv, renderReportJson, summarizeSettlementReports } from "./settlementReport.js";
+export { buildSettlementReport, buildSettlementReports, depositAmountFromHistory, parseSettlementReportJson, renderReport, renderReportCsv, renderReportJson, summarizeSettlementReports } from "./settlementReport.js";
 export { buildSettlementWebhook, buildSettlementWebhooks, deliverSettlementWebhook, deliverSettlementWebhookToMany, parseRetryAfter, verifySettlementWebhook, SettlementEventDedupe } from "./webhooks.js";
 export type {
   BuildSettlementWebhooksOptions,
