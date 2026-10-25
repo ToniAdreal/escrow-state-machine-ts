@@ -18,6 +18,21 @@ version changes.
 
 ### Added
 
+- Settlement report JSON round-trip import `parseSettlementReportJson`
+  (2026-10-25, commit 734dcc4, backlog #591): the inverse of
+  `renderReportJson`, applying the same structural shape check in the
+  other direction — unparseable text, non-report JSON values, empty
+  `escrowId`, illegal `outcome`, empty `parties`, unknown party roles,
+  and non-finite money figures (including `null`, which is what
+  non-finite figures become after a plain `JSON.stringify`) all throw
+  `cannot parse settlement report JSON: …`; a parsed report re-renders
+  byte-identically. Import is structural validation only, not a
+  re-verification of the audit chain (chain verification still belongs
+  to `verifyHistoryChain`). The shared shape check was hardened in the
+  same change: a `null` settlement/deposit figure previously slipped
+  through (only non-finite numbers were rejected); every money field
+  must now be a finite number.
+
 - New benchmark path `renderReportCsv (released report, 4 parties)`:
   the same fixed golden released report the `#582` demo section
   prints as CSV (deposit 10,630, released via VERIFY_PASS → RELEASE,
