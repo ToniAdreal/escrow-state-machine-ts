@@ -18,6 +18,16 @@ version changes.
 
 ### Added
 
+- `renderReportJson(report)` renders a settlement report as JSON for
+  programmatic consumers (bookkeeping APIs, databases): `JSON.stringify`
+  of the report itself, carrying exactly the `SettlementReport` fields
+  with amounts as JSON numbers, not two-decimal strings as in
+  `renderReportCsv`; a non-report value or a non-finite money figure
+  throws `cannot render settlement report as JSON: …` instead of
+  serializing (`JSON.stringify` alone would silently turn
+  `Infinity`/`NaN` into `null`). `test/settlementReportJson.test.ts`
+  (10 cases).
+
 - `deliverSettlementWebhook` now sends an `Idempotency-Key` header on
   every attempt, equal to the payload's `eventId` (identical across
   retries; fan-out endpoints share the same logical eventId, so they

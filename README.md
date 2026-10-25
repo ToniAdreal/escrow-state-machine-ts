@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 826 tests, all local
+npm test   # 836 tests, all local
 ```
 
 ## Quickstart
@@ -810,9 +810,24 @@ sums over the party rows. String fields follow RFC 4180 escaping
 TOTAL row repeats the report's `escrowId`/`outcome` so imports can group
 rows back to their escrow.
 
+For programmatic consumers instead of imports, `renderReportJson(report)`
+renders the same report as JSON — `JSON.stringify` of the report itself,
+so it carries exactly the `SettlementReport` fields (escrowId, outcome,
+releasePath when present, deposit breakdown, settlement when present, the
+four party ledgers, totals, balanced flag, and audit window) with no field
+added, renamed, or dropped. The one deliberate difference from CSV: amounts
+stay JSON numbers (`10098.5`), not two-decimal strings (`"10098.50"`), so
+a bookkeeping API or database gets typed money figures rather than text
+to re-parse. A value that is not a report at all — or a money figure that
+is not finite — throws `cannot render settlement report as JSON: …`
+instead of serializing (plain `JSON.stringify` would silently turn
+`Infinity`/`NaN` into `null`). The three exports therefore cover three
+audiences: `renderReport` for humans, `renderReportCsv` for spreadsheet
+imports, `renderReportJson` for APIs and storage.
+
 ## Reproducibility
 
-`npm test` runs 826 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 836 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

@@ -503,6 +503,109 @@ export function renderReportCsv(report: SettlementReport): string {
   return lines.join("\n");
 }
 
+/**
+ * Validate the structural shape of a {@link SettlementReport} before it is
+ * serialized. This is a shape check, not a re-derivation of the accounting:
+ * the figures are trusted as the caller's (normally `buildSettlementReport`'s
+ * output), but a value that is not a report at all — or a money figure that
+ * is not a finite number — must fail loudly here rather than silently
+ * degrading in transit. `JSON.stringify` turns `Infinity`/`NaN` into `null`
+ * without complaint, so a non-finite amount would otherwise leave this
+ * function as a plausible-looking `null` and corrupt a downstream import.
+ * Every failure throws `cannot render settlement report as JSON: …`.
+ */
+function assertReportShape(report: unknown): asserts report is SettlementReport {
+  const fail = (reason: string): never => {
+    throw new Error(`cannot render settlement report as JSON: ${reason}`);
+  };
+  if (typeof report !== "object" || report === null || Array.isArray(report))
+    fail("report must be a SettlementReport object");
+  const r = report as Record<string, unknown>;
+  if (typeof r.escrowId !== "string" || r.escrowId.length === 0)
+    fail("escrowId must be a non-empty string");
+  if (r.outcome !== "released" && r.outcome !== "refunded" && r.outcome !== "expired")
+    fail('outcome must be "released", "refunded", or "expired"');
+  if (typeof r.deposit !== "object" || r.deposit === null || Array.isArray(r.deposit))
+    fail("deposit must be a FeeBreakdown object");
+  const deposit = r.deposit as Record<string, unknown>;
+  if (typeof deposit.deposit !== "number" || !Number.isFinite(deposit.deposit))
+    fail("deposit.deposit must be a finite number");
+  for (const [key, value] of Object.entries(deposit)) {
+    if (typeof value === "number" && !Number.isFinite(value))
+      fail(`deposit.${key} must be a finite number`);
+  }
+  if (!Array.isArray(r.parties) || r.parties.length === 0)
+    fail("parties must be a non-empty array");
+  for (const party of r.parties as unknown[]) {
+    if (typeof party !== "object" || party === null || Array.isArray(party))
+      fail("each party must be a PartyLedger object");
+    const p = party as Record<string, unknown>;
+    if (
+      p.party !== "sponsor" &&
+      p.party !== "creator" &&
+      p.party !== "platform" &&
+      p.party !== "referrer"
+    )
+      fail("each party.party must be a PartyRole");
+    if (typeof p.label !== "string") fail("each party.label must be a string");
+    for (const key of ["inflow", "outflow", "net"] as const) {
+      if (typeof p[key] !== "number" || !Number.isFinite(p[key]))
+        fail(`each party.${key} must be a finite number`);
+    }
+  }
+  for (const key of ["totalInflow", "totalOutflow"] as const) {
+    if (typeof r[key] !== "number" || !Number.isFinite(r[key]))
+      fail(`${key} must be a finite number`);
+  }
+  if (typeof r.balanced !== "boolean") fail("balanced must be a boolean");
+  if (
+    typeof r.eventCount !== "number" ||
+    !Number.isInteger(r.eventCount) ||
+    r.eventCount < 0
+  )
+    fail("eventCount must be a non-negative integer");
+  if (r.releasePath !== undefined && typeof r.releasePath !== "string")
+    fail("releasePath must be a string when present");
+  if (r.settlement !== undefined) {
+    if (typeof r.settlement !== "object" || r.settlement === null || Array.isArray(r.settlement))
+      fail("settlement must be a Settlement object when present");
+    for (const [key, value] of Object.entries(r.settlement as Record<string, unknown>)) {
+      if (typeof value === "number" && !Number.isFinite(value))
+        fail(`settlement.${key} must be a finite number`);
+    }
+  }
+  for (const key of ["firstEventAt", "lastEventAt"] as const) {
+    if (r[key] !== undefined && typeof r[key] !== "string")
+      fail(`${key} must be a string when present`);
+  }
+}
+
+/**
+ * Render the report as JSON for programmatic consumers — the
+ * machine-readable counterpart to {@link renderReportCsv} for callers that
+ * feed the report to a bookkeeping API or a database instead of a CSV
+ * import. The output is `JSON.stringify` of the report itself, so it
+ * carries exactly the {@link SettlementReport} fields (escrowId, outcome,
+ * releasePath when present, deposit breakdown, settlement when present,
+ * the four party ledgers, totals, balanced flag, and audit window) with
+ * no field added, renamed, or dropped.
+ *
+ * The one deliberate difference from CSV: amounts stay JSON numbers, not
+ * two-decimal strings. A consumer parsing this output gets `10098.5`, not
+ * `"10098.50"` — re-stringifying a CSV row would lose that distinction
+ * and break the moment a field is added. Optional fields that are
+ * `undefined` are omitted by `JSON.stringify` itself, as usual; a report
+ * that fails the shape check throws instead of serializing (see
+ * `assertReportShape`), so a malformed object never becomes a
+ * plausible-looking JSON document.
+ *
+ * Pure: the report is only read, never mutated.
+ */
+export function renderReportJson(report: SettlementReport): string {
+  assertReportShape(report);
+  return JSON.stringify(report);
+}
+
 /** Render the report as plain human-readable text. */
 export function renderReport(report: SettlementReport): string {
   const d = report.deposit;
