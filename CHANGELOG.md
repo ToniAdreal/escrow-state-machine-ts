@@ -18,6 +18,36 @@ version changes.
 
 ### Added
 
+- New benchmark path `renderReportCsv (released report, 4 parties)`:
+  the same fixed golden released report the `#582` demo section
+  prints as CSV (deposit 10,630, released via VERIFY_PASS → RELEASE,
+  4 party rows) rendered on every iteration and checked against the
+  hand-written 6 lines — header
+  `escrowId,outcome,role,inflow,outflow,net`, one row per party in
+  report order, and the TOTAL row — with the TOTAL columns
+  additionally re-derived from the party rows themselves on every
+  iteration, so the check pins the CSV's self-consistency claim (the
+  TOTAL row sums the rows above it) rather than only the pinned
+  TOTAL line. A premise correction, pinned in the bench rather than
+  assumed: `renderReportCsv` itself performs no shape validation
+  (unlike `renderReportJson`'s `assertReportShape`) — a hand-built
+  report with a non-finite party amount renders the literal string
+  `Infinity`, it does not throw — so the illegal-report fail-fast
+  probe pins the gate that actually guards the CSV path, at report
+  construction: `buildSettlementReport` refuses a deposit that
+  disagrees with the FUND total recorded in the audit history, with
+  the exact message pinned
+  (`cannot build settlement report for BENCH-001: deposit 10631 does
+  not match the FUND total 10630 recorded in the audit history`).
+  The renderer's missing shape check is a real gap, left for a
+  follow-up item rather than papered over by this bench. A mutation
+  probe (corrupting the hand-pinned TOTAL row expectation) fails the
+  bench at fixture load with the exact self-check error, confirming
+  the pin is live. The run measured ~120,096 ops/sec (~8.33 µs/op)
+  for this row. The new row joins the README benchmark table, with
+  the whole table refreshed from the same real run. No network, no
+  randomness, no wall clock.
+
 - The CLI demo now prints the main settlement report as JSON next to
   its CSV form: `renderReportJson(report)` on the same released
   report, with the demo asserting the parsed JSON matches the report

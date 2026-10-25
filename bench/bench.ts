@@ -974,6 +974,7 @@ import {
   parseEscrowHistory,
   parseRetryAfter,
   renderReport,
+  renderReportCsv,
   restoreQuorum,
   settleRelease,
   SettlementEventDedupe,
@@ -5940,6 +5941,139 @@ function benchRenderReportRefundedExpired(): number {
   }, ITERATIONS);
 }
 
+// ---------------------------------------------------------------------
+// renderReportCsv fixture: the module-scope golden released `report`
+// above, re-rendered as CSV — the same report the #582 demo section
+// prints (same golden vector: deposit 10,630 = pool 10,000 + base
+// 600 x1.0 - loyalty 30 + oracle 60, settled at proFeeBps 500:
+// sponsor 0 / 10,630 / -10,630, creator 10,098.50 / 0 / 10,098.50,
+// platform 531.50 / 0 / 531.50, referrer 0 / 0 / 0), so the bench
+// CSV row and the demo CSV section can never drift apart in
+// figures. renderReportCsv is pure (it only reads the report), so
+// the same report is re-rendered on every iteration.
+// Hand-written expected lines — the header verbatim, one row per
+// party in the report's party order, and the TOTAL row — written
+// out from the documented CSV shape (header
+// `escrowId,outcome,role,inflow,outflow,net`, cent-rounded
+// two-decimal amounts, no thousands separators) and the golden
+// figures above, cross-checked against
+// test/settlementReportCsv.test.ts — never produced by calling
+// renderReportCsv itself:
+//   header:   "escrowId,outcome,role,inflow,outflow,net"
+//   sponsor:  "BENCH-001,released,sponsor,0.00,10630.00,-10630.00"
+//   creator:  "BENCH-001,released,creator,10098.50,0.00,10098.50"
+//   platform: "BENCH-001,released,platform,531.50,0.00,531.50"
+//   referrer: "BENCH-001,released,referrer,0.00,0.00,0.00"
+//   TOTAL:    "BENCH-001,released,TOTAL,10630.00,10630.00,0.00"
+// The TOTAL row is additionally re-derived on every iteration from
+// the party rows themselves (parsed back out of the CSV text and
+// summed at cent precision), so the check pins the CSV's
+// self-consistency claim — the TOTAL columns sum the rows above
+// them — rather than only the pinned TOTAL line.
+// ---------------------------------------------------------------------
+const RENDER_CSV_EXPECTED_LINES: readonly string[] = [
+  "escrowId,outcome,role,inflow,outflow,net",
+  "BENCH-001,released,sponsor,0.00,10630.00,-10630.00",
+  "BENCH-001,released,creator,10098.50,0.00,10098.50",
+  "BENCH-001,released,platform,531.50,0.00,531.50",
+  "BENCH-001,released,referrer,0.00,0.00,0.00",
+  "BENCH-001,released,TOTAL,10630.00,10630.00,0.00",
+];
+
+function checkRenderReportCsv(text: string): void {
+  const lines = text.split("\n");
+  if (lines.length !== RENDER_CSV_EXPECTED_LINES.length) {
+    throw new Error("benchmark self-check failed: renderReportCsv line count");
+  }
+  for (let i = 0; i < RENDER_CSV_EXPECTED_LINES.length; i++) {
+    if (lines[i] !== RENDER_CSV_EXPECTED_LINES[i]) {
+      throw new Error("benchmark self-check failed: renderReportCsv");
+    }
+  }
+  // TOTAL self-consistency: re-derive the TOTAL columns from the
+  // party rows above it, at cent precision, and compare against the
+  // TOTAL row itself and against the report's totals (the fixture
+  // report is pinned balanced at 10630 / 10630).
+  let inflow = 0;
+  let outflow = 0;
+  let net = 0;
+  for (let i = 1; i <= 4; i++) {
+    const cols = lines[i].split(",");
+    inflow = Math.round((inflow + Number(cols[3])) * 100) / 100;
+    outflow = Math.round((outflow + Number(cols[4])) * 100) / 100;
+    net = Math.round((net + Number(cols[5])) * 100) / 100;
+  }
+  const totalCols = lines[5].split(",");
+  if (
+    totalCols[2] !== "TOTAL" ||
+    totalCols[3] !== inflow.toFixed(2) ||
+    totalCols[4] !== outflow.toFixed(2) ||
+    totalCols[5] !== net.toFixed(2) ||
+    inflow !== report.totalInflow ||
+    outflow !== report.totalOutflow
+  ) {
+    throw new Error("benchmark self-check failed: renderReportCsv TOTAL");
+  }
+}
+// Pre-check outside the timed loop: the CSV render carries every
+// hand-written expected line before any number is reported.
+checkRenderReportCsv(renderReportCsv(report));
+
+// Outside the timed loop: the illegal-report fail-fast probe. A
+// premise correction, pinned here rather than assumed:
+// renderReportCsv itself performs no shape validation (unlike
+// renderReportJson's assertReportShape) — a hand-built report with
+// a non-finite party amount renders the literal string "Infinity",
+// it does not throw. The fail-fast gate that actually guards the
+// CSV path therefore lives one step earlier, at report
+// construction: buildSettlementReport refuses to produce a report
+// whose deposit disagrees with the FUND total recorded in the
+// audit history, so a mismatched-deposit report can never reach
+// the renderer through the supported path. That gate is pinned
+// here with its exact message; the renderer's missing shape check
+// is a real gap, left for a follow-up item rather than silently
+// papered over by this bench.
+{
+  const mismatchedDeposit = calculateDeposit({
+    creatorPool: 10000,
+    baseFee: 600,
+    complexityMultiplier: 1.0,
+    loyaltyDiscount: 30,
+    oracleFee: 61,
+  });
+  let mismatchError = "";
+  try {
+    buildSettlementReport({
+      escrowId: releasedEscrow.id,
+      history: historyFixture,
+      finalState: "RELEASED",
+      deposit: mismatchedDeposit,
+      settlement: { proFeeBps: 500 },
+    });
+  } catch (err) {
+    mismatchError = err instanceof Error ? err.message : String(err);
+  }
+  if (
+    mismatchError !==
+    "cannot build settlement report for BENCH-001: deposit 10631 does not match the FUND total 10630 recorded in the audit history"
+  ) {
+    throw new Error(
+      "benchmark fixture failed: renderReportCsv illegal-report gate",
+    );
+  }
+}
+
+function benchRenderReportCsv(): number {
+  // Per-iteration self-check: the full 6-line CSV against the
+  // hand-written expected lines, plus the TOTAL row re-derived from
+  // the party rows — a drift in the CSV shape or in the TOTAL
+  // summation breaks the run instead of silently re-timing a
+  // changed export.
+  return measure(() => {
+    checkRenderReportCsv(renderReportCsv(report));
+  }, ITERATIONS);
+}
+
 function benchDepositAmountFromHistory(): number {
   return measure(() => {
     checkDepositCorpus();
@@ -7151,6 +7285,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "buildSettlementReport audit window (eventCount/firstEventAt/lastEventAt)", ops: benchBuildSettlementReportAuditWindow() },
   { path: "renderReport (released report, 4 parties)", ops: benchRenderReport() },
   { path: "renderReport (refunded + expired, 2 reports)", ops: benchRenderReportRefundedExpired() },
+  { path: "renderReportCsv (released report, 4 parties)", ops: benchRenderReportCsv() },
   { path: "depositAmountFromHistory (4-shape corpus)", ops: benchDepositAmountFromHistory() },
   { path: "buildSettlementReports (batch 4 x 4 entries)", ops: benchBuildSettlementReports() },
   { path: "summarizeSettlementReports (batch 4 results)", ops: benchSummarizeSettlementReports() },
