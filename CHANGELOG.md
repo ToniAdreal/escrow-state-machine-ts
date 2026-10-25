@@ -18,6 +18,15 @@ version changes.
 
 ### Added
 
+- `deliverSettlementWebhook` now sends an `Idempotency-Key` header on
+  every attempt, equal to the payload's `eventId` (identical across
+  retries; fan-out endpoints share the same logical eventId, so they
+  share the same header value). There is no opt-out. Like
+  `X-Event-Id`, it is a transport-layer idempotency hint only — it is
+  not covered by the signature, so receivers must verify the signature
+  and then trust the body's `eventId`, never the header.
+  `test/webhookIdempotencyKeyHeader.test.ts` (8 cases).
+
 - `StaleEscrowActionResult` now carries the appended audit entry on
   success: `actOnStaleEscrows()` fills `entry` with a frozen,
   detached copy of the escrow's last history entry when the action

@@ -11,7 +11,8 @@
  * Scope honesty (what this is NOT):
  * - Delivery is available via {@link deliverSettlementWebhook}: HTTP POST of
  *   the signed payload with the `X-Signature` header plus an `X-Event-Id`
- *   header carrying the payload's `eventId`, a per-attempt timeout,
+ *   header and an `Idempotency-Key` header, both carrying the payload's
+ *   `eventId`, a per-attempt timeout,
  *   and exponential-backoff retries on 5xx, 429, and network errors (a 429
  *   `Retry-After` hint is honored; other 4xx are not retried). Multi-endpoint
  *   fan-out is available via {@link deliverSettlementWebhookToMany}.
@@ -1176,6 +1177,16 @@ function assertDeliverOptionValues(
  * alone, so a receiver must still verify the signature and then trust
  * the body's `eventId`, never the header, as the deduplication key.
  *
+ * Every attempt also carries an `Idempotency-Key` header with exactly the
+ * same value — the payload's `eventId`, identical on every retry and on
+ * every fan-out endpoint (fan-out shares one logical event). There is no
+ * opt-out: the header is always sent. It exists for receivers that
+ * deduplicate on the standard payment-gateway `Idempotency-Key` header
+ * rather than on a vendor-specific header; like `X-Event-Id`, it is a
+ * transport hint only, NOT covered by the signature, so a receiver must
+ * verify the signature and then trust the body's `eventId`, never the
+ * header, as the deduplication key.
+ *
  * The request body is byte-identical to what `buildSettlementWebhook`
  * signed, so the receiver can verify it over the raw bytes.
  *
@@ -1572,6 +1583,7 @@ async function postOnce(
         "content-type": "application/json",
         "X-Signature": signature,
         "X-Event-Id": eventId,
+        "Idempotency-Key": eventId,
       },
       body,
       signal: controller.signal,
