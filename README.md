@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 857 tests, all local
+npm test   # 885 tests, all local
 ```
 
 ## Quickstart
@@ -810,6 +810,24 @@ sums over the party rows. String fields follow RFC 4180 escaping
 TOTAL row repeats the report's `escrowId`/`outcome` so imports can group
 rows back to their escrow.
 
+`parseSettlementReportCsv(text)` is the inverse for the receiving end of
+that hop: it parses the header, the four party rows, and the `TOTAL` row
+with an RFC 4180 record parser (quoted fields may carry commas, quotes,
+and line breaks), and it cross-checks the document before returning
+anything — same `escrowId`/`outcome` on every row, exactly one row per
+party role, every amount a finite two-decimal figure, every party `net`
+equal to its `inflow − outflow`, and the `TOTAL` row equal to the sums
+over the party rows. Anything else throws
+`cannot parse settlement report CSV: …`. The return value is a
+`SettlementReportCsv`: the CSV-carried subset (`escrowId`, `outcome`,
+party ledgers, totals, `balanced`), not a full `SettlementReport` — the
+CSV carries no deposit breakdown, settlement parameters, `releasePath`,
+`eventCount`, or audit window, and the import does not invent them, so
+a parsed value re-renders byte-identically through `renderReportCsv`
+but must not be read as the original breakdown. As with the JSON import,
+this is structural validation only, not a re-verification of the audit
+chain.
+
 For programmatic consumers instead of imports, `renderReportJson(report)`
 renders the same report as JSON — `JSON.stringify` of the report itself,
 so it carries exactly the `SettlementReport` fields (escrowId, outcome,
@@ -838,7 +856,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 857 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 885 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

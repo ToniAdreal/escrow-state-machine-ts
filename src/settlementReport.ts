@@ -469,8 +469,15 @@ function csvField(value: string): string {
  * String fields are RFC 4180-escaped (today's ids/roles/outcomes contain no
  * special characters; the escaping is pinned anyway so a future id carrying
  * a comma or quote cannot silently shift columns).
+ *
+ * The parameter is a full {@link SettlementReport} or the CSV-carried
+ * subset returned by {@link parseSettlementReportCsv}: rendering reads
+ * only `escrowId`, `outcome`, and `parties`, so a parsed value re-renders
+ * byte-identically without rebuilding the fields the CSV never carried.
  */
-export function renderReportCsv(report: SettlementReport): string {
+export function renderReportCsv(
+  report: SettlementReport | SettlementReportCsv,
+): string {
   const lines: string[] = ["escrowId,outcome,role,inflow,outflow,net"];
   let totalInflow = 0;
   let totalOutflow = 0;
@@ -501,6 +508,288 @@ export function renderReportCsv(report: SettlementReport): string {
     ].join(","),
   );
   return lines.join("\n");
+}
+
+/**
+ * The settlement report as carried by {@link renderReportCsv} — the
+ * CSV-carried subset of a {@link SettlementReport}, nothing more.
+ *
+ * A CSV row carries only `escrowId`, `outcome`, and the per-party
+ * `inflow`/`outflow`/`net` ledgers, plus the `TOTAL` row that sums them.
+ * It does NOT carry the deposit breakdown (`creatorPool`, `baseFee`,
+ * `complexityMultiplier`, `loyaltyDiscount`, `oracleFee`), the
+ * `settlement` parameters, the `releasePath`, the `eventCount`, or the
+ * audit window (`firstEventAt`/`lastEventAt`) — so a CSV import cannot
+ * reconstruct a full `SettlementReport` without inventing those figures,
+ * and this type does not pretend otherwise. `totalInflow`/`totalOutflow`
+ * are the `TOTAL` row's figures (cross-checked against the party rows);
+ * `balanced` is whether those two totals agree at cent precision.
+ * For a report produced by `buildSettlementReport`, `totalOutflow` equals
+ * `deposit.deposit` (the sponsor's outflow is the locked deposit in all
+ * three outcomes); for a hand-built CSV it is simply the `TOTAL` outflow
+ * figure, not an independently verified deposit.
+ */
+export interface SettlementReportCsv {
+  escrowId: string;
+  outcome: SettlementOutcome;
+  parties: PartyLedger[];
+  totalInflow: number;
+  totalOutflow: number;
+  /** totalInflow === totalOutflow at cent precision. */
+  balanced: boolean;
+}
+
+/**
+ * Split CSV text into records, following RFC 4180: a field containing a
+ * comma, a double quote, or a line break is wrapped in double quotes, and
+ * each double quote inside it is doubled. A quote anywhere else — a bare
+ * quote in the middle of an unquoted field, a character other than a
+ * comma, a line break, or end-of-input after a closing quote, or an
+ * unterminated quoted field — is malformed and throws, because silently
+ * re-interpreting a shifted column would corrupt a money import.
+ * CRLF and LF line breaks are both accepted; a quoted field may itself
+ * contain a line break, so records are parsed from the whole text, not
+ * by splitting on newlines first.
+ */
+function parseCsvRecords(text: string): string[][] {
+  const records: string[][] = [];
+  let record: string[] = [];
+  let field = "";
+  let inQuotes = false;
+  let afterClosingQuote = false;
+  let i = 0;
+  const pushField = () => {
+    record.push(field);
+    field = "";
+  };
+  const pushRecord = () => {
+    pushField();
+    records.push(record);
+    record = [];
+  };
+  while (i < text.length) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i + 1] === '"') {
+          field += '"';
+          i += 2;
+        } else {
+          inQuotes = false;
+          afterClosingQuote = true;
+          i += 1;
+        }
+      } else {
+        field += c;
+        i += 1;
+      }
+      continue;
+    }
+    if (afterClosingQuote) {
+      if (c === ",") {
+        pushField();
+        afterClosingQuote = false;
+        i += 1;
+      } else if (c === "\r") {
+        if (text[i + 1] === "\n") i += 1;
+        pushRecord();
+        afterClosingQuote = false;
+        i += 1;
+      } else if (c === "\n") {
+        pushRecord();
+        afterClosingQuote = false;
+        i += 1;
+      } else {
+        throw new Error(
+          `cannot parse settlement report CSV: unexpected character after a closing quote: ${JSON.stringify(c)}`,
+        );
+      }
+      continue;
+    }
+    if (c === '"' && field === "") {
+      inQuotes = true;
+      i += 1;
+    } else if (c === ",") {
+      pushField();
+      i += 1;
+    } else if (c === "\r") {
+      if (text[i + 1] === "\n") i += 1;
+      pushRecord();
+      i += 1;
+    } else if (c === "\n") {
+      pushRecord();
+      i += 1;
+    } else {
+      field += c;
+      i += 1;
+    }
+  }
+  if (inQuotes) {
+    throw new Error("cannot parse settlement report CSV: unterminated quoted field");
+  }
+  // A trailing newline already closed the last record; only push a final
+  // record when the text ends mid-field or mid-record.
+  if (afterClosingQuote || field !== "" || record.length > 0) {
+    pushRecord();
+  }
+  return records;
+}
+
+/** Two-decimal money figure, exactly as `renderReportCsv` emits it. */
+const CSV_MONEY = /^-?\d+\.\d{2}$/;
+
+function parseCsvMoney(value: string, where: string): number {
+  if (!CSV_MONEY.test(value)) {
+    throw new Error(
+      `cannot parse settlement report CSV: ${where} must be a two-decimal money figure, got ${JSON.stringify(value)}`,
+    );
+  }
+  const n = Number(value);
+  if (!Number.isFinite(n)) {
+    throw new Error(
+      `cannot parse settlement report CSV: ${where} must be a finite number, got ${JSON.stringify(value)}`,
+    );
+  }
+  return n;
+}
+
+/**
+ * Parse a settlement report back from CSV — the inverse of
+ * {@link renderReportCsv}, for the receiving end of the bookkeeping hop:
+ * a caller that exported a report with `renderReportCsv` gets the
+ * report's ledgers back without hand-writing a CSV parser for each row.
+ *
+ * The check is structural plus self-consistency, in the other direction
+ * from rendering: the header must be exactly
+ * `escrowId,outcome,role,inflow,outflow,net`; there must be exactly four
+ * party rows (one per role, each once, in any order) plus a final `TOTAL`
+ * row; every row must carry the same `escrowId` and `outcome`; every
+ * amount must be a finite two-decimal figure; every party's `net` must
+ * equal its `inflow − outflow` at cent precision; and the `TOTAL` row
+ * must equal the sums over the party rows. Any violation throws
+ * `cannot parse settlement report CSV: …` instead of returning a
+ * plausible-looking half-report.
+ *
+ * Honest limit, stated plainly because it is the whole point of the
+ * {@link SettlementReportCsv} type: this import recovers only what the
+ * CSV carries. The deposit breakdown, settlement parameters,
+ * `releasePath`, `eventCount`, and audit window are not in the file and
+ * are not reconstructed — a parsed value re-renders byte-identically
+ * through `renderReportCsv`, but it is not the original
+ * `SettlementReport`, and no field in it should be read as the original
+ * breakdown. Import is structural validation only, not a re-verification
+ * of the audit chain: a hand-built CSV with internally consistent rows
+ * parses, just as it would render, and chain verification still belongs
+ * to `verifyHistoryChain` over the escrow's own history.
+ *
+ * Pure: the input string is only read, never mutated, and the returned
+ * value is a fresh object graph (a second parse of the same text yields
+ * an independent copy).
+ */
+export function parseSettlementReportCsv(text: string): SettlementReportCsv {
+  if (typeof text !== "string") {
+    throw new Error("cannot parse settlement report CSV: input must be a CSV string");
+  }
+  // A UTF-8 byte-order mark is a transport artifact, not a column.
+  const records = parseCsvRecords(text.replace(/^\uFEFF/, ""));
+  // Trailing blank lines are line-ending noise, not extra rows; a blank
+  // record anywhere else changes the record count and fails below.
+  while (records.length > 0) {
+    const last = records[records.length - 1];
+    if (last.length === 1 && last[0] === "") records.pop();
+    else break;
+  }
+  const fail = (reason: string): never => {
+    throw new Error(`cannot parse settlement report CSV: ${reason}`);
+  };
+  if (records.length !== 6) {
+    fail(
+      `expected 6 records (header + 4 party rows + TOTAL row), got ${records.length}`,
+    );
+  }
+  const header = records[0];
+  if (
+    header.length !== 6 ||
+    header[0] !== "escrowId" ||
+    header[1] !== "outcome" ||
+    header[2] !== "role" ||
+    header[3] !== "inflow" ||
+    header[4] !== "outflow" ||
+    header[5] !== "net"
+  ) {
+    fail('header must be exactly "escrowId,outcome,role,inflow,outflow,net"');
+  }
+  const escrowId = records[1][0];
+  const outcome = records[1][1];
+  if (escrowId === undefined || escrowId === "") {
+    fail("escrowId must be a non-empty string");
+  }
+  if (outcome !== "released" && outcome !== "refunded" && outcome !== "expired") {
+    fail('outcome must be "released", "refunded", or "expired"');
+  }
+  const parties: PartyLedger[] = [];
+  const seen = new Set<string>();
+  let sumInflow = 0;
+  let sumOutflow = 0;
+  let sumNet = 0;
+  for (let r = 1; r <= 4; r += 1) {
+    const row = records[r];
+    const where = `party row ${r}`;
+    if (row.length !== 6) fail(`${where} must have 6 columns, got ${row.length}`);
+    if (row[0] !== escrowId) fail(`${where} escrowId ${JSON.stringify(row[0])} does not match ${JSON.stringify(escrowId)}`);
+    if (row[1] !== outcome) fail(`${where} outcome ${JSON.stringify(row[1])} does not match ${JSON.stringify(outcome)}`);
+    const role = row[2];
+    if (role !== "sponsor" && role !== "creator" && role !== "platform" && role !== "referrer") {
+      fail(`${where} role must be a PartyRole, got ${JSON.stringify(role)}`);
+    }
+    if (seen.has(role)) fail(`${where} role ${JSON.stringify(role)} appears more than once`);
+    seen.add(role);
+    const inflow = parseCsvMoney(row[3], `${where} inflow`);
+    const outflow = parseCsvMoney(row[4], `${where} outflow`);
+    const net = parseCsvMoney(row[5], `${where} net`);
+    if (inflow < 0) fail(`${where} inflow must not be negative`);
+    if (outflow < 0) fail(`${where} outflow must not be negative`);
+    if (round2(inflow - outflow) !== net) {
+      fail(`${where} net ${net} does not equal inflow ${inflow} minus outflow ${outflow}`);
+    }
+    // The role check above already rejected anything outside PartyRole;
+    // the cast only tells TypeScript what the runtime check established
+    // (a never-returning helper call does not narrow here).
+    parties.push({ party: role as PartyRole, label: PARTY_LABELS[role as PartyRole], inflow, outflow, net });
+    sumInflow = round2(sumInflow + inflow);
+    sumOutflow = round2(sumOutflow + outflow);
+    sumNet = round2(sumNet + net);
+  }
+  for (const role of ["sponsor", "creator", "platform", "referrer"] as const) {
+    if (!seen.has(role)) fail(`missing party row for role ${JSON.stringify(role)}`);
+  }
+  const total = records[5];
+  if (total.length !== 6) fail(`TOTAL row must have 6 columns, got ${total.length}`);
+  if (total[0] !== escrowId) fail(`TOTAL row escrowId does not match ${JSON.stringify(escrowId)}`);
+  if (total[1] !== outcome) fail(`TOTAL row outcome does not match ${JSON.stringify(outcome)}`);
+  if (total[2] !== "TOTAL") fail(`last row role must be "TOTAL", got ${JSON.stringify(total[2])}`);
+  const totalInflow = parseCsvMoney(total[3], "TOTAL row inflow");
+  const totalOutflow = parseCsvMoney(total[4], "TOTAL row outflow");
+  const totalNet = parseCsvMoney(total[5], "TOTAL row net");
+  if (totalInflow !== sumInflow) {
+    fail(`TOTAL row inflow ${totalInflow} does not equal the sum over party rows ${sumInflow}`);
+  }
+  if (totalOutflow !== sumOutflow) {
+    fail(`TOTAL row outflow ${totalOutflow} does not equal the sum over party rows ${sumOutflow}`);
+  }
+  if (totalNet !== sumNet) {
+    fail(`TOTAL row net ${totalNet} does not equal the sum over party rows ${sumNet}`);
+  }
+  return {
+    escrowId,
+    // Same note as the role cast above: the outcome check already
+    // rejected anything outside SettlementOutcome.
+    outcome: outcome as SettlementOutcome,
+    parties,
+    totalInflow,
+    totalOutflow,
+    balanced: totalInflow === totalOutflow,
+  };
 }
 
 /**

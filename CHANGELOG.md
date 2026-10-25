@@ -18,6 +18,20 @@ version changes.
 
 ### Added
 
+- Settlement report CSV round-trip import `parseSettlementReportCsv`
+  (2026-10-25, backlog #600): the inverse of `renderReportCsv`, with an
+  RFC 4180 record parser and cross-checks (exact header, one row per
+  party role, same `escrowId`/`outcome` on every row, finite two-decimal
+  amounts, party `net` equal to `inflow − outflow`, `TOTAL` row equal to
+  the party-row sums) — anything else throws
+  `cannot parse settlement report CSV: …`. Deliberate, documented limit:
+  the CSV carries no deposit breakdown, settlement parameters,
+  `releasePath`, `eventCount`, or audit window, so the import returns
+  the CSV-carried subset (`SettlementReportCsv`) and does not invent
+  those fields; a parsed value re-renders byte-identically through
+  `renderReportCsv`, whose parameter type now also accepts that subset.
+  Import is structural validation only, not a re-verification of the
+  audit chain.
 - CLI demo settlement report JSON import segment (2026-10-25, backlog
   #597): the demo now shows `parseSettlementReportJson` reading the
   just-exported report JSON back — the parsed report deep-equals the
