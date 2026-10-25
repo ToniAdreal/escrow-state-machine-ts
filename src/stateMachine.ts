@@ -2169,6 +2169,16 @@ export interface StaleEscrowActionResult {
   acted: boolean;
   /** Set when the action threw; the message of the caught error. */
   error?: string;
+  /**
+   * The audit entry the successful action appended — a frozen,
+   * detached copy of the escrow's last history entry, so a stale-patrol
+   * report can cite it (escrow id, from/to state, timestamp) without
+   * re-reading `escrow.history`. Present only when the action ran
+   * successfully AND appended to the history (a dispatch-style action
+   * does; a notify-only custom action does not). Failed actions leave
+   * this absent, even if the action dispatched and then threw.
+   */
+  entry?: EscrowHistoryEntry;
 }
 
 /**
@@ -2198,6 +2208,14 @@ export interface StaleEscrowActionResult {
  * attempted count equals the `staleEscrows()` selection size.
  * Non-stale and terminal escrows are untouched and produce no entry.
  *
+ * Successful outcomes also carry `entry` when the action appended to
+ * the history — a frozen, detached copy of the appended audit entry —
+ * so a stale-patrol report can cite the action's own audit record
+ * without re-reading `escrow.history`. Growth across the action is
+ * the test (history is append-only): a notify-only action that
+ * appended nothing leaves `entry` absent, and a failed action leaves
+ * it absent even if it dispatched before throwing.
+ *
  * Configuration is validated fail-fast before any action runs: a
  * non-function `action`, an invalid `maxAgeByState`, or an invalid
  * `now` (the latter two via `staleEscrows()`) throws and no escrow is
@@ -2215,9 +2233,18 @@ export function actOnStaleEscrows(
   // staleEscrows() validates maxAgeByState and now fail-fast, before
   // any action runs.
   return staleEscrows(escrows, maxAgeByState, now).map((escrow) => {
+    // History is append-only, so growth across the action is exactly
+    // "the action appended an audit entry". The history getter returns
+    // frozen detached copies, so the last entry is already the
+    // immutable audit record of the action — same pattern as
+    // expireOverdueEscrows() and dataquest's actOnStaleTasks().
+    const before = escrow.history.length;
     try {
       action(escrow);
-      return { escrow, acted: true };
+      const history = escrow.history;
+      return history.length > before
+        ? { escrow, acted: true, entry: history[history.length - 1] }
+        : { escrow, acted: true };
     } catch (err) {
       return {
         escrow,

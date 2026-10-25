@@ -18,6 +18,16 @@ version changes.
 
 ### Added
 
+- `StaleEscrowActionResult` now carries the appended audit entry on
+  success: `actOnStaleEscrows()` fills `entry` with a frozen,
+  detached copy of the escrow's last history entry when the action
+  appended to the history (history growth across the action is the
+  test, mirroring dataquest's `StaleActionResult`); notify-only
+  actions leave the field absent, and failed actions leave it absent
+  even if the action dispatched before throwing, preserving the
+  previous result shape. `test/staleEscrowActionEntry.test.ts`
+  (10 cases).
+
 - `deliverSettlementWebhook` now sends an `X-Event-Id` header on every
   attempt, equal to the payload's `eventId` (identical across retries;
   fan-out endpoints each carry the shared logical event's id). The
