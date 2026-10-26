@@ -139,6 +139,8 @@ import {
   DEMO_EVENT_ID_HEADER_FANOUT_PATHS,
   DEMO_EVENT_ID_HEADER_RETRY_PATH,
   DEMO_EVENT_ID_HEADER_RETRY_STATUSES,
+  DEMO_IDEMPOTENCY_HEADER_RETRY_PATH,
+  DEMO_IDEMPOTENCY_HEADER_RETRY_STATUSES,
   DEMO_SNAPSHOT_SERIALIZED_BYTES,
   DEMO_STALE_DAY_MS,
   DEMO_STALE_DEADLINE,
@@ -2900,12 +2902,11 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
       `  tampered copy: SUBMIT_MILESTONE note rewritten to "${DEMO_AUDIT_KEY_TAMPERED_NOTE}" — verifyHistoryChain(tampered, auditKey): false (tamper detected even for the key holder: the stored HMAC no longer recomputes)`,
     ),
   );
-  // timeout tail: the closing segment delivers the
-  // signed webhook against a hanging fake fetch — the
-  // pinned short timeout fails the delivery after one
-  // attempt, an illegal timeoutMs throws before any
-  // fetch, and a generous timeout succeeds unchanged;
-  // the demo ends on the per-attempt-bound rule line.
+  // timeout tail: the segment delivers the signed
+  // webhook against a hanging fake fetch — the pinned
+  // short timeout fails the delivery after one attempt,
+  // an illegal timeoutMs throws before any fetch, and a
+  // generous timeout succeeds unchanged.
   assert.match(out, /Webhook delivery timeout \(deliverSettlementWebhook timeoutMs via hanging fake fetch, zero network\):/);
   assert.ok(
     out.includes(
@@ -2917,11 +2918,24 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
       `  illegal timeoutMs 0: delivery throws "${DEMO_TIMEOUT_INVALID_ERROR}" before any request: fake fetch called 0 time(s)`,
     ),
   );
+  // Idempotency-Key tail: the closing segment delivers
+  // the signed webhook over a loopback server with the
+  // same key on both attempts; the demo ends on the
+  // transport-hint note line.
+  assert.match(
+    out,
+    /Settlement webhook Idempotency-Key header \(deliverSettlementWebhook retry over a loopback server\):/,
+  );
+  assert.ok(
+    out.includes(
+      `  retry wire check: 2 captured POSTs — the Idempotency-Key header on attempt 1 and on the retry are both ${DEMO_WEBHOOK_EVENT_ID}, identical to each other and to the body eventId on both attempts`,
+    ),
+  );
   assert.ok(
     out
       .trimEnd()
       .endsWith(
-        "  a timeout is a per-attempt bound, handled by the retry policy like any network error: the pinned short wait above is the object under test itself — no elapsed time is asserted or printed",
+        "  note: the header is a transport hint only — it is NOT covered by the signature, so a receiver verifies the signature first and then trusts the body's eventId, never the header, as the deduplication key",
       ),
   );
 });
@@ -6108,9 +6122,10 @@ test("demo shows deliverSettlementWebhook timeoutMs: a hanging endpoint times ou
   }
   assert.equal(probeOkCalls, 1);
 
-  // The segment closes the demo: it follows the auditKey
-  // segment, prints its lines verbatim, and its
-  // per-attempt-bound rule line is the demo's last line.
+  // The segment precedes the Idempotency-Key segment: it
+  // follows the auditKey segment, prints its lines
+  // verbatim, and its per-attempt-bound rule line is
+  // followed by the Idempotency-Key header.
   const auditKeyAt = text.indexOf(
     "Keyed audit chain (verifyHistoryChain with EscrowOptions.auditKey on a branch escrow):",
   );
@@ -6126,9 +6141,11 @@ test("demo shows deliverSettlementWebhook timeoutMs: a hanging endpoint times ou
   ]) {
     assert.ok(text.includes(line), `missing timeout line: ${line}`);
   }
-  assert.equal(
-    lines[lines.length - 1],
-    "  a timeout is a per-attempt bound, handled by the retry policy like any network error: the pinned short wait above is the object under test itself — no elapsed time is asserted or printed",
+  assert.ok(
+    text.indexOf(
+      "Settlement webhook Idempotency-Key header (deliverSettlementWebhook retry over a loopback server):",
+    ) > timeoutAt,
+    "Idempotency-Key header segment must follow the timeout segment",
   );
 });
 
@@ -6138,6 +6155,9 @@ test("demo timeout segment is deterministic: two runs print byte-identical timeo
       ls.indexOf(
         "Webhook delivery timeout (deliverSettlementWebhook timeoutMs via hanging fake fetch, zero network):",
       ),
+      ls.indexOf(
+        "Settlement webhook Idempotency-Key header (deliverSettlementWebhook retry over a loopback server):",
+      ) - 1,
     );
   const a = await runDemo();
   const b = await runDemo();
@@ -6155,6 +6175,146 @@ test("demo timeout segment is deterministic: two runs print byte-identical timeo
   assert.equal(a.timeoutInvalidFetchCalls, b.timeoutInvalidFetchCalls);
   assert.deepEqual(a.timeoutOkResult, b.timeoutOkResult);
   assert.equal(a.timeoutOkFetchCalls, b.timeoutOkFetchCalls);
+});
+
+test("demo shows Idempotency-Key header: deliverSettlementWebhook retries over a loopback server with the same key on both attempts, and X-Event-Id coexists on the same wire", async () => {
+  const {
+    webhook,
+    idempotencyHeaderRetryResult,
+    idempotencyHeaderRetryCalls,
+    lines,
+  } = await runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned expectations — written out here from
+  // the documented deliverSettlementWebhook() semantics
+  // in src/webhooks.ts (every attempt carries
+  // `Idempotency-Key` exactly equal to the payload's
+  // `eventId`, identical on every retry; the same
+  // attempts also carry `X-Event-Id` equal to that
+  // same eventId), never derived by calling the
+  // delivery to produce them.
+  // test/webhookIdempotencyKeyHeader.test.ts pins the
+  // same semantics independently (a 500-then-200
+  // loopback endpoint succeeds on the retry with the
+  // same header on both attempts; re-delivery of the
+  // same webhook reuses the same key).
+  assert.deepEqual(DEMO_IDEMPOTENCY_HEADER_RETRY_STATUSES, [500, 200]);
+  assert.deepEqual(idempotencyHeaderRetryResult, { status: 200, attempts: 2 });
+  assert.equal(idempotencyHeaderRetryCalls.length, 2);
+  for (const [i, call] of idempotencyHeaderRetryCalls.entries()) {
+    assert.equal(call.path, DEMO_IDEMPOTENCY_HEADER_RETRY_PATH);
+    assert.equal(call.status, DEMO_IDEMPOTENCY_HEADER_RETRY_STATUSES[i]);
+    assert.equal(call.idempotencyKeyHeader, DEMO_WEBHOOK_EVENT_ID);
+    assert.equal(call.eventIdHeader, DEMO_WEBHOOK_EVENT_ID);
+    assert.equal(call.bodyEventId, DEMO_WEBHOOK_EVENT_ID);
+    assert.equal(call.body, JSON.stringify(webhook.payload));
+  }
+  // Independent cross-check: a fresh loopback server
+  // through the library entry point reproduces the same
+  // shape — the demo segment is not self-certifying.
+  const probeCalls: Array<{
+    idempotencyKeyHeader: string;
+    eventIdHeader: string;
+    body: string;
+  }> = [];
+  const probeServer = createServer((req, res) => {
+    void (async () => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) {
+        chunks.push(chunk as Buffer);
+      }
+      const body = Buffer.concat(chunks).toString("utf8");
+      probeCalls.push({
+        idempotencyKeyHeader: String(req.headers["idempotency-key"] ?? ""),
+        eventIdHeader: String(req.headers["x-event-id"] ?? ""),
+        body,
+      });
+      const status = probeCalls.length === 1 ? 500 : 200;
+      res.writeHead(status, { "content-type": "application/json" });
+      res.end(status === 200 ? "{}" : "boom");
+    })();
+  });
+  await new Promise<void>((resolve, reject) => {
+    probeServer.once("error", reject);
+    probeServer.listen(0, "127.0.0.1", () => resolve());
+  });
+  const probeAddress = probeServer.address();
+  assert.ok(
+    probeAddress !== null && typeof probeAddress !== "string",
+    "probe server must bind to a TCP port",
+  );
+  const probeBase = `http://127.0.0.1:${probeAddress.port}`;
+  try {
+    const probeResult = await deliverSettlementWebhook(
+      `${probeBase}/probe-idempotency-retry`,
+      webhook,
+      { backoffMs: 0, allowInsecureHttp: true },
+    );
+    assert.deepEqual(probeResult, { status: 200, attempts: 2 });
+    assert.equal(probeCalls.length, 2);
+    for (const call of probeCalls) {
+      assert.equal(call.idempotencyKeyHeader, DEMO_WEBHOOK_EVENT_ID);
+      assert.equal(call.eventIdHeader, DEMO_WEBHOOK_EVENT_ID);
+      assert.equal(call.body, JSON.stringify(webhook.payload));
+    }
+  } finally {
+    probeServer.closeAllConnections();
+    await new Promise<void>((resolve) => {
+      probeServer.close(() => resolve());
+    });
+  }
+  // The segment closes the demo: it follows the
+  // timeout segment, prints its lines verbatim, and its
+  // note line is the demo's last line.
+  const timeoutAt = text.indexOf(
+    "Webhook delivery timeout (deliverSettlementWebhook timeoutMs via hanging fake fetch, zero network):",
+  );
+  const headerAt = text.indexOf(
+    "Settlement webhook Idempotency-Key header (deliverSettlementWebhook retry over a loopback server):",
+  );
+  assert.ok(
+    headerAt > timeoutAt,
+    "Idempotency-Key header segment must follow the timeout segment",
+  );
+  for (const line of [
+    `  retry: the main escrow's signed webhook (body eventId ${DEMO_WEBHOOK_EVENT_ID}) delivered to ${DEMO_IDEMPOTENCY_HEADER_RETRY_PATH} — attempt 1 answered 500, attempt 2 answered 200; result: status 200, attempts 2 (succeeded after exactly one retry, backoffMs 0 — no real waiting)`,
+    `  retry wire check: 2 captured POSTs — the Idempotency-Key header on attempt 1 and on the retry are both ${DEMO_WEBHOOK_EVENT_ID}, identical to each other and to the body eventId on both attempts`,
+    `  coexistence: the same 2 captured POSTs also carry X-Event-Id ${DEMO_WEBHOOK_EVENT_ID} = body eventId ${DEMO_WEBHOOK_EVENT_ID} — the standard idempotency header and the vendor header travel on one wire, both keyed to the one logical event, so a receiver deduplicating on either header sees the same key`,
+    "  note: the header is a transport hint only — it is NOT covered by the signature, so a receiver verifies the signature first and then trusts the body's eventId, never the header, as the deduplication key",
+  ]) {
+    assert.ok(text.includes(line), `missing Idempotency-Key header line: ${line}`);
+  }
+  assert.equal(
+    lines[lines.length - 1],
+    "  note: the header is a transport hint only — it is NOT covered by the signature, so a receiver verifies the signature first and then trusts the body's eventId, never the header, as the deduplication key",
+  );
+});
+
+test("demo Idempotency-Key header segment is deterministic: two runs print byte-identical header lines", async () => {
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf(
+        "Settlement webhook Idempotency-Key header (deliverSettlementWebhook retry over a loopback server):",
+      ),
+    );
+  const a = await runDemo();
+  const b = await runDemo();
+  const segA = segment(a.lines);
+  // Header + the retry line + the retry wire-check
+  // line + the coexistence line + the note line; the
+  // loopback port is never printed, so no
+  // normalization is needed.
+  assert.equal(segA.length, 5);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(
+    a.idempotencyHeaderRetryResult,
+    b.idempotencyHeaderRetryResult,
+  );
+  assert.deepEqual(
+    a.idempotencyHeaderRetryCalls,
+    b.idempotencyHeaderRetryCalls,
+  );
 });
 
 test("demo shows the adjustedBaseFee fee-breakdown segment with pinned expectations", async () => {

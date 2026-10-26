@@ -1130,6 +1130,48 @@ export const DEMO_EVENT_ID_HEADER_FANOUT_SECRET_B =
   "demo-event-id-fanout-secret-b";
 
 /**
+ * Idempotency-Key header fixtures for the closing
+ * segment after the timeout segment: the transport
+ * header `deliverSettlementWebhook()` carries on every
+ * attempt (see src/webhooks.ts — the header value is
+ * exactly the payload's `eventId`, identical on every
+ * retry, and it is a transport hint only, NOT covered
+ * by the signature). Hand-pinned expectations —
+ * written from those documented semantics, never
+ * derived by calling the delivery itself, and
+ * cross-checked against
+ * test/webhookIdempotencyKeyHeader.test.ts, whose
+ * loopback cases pin the same shape (a 500-then-200
+ * endpoint succeeds on the retry with the same header
+ * on both attempts; re-delivery of the same webhook
+ * reuses the same key):
+ * - the retry endpoint answers 500 on attempt 1 and
+ *   200 on attempt 2 -> the result is exactly
+ *   `{status: 200, attempts: 2}`, and both captured
+ *   requests carry `Idempotency-Key` equal to the main
+ *   webhook's body eventId ({@link DEMO_WEBHOOK_EVENT_ID})
+ * - the same two requests also carry `X-Event-Id`
+ *   equal to that same body eventId: the standard
+ *   idempotency header coexists with the vendor
+ *   header on one wire, both keyed to the one logical
+ *   event, so a receiver deduplicating on either
+ *   header sees the same key
+ * The endpoint is a loopback path, served by a real
+ * local HTTP server on an ephemeral port: unlike the
+ * scripted-fake delivery segments, this one proves the
+ * header survives a genuine HTTP round-trip. The port
+ * is never printed — only the path — so the demo
+ * output stays byte-identical across runs.
+ * `allowInsecureHttp` is passed explicitly: loopback
+ * plaintext is a dev-only opt-out, never the default.
+ */
+export const DEMO_IDEMPOTENCY_HEADER_RETRY_PATH =
+  "/settlement-idempotency-retry";
+export const DEMO_IDEMPOTENCY_HEADER_RETRY_STATUSES: readonly number[] = [
+  500, 200,
+];
+
+/**
  * 429 Retry-After delivery fixtures for the closing
  * segment after the single-target delivery: the main
  * escrow's already-built signed webhook is delivered
@@ -3008,6 +3050,32 @@ export interface DemoResult {
    * delivery: exactly 1.
    */
   timeoutOkFetchCalls: number;
+  /**
+   * Result of delivering the main escrow's signed webhook
+   * to the loopback retry endpoint with
+   * `deliverSettlementWebhook()`: exactly
+   * `{status: 200, attempts: 2}` — the loopback endpoint
+   * answered 500 first, so the delivery succeeded only
+   * after one genuine HTTP retry.
+   */
+  idempotencyHeaderRetryResult: WebhookDeliveryResult;
+  /**
+   * The requests the loopback server captured during the
+   * Idempotency-Key retry delivery, in attempt order:
+   * exactly 2, each carrying `Idempotency-Key` and
+   * `X-Event-Id` both equal to the main webhook's body
+   * eventId, with the raw body and its parsed eventId
+   * alongside for the header/body comparison the
+   * segment prints.
+   */
+  idempotencyHeaderRetryCalls: Array<{
+    path: string;
+    status: number;
+    idempotencyKeyHeader: string;
+    eventIdHeader: string;
+    body: string;
+    bodyEventId: string;
+  }>;
   /**
    * The `FeeBreakdown` of the portfolio golden vector
    * (pool 10000, base 600, multiplier 1.0x, loyalty 30,
@@ -6960,6 +7028,138 @@ export async function runDemo(): Promise<DemoResult> {
     "  a timeout is a per-attempt bound, handled by the retry policy like any network error: the pinned short wait above is the object under test itself — no elapsed time is asserted or printed",
   );
 
+  // --- Idempotency-Key header: deliverSettlementWebhook retry (closing) ---
+  // The X-Event-Id segment proved the vendor header
+  // survives a genuine retry, but no demo delivery ever
+  // showed the standard payment-gateway header receivers
+  // deduplicate on: `Idempotency-Key`. Here the main
+  // escrow's signed webhook is delivered for real over
+  // HTTP to a loopback server (ephemeral port, path
+  // pinned above — the port itself is never printed, so
+  // the output stays byte-identical across runs). The
+  // loopback endpoint answers 500 on the first attempt
+  // and 200 on the retry, so the delivery resolves
+  // {status: 200, attempts: 2} through a genuine retry,
+  // not a scripted fake. Hand-pinned expectations (see
+  // the fixture comment above), asserted HERE, outside
+  // the printing: both captured requests carry
+  // Idempotency-Key exactly equal to the body's
+  // eventId — the header does not drift across the
+  // retry, so a retried delivery is not mistaken for a
+  // second event — and both carry X-Event-Id equal to
+  // that same body eventId, so the two headers coexist
+  // on one wire keyed to the one logical event. A
+  // delivery that minted a fresh key per attempt would
+  // fail the demo itself. `backoffMs: 0` keeps the
+  // retry wait at zero and `allowInsecureHttp: true`
+  // is the explicit loopback opt-out (plaintext is
+  // refused by default).
+  const idempotencyHeaderRetryCalls: Array<{
+    path: string;
+    status: number;
+    idempotencyKeyHeader: string;
+    eventIdHeader: string;
+    body: string;
+    bodyEventId: string;
+  }> = [];
+  const idempotencyHeaderServer = createServer((req, res) => {
+    void (async () => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) {
+        chunks.push(chunk as Buffer);
+      }
+      const body = Buffer.concat(chunks).toString("utf8");
+      let bodyEventId = "";
+      try {
+        const parsed = JSON.parse(body) as { eventId?: unknown };
+        bodyEventId =
+          typeof parsed.eventId === "string" ? parsed.eventId : "";
+      } catch {
+        bodyEventId = "";
+      }
+      const idempotencyKeyHeader = String(
+        req.headers["idempotency-key"] ?? "",
+      );
+      const eventIdHeader = String(req.headers["x-event-id"] ?? "");
+      if (req.url === DEMO_IDEMPOTENCY_HEADER_RETRY_PATH) {
+        const status =
+          DEMO_IDEMPOTENCY_HEADER_RETRY_STATUSES[
+            Math.min(
+              idempotencyHeaderRetryCalls.length,
+              DEMO_IDEMPOTENCY_HEADER_RETRY_STATUSES.length - 1,
+            )
+          ];
+        idempotencyHeaderRetryCalls.push({
+          path: DEMO_IDEMPOTENCY_HEADER_RETRY_PATH,
+          status,
+          idempotencyKeyHeader,
+          eventIdHeader,
+          body,
+          bodyEventId,
+        });
+        res.writeHead(status, { "content-type": "application/json" });
+        res.end(status === 200 ? "{}" : "boom");
+        return;
+      }
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end("{}");
+    })();
+  });
+  await new Promise<void>((resolve, reject) => {
+    idempotencyHeaderServer.once("error", reject);
+    idempotencyHeaderServer.listen(0, "127.0.0.1", () => resolve());
+  });
+  const idempotencyHeaderAddress = idempotencyHeaderServer.address();
+  if (
+    idempotencyHeaderAddress === null ||
+    typeof idempotencyHeaderAddress === "string"
+  ) {
+    idempotencyHeaderServer.close();
+    throw new Error(
+      "demo fixture broken: Idempotency-Key loopback server did not bind to a TCP port",
+    );
+  }
+  const idempotencyHeaderBase = `http://127.0.0.1:${idempotencyHeaderAddress.port}`;
+  let idempotencyHeaderRetryResult: WebhookDeliveryResult;
+  try {
+    idempotencyHeaderRetryResult = await deliverSettlementWebhook(
+      `${idempotencyHeaderBase}${DEMO_IDEMPOTENCY_HEADER_RETRY_PATH}`,
+      webhook,
+      { backoffMs: 0, allowInsecureHttp: true },
+    );
+  } finally {
+    idempotencyHeaderServer.closeAllConnections();
+    await new Promise<void>((resolve) => {
+      idempotencyHeaderServer.close(() => resolve());
+    });
+  }
+  if (
+    idempotencyHeaderRetryResult.status !== 200 ||
+    idempotencyHeaderRetryResult.attempts !== 2 ||
+    idempotencyHeaderRetryCalls.length !== 2 ||
+    idempotencyHeaderRetryCalls.some(
+      (call, i) =>
+        call.path !== DEMO_IDEMPOTENCY_HEADER_RETRY_PATH ||
+        call.status !== DEMO_IDEMPOTENCY_HEADER_RETRY_STATUSES[i] ||
+        call.idempotencyKeyHeader !== DEMO_WEBHOOK_EVENT_ID ||
+        call.eventIdHeader !== DEMO_WEBHOOK_EVENT_ID ||
+        call.bodyEventId !== DEMO_WEBHOOK_EVENT_ID ||
+        call.body !== JSON.stringify(webhook.payload),
+    )
+  ) {
+    throw new Error(
+      "demo fixture broken: deliverSettlementWebhook Idempotency-Key header does not match the pinned shape (loopback 500 then 200, result {status: 200, attempts: 2}, both attempts' Idempotency-Key equal to the body eventId, both attempts' X-Event-Id equal to that same body eventId, bodies byte-identical)",
+    );
+  }
+  lines.push(
+    "",
+    "Settlement webhook Idempotency-Key header (deliverSettlementWebhook retry over a loopback server):",
+    `  retry: the main escrow's signed webhook (body eventId ${DEMO_WEBHOOK_EVENT_ID}) delivered to ${DEMO_IDEMPOTENCY_HEADER_RETRY_PATH} — attempt 1 answered 500, attempt 2 answered 200; result: status ${idempotencyHeaderRetryResult.status}, attempts ${idempotencyHeaderRetryResult.attempts} (succeeded after exactly one retry, backoffMs 0 — no real waiting)`,
+    `  retry wire check: ${idempotencyHeaderRetryCalls.length} captured POSTs — the Idempotency-Key header on attempt 1 and on the retry are both ${DEMO_WEBHOOK_EVENT_ID}, identical to each other and to the body eventId on both attempts`,
+    `  coexistence: the same 2 captured POSTs also carry X-Event-Id ${DEMO_WEBHOOK_EVENT_ID} = body eventId ${DEMO_WEBHOOK_EVENT_ID} — the standard idempotency header and the vendor header travel on one wire, both keyed to the one logical event, so a receiver deduplicating on either header sees the same key`,
+    "  note: the header is a transport hint only — it is NOT covered by the signature, so a receiver verifies the signature first and then trusts the body's eventId, never the header, as the deduplication key",
+  );
+
   return {
     escrow,
     report,
@@ -7155,6 +7355,8 @@ export async function runDemo(): Promise<DemoResult> {
     timeoutInvalidFetchCalls,
     timeoutOkResult,
     timeoutOkFetchCalls,
+    idempotencyHeaderRetryResult,
+    idempotencyHeaderRetryCalls,
     lines,
   };
 }

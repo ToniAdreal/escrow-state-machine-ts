@@ -18,6 +18,18 @@ version changes.
 
 ### Added
 
+- CLI demo `Idempotency-Key` header segment (2026-10-26, backlog
+  #603): the demo now shows the standard payment-gateway header
+  `deliverSettlementWebhook` carries, over a real loopback server
+  instead of a scripted fake — the main webhook delivered to a
+  500-then-200 endpoint succeeds after exactly one retry with
+  `Idempotency-Key` identical to the body `eventId` on both attempts,
+  and the same two requests carry `X-Event-Id` equal to that same
+  body `eventId`, so the two headers coexist on one wire keyed to
+  the one logical event. The loopback port is never printed, so
+  demo output stays byte-identical across runs; the header's
+  transport-hint-only status (not covered by the signature) is
+  stated in the segment's note line.
 - Settlement report CSV round-trip import `parseSettlementReportCsv`
   (2026-10-25, backlog #600): the inverse of `renderReportCsv`, with an
   RFC 4180 record parser and cross-checks (exact header, one row per
