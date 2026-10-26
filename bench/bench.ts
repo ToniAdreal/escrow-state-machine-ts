@@ -3610,6 +3610,10 @@ checkWatchdogIds(
 //   from both states, so expired = true for all 40, no entry carries
 //   an error, every attempted escrow ends EXPIRED, and its history
 //   grows by exactly the EXPIRE entry (A: 1 -> 2 entries, D: 2 -> 3).
+//   Each successful result's own `entry` must also equal that
+//   escrow's history last entry field for field (seq/event/from/to/at),
+//   so a caller citing `result.entry` reports the same audit record
+//   as a caller re-reading `escrow.history`.
 //   actOnStaleEscrows with the action (e) => e.dispatch("EXPIRE")
 //   attempts the 70 stale ids (A x30 + B x20 + D x10 + G x10), in
 //   batch order. The stale states are FUNDED (A/B/G) and
@@ -3640,6 +3644,27 @@ function checkExpireOverdueResults(
         r.escrow.history[r.escrow.history.length - 1].event !== "EXPIRE" ||
         r.escrow.history[r.escrow.history.length - 1].to !== "EXPIRED",
     )
+  ) {
+    throw new Error(`benchmark watchdog check failed: ${label}`);
+  }
+  // The result's own `entry` citation must be the audit record the
+  // dispatch appended — field for field equal to the escrow history's
+  // last entry (seq/event/from/to/at). Checking only the history's
+  // last entry, as before, left a drifted `entry` undetected: a caller
+  // citing `result.entry` instead of re-reading history would have
+  // reported the wrong audit record with no bench check failing.
+  if (
+    results.some((r) => {
+      const last = r.escrow.history[r.escrow.history.length - 1];
+      return (
+        r.entry === undefined ||
+        r.entry.seq !== last.seq ||
+        r.entry.event !== last.event ||
+        r.entry.from !== last.from ||
+        r.entry.to !== last.to ||
+        r.entry.at !== last.at
+      );
+    })
   ) {
     throw new Error(`benchmark watchdog check failed: ${label}`);
   }

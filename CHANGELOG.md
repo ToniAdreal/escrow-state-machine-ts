@@ -18,6 +18,13 @@ version changes.
 
 ### Added
 
+- Benchmark `expireOverdueEscrows` result-entry audit check (2026-10-26,
+  backlog #625): `checkExpireOverdueResults` now also verifies each
+  successful result's `entry` against that escrow's history last entry
+  field for field (seq/event/from/to/at), so the cited audit record
+  cannot drift from the history itself. The benchmark table is not
+  refreshed for this change: the added assertion does not change the
+  measured paths, only strengthens the per-iteration self-check.
 - Benchmark `renderReportJson` rendering path (2026-10-26, backlog
   #619): the bench now times the API/storage export over the same
   golden released report the CSV row renders — the structural shape

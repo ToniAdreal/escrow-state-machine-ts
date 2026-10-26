@@ -1122,7 +1122,11 @@ the executors mutate their inputs — 40 of 40 expire attempts and
 70 of 70 stale actions succeed, since both selected states carry
 an `EXPIRE` edge — with result ids, success flags, post-states,
 and the appended `EXPIRE` audit entries checked against the
-hand-counted expectations on every iteration; the fresh-fixture
+hand-counted expectations on every iteration; the expire row
+additionally checks each successful result's `entry` against that
+escrow's history last entry field for field (seq/event/from/to/at),
+so the cited audit record cannot drift from the history itself;
+the fresh-fixture
 rebuild cost is inside these two rows' timed region, unlike the
 pure screening rows above), and
 allowed-events lookup (`allowedEvents` over all 8 states of the
