@@ -983,6 +983,23 @@
  *      independent object graphs (mutating one leaves a fresh
  *      parse untouched). Fixed report, no network, no
  *      randomness.
+ *  59. settlement report JSON rendering —
+ *      `renderReportJson` over the same fixed golden released
+ *      report the CSV row renders (deposit 10,630, released
+ *      via VERIFY_PASS -> RELEASE, 4 party rows), the export
+ *      an API/storage caller pays for every report it
+ *      stores — the structural shape check plus
+ *      `JSON.stringify`, with amounts kept as numbers, not
+ *      two-decimal text. Every timed iteration re-checks
+ *      the parsed JSON against the golden report's amount
+ *      fields (escrowId, outcome, releasePath, deposit
+ *      breakdown, party ledgers, totals, balanced flag,
+ *      eventCount) and pins the numeric (not string) form
+ *      of the creator inflow. Outside the timed loop: a
+ *      copy with a non-finite creator inflow is pinned to
+ *      throw the exact render error, so no `Infinity`
+ *      literal ever reaches a stored document. Fixed
+ *      report, no network, no randomness.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -6125,6 +6142,113 @@ function benchRenderReportCsv(): number {
 }
 
 // ---------------------------------------------------------------------
+// renderReportJson fixture: the module-scope golden released `report`
+// above — the same report the CSV row renders (deposit 10,630 =
+// pool 10,000 + base 600 x1.0 - loyalty 30 + oracle 60, settled at
+// proFeeBps 500: sponsor 0 / 10,630 / -10,630, creator
+// 10,098.50 / 0 / 10,098.50, platform 531.50 / 0 / 531.50,
+// referrer 0 / 0 / 0), so the bench JSON row and the demo JSON
+// section can never drift apart in figures. renderReportJson is
+// pure (it only reads the report: a structural shape check, then
+// JSON.stringify), so the same report is re-rendered on every
+// iteration. The per-iteration check parses the JSON back and
+// compares it field for field against the golden report — not
+// against a string produced by calling renderReportJson itself —
+// plus the numeric-form pin: the creator inflow must appear as
+// the number 10098.5, never as the two-decimal CSV text
+// "10098.50" or a quoted string.
+// ---------------------------------------------------------------------
+const RENDER_JSON_EXPECTED_PARTIES: ReadonlyArray<
+  readonly [string, number, number, number]
+> = [
+  ["sponsor", 0, 10630, -10630],
+  ["creator", 10098.5, 0, 10098.5],
+  ["platform", 531.5, 0, 531.5],
+  ["referrer", 0, 0, 0],
+];
+
+function checkRenderReportJson(text: string): void {
+  const parsed = JSON.parse(text) as SettlementReport;
+  if (
+    parsed.escrowId !== report.escrowId ||
+    parsed.outcome !== report.outcome ||
+    parsed.releasePath !== report.releasePath ||
+    parsed.deposit.deposit !== report.deposit.deposit ||
+    parsed.totalInflow !== report.totalInflow ||
+    parsed.totalOutflow !== report.totalOutflow ||
+    parsed.balanced !== report.balanced ||
+    parsed.eventCount !== report.eventCount ||
+    parsed.parties.length !== RENDER_JSON_EXPECTED_PARTIES.length
+  ) {
+    throw new Error("benchmark self-check failed: renderReportJson");
+  }
+  for (let i = 0; i < RENDER_JSON_EXPECTED_PARTIES.length; i++) {
+    const expected = RENDER_JSON_EXPECTED_PARTIES[i];
+    const actual = parsed.parties[i];
+    if (
+      actual.party !== expected[0] ||
+      typeof actual.inflow !== "number" ||
+      typeof actual.outflow !== "number" ||
+      typeof actual.net !== "number" ||
+      actual.inflow !== expected[1] ||
+      actual.outflow !== expected[2] ||
+      actual.net !== expected[3]
+    ) {
+      throw new Error("benchmark self-check failed: renderReportJson");
+    }
+  }
+  // Numeric, not text: JSON amounts stay numbers, unlike the CSV
+  // row's two-decimal strings.
+  if (
+    !text.includes('"inflow":10098.5') ||
+    text.includes('"inflow":"10098.50"')
+  ) {
+    throw new Error("benchmark self-check failed: renderReportJson numeric amounts");
+  }
+}
+// Pre-check outside the timed loop: the JSON render carries every
+// hand-pinned amount field before any number is reported.
+checkRenderReportJson(renderReportJson(report));
+
+// Outside the timed loop: the illegal-report fail-fast probe.
+// renderReportJson shape-checks before serializing, so a
+// hand-built report with a non-finite party amount throws instead
+// of emitting a JSON document carrying an `Infinity` literal
+// (which JSON.stringify would silently turn into `null`).
+{
+  const damaged = {
+    ...report,
+    parties: report.parties.map((p) =>
+      p.party === "creator" ? { ...p, inflow: Infinity } : p,
+    ),
+  };
+  let damagedError = "";
+  try {
+    renderReportJson(damaged);
+  } catch (err) {
+    damagedError = err instanceof Error ? err.message : String(err);
+  }
+  if (
+    damagedError !==
+    "cannot render settlement report as JSON: each party.inflow must be a finite number"
+  ) {
+    throw new Error(
+      "benchmark fixture failed: renderReportJson illegal-report gate",
+    );
+  }
+}
+
+function benchRenderReportJson(): number {
+  // Per-iteration self-check: the parsed JSON matches the golden
+  // report's amount fields and keeps amounts numeric — a drift in
+  // the JSON shape or in the shape check breaks the run instead
+  // of silently re-timing a changed export.
+  return measure(() => {
+    checkRenderReportJson(renderReportJson(report));
+  }, ITERATIONS);
+}
+
+// ---------------------------------------------------------------------
 // parseSettlementReportJson fixture: the JSON of the module-scope
 // golden released `report` above — the same report the #597 demo
 // section round-trips (same golden vector: deposit 10,630, settled
@@ -7510,6 +7634,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "renderReport (released report, 4 parties)", ops: benchRenderReport() },
   { path: "renderReport (refunded + expired, 2 reports)", ops: benchRenderReportRefundedExpired() },
   { path: "renderReportCsv (released report, 4 parties)", ops: benchRenderReportCsv() },
+  { path: "renderReportJson (released report, 4 parties)", ops: benchRenderReportJson() },
   { path: "parseSettlementReportJson (released report, 4 parties)", ops: benchParseSettlementReportJson() },
   { path: "parseSettlementReportCsv (released report, 4 parties)", ops: benchParseSettlementReportCsv() },
   { path: "depositAmountFromHistory (4-shape corpus)", ops: benchDepositAmountFromHistory() },

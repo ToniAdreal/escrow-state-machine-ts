@@ -18,6 +18,15 @@ version changes.
 
 ### Added
 
+- Benchmark `renderReportJson` rendering path (2026-10-26, backlog
+  #619): the bench now times the API/storage export over the same
+  golden released report the CSV row renders — the structural shape
+  check plus `JSON.stringify`, with every iteration re-checking the
+  parsed JSON against the golden report's amount fields and pinning
+  amounts as numbers (creator inflow `10098.5`, not the CSV's
+  two-decimal text), and a non-finite creator inflow pinned to the
+  exact render error outside the timed loop. The README benchmark
+  table is refreshed from this run with the new row added.
 - CLI demo `expireOverdueEscrows` audit-entry segment (2026-10-26,
   backlog #615): the deadline watchdog section now prints each
   result's `entry` citation — the successful FUNDED expiry cites
