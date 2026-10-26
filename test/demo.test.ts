@@ -205,7 +205,9 @@ import {
   isOverdue,
   parseEscrowHistory,
   parseRetryAfter,
+  parseSettlementReportCsv,
   parseSettlementReportJson,
+  renderReportCsv,
   renderReportJson,
   restoreQuorum,
   settleRelease,
@@ -501,6 +503,94 @@ test("demo settlement JSON import section is deterministic: two runs print the i
     b.lines.slice(
       b.lines.indexOf(
         "Settlement report as JSON, imported back (parseSettlementReportJson",
+      ),
+      b.lines.indexOf("Audit hash chain (verifyHistoryChain on the main escrow history):"),
+    ),
+  );
+});
+
+test("demo imports the settlement report CSV back between the JSON import section and the audit hash chain", async () => {
+  const { report, reportCsv, reportCsvImported, reportCsvDamagedError, lines } =
+    await runDemo();
+  const text = lines.join("\n");
+
+  // The import is the inverse of the CSV export above: the same
+  // released report's carried fields, not a second report — party
+  // ledgers field for field, TOTAL totals, balanced, and a
+  // byte-identical re-render, as an independent object graph.
+  assert.equal(reportCsvImported.escrowId, report.escrowId);
+  assert.equal(reportCsvImported.outcome, report.outcome);
+  assert.deepEqual(
+    reportCsvImported.parties.map((p) => [p.party, p.inflow, p.outflow, p.net]),
+    report.parties.map((p) => [p.party, p.inflow, p.outflow, p.net]),
+  );
+  assert.equal(reportCsvImported.totalInflow, report.totalInflow);
+  assert.equal(reportCsvImported.totalOutflow, report.totalOutflow);
+  assert.equal(reportCsvImported.balanced, true);
+  assert.equal(renderReportCsv(reportCsvImported), reportCsv);
+  assert.notEqual(reportCsvImported, report);
+  assert.notEqual(reportCsvImported.parties[1], report.parties[1]);
+  reportCsvImported.parties[1].inflow = -1;
+  assert.equal(report.parties[1].inflow, 10098.5);
+  // The damaged copy (TOTAL inflow 1 higher than the party-row sum)
+  // is rejected verbatim.
+  assert.equal(
+    reportCsvDamagedError,
+    "cannot parse settlement report CSV: TOTAL row inflow 10631 does not equal the sum over party rows 10630",
+  );
+  // An independent re-parse of the same text agrees with the demo.
+  assert.deepEqual(parseSettlementReportCsv(reportCsv), {
+    escrowId: report.escrowId,
+    outcome: report.outcome,
+    parties: report.parties.map((p) => ({
+      party: p.party,
+      label: p.label,
+      inflow: p.inflow,
+      outflow: p.outflow,
+      net: p.net,
+    })),
+    totalInflow: report.totalInflow,
+    totalOutflow: report.totalOutflow,
+    balanced: true,
+  });
+  assert.match(
+    text,
+    /Settlement report as CSV, imported back \(parseSettlementReportCsv — the same released report, read back from a bookkeeping import\):/,
+  );
+  assert.ok(
+    text.includes(
+      "  round-trip: parseSettlementReportCsv(reportCsv) recovers the CSV-carried subset and re-renders byte-identically (escrowId DEMO-ESC-001, outcome released, 4 party rows, TOTAL 10630.00/10630.00, balanced true)",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      '  damaged CSV rejected: TOTAL inflow 10631.00 against party-row sum 10630.00 -> "cannot parse settlement report CSV: TOTAL row inflow 10631 does not equal the sum over party rows 10630"',
+    ),
+  );
+  // Position: the CSV import follows the JSON import and precedes the
+  // hash chain that verifies the history the report was derived from.
+  const importedAt = text.indexOf("Settlement report as JSON, imported back");
+  const csvImportedAt = text.indexOf("Settlement report as CSV, imported back");
+  const chainAt = text.indexOf("Audit hash chain (verifyHistoryChain");
+  assert.ok(importedAt < csvImportedAt && csvImportedAt < chainAt);
+});
+
+test("demo settlement CSV import section is deterministic: two runs print the identical import lines", async () => {
+  const a = await runDemo();
+  const b = await runDemo();
+
+  assert.deepEqual(a.reportCsvImported, b.reportCsvImported);
+  assert.equal(a.reportCsvDamagedError, b.reportCsvDamagedError);
+  assert.deepEqual(
+    a.lines.slice(
+      a.lines.indexOf(
+        "Settlement report as CSV, imported back (parseSettlementReportCsv",
+      ),
+      a.lines.indexOf("Audit hash chain (verifyHistoryChain on the main escrow history):"),
+    ),
+    b.lines.slice(
+      b.lines.indexOf(
+        "Settlement report as CSV, imported back (parseSettlementReportCsv",
       ),
       b.lines.indexOf("Audit hash chain (verifyHistoryChain on the main escrow history):"),
     ),

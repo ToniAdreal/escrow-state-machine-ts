@@ -404,6 +404,7 @@ import {
   isOverdue,
   parseEscrowHistory,
   parseRetryAfter,
+  parseSettlementReportCsv,
   parseSettlementReportJson,
   renderReport,
   renderReportCsv,
@@ -434,6 +435,7 @@ import {
   type SettlementEventDedupeSnapshot,
   type SettlementEventDedupeStats,
   type SettlementReport,
+  type SettlementReportCsv,
   type SettlementReportResult,
   type SettlementReportsSummary,
   type SettlementWebhook,
@@ -1890,6 +1892,24 @@ export interface DemoResult {
    */
   reportJsonDamagedError: string;
   /**
+   * `parseSettlementReportCsv(reportCsv)` on the main settlement
+   * report: the same released report read back from its CSV form —
+   * the CSV-carried subset (`SettlementReportCsv`: escrowId,
+   * outcome, the four party ledgers, the TOTAL row's totals, and
+   * `balanced`), re-rendering byte-identically through
+   * `renderReportCsv`, as an independent object graph (mutating it
+   * never touches `report`).
+   */
+  reportCsvImported: SettlementReportCsv;
+  /**
+   * The pinned rejection for a damaged report CSV whose TOTAL row
+   * no longer sums the party rows: `cannot parse settlement report
+   * CSV: TOTAL row inflow 10631 does not equal the sum over party
+   * rows 10630` — the import fails fast instead of returning a
+   * self-inconsistent report.
+   */
+  reportCsvDamagedError: string;
+  /**
    * `verifyHistoryChain` verdict on the main escrow's intact audit
    * history: `true` — every link recomputes, genesis-linked.
    */
@@ -3320,6 +3340,73 @@ export async function runDemo(): Promise<DemoResult> {
     "Settlement report as JSON, imported back (parseSettlementReportJson — the same released report, read back from storage):",
     `  round-trip: parseSettlementReportJson(reportJson) deep-equals the report and re-renders byte-identically (escrowId ${importedReport.escrowId}, outcome ${importedReport.outcome})`,
     `  damaged JSON rejected: parties field missing -> "${damagedReportError}" (the import fails fast instead of returning a party-less report)`,
+  );
+
+  // --- Settlement report as CSV, imported back: parseSettlementReportCsv ---
+  // The CSV above is the export side; a bookkeeping importer that
+  // received it must be able to read it back without hand-writing a
+  // CSV parser per row. The import side applies the same shape check
+  // in the other direction, so the demo asserts the full round-trip
+  // before printing it: parsing the exported CSV yields the
+  // CSV-carried subset (escrowId, outcome, the four party ledgers,
+  // the TOTAL row's totals, `balanced`) whose party ledgers match the
+  // report's field for field and which re-renders byte-identically —
+  // and a damaged copy whose TOTAL inflow is 1 higher than the
+  // party-row sum is rejected with the pinned `cannot parse
+  // settlement report CSV: TOTAL row inflow …` message, so a
+  // self-inconsistent export never becomes a plausible-looking
+  // import. The honest limit is printed, not hidden: the CSV never
+  // carried the deposit breakdown, settlement parameters,
+  // `releasePath`, `eventCount`, or audit window, so the import does
+  // not reconstruct them — and, as with the JSON import, the import
+  // is structural validation only, not a re-verification of the audit
+  // chain (that stays with verifyHistoryChain below); a hand-built
+  // CSV with internally consistent rows would parse, and the demo
+  // does not pretend otherwise.
+  const importedReportCsv = parseSettlementReportCsv(reportCsv);
+  const importedReportCsvText = renderReportCsv(importedReportCsv);
+  const damagedCsvLines = reportCsv.split("\n");
+  const damagedCsvTotal = damagedCsvLines[damagedCsvLines.length - 1].split(",");
+  damagedCsvTotal[3] = "10631.00";
+  damagedCsvLines[damagedCsvLines.length - 1] = damagedCsvTotal.join(",");
+  const damagedReportCsv = damagedCsvLines.join("\n");
+  let damagedReportCsvError = "";
+  try {
+    parseSettlementReportCsv(damagedReportCsv);
+  } catch (error) {
+    damagedReportCsvError =
+      error instanceof Error ? error.message : String(error);
+  }
+  const importedCsvPartiesMatch =
+    importedReportCsv.parties.length === report.parties.length &&
+    importedReportCsv.parties.every(
+      (p, i) =>
+        p.party === report.parties[i].party &&
+        p.inflow === report.parties[i].inflow &&
+        p.outflow === report.parties[i].outflow &&
+        p.net === report.parties[i].net,
+    );
+  if (
+    importedReportCsv.escrowId !== report.escrowId ||
+    importedReportCsv.outcome !== report.outcome ||
+    !importedCsvPartiesMatch ||
+    importedReportCsv.totalInflow !== report.totalInflow ||
+    importedReportCsv.totalOutflow !== report.totalOutflow ||
+    importedReportCsv.balanced !== true ||
+    importedReportCsvText !== reportCsv ||
+    damagedReportCsvError !==
+      "cannot parse settlement report CSV: TOTAL row inflow 10631 does not equal the sum over party rows 10630"
+  ) {
+    throw new Error(
+      "demo fixture broken: parseSettlementReportCsv on the main settlement report does not match the pinned shape (parsed CSV subset matches the report's carried fields and re-renders byte-identically, and a copy with a TOTAL row inconsistent with the party rows is rejected with 'cannot parse settlement report CSV: TOTAL row inflow 10631 does not equal the sum over party rows 10630')",
+    );
+  }
+  lines.push(
+    "",
+    "Settlement report as CSV, imported back (parseSettlementReportCsv — the same released report, read back from a bookkeeping import):",
+    `  round-trip: parseSettlementReportCsv(reportCsv) recovers the CSV-carried subset and re-renders byte-identically (escrowId ${importedReportCsv.escrowId}, outcome ${importedReportCsv.outcome}, ${importedReportCsv.parties.length} party rows, TOTAL ${importedReportCsv.totalInflow.toFixed(2)}/${importedReportCsv.totalOutflow.toFixed(2)}, balanced ${importedReportCsv.balanced})`,
+    `  carried fields only: the deposit breakdown, settlement parameters, releasePath, eventCount and audit window are not in the CSV and are not reconstructed (the import is structural validation, not a re-verification of the audit chain)`,
+    `  damaged CSV rejected: TOTAL inflow 10631.00 against party-row sum 10630.00 -> "${damagedReportCsvError}" (the import fails fast instead of returning a self-inconsistent report)`,
   );
 
   // --- Audit hash chain: verifyHistoryChain on the history above ---
@@ -7167,6 +7254,8 @@ export async function runDemo(): Promise<DemoResult> {
     reportJson,
     reportJsonImported: importedReport,
     reportJsonDamagedError: damagedReportError,
+    reportCsvImported: importedReportCsv,
+    reportCsvDamagedError: damagedReportCsvError,
     depositBreakdown: fees,
     fractionalFeeInputs: DEMO_FEE_FRACTIONAL_INPUTS,
     fractionalDepositBreakdown: fractionalFees,

@@ -18,6 +18,19 @@ version changes.
 
 ### Added
 
+- CLI demo settlement report CSV import segment (2026-10-26, backlog
+  #609): the demo now shows `parseSettlementReportCsv` reading the
+  just-exported report CSV back — the parsed CSV-carried subset
+  matches the report's party ledgers field for field and re-renders
+  byte-identically — and a damaged copy whose TOTAL inflow is 1
+  higher than the party-row sum is rejected with the pinned
+  `cannot parse settlement report CSV: TOTAL row inflow 10631 does
+  not equal the sum over party rows 10630` message. The segment
+  states the honest limit plainly: the CSV never carried the deposit
+  breakdown, settlement parameters, `releasePath`, `eventCount`, or
+  audit window, so the import does not reconstruct them, and the
+  import is structural validation only, not a re-verification of the
+  audit chain.
 - Benchmark `parseSettlementReportJson` round-trip import path
   (2026-10-26, backlog #606): the bench now times the receiving end
   of the API/storage hop over the same golden released report JSON
