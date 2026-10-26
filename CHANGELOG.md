@@ -18,6 +18,16 @@ version changes.
 
 ### Added
 
+- Benchmark `parseSettlementReportJson` round-trip import path
+  (2026-10-26, backlog #606): the bench now times the receiving end
+  of the API/storage hop over the same golden released report JSON
+  the demo round-trips — JSON parsing plus the structural shape
+  check, with every iteration re-checking the parsed report
+  deep-equals the golden report and re-renders byte-identically
+  through `renderReportJson`, a parties-less copy pinned to the
+  exact import error and two parses pinned to independent object
+  graphs outside the timed loop. The README benchmark table is
+  refreshed from this run with the new row added.
 - CLI demo `Idempotency-Key` header segment (2026-10-26, backlog
   #603): the demo now shows the standard payment-gateway header
   `deliverSettlementWebhook` carries, over a real loopback server

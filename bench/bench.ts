@@ -937,6 +937,27 @@
  *      The dedupe lookup the webhook-driven dispatcher pays on
  *      every delivery — hit or miss — previously had no measured
  *      baseline. Fixed timestamps, no network, no randomness.
+ *  57. settlement report JSON round-trip import —
+ *      `parseSettlementReportJson` over the JSON of the same
+ *      fixed golden released report the CSV row renders
+ *      (deposit 10,630, released via VERIFY_PASS -> RELEASE,
+ *      4 party rows), the import a reconciliation reader pays
+ *      for every stored report it reads back — JSON parsing
+ *      plus the same structural shape check `renderReportJson`
+ *      applies in the other direction. This is the receiving
+ *      end of the API/storage hop the export row never
+ *      exercises: the export serializes, the import must
+ *      re-validate. Every timed iteration re-checks the
+ *      parsed report against the golden report (stringified
+ *      deep equality — the parsed key order is the JSON
+ *      text's own order, which is the export's order) and
+ *      re-renders it byte-identically through
+ *      `renderReportJson`. Outside the timed loop: a copy
+ *      with the `parties` field removed is pinned to throw
+ *      the exact import error, and two parses of the same
+ *      text are pinned to yield independent object graphs
+ *      (mutating one leaves a fresh parse untouched).
+ *      Fixed report, no network, no randomness.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -973,8 +994,10 @@ import {
   isOverdue,
   parseEscrowHistory,
   parseRetryAfter,
+  parseSettlementReportJson,
   renderReport,
   renderReportCsv,
+  renderReportJson,
   restoreQuorum,
   settleRelease,
   SettlementEventDedupe,
@@ -6074,6 +6097,79 @@ function benchRenderReportCsv(): number {
   }, ITERATIONS);
 }
 
+// ---------------------------------------------------------------------
+// parseSettlementReportJson fixture: the JSON of the module-scope
+// golden released `report` above — the same report the #597 demo
+// section round-trips (same golden vector: deposit 10,630, settled
+// at proFeeBps 500, 4 party rows), so the bench JSON row and the
+// demo JSON section can never drift apart in figures.
+// parseSettlementReportJson is pure (it only reads the text and
+// returns a fresh object graph), so the same JSON text is re-parsed
+// on every iteration. The deep-equality check below compares
+// JSON.stringify(parsed) against the export text itself: the parsed
+// key order is the JSON text's own order, which is the export's
+// order (renderReportJson is JSON.stringify of the report), so
+// string equality is exact deep equality here, not a shortcut
+// past field comparison — and the re-render check additionally
+// pins byte-identity through renderReportJson.
+// ---------------------------------------------------------------------
+const REPORT_JSON: string = renderReportJson(report);
+
+function checkParseSettlementReportJson(parsed: SettlementReport): void {
+  if (JSON.stringify(parsed) !== REPORT_JSON) {
+    throw new Error(
+      "benchmark self-check failed: parseSettlementReportJson deep equality",
+    );
+  }
+  if (renderReportJson(parsed) !== REPORT_JSON) {
+    throw new Error(
+      "benchmark self-check failed: parseSettlementReportJson re-render",
+    );
+  }
+}
+// Pre-check outside the timed loop: the golden JSON round-trips
+// before any number is reported.
+checkParseSettlementReportJson(parseSettlementReportJson(REPORT_JSON));
+
+// Outside the timed loop: the import fail-fast probe and the
+// fresh-object-graph probe. A copy with the `parties` field removed
+// must be rejected with the exact import error (a party-less
+// document never becomes a plausible-looking report), and two
+// parses of the same text must yield independent graphs (mutating
+// one leaves a fresh parse untouched) — the import promises a
+// fresh object graph, not a shared cache.
+{
+  const damagedParsed = JSON.parse(REPORT_JSON) as Record<string, unknown>;
+  delete damagedParsed.parties;
+  let damagedError = "";
+  try {
+    parseSettlementReportJson(JSON.stringify(damagedParsed));
+  } catch (err) {
+    damagedError = err instanceof Error ? err.message : String(err);
+  }
+  if (
+    damagedError !==
+    "cannot parse settlement report JSON: parties must be a non-empty array"
+  ) {
+    throw new Error(
+      "benchmark fixture failed: parseSettlementReportJson damaged-input gate",
+    );
+  }
+  const firstParse = parseSettlementReportJson(REPORT_JSON);
+  firstParse.parties[0].inflow = -1;
+  checkParseSettlementReportJson(parseSettlementReportJson(REPORT_JSON));
+}
+
+function benchParseSettlementReportJson(): number {
+  // Per-iteration self-check: the parsed report deep-equals the
+  // golden report and re-renders byte-identically — a drift in
+  // the import shape or in the shape check breaks the run
+  // instead of silently re-timing a changed import.
+  return measure(() => {
+    checkParseSettlementReportJson(parseSettlementReportJson(REPORT_JSON));
+  }, ITERATIONS);
+}
+
 function benchDepositAmountFromHistory(): number {
   return measure(() => {
     checkDepositCorpus();
@@ -7286,6 +7382,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "renderReport (released report, 4 parties)", ops: benchRenderReport() },
   { path: "renderReport (refunded + expired, 2 reports)", ops: benchRenderReportRefundedExpired() },
   { path: "renderReportCsv (released report, 4 parties)", ops: benchRenderReportCsv() },
+  { path: "parseSettlementReportJson (released report, 4 parties)", ops: benchParseSettlementReportJson() },
   { path: "depositAmountFromHistory (4-shape corpus)", ops: benchDepositAmountFromHistory() },
   { path: "buildSettlementReports (batch 4 x 4 entries)", ops: benchBuildSettlementReports() },
   { path: "summarizeSettlementReports (batch 4 results)", ops: benchSummarizeSettlementReports() },
