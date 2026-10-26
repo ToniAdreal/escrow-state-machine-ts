@@ -18,6 +18,16 @@ version changes.
 
 ### Added
 
+- CLI demo `expireOverdueEscrows` audit-entry segment (2026-10-26,
+  backlog #615): the deadline watchdog section now prints each
+  result's `entry` citation — the successful FUNDED expiry cites
+  `entry seq 2 EXPIRE FUNDED -> EXPIRED at 2026-03-09T09:00:00.000Z`
+  (identical to the escrow history's last entry), the failed VERIFIED
+  attempt explicitly cites no entry — and `DemoResult` gains
+  `deadlineExpireEntryRefs` carrying those citations, guarded by a
+  fail-fast demo self-check that fails the demo if any entry drifts
+  from the history's last entry. The previously printed outcome lines
+  are unchanged.
 - CLI demo settlement report CSV import segment (2026-10-26, backlog
   #609): the demo now shows `parseSettlementReportCsv` reading the
   just-exported report CSV back — the parsed CSV-carried subset

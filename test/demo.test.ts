@@ -1837,6 +1837,85 @@ test("demo lines print the deadline watchdog section after the stale screening",
   assert.ok(screeningAt < deadlineAt);
 });
 
+test("demo deadline watchdog cites the EXPIRE audit entry per result (backlog #615)", async () => {
+  const { deadlineEscrows, deadlineExpireResults, deadlineExpireEntryRefs, lines } =
+    await runDemo();
+  const text = lines.join("\n");
+
+  // One citation per attempted escrow, in batch order: the failed
+  // VERIFIED attempt cites no entry (a failed dispatch appends
+  // nothing); the successful FUNDED expiry cites its EXPIRE entry
+  // field for field — seq/from/to/at pinned, never recomputed from
+  // the executor itself.
+  assert.equal(deadlineExpireEntryRefs.length, 2);
+  assert.equal(
+    deadlineExpireEntryRefs[0].escrowId,
+    DEMO_UNEXPIRABLE_ESCROW_ID,
+  );
+  assert.equal(deadlineExpireEntryRefs[0].entry, undefined);
+  assert.equal(
+    deadlineExpireEntryRefs[1].escrowId,
+    DEMO_EXPIRABLE_ESCROW_ID,
+  );
+  const entry = deadlineExpireEntryRefs[1].entry;
+  assert.equal(entry?.seq, 2);
+  assert.equal(entry?.event, "EXPIRE");
+  assert.equal(entry?.from, "FUNDED");
+  assert.equal(entry?.to, "EXPIRED");
+  assert.equal(entry?.at, DEMO_STALE_NOW);
+  // The citation IS the escrow history's last entry — the whole
+  // point of #615 is that a reader need not re-read the history.
+  const last = deadlineEscrows[1].history[deadlineEscrows[1].history.length - 1];
+  assert.deepEqual(entry, last);
+  assert.equal(deadlineExpireResults[1].entry, entry);
+  assert.equal(deadlineExpireResults[0].entry, undefined);
+  // Printed lines: the header plus one citation line per result,
+  // placed after the per-result outcome lines and before the
+  // deadline-vs-stale summary line.
+  assert.ok(
+    text.includes(
+      "  expireOverdueEscrows audit entries (result.entry — the EXPIRE audit record, cited without re-reading escrow.history):",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  DEMO-ESC-007: no entry — failed dispatch appends nothing",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  DEMO-ESC-008: entry seq 2 EXPIRE FUNDED -> EXPIRED at 2026-03-09T09:00:00.000Z — matches escrow history last entry",
+    ),
+  );
+  const headerAt = text.indexOf("expireOverdueEscrows audit entries");
+  assert.ok(
+    headerAt > text.indexOf("  DEMO-ESC-008: expired true — now EXPIRED"),
+    "entry citations must follow the outcome lines",
+  );
+  assert.ok(
+    headerAt <
+      text.indexOf("  deadline vs stale on the same batch:"),
+    "entry citations must precede the summary line",
+  );
+});
+
+test("demo deadline watchdog entry citations are deterministic: two runs print byte-identical citation lines", async () => {
+  const segment = (ls: string[]) => {
+    const start = ls.indexOf(
+      "  expireOverdueEscrows audit entries (result.entry — the EXPIRE audit record, cited without re-reading escrow.history):",
+    );
+    return ls.slice(start, start + 3);
+  };
+  const a = await runDemo();
+  const b = await runDemo();
+  // Header + one citation line per attempted escrow; every value is
+  // pinned to the fixed screening `now`, so no normalization is needed.
+  const segA = segment(a.lines);
+  assert.equal(segA.length, 3);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(a.deadlineExpireEntryRefs, b.deadlineExpireEntryRefs);
+});
+
 test("demo shows the allowed-events listing: every state's events match the hand-pinned table, cross-checked against the transition table", async () => {
   const { allowedEventsByState, mainEscrowAllowedEvents, escrow, lines } =
     await runDemo();
