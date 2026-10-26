@@ -18,6 +18,18 @@ version changes.
 
 ### Added
 
+- Settlement webhook fan-out limits (2026-10-26, backlog #630):
+  `DeliverSettlementWebhookToManyOptions` gains `maxEndpoints` (more
+  endpoints than the cap throws before any request, zero fetch calls)
+  and `overallDeadlineMs` (one wall-clock budget for the whole
+  fan-out: the timer aborts every in-flight endpoint through a
+  deadline signal composed with each endpoint's own signal, so a
+  per-endpoint signal override cannot outrun the deadline; a
+  deadline-stopped endpoint reports the deadline timeout error and
+  the aggregate result gains `deadlineExceeded: true`, while
+  already-completed endpoints keep their results). Invalid values
+  fail fast as caller configuration errors. `test/webhookFanoutLimits.test.ts`
+  (8 cases).
 - Benchmark `expireOverdueEscrows` result-entry audit check (2026-10-26,
   backlog #625): `checkExpireOverdueResults` now also verifies each
   successful result's `entry` against that escrow's history last entry

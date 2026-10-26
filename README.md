@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 904 tests, all local
+npm test   # 912 tests, all local
 ```
 
 ## Quickstart
@@ -760,7 +760,7 @@ const out = await deliverSettlementWebhookToMany(report, [
   { url: "https://ledger.example.com/hooks/escrow", secret: ledgerSecret },
   { url: "https://notify.example.com/hooks/escrow", secret: notifySecret },
 ]);
-// out: { results: SettlementWebhookEndpointResult[], delivered: number, failed: number }
+// out: { results: SettlementWebhookEndpointResult[], delivered: number, failed: number, deadlineExceeded: boolean }
 // results[i] corresponds to endpoints[i], in input order, and
 // delivered + failed always equals endpoints.length.
 ```
@@ -779,6 +779,19 @@ empty secret — marks only that endpoint's result
 Call-level configuration errors still throw before any request: an
 empty/non-array `endpoints` list, invalid global delivery options, or
 an invalid shared `now`/`eventId`.
+
+Fan-out limits: pass `maxEndpoints` to cap the fan-out size (more
+endpoints than the cap throws before any request, so one settlement
+event cannot turn into an endpoint explosion) and
+`overallDeadlineMs` to cap the whole call's wall-clock time. When the
+deadline expires, every still-in-flight endpoint is aborted through a
+deadline signal composed with that endpoint's own signal — a
+per-endpoint `signal` override does not exempt an endpoint from the
+deadline — the stopped endpoint reports
+`settlement webhook delivery timed out: overall deadline of <ms>ms exceeded`,
+endpoints that already completed keep their results, and the
+aggregate carries `deadlineExceeded: true`. Both options are
+call-level configuration: invalid values throw before any request.
 
 Honest limit: there is no durable queue. If the process dies
 mid-fan-out, some endpoints may have received the event and others
@@ -862,7 +875,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 904 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 912 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
