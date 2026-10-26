@@ -474,10 +474,26 @@ function csvField(value: string): string {
  * subset returned by {@link parseSettlementReportCsv}: rendering reads
  * only `escrowId`, `outcome`, and `parties`, so a parsed value re-renders
  * byte-identically without rebuilding the fields the CSV never carried.
+ *
+ * Before rendering, the CSV-carried fields are shape-checked with the
+ * shared core also used by {@link assertReportShape} (see below): a non-object
+ * report, an empty `escrowId`, an illegal `outcome`, an empty
+ * `parties` array, an unknown party role, or a non-finite party amount
+ * throws `cannot render settlement report as CSV: …` instead of
+ * emitting a row that reads `Infinity` or `NaN` — the literals
+ * `csvMoney` used to produce for such figures. Only the carried fields
+ * are required: the deposit breakdown, settlement parameters,
+ * `releasePath`, `eventCount`, and audit window are not read by this
+ * renderer and are not checked here, so a parsed
+ * {@link SettlementReportCsv} still re-renders; a full report's carried
+ * fields are checked the same way, and its `totalInflow`/
+ * `totalOutflow`/`balanced`, when present, must be finite/boolean or
+ * the render throws too.
  */
 export function renderReportCsv(
   report: SettlementReport | SettlementReportCsv,
 ): string {
+  assertReportCsvFields(report, "cannot render settlement report as CSV");
   const lines: string[] = ["escrowId,outcome,role,inflow,outflow,net"];
   let totalInflow = 0;
   let totalOutflow = 0;
@@ -805,11 +821,24 @@ export function parseSettlementReportCsv(text: string): SettlementReportCsv {
  * `<prefix>: …`, where the prefix names the direction (`cannot render
  * settlement report as JSON` when writing, `cannot parse settlement
  * report JSON` when reading) so a failure's origin is unambiguous.
+ * The CSV-carried fields are checked first via
+ * {@link assertReportCsvFields}, shared with {@link renderReportCsv},
+ * so both renderers reject the same malformed ledgers, each under its
+ * own direction prefix.
  */
-function assertReportShape(
-  report: unknown,
-  prefix = "cannot render settlement report as JSON",
-): asserts report is SettlementReport {
+/**
+ * Validate the fields a CSV row actually carries: `escrowId`, `outcome`,
+ * and the per-party ledgers. This is the shared core of the report shape
+ * checks: {@link renderReportCsv} applies exactly this (with a CSV
+ * prefix) because rendering reads nothing else, and
+ * {@link assertReportShape} applies it first and then adds the
+ * full-report fields. Totals/`balanced` are carried by both shapes, so
+ * when present they must be sane; a bare carried-fields value without
+ * them still passes here, and the full-report check below requires them.
+ * Every failure throws `<prefix>: …`. No assertion signature: callers
+ * keep their own (narrower) parameter types.
+ */
+function assertReportCsvFields(report: unknown, prefix: string): void {
   const fail = (reason: string): never => {
     throw new Error(`${prefix}: ${reason}`);
   };
@@ -820,18 +849,6 @@ function assertReportShape(
     fail("escrowId must be a non-empty string");
   if (r.outcome !== "released" && r.outcome !== "refunded" && r.outcome !== "expired")
     fail('outcome must be "released", "refunded", or "expired"');
-  if (typeof r.deposit !== "object" || r.deposit === null || Array.isArray(r.deposit))
-    fail("deposit must be a FeeBreakdown object");
-  const deposit = r.deposit as Record<string, unknown>;
-  if (typeof deposit.deposit !== "number" || !Number.isFinite(deposit.deposit))
-    fail("deposit.deposit must be a finite number");
-  for (const [key, value] of Object.entries(deposit)) {
-    // Every FeeBreakdown field is a money figure: a null here is what a
-    // non-finite figure becomes after a plain JSON.stringify, so it must
-    // fail like Infinity does, not slip through as "not a number".
-    if (typeof value !== "number" || !Number.isFinite(value))
-      fail(`deposit.${key} must be a finite number`);
-  }
   if (!Array.isArray(r.parties) || r.parties.length === 0)
     fail("parties must be a non-empty array");
   for (const party of r.parties as unknown[]) {
@@ -851,6 +868,42 @@ function assertReportShape(
         fail(`each party.${key} must be a finite number`);
     }
   }
+  for (const key of ["totalInflow", "totalOutflow"] as const) {
+    if (
+      r[key] !== undefined &&
+      (typeof r[key] !== "number" || !Number.isFinite(r[key]))
+    )
+      fail(`${key} must be a finite number`);
+  }
+  if (r.balanced !== undefined && typeof r.balanced !== "boolean")
+    fail("balanced must be a boolean");
+}
+
+function assertReportShape(
+  report: unknown,
+  prefix = "cannot render settlement report as JSON",
+): asserts report is SettlementReport {
+  assertReportCsvFields(report, prefix);
+  const fail = (reason: string): never => {
+    throw new Error(`${prefix}: ${reason}`);
+  };
+  const r = report as Record<string, unknown>;
+  if (typeof r.deposit !== "object" || r.deposit === null || Array.isArray(r.deposit))
+    fail("deposit must be a FeeBreakdown object");
+  const deposit = r.deposit as Record<string, unknown>;
+  if (typeof deposit.deposit !== "number" || !Number.isFinite(deposit.deposit))
+    fail("deposit.deposit must be a finite number");
+  for (const [key, value] of Object.entries(deposit)) {
+    // Every FeeBreakdown field is a money figure: a null here is what a
+    // non-finite figure becomes after a plain JSON.stringify, so it must
+    // fail like Infinity does, not slip through as "not a number".
+    if (typeof value !== "number" || !Number.isFinite(value))
+      fail(`deposit.${key} must be a finite number`);
+  }
+  // The carried-fields check above already validated escrowId, outcome,
+  // and the party ledgers; the full-report check adds the requirement
+  // that totals and the balanced flag are actually present (not merely
+  // sane when present).
   for (const key of ["totalInflow", "totalOutflow"] as const) {
     if (typeof r[key] !== "number" || !Number.isFinite(r[key]))
       fail(`${key} must be a finite number`);

@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 887 tests, all local
+npm test   # 900 tests, all local
 ```
 
 ## Quickstart
@@ -808,7 +808,13 @@ no thousands separators, and a final `TOTAL` row whose columns are the
 sums over the party rows. String fields follow RFC 4180 escaping
 (comma/quote/newline fields are quoted, inner quotes doubled), and the
 TOTAL row repeats the report's `escrowId`/`outcome` so imports can group
-rows back to their escrow.
+rows back to their escrow. As with the JSON renderer, the CSV renderer
+shape-checks its input first: a non-object report, an empty `escrowId`,
+an illegal `outcome`, an empty `parties` array, an unknown party role,
+or a non-finite party amount throws
+`cannot render settlement report as CSV: …` instead of emitting an
+`Infinity`/`NaN` row — only the CSV-carried fields are required, so a
+parsed `SettlementReportCsv` still re-renders.
 
 `parseSettlementReportCsv(text)` is the inverse for the receiving end of
 that hop: it parses the header, the four party rows, and the `TOTAL` row
@@ -856,7 +862,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 887 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 900 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

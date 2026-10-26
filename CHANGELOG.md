@@ -206,6 +206,19 @@ version changes.
 
 ### Fixed
 
+- `renderReportCsv` now shape-checks its input before rendering
+  (2026-10-26, backlog #608): the CSV renderer reuses the shared
+  carried-fields core of `assertReportShape` (new internal helper
+  `assertReportCsvFields`) under the direction prefix
+  `cannot render settlement report as CSV: …`, so a non-object report,
+  an empty `escrowId`, an illegal `outcome`, an empty `parties` array,
+  an unknown party role, or a non-finite party amount fails fast
+  instead of emitting a literal `Infinity`/`NaN` row — the gap the JSON
+  renderer (#579/#591) already closed. Only the CSV-carried fields are
+  required, and totals/`balanced` are checked when present, so a parsed
+  `SettlementReportCsv` still re-renders byte-identically and golden
+  released/refunded/expired CSVs are unchanged.
+  `test/renderReportCsvShape.test.ts` (13 cases).
 - `verifyHistoryChain` now compares keyed (HMAC) audit-chain digests in
   constant time (`timingSafeEqual` with a length guard, via a new
   `constantTimeHexEqual` helper), matching the webhook signature
