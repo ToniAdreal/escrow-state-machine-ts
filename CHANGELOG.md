@@ -31,6 +31,17 @@ version changes.
   audit window, so the import does not reconstruct them, and the
   import is structural validation only, not a re-verification of the
   audit chain.
+- Benchmark `parseSettlementReportCsv` round-trip import path
+  (2026-10-26, backlog #610): the bench now times the receiving end
+  of the spreadsheet hop over the same golden released report CSV
+  the demo round-trips — RFC 4180 record parsing plus the structural
+  and TOTAL-row self-consistency checks, with every iteration
+  re-checking the parsed subset field for field against the golden
+  report's CSV-carried fields and re-rendering byte-identically
+  through `renderReportCsv`, a TOTAL-mismatched copy pinned to the
+  exact import error and two parses pinned to independent object
+  graphs outside the timed loop. The README benchmark table is
+  refreshed from this run with the new row added.
 - Benchmark `parseSettlementReportJson` round-trip import path
   (2026-10-26, backlog #606): the bench now times the receiving end
   of the API/storage hop over the same golden released report JSON

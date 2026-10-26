@@ -958,6 +958,31 @@
  *      text are pinned to yield independent object graphs
  *      (mutating one leaves a fresh parse untouched).
  *      Fixed report, no network, no randomness.
+ *  58. settlement report CSV round-trip import —
+ *      `parseSettlementReportCsv` over the CSV of the same
+ *      fixed golden released report the JSON row imports
+ *      (deposit 10,630, released via VERIFY_PASS -> RELEASE,
+ *      4 party rows), the import a bookkeeping reader pays
+ *      for every stored report CSV it reads back — RFC 4180
+ *      record parsing plus the structural and TOTAL-row
+ *      self-consistency checks `renderReportCsv` applies in
+ *      the other direction. This is the receiving end of
+ *      the spreadsheet hop the export row never exercises:
+ *      the export serializes, the import must re-validate.
+ *      Every timed iteration re-checks the parsed subset
+ *      field for field against the golden report's
+ *      CSV-carried fields (escrowId, outcome, party ledgers,
+ *      totals, balanced flag) and re-renders it
+ *      byte-identically through `renderReportCsv` — the CSV
+ *      carries only that subset, so the check is subset
+ *      equality plus byte-identical re-render, not equality
+ *      against the full report. Outside the timed loop: a
+ *      copy whose TOTAL inflow is 1 higher than the party-row
+ *      sum is pinned to throw the exact import error, and two
+ *      parses of the same text are pinned to yield
+ *      independent object graphs (mutating one leaves a fresh
+ *      parse untouched). Fixed report, no network, no
+ *      randomness.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -994,6 +1019,7 @@ import {
   isOverdue,
   parseEscrowHistory,
   parseRetryAfter,
+  parseSettlementReportCsv,
   parseSettlementReportJson,
   renderReport,
   renderReportCsv,
@@ -1017,6 +1043,7 @@ import {
   type QuorumSnapshot,
   type SettlementInputs,
   type SettlementReport,
+  type SettlementReportCsv,
   type SettlementReportInputs,
   type SettlementWebhookEndpoint,
   type TransitionEdge,
@@ -6170,6 +6197,107 @@ function benchParseSettlementReportJson(): number {
   }, ITERATIONS);
 }
 
+// ---------------------------------------------------------------------
+// parseSettlementReportCsv fixture: the CSV of the module-scope
+// golden released `report` above — the same report the #609 demo
+// section round-trips (same golden vector: deposit 10,630, settled
+// at proFeeBps 500, 4 party rows), so the bench CSV row and the
+// demo CSV section can never drift apart in figures.
+// parseSettlementReportCsv is pure (it only reads the text and
+// returns a fresh object graph), so the same CSV text is re-parsed
+// on every iteration. The check below compares the parsed subset
+// field for field against the golden report's CSV-carried fields
+// (escrowId, outcome, party ledgers, totals, balanced flag) and
+// re-renders it byte-identically through renderReportCsv: the CSV
+// carries only that subset — not the deposit breakdown,
+// settlement parameters, releasePath, eventCount, or audit window —
+// so equality against the full report is not the check here, and
+// the subset comparison plus byte-identical re-render is the
+// honest equivalent of the JSON row's deep-equality check.
+// ---------------------------------------------------------------------
+const REPORT_CSV: string = renderReportCsv(report);
+
+function checkParseSettlementReportCsv(parsed: SettlementReportCsv): void {
+  if (
+    parsed.escrowId !== report.escrowId ||
+    parsed.outcome !== report.outcome ||
+    parsed.totalInflow !== report.totalInflow ||
+    parsed.totalOutflow !== report.totalOutflow ||
+    parsed.balanced !== (report.totalInflow === report.totalOutflow) ||
+    parsed.parties.length !== report.parties.length
+  ) {
+    throw new Error(
+      "benchmark self-check failed: parseSettlementReportCsv subset equality",
+    );
+  }
+  for (let i = 0; i < report.parties.length; i++) {
+    const expected = report.parties[i];
+    const actual = parsed.parties[i];
+    if (
+      actual.party !== expected.party ||
+      actual.label !== expected.label ||
+      actual.inflow !== expected.inflow ||
+      actual.outflow !== expected.outflow ||
+      actual.net !== expected.net
+    ) {
+      throw new Error(
+        "benchmark self-check failed: parseSettlementReportCsv subset equality",
+      );
+    }
+  }
+  if (renderReportCsv(parsed) !== REPORT_CSV) {
+    throw new Error(
+      "benchmark self-check failed: parseSettlementReportCsv re-render",
+    );
+  }
+}
+// Pre-check outside the timed loop: the golden CSV round-trips
+// before any number is reported.
+checkParseSettlementReportCsv(parseSettlementReportCsv(REPORT_CSV));
+
+// Outside the timed loop: the import fail-fast probe and the
+// fresh-object-graph probe. A copy whose TOTAL inflow is 1 higher
+// than the party-row sum must be rejected with the exact import
+// error (a TOTAL row that disagrees with its own rows never becomes
+// a plausible-looking report), and two parses of the same text
+// must yield independent graphs (mutating one leaves a fresh parse
+// untouched) — the import promises a fresh object graph, not a
+// shared cache.
+{
+  const damagedCsv = REPORT_CSV.replace(
+    "BENCH-001,released,TOTAL,10630.00,10630.00,0.00",
+    "BENCH-001,released,TOTAL,10631.00,10630.00,0.00",
+  );
+  let damagedError = "";
+  try {
+    parseSettlementReportCsv(damagedCsv);
+  } catch (err) {
+    damagedError = err instanceof Error ? err.message : String(err);
+  }
+  if (
+    damagedError !==
+    "cannot parse settlement report CSV: TOTAL row inflow 10631 does not equal the sum over party rows 10630"
+  ) {
+    throw new Error(
+      "benchmark fixture failed: parseSettlementReportCsv damaged-input gate",
+    );
+  }
+  const firstParse = parseSettlementReportCsv(REPORT_CSV);
+  firstParse.parties[0].inflow = -1;
+  checkParseSettlementReportCsv(parseSettlementReportCsv(REPORT_CSV));
+}
+
+function benchParseSettlementReportCsv(): number {
+  // Per-iteration self-check: the parsed subset equals the golden
+  // report's CSV-carried fields and re-renders byte-identically —
+  // a drift in the import shape or in the TOTAL self-consistency
+  // check breaks the run instead of silently re-timing a changed
+  // import.
+  return measure(() => {
+    checkParseSettlementReportCsv(parseSettlementReportCsv(REPORT_CSV));
+  }, ITERATIONS);
+}
+
 function benchDepositAmountFromHistory(): number {
   return measure(() => {
     checkDepositCorpus();
@@ -7383,6 +7511,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "renderReport (refunded + expired, 2 reports)", ops: benchRenderReportRefundedExpired() },
   { path: "renderReportCsv (released report, 4 parties)", ops: benchRenderReportCsv() },
   { path: "parseSettlementReportJson (released report, 4 parties)", ops: benchParseSettlementReportJson() },
+  { path: "parseSettlementReportCsv (released report, 4 parties)", ops: benchParseSettlementReportCsv() },
   { path: "depositAmountFromHistory (4-shape corpus)", ops: benchDepositAmountFromHistory() },
   { path: "buildSettlementReports (batch 4 x 4 entries)", ops: benchBuildSettlementReports() },
   { path: "summarizeSettlementReports (batch 4 results)", ops: benchSummarizeSettlementReports() },
