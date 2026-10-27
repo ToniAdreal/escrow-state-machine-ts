@@ -18,6 +18,18 @@ version changes.
 
 ### Added
 
+- Benchmark `deliverSettlementWebhookToMany` fan-out limits path (2026-10-27, backlog
+  #650): the bench now times the #630 `maxEndpoints` / `overallDeadlineMs`
+  guards as a cost path — every iteration runs a 3-endpoint batch under
+  `maxEndpoints: 2` (pinned cap error before any request, 0 fetch calls)
+  and a fast + hanging pair under a bench-local `overallDeadlineMs: 50`
+  with a 10,000 ms per-attempt timeout and retries 0 (fast result kept,
+  hanging endpoint reports the pinned deadline error after exactly 1
+  attempt, aggregate delivered 1 / failed 1 with `deadlineExceeded: true`),
+  with an invalid `maxEndpoints: 0` and a cap-equal batch pinned once
+  outside the timed loop. The README benchmark table is refreshed from
+  this run with the new row added
+  (18.7 ops/sec, 53523.05 µs/op).
 - CLI demo `deliverSettlementWebhookToMany` fan-out limit segment (2026-10-27, backlog
   #649): the demo now shows the #630 guards over a loopback server - 3
   endpoints under `maxEndpoints: 2` throw the pinned cap error before any
