@@ -18,6 +18,17 @@ version changes.
 
 ### Added
 
+- Benchmark `deliverSettlementWebhook` loopback header-check path (2026-10-27, backlog
+  #651): the bench now times the #567/#576 delivery-header contract over a real
+  loopback HTTP server instead of a fake fetch — every iteration delivers the fixed
+  signed webhook with a 500-then-200 script (retries 1, backoffMs 0) and pins both
+  attempts' `X-Event-Id` and `Idempotency-Key` equal to the body `eventId` and
+  identical across the retry, with the signed body and `X-Signature` unchanged;
+  outside the timed loop a forged header value is pinned not to break body
+  verification (headers are transport hints, not signature-covered) and a body with
+  a mutated `eventId` is pinned to fail verification. The README benchmark table is
+  refreshed from this run with the new row added
+  (281.5 ops/sec, 3552.63 µs/op).
 - Benchmark `deliverSettlementWebhookToMany` fan-out limits path (2026-10-27, backlog
   #650): the bench now times the #630 `maxEndpoints` / `overallDeadlineMs`
   guards as a cost path — every iteration runs a 3-endpoint batch under
