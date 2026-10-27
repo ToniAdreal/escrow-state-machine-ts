@@ -18,6 +18,20 @@ version changes.
 
 ### Added
 
+- Benchmark `dispatch rolePolicy` RBAC path (2026-10-27, backlog
+  #632): the bench now times the gated-arbitration dispatch a
+  webhook-driven dispatcher actually pays — a fresh DISPUTED
+  escrow with `ARBITRATE_RELEASE` allowlisted to `moderator`,
+  rebuilt on every iteration (dispatch mutates it), with a
+  `contributor` dispatch rejected by the exact
+  `actor not authorized for ARBITRATE_RELEASE` error leaving
+  the history at 2 entries and a `moderator` dispatch then
+  advancing to RELEASED with one entry pinned field for field
+  (seq 3, DISPUTED -> RELEASED, actor `moderator`) and an
+  intact hash chain, plus an actor-less rejection pinned once
+  outside the timed loop. The README benchmark table is
+  refreshed from this run with the new row added
+  (4,346 ops/sec, 230.09 µs/op).
 - Settlement webhook fan-out limits (2026-10-26, backlog #630):
   `DeliverSettlementWebhookToManyOptions` gains `maxEndpoints` (more
   endpoints than the cap throws before any request, zero fetch calls)
