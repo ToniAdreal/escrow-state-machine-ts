@@ -616,6 +616,50 @@ export const DEMO_FANOUT_ENDPOINTS: readonly SettlementWebhookEndpoint[] = [
 ];
 
 /**
+ * Fan-out limit fixtures for the closing demo section: the
+ * `maxEndpoints` / `overallDeadlineMs` options that backlog #630
+ * landed on `deliverSettlementWebhookToMany` had no demo segment -
+ * a caller reading the demo learned the fan-out shape but never
+ * saw the two guards that keep one settlement event from turning
+ * into an endpoint explosion or an unbounded wait. Hand-pinned
+ * expectations - written from src/webhooks.ts's documented
+ * fan-out-limit semantics and cross-checked against
+ * test/webhookFanoutLimits.test.ts:
+ * - 3 endpoints under `maxEndpoints: 2` throws
+ *   `cannot deliver settlement webhook to many endpoints: 3
+ *   endpoints exceed maxEndpoints 2` before any request, so the
+ *   loopback server records 0 requests
+ * - under `overallDeadlineMs: 100` (per-attempt `timeoutMs`
+ *   10,000, so the deadline - not the per-attempt timeout - is
+ *   what can stop the call) a fast endpoint delivers
+ *   `{ok: true, attempts: 1, status: 200}` and a hanging
+ *   endpoint reports the pinned deadline error with
+ *   `deadlineExceeded: true`, aggregate delivered 1 / failed 1
+ * The loopback paths are fixed; the port is ephemeral and never
+ * printed, so the output stays byte-identical across runs. The
+ * 100 ms deadline is the object under test itself - no elapsed
+ * time is asserted or printed.
+ */
+export const DEMO_FANOUT_LIMIT_AT = "2026-03-08T12:00:00.000Z";
+export const DEMO_FANOUT_LIMIT_EVENT_ID = "evt_demo_fanout_limit_001";
+export const DEMO_FANOUT_LIMIT_FAST_A_PATH = "/fanout-limit-fast-a";
+export const DEMO_FANOUT_LIMIT_FAST_B_PATH = "/fanout-limit-fast-b";
+export const DEMO_FANOUT_LIMIT_HANG_PATH = "/fanout-limit-hang";
+export const DEMO_FANOUT_LIMIT_SECRET_A =
+  "demo-fanout-limit-secret-a-not-a-real-secret";
+export const DEMO_FANOUT_LIMIT_SECRET_B =
+  "demo-fanout-limit-secret-b-not-a-real-secret";
+export const DEMO_FANOUT_LIMIT_SECRET_C =
+  "demo-fanout-limit-secret-c-not-a-real-secret";
+export const DEMO_FANOUT_LIMIT_CAP = 2;
+export const DEMO_FANOUT_LIMIT_DEADLINE_MS = 100;
+export const DEMO_FANOUT_LIMIT_TIMEOUT_MS = 10_000;
+export const DEMO_FANOUT_LIMIT_CAP_ERROR =
+  "cannot deliver settlement webhook to many endpoints: 3 endpoints exceed maxEndpoints 2";
+export const DEMO_FANOUT_LIMIT_DEADLINE_ERROR =
+  "settlement webhook delivery timed out: overall deadline of 100ms exceeded";
+
+/**
  * Watchdog fixtures for the closing section: three further escrows
  * screened on one fixed `now` (the morning after the batch webhook
  * timestamp) under two different axes. Hand-computed expectations —
@@ -3129,6 +3173,33 @@ export interface DemoResult {
    * `adjustedBaseFee` 749.99, `deposit` 10779.99.
    */
   fractionalDepositBreakdown: FeeBreakdown;
+  /**
+   * The pinned rejection when the fan-out limit demo calls
+   * `deliverSettlementWebhookToMany` with 3 endpoints under
+   * `maxEndpoints: 2`: exactly
+   * {@link DEMO_FANOUT_LIMIT_CAP_ERROR} - the cap throws
+   * before any request, so the loopback server records 0
+   * requests.
+   */
+  fanoutLimitCapError: string;
+  /**
+   * Aggregate fan-out outcome of delivering the main report
+   * via `deliverSettlementWebhookToMany` to a fast and a
+   * hanging loopback endpoint under
+   * `overallDeadlineMs: 100`: 2 results in endpoint order,
+   * delivered 1 / failed 1, `deadlineExceeded: true` - the
+   * fast endpoint keeps `{ok: true, attempts: 1, status:
+   * 200}` and the hanging endpoint reports the pinned
+   * deadline error.
+   */
+  fanoutLimitDeadlineResult: DeliverSettlementWebhookToManyResult;
+  /**
+   * The requests the loopback server captured during the
+   * fan-out limit segment, in arrival order: exactly 0 for
+   * the over-cap call, then exactly 1 fast and 1 hanging
+   * request for the deadline call.
+   */
+  fanoutLimitCalls: Array<{ path: string }>;
   lines: string[];
 }
 
@@ -7300,6 +7371,186 @@ export async function runDemo(): Promise<DemoResult> {
     "  note: the header is a transport hint only — it is NOT covered by the signature, so a receiver verifies the signature first and then trusts the body's eventId, never the header, as the deduplication key",
   );
 
+  // --- Fan-out limits: deliverSettlementWebhookToMany maxEndpoints / overallDeadlineMs (closing) ---
+  // The fan-out segment above proved one logical event reaches
+  // every endpoint, and the unit tests proved the two fan-out
+  // guards - but no demo segment ever showed them: a caller
+  // reading the demo learned the fan-out shape and never saw
+  // the cap that keeps one settlement event from turning into
+  // an endpoint explosion, nor the wall-clock budget that keeps
+  // one hanging endpoint from holding the whole fan-out open.
+  // Here the main escrow's report is fanned out over a real
+  // loopback server (ephemeral port, paths pinned above - the
+  // port itself is never printed, so the output stays
+  // byte-identical across runs). Shape one is the cap: 3
+  // endpoints under `maxEndpoints: 2` throw the pinned
+  // configuration error before any request, so the loopback
+  // server records 0 requests. Shape two is the deadline:
+  // the same report goes to one fast endpoint and one endpoint
+  // that never answers, under `overallDeadlineMs: 100` with a
+  // 10,000 ms per-attempt timeout and `retries: 0` - so the
+  // deadline, not the per-attempt timeout, is the only thing
+  // that can stop the hanging delivery, and no retry can
+  // mask it. Hand-pinned expectations (see the fixture comment
+  // above), asserted HERE, outside the printing: the cap error
+  // equals the pinned text and the server recorded 0 requests
+  // at that point; the deadline call then records exactly one
+  // fast and one hanging request and no second fast request,
+  // the fast result is `{ok: true, attempts: 1, status: 200}`,
+  // the hanging result is `{ok: false, attempts: 1}` with the
+  // pinned deadline error, and the aggregate reads delivered
+  // 1 / failed 1 with `deadlineExceeded: true`. A cap that
+  // fetched, a deadline that waited out the per-attempt
+  // timeout, or a completed endpoint dropped by the deadline
+  // would fail the demo itself. Honest limit: the 100 ms
+  // deadline is the object under test - no elapsed time is
+  // asserted or printed.
+  const fanoutLimitCalls: Array<{ path: string }> = [];
+  const fanoutLimitServer = createServer((req, res) => {
+    void (async () => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) {
+        chunks.push(chunk as Buffer);
+      }
+      const path = req.url ?? "";
+      if (
+        path === DEMO_FANOUT_LIMIT_FAST_A_PATH ||
+        path === DEMO_FANOUT_LIMIT_FAST_B_PATH
+      ) {
+        fanoutLimitCalls.push({ path });
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end("{}");
+        return;
+      }
+      if (path === DEMO_FANOUT_LIMIT_HANG_PATH) {
+        fanoutLimitCalls.push({ path });
+        return;
+      }
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end("{}");
+    })();
+  });
+  await new Promise<void>((resolve, reject) => {
+    fanoutLimitServer.once("error", reject);
+    fanoutLimitServer.listen(0, "127.0.0.1", () => resolve());
+  });
+  const fanoutLimitAddress = fanoutLimitServer.address();
+  if (
+    fanoutLimitAddress === null ||
+    typeof fanoutLimitAddress === "string"
+  ) {
+    fanoutLimitServer.close();
+    throw new Error(
+      "demo fixture broken: fan-out limit loopback server did not bind to a TCP port",
+    );
+  }
+  const fanoutLimitBase = `http://127.0.0.1:${fanoutLimitAddress.port}`;
+  let fanoutLimitCapError = "";
+  let fanoutLimitCallsAfterCap = -1;
+  let fanoutLimitDeadlineResult: DeliverSettlementWebhookToManyResult;
+  try {
+    try {
+      await deliverSettlementWebhookToMany(
+        report,
+        [
+          {
+            url: `${fanoutLimitBase}${DEMO_FANOUT_LIMIT_FAST_A_PATH}`,
+            secret: DEMO_FANOUT_LIMIT_SECRET_A,
+          },
+          {
+            url: `${fanoutLimitBase}${DEMO_FANOUT_LIMIT_FAST_B_PATH}`,
+            secret: DEMO_FANOUT_LIMIT_SECRET_B,
+          },
+          {
+            url: `${fanoutLimitBase}${DEMO_FANOUT_LIMIT_HANG_PATH}`,
+            secret: DEMO_FANOUT_LIMIT_SECRET_C,
+          },
+        ],
+        {
+          now: DEMO_FANOUT_LIMIT_AT,
+          eventId: DEMO_FANOUT_LIMIT_EVENT_ID,
+          maxEndpoints: DEMO_FANOUT_LIMIT_CAP,
+          backoffMs: 0,
+          allowInsecureHttp: true,
+        },
+      );
+    } catch (err) {
+      fanoutLimitCapError = err instanceof Error ? err.message : String(err);
+    }
+    fanoutLimitCallsAfterCap = fanoutLimitCalls.length;
+    fanoutLimitDeadlineResult = await deliverSettlementWebhookToMany(
+      report,
+      [
+        {
+          url: `${fanoutLimitBase}${DEMO_FANOUT_LIMIT_FAST_A_PATH}`,
+          secret: DEMO_FANOUT_LIMIT_SECRET_A,
+        },
+        {
+          url: `${fanoutLimitBase}${DEMO_FANOUT_LIMIT_HANG_PATH}`,
+          secret: DEMO_FANOUT_LIMIT_SECRET_B,
+        },
+      ],
+      {
+        now: DEMO_FANOUT_LIMIT_AT,
+        eventId: DEMO_FANOUT_LIMIT_EVENT_ID,
+        backoffMs: 0,
+        retries: 0,
+        timeoutMs: DEMO_FANOUT_LIMIT_TIMEOUT_MS,
+        overallDeadlineMs: DEMO_FANOUT_LIMIT_DEADLINE_MS,
+        allowInsecureHttp: true,
+      },
+    );
+  } finally {
+    fanoutLimitServer.closeAllConnections();
+    await new Promise<void>((resolve) => {
+      fanoutLimitServer.close(() => resolve());
+    });
+  }
+  const fanoutLimitFastCalls = fanoutLimitCalls.filter(
+    (call) => call.path === DEMO_FANOUT_LIMIT_FAST_A_PATH,
+  ).length;
+  const fanoutLimitFastBCalls = fanoutLimitCalls.filter(
+    (call) => call.path === DEMO_FANOUT_LIMIT_FAST_B_PATH,
+  ).length;
+  const fanoutLimitHangCalls = fanoutLimitCalls.filter(
+    (call) => call.path === DEMO_FANOUT_LIMIT_HANG_PATH,
+  ).length;
+  if (
+    fanoutLimitCapError !== DEMO_FANOUT_LIMIT_CAP_ERROR ||
+    fanoutLimitCallsAfterCap !== 0 ||
+    fanoutLimitFastCalls !== 1 ||
+    fanoutLimitFastBCalls !== 0 ||
+    fanoutLimitHangCalls !== 1 ||
+    fanoutLimitDeadlineResult.results.length !== 2 ||
+    fanoutLimitDeadlineResult.delivered !== 1 ||
+    fanoutLimitDeadlineResult.failed !== 1 ||
+    fanoutLimitDeadlineResult.deadlineExceeded !== true ||
+    fanoutLimitDeadlineResult.results[0].url !==
+      `${fanoutLimitBase}${DEMO_FANOUT_LIMIT_FAST_A_PATH}` ||
+    fanoutLimitDeadlineResult.results[0].ok !== true ||
+    fanoutLimitDeadlineResult.results[0].attempts !== 1 ||
+    fanoutLimitDeadlineResult.results[0].status !== 200 ||
+    fanoutLimitDeadlineResult.results[1].url !==
+      `${fanoutLimitBase}${DEMO_FANOUT_LIMIT_HANG_PATH}` ||
+    fanoutLimitDeadlineResult.results[1].ok !== false ||
+    fanoutLimitDeadlineResult.results[1].attempts !== 1 ||
+    fanoutLimitDeadlineResult.results[1].error !==
+      DEMO_FANOUT_LIMIT_DEADLINE_ERROR
+  ) {
+    throw new Error(
+      "demo fixture broken: deliverSettlementWebhookToMany fan-out limits do not match the pinned shape (3 endpoints under maxEndpoints 2 throw the pinned cap error with 0 loopback requests; under overallDeadlineMs 100 the fast endpoint delivers {ok: true, attempts: 1, status: 200}, the hanging endpoint reports the pinned deadline error after 1 attempt, aggregate delivered 1 / failed 1 with deadlineExceeded true)",
+    );
+  }
+  lines.push(
+    "",
+    "Settlement webhook fan-out limits (deliverSettlementWebhookToMany maxEndpoints / overallDeadlineMs over a loopback server):",
+    `  over-cap: 3 endpoints under maxEndpoints ${DEMO_FANOUT_LIMIT_CAP} - throws "${fanoutLimitCapError}" before any request: loopback server recorded ${fanoutLimitCallsAfterCap} request(s)`,
+    `  deadline: the same report fanned out as one logical event (eventId ${DEMO_FANOUT_LIMIT_EVENT_ID}, at ${DEMO_FANOUT_LIMIT_AT}) to ${DEMO_FANOUT_LIMIT_FAST_A_PATH} and ${DEMO_FANOUT_LIMIT_HANG_PATH} under overallDeadlineMs ${DEMO_FANOUT_LIMIT_DEADLINE_MS} ms, per-attempt timeoutMs ${DEMO_FANOUT_LIMIT_TIMEOUT_MS} ms, retries 0 - the deadline, not the per-attempt timeout, is what can stop the call`,
+    `  fast: ${DEMO_FANOUT_LIMIT_FAST_A_PATH} answered 200 - result: ok ${fanoutLimitDeadlineResult.results[0].ok}, attempts ${fanoutLimitDeadlineResult.results[0].attempts}, status ${fanoutLimitDeadlineResult.results[0].status} (the completed endpoint keeps its result)`,
+    `  hanging: ${DEMO_FANOUT_LIMIT_HANG_PATH} never answered - result: ok ${fanoutLimitDeadlineResult.results[1].ok}, attempts ${fanoutLimitDeadlineResult.results[1].attempts}, error "${fanoutLimitDeadlineResult.results[1].error}" (the deadline error, not the per-attempt timeout text and not the plain abort text)`,
+    `  aggregate: ${fanoutLimitDeadlineResult.delivered} delivered, ${fanoutLimitDeadlineResult.failed} failed, deadlineExceeded ${fanoutLimitDeadlineResult.deadlineExceeded} - the cap and the deadline are caller-side guards: the cap fails the call before any request, the deadline stops only the in-flight endpoints`,
+  );
+
   return {
     escrow,
     report,
@@ -7503,6 +7754,9 @@ export async function runDemo(): Promise<DemoResult> {
     timeoutOkFetchCalls,
     idempotencyHeaderRetryResult,
     idempotencyHeaderRetryCalls,
+    fanoutLimitCapError,
+    fanoutLimitDeadlineResult,
+    fanoutLimitCalls,
     lines,
   };
 }

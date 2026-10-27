@@ -69,6 +69,16 @@ import {
   DEMO_FANOUT_AT,
   DEMO_FANOUT_ENDPOINTS,
   DEMO_FANOUT_EVENT_ID,
+  DEMO_FANOUT_LIMIT_AT,
+  DEMO_FANOUT_LIMIT_CAP,
+  DEMO_FANOUT_LIMIT_CAP_ERROR,
+  DEMO_FANOUT_LIMIT_DEADLINE_ERROR,
+  DEMO_FANOUT_LIMIT_DEADLINE_MS,
+  DEMO_FANOUT_LIMIT_EVENT_ID,
+  DEMO_FANOUT_LIMIT_FAST_A_PATH,
+  DEMO_FANOUT_LIMIT_FAST_B_PATH,
+  DEMO_FANOUT_LIMIT_HANG_PATH,
+  DEMO_FANOUT_LIMIT_TIMEOUT_MS,
   DEMO_FEE_FRACTIONAL_ADJUSTED_BASE_FEE,
   DEMO_FEE_FRACTIONAL_DEPOSIT,
   DEMO_FEE_FRACTIONAL_INPUTS,
@@ -3087,10 +3097,11 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
       `  illegal timeoutMs 0: delivery throws "${DEMO_TIMEOUT_INVALID_ERROR}" before any request: fake fetch called 0 time(s)`,
     ),
   );
-  // Idempotency-Key tail: the closing segment delivers
-  // the signed webhook over a loopback server with the
-  // same key on both attempts; the demo ends on the
-  // transport-hint note line.
+  // Idempotency-Key tail: the segment delivers the
+  // signed webhook over a loopback server with the
+  // same key on both attempts; the demo no longer ends
+  // here - the fan-out limit segment (backlog #649)
+  // closes it after this one, on its aggregate line.
   assert.match(
     out,
     /Settlement webhook Idempotency-Key header \(deliverSettlementWebhook retry over a loopback server\):/,
@@ -3104,7 +3115,7 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
     out
       .trimEnd()
       .endsWith(
-        "  note: the header is a transport hint only — it is NOT covered by the signature, so a receiver verifies the signature first and then trusts the body's eventId, never the header, as the deduplication key",
+        "  aggregate: 1 delivered, 1 failed, deadlineExceeded true - the cap and the deadline are caller-side guards: the cap fails the call before any request, the deadline stops only the in-flight endpoints",
       ),
   );
 });
@@ -6433,9 +6444,11 @@ test("demo shows Idempotency-Key header: deliverSettlementWebhook retries over a
       probeServer.close(() => resolve());
     });
   }
-  // The segment closes the demo: it follows the
-  // timeout segment, prints its lines verbatim, and its
-  // note line is the demo's last line.
+  // The segment no longer closes the demo: the fan-out
+  // limit segment (backlog #649) closes it after this
+  // one. It still follows the timeout segment and prints
+  // its lines verbatim, and its note line is still
+  // present above.
   const timeoutAt = text.indexOf(
     "Webhook delivery timeout (deliverSettlementWebhook timeoutMs via hanging fake fetch, zero network):",
   );
@@ -6454,9 +6467,12 @@ test("demo shows Idempotency-Key header: deliverSettlementWebhook retries over a
   ]) {
     assert.ok(text.includes(line), `missing Idempotency-Key header line: ${line}`);
   }
-  assert.equal(
-    lines[lines.length - 1],
-    "  note: the header is a transport hint only — it is NOT covered by the signature, so a receiver verifies the signature first and then trusts the body's eventId, never the header, as the deduplication key",
+  const fanoutLimitAt = text.indexOf(
+    "Settlement webhook fan-out limits (deliverSettlementWebhookToMany maxEndpoints / overallDeadlineMs over a loopback server):",
+  );
+  assert.ok(
+    fanoutLimitAt > headerAt,
+    "fan-out limit segment must follow the Idempotency-Key header segment",
   );
 });
 
@@ -6466,6 +6482,9 @@ test("demo Idempotency-Key header segment is deterministic: two runs print byte-
       ls.indexOf(
         "Settlement webhook Idempotency-Key header (deliverSettlementWebhook retry over a loopback server):",
       ),
+      ls.indexOf(
+        "Settlement webhook fan-out limits (deliverSettlementWebhookToMany maxEndpoints / overallDeadlineMs over a loopback server):",
+      ) - 1,
     );
   const a = await runDemo();
   const b = await runDemo();
@@ -6692,4 +6711,141 @@ test("demo staged top-up segment is deterministic: two runs print byte-identical
   assert.equal(a.topupTracedDeposit, b.topupTracedDeposit);
   assert.deepEqual(a.topupSettlement, b.topupSettlement);
   assert.deepEqual(a.topupReport, b.topupReport);
+});
+
+test("demo shows fan-out limits: over-cap throws before any request, deadline keeps the fast result and reports the hanging endpoint", async () => {
+  const {
+    fanoutLimitCapError,
+    fanoutLimitDeadlineResult,
+    fanoutLimitCalls,
+    lines,
+  } = await runDemo();
+
+  // Hand-pinned fixture shape: the cap is 2 against 3
+  // endpoints, the deadline is 100 ms against a 10,000 ms
+  // per-attempt timeout, so the deadline - not the timeout -
+  // is what stops the hanging delivery.
+  assert.equal(DEMO_FANOUT_LIMIT_CAP, 2);
+  assert.equal(DEMO_FANOUT_LIMIT_DEADLINE_MS, 100);
+  assert.equal(DEMO_FANOUT_LIMIT_TIMEOUT_MS, 10_000);
+  assert.equal(DEMO_FANOUT_LIMIT_AT, "2026-03-08T12:00:00.000Z");
+  assert.equal(DEMO_FANOUT_LIMIT_EVENT_ID, "evt_demo_fanout_limit_001");
+
+  // The cap: the pinned error, and the loopback counts prove
+  // it fetched nothing - the cap call's three paths (fast A,
+  // fast B, hanging) appear in the deadline call only as fast
+  // A once and hanging once, never as a second fast request.
+  assert.equal(fanoutLimitCapError, DEMO_FANOUT_LIMIT_CAP_ERROR);
+  assert.equal(
+    fanoutLimitCalls.filter(
+      (call) => call.path === DEMO_FANOUT_LIMIT_FAST_A_PATH,
+    ).length,
+    1,
+  );
+  assert.equal(
+    fanoutLimitCalls.filter(
+      (call) => call.path === DEMO_FANOUT_LIMIT_FAST_B_PATH,
+    ).length,
+    0,
+  );
+  assert.equal(
+    fanoutLimitCalls.filter(
+      (call) => call.path === DEMO_FANOUT_LIMIT_HANG_PATH,
+    ).length,
+    1,
+  );
+
+  // The deadline: the fast endpoint keeps its success, the
+  // hanging endpoint reports the pinned deadline error after
+  // exactly one attempt, and the aggregate carries
+  // deadlineExceeded. URLs carry an ephemeral port, so only
+  // their path suffixes are pinned.
+  assert.equal(fanoutLimitDeadlineResult.results.length, 2);
+  assert.equal(fanoutLimitDeadlineResult.delivered, 1);
+  assert.equal(fanoutLimitDeadlineResult.failed, 1);
+  assert.equal(fanoutLimitDeadlineResult.deadlineExceeded, true);
+  assert.ok(
+    fanoutLimitDeadlineResult.results[0].url.endsWith(
+      DEMO_FANOUT_LIMIT_FAST_A_PATH,
+    ),
+  );
+  assert.equal(fanoutLimitDeadlineResult.results[0].ok, true);
+  assert.equal(fanoutLimitDeadlineResult.results[0].attempts, 1);
+  assert.equal(fanoutLimitDeadlineResult.results[0].status, 200);
+  assert.ok(
+    fanoutLimitDeadlineResult.results[1].url.endsWith(
+      DEMO_FANOUT_LIMIT_HANG_PATH,
+    ),
+  );
+  assert.equal(fanoutLimitDeadlineResult.results[1].ok, false);
+  assert.equal(fanoutLimitDeadlineResult.results[1].attempts, 1);
+  assert.equal(
+    fanoutLimitDeadlineResult.results[1].error,
+    DEMO_FANOUT_LIMIT_DEADLINE_ERROR,
+  );
+
+  // The printed section is the demo's last section, after the
+  // Idempotency-Key section, and carries both pinned errors.
+  const text = lines.join("\n");
+  const header =
+    "Settlement webhook fan-out limits (deliverSettlementWebhookToMany maxEndpoints / overallDeadlineMs over a loopback server):";
+  assert.ok(
+    text.indexOf(header) >
+      text.indexOf(
+        "Settlement webhook Idempotency-Key header (deliverSettlementWebhook retry over a loopback server):",
+      ),
+    "fan-out limit segment must follow the Idempotency-Key segment",
+  );
+  assert.ok(
+    text.includes(
+      `  over-cap: 3 endpoints under maxEndpoints ${DEMO_FANOUT_LIMIT_CAP} - throws "${DEMO_FANOUT_LIMIT_CAP_ERROR}" before any request: loopback server recorded 0 request(s)`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  hanging: ${DEMO_FANOUT_LIMIT_HANG_PATH} never answered - result: ok false, attempts 1, error "${DEMO_FANOUT_LIMIT_DEADLINE_ERROR}" (the deadline error, not the per-attempt timeout text and not the plain abort text)`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  aggregate: 1 delivered, 1 failed, deadlineExceeded true - the cap and the deadline are caller-side guards: the cap fails the call before any request, the deadline stops only the in-flight endpoints",
+    ),
+  );
+});
+
+test("demo fan-out limit segment is deterministic: two runs print byte-identical limit lines", async () => {
+  const header =
+    "Settlement webhook fan-out limits (deliverSettlementWebhookToMany maxEndpoints / overallDeadlineMs over a loopback server):";
+  // The limit section is the demo's last section, so it runs
+  // from its header to the end of the lines.
+  const segment = (ls: string[]) => ls.slice(ls.indexOf(header));
+  const a = await runDemo();
+  const b = await runDemo();
+  // Header + over-cap + deadline + fast + hanging +
+  // aggregate; every printed value is derived from the pinned
+  // fixtures alone (ports are never printed), so no
+  // normalization is needed.
+  const segA = segment(a.lines);
+  assert.equal(segA.length, 6);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.equal(a.fanoutLimitCapError, b.fanoutLimitCapError);
+  assert.equal(
+    a.fanoutLimitDeadlineResult.delivered,
+    b.fanoutLimitDeadlineResult.delivered,
+  );
+  assert.equal(
+    a.fanoutLimitDeadlineResult.failed,
+    b.fanoutLimitDeadlineResult.failed,
+  );
+  assert.equal(
+    a.fanoutLimitDeadlineResult.deadlineExceeded,
+    b.fanoutLimitDeadlineResult.deadlineExceeded,
+  );
+  // Loopback arrival order between the concurrent fast and
+  // hanging requests is not pinned, so compare the recorded
+  // paths as a sorted set, not in arrival order.
+  assert.deepEqual(
+    a.fanoutLimitCalls.map((call) => call.path).sort(),
+    b.fanoutLimitCalls.map((call) => call.path).sort(),
+  );
 });

@@ -18,6 +18,18 @@ version changes.
 
 ### Added
 
+- CLI demo `deliverSettlementWebhookToMany` fan-out limit segment (2026-10-27, backlog
+  #649): the demo now shows the #630 guards over a loopback server - 3
+  endpoints under `maxEndpoints: 2` throw the pinned cap error before any
+  request (0 loopback requests), and under `overallDeadlineMs: 100` with a
+  10,000 ms per-attempt timeout a fast endpoint keeps
+  `{ok: true, attempts: 1, status: 200}` while a hanging endpoint reports
+  the pinned deadline error after 1 attempt, aggregate delivered 1 /
+  failed 1 with `deadlineExceeded: true`. `DemoResult` gains
+  `fanoutLimitCapError`, `fanoutLimitDeadlineResult`, and
+  `fanoutLimitCalls`, guarded by a fail-fast demo self-check; the new
+  segment is the demo's last section and prints byte-identically across
+  runs (ports are never printed). `test/demo.test.ts` (2 cases).
 - Benchmark `dispatch rolePolicy` RBAC path (2026-10-27, backlog
   #632): the bench now times the gated-arbitration dispatch a
   webhook-driven dispatcher actually pays — a fresh DISPUTED
