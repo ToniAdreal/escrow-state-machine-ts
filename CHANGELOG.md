@@ -18,6 +18,18 @@ version changes.
 
 ### Added
 
+- Settlement webhook payload × top-up coverage (2026-10-28, backlog
+  #671): `test/webhookTopup.test.ts` (7 cases) pins the combination the
+  `webhooks` and `settlementWebhooksBatch` suites never exercised — that
+  after two FUNDs (10000 + 630 top-up) the webhook payload `deposit`
+  equals the summed locked total (10630), matching the report and the
+  ledger parties, that a caller deposit equal to the first FUND only or
+  the last FUND only is rejected with the FUND-total mismatch error, that
+  a single-FUND escrow is unchanged, that a FUND recorded without an
+  amount keeps the report's caller-deposit behavior while
+  `depositAmountFromHistory` still fails fast, and that tampering the
+  summed deposit breaks signature verification. No source change: the
+  sum semantics landed with #43.
 - Arbitration dispatch × quorum approval expiry coverage (2026-10-28, backlog
   #668): `test/arbitrationQuorumExpiry.test.ts` (6 cases) pins the
   interaction the separate `quorumExpiry` and `arbitrationQuorum` suites
