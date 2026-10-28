@@ -18,6 +18,18 @@ version changes.
 
 ### Added
 
+- Arbitration dispatch × quorum approval expiry coverage (2026-10-28, backlog
+  #668): `test/arbitrationQuorumExpiry.test.ts` (6 cases) pins the
+  interaction the separate `quorumExpiry` and `arbitrationQuorum` suites
+  left untested — that `dispatchArbitration` reads the quorum's live
+  counting views, so approvals aging out of `maxApprovalAgeMs` refuse
+  arbitration with `arbitration requires quorum: <counted>/<threshold>
+  approvals` and leave state/history untouched (full expiry 0/5 and
+  staggered expiry 4/5), that re-approval after expiry restores the
+  dispatch, that the inclusive expiry boundary still allows it, that an
+  expiry-gated rejection does not consume an `idempotencyKey`, and that
+  a windowless quorum is unaffected by clock advances. No source change:
+  the gate already delegated to `hasQuorum()` / `approvalCount()`.
 - Settlement webhook delivery `jitterMs` retry jitter (2026-10-28, backlog
   #665): `DeliverWebhookOptions.jitterMs` (default 0, preserving the exact
   deterministic backoff schedule) adds a `Math.random() * jitterMs` spread
