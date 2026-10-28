@@ -1063,6 +1063,33 @@
  *      backoffMs 0 keeps the retry immediate. No randomness, no
  *      elapsed-time assertion.
  *
+ *  63. settlement webhook jitterMs backoff — `deliverSettlementWebhook()`
+ *      with `jitterMs` over a 500 / 500 / 200 script through a fake
+ *      fetch (backoffMs 100, retries 2): one timed pass is two
+ *      deliveries — the jittered script, whose two backoff waits must
+ *      land inside [100, 1100] and [200, 1200] (the exponential bases
+ *      100 * 2^0 and 100 * 2^1 plus a uniform `Math.random() * 1000`
+ *      spread), and the zero-jitter control, whose waits must be
+ *      exactly [100, 200]. The delivery layer exposes no sleep
+ *      injection, so the waits are recorded by a `setTimeout` wrapper
+ *      installed for each delivery only (the same technique the
+ *      #679 demo segment uses): it keeps only timers created inside
+ *      `sleepAbortable` — identified by their creation stack — and
+ *      shortens those timers to 0 ms, so the row measures the
+ *      jittered delivery logic, not a wall-clock backoff, and no
+ *      elapsed-time assertion is made anywhere. The wrapper is
+ *      restored after every delivery, so no other bench row's timers
+ *      are touched. Outside the timed loop, a deterministic probe
+ *      stubs `Math.random` to the fixed sequence [0, 0.5] and pins
+ *      the jittered waits to exactly [100, 700] (100 + 0 * 1000,
+ *      then 200 + 0.5 * 1000), proving the spread is applied per
+ *      attempt on top of the exponential base, and the zero-jitter
+ *      waits to exactly [100, 200], proving the random source is
+ *      never consulted when jitter is off; the stub is restored and
+ *      the restore itself is asserted. The timed loop asserts
+ *      intervals only, never exact values, because with live
+ *      `Math.random` an exact wait is unknowable in advance.
+ *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
  * dispatch timestamps (a fixed base instant plus per-step offsets),
@@ -3021,6 +3048,161 @@ await runHeaderDelivery();
   ) {
     throw new Error(
       "benchmark fixture failed: deliverSettlementWebhook mutated body eventId must fail verification",
+    );
+  }
+}
+
+// Jitter-delivery fixture: the same settled report's signed webhook
+// (`webhook`, built once above via `buildSettlementWebhook`)
+// delivered over a fake fetch answering 500 on the first two
+// attempts of every delivery and 200 on the third, with backoffMs
+// 100 and retries 2. The 500 path carries no Retry-After hint, so
+// no hint clamping is involved; the jitter spread is the only
+// thing moving the waits. The delivery layer has no sleep
+// injection point (unlike the dataquest sister bench, whose
+// `deliverPayoutWebhook` accepts a `sleepImpl`), so the waits are
+// recorded by wrapping the global `setTimeout` for the delivery
+// only — the same technique the #679 demo segment uses: a timer
+// counts as a backoff wait only when its creation stack includes
+// `sleepAbortable` (per-attempt timeout timers and transport
+// timers are filtered out by their own stacks), the recorded wait
+// is the computed jittered value, and the timer itself is
+// shortened to 0 ms so the row measures delivery logic, not a
+// wall-clock backoff. The wrapper is restored in a finally block
+// after every delivery, so other bench rows never see it.
+const JITTER_DELIVERY_URL =
+  "https://settlement-jitter.example.com/hooks/settlement";
+const JITTER_BACKOFF_MS = 100;
+const JITTER_JITTER_MS = 1000;
+const JITTER_RETRIES = 2;
+let jitterActiveSleeps: number[] | null = null;
+// Node's setTimeout function object carries a `__promisify__`
+// property (and the DOM and Node declarations disagree on its
+// return type), so a plain wrapper is not assignable to its type —
+// assign through one narrow function type instead; at runtime this
+// still replaces (and later restores) the same global timer.
+type JitterTimerFn = (
+  callback: (...args: never[]) => void,
+  ms?: number,
+  ...args: never[]
+) => unknown;
+const jitterGlobalTimers = globalThis as unknown as {
+  setTimeout: JitterTimerFn;
+};
+const jitterOriginalSetTimeout = jitterGlobalTimers.setTimeout;
+const jitterRecordingSetTimeout = (
+  callback: (...args: never[]) => void,
+  ms?: number,
+  ...args: never[]
+): unknown => {
+  if (
+    jitterActiveSleeps !== null &&
+    typeof ms === "number" &&
+    (new Error().stack ?? "").includes("sleepAbortable")
+  ) {
+    jitterActiveSleeps.push(ms);
+    // Record only: the backoff wait itself is not waited, so the
+    // timed row stays a logic-throughput row, not a sleep timer.
+    return jitterOriginalSetTimeout(callback, 0, ...args);
+  }
+  return jitterOriginalSetTimeout(callback, ms, ...args);
+};
+
+async function runJitterDelivery(jitterMs: number): Promise<number[]> {
+  let calls = 0;
+  const jitterFetch: typeof fetch = async () => {
+    calls++;
+    const status = calls % 3 === 0 ? 200 : 500;
+    return new Response(status === 200 ? "{}" : "boom", {
+      status,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  const sleeps: number[] = [];
+  globalThis.fetch = jitterFetch;
+  jitterActiveSleeps = sleeps;
+  jitterGlobalTimers.setTimeout = jitterRecordingSetTimeout;
+  try {
+    const result = await deliverSettlementWebhook(
+      JITTER_DELIVERY_URL,
+      webhook,
+      {
+        backoffMs: JITTER_BACKOFF_MS,
+        jitterMs,
+        retries: JITTER_RETRIES,
+      },
+    );
+    if (
+      result.status !== 200 ||
+      result.attempts !== JITTER_RETRIES + 1 ||
+      calls !== JITTER_RETRIES + 1 ||
+      sleeps.length !== JITTER_RETRIES
+    ) {
+      throw new Error(
+        "benchmark self-check failed: deliverSettlementWebhook jitterMs backoff",
+      );
+    }
+  } finally {
+    jitterActiveSleeps = null;
+    jitterGlobalTimers.setTimeout = jitterOriginalSetTimeout;
+  }
+  if (jitterMs > 0) {
+    const bases = [JITTER_BACKOFF_MS, JITTER_BACKOFF_MS * 2];
+    const inWindow = sleeps.every(
+      (sleep, i) => sleep >= bases[i] && sleep <= bases[i] + jitterMs,
+    );
+    if (!inWindow) {
+      throw new Error(
+        "benchmark self-check failed: deliverSettlementWebhook jitterMs sleep outside [backoff, backoff + jitterMs]",
+      );
+    }
+  } else if (
+    sleeps[0] !== JITTER_BACKOFF_MS ||
+    sleeps[1] !== JITTER_BACKOFF_MS * 2
+  ) {
+    throw new Error(
+      "benchmark self-check failed: deliverSettlementWebhook jitterMs=0 not pure exponential",
+    );
+  }
+  return sleeps;
+}
+
+// One-time fixture validation (outside the timed loop): one
+// jittered and one zero-jitter delivery each, then the
+// deterministic jitter probe — with Math.random stubbed to the
+// fixed sequence [0, 0.5], the two jittered sleeps must be exactly
+// [100, 700] (100 + 0 * 1000, then 200 + 0.5 * 1000), proving the
+// spread is applied per attempt on top of the exponential base,
+// not once and not at all; with jitterMs 0 the same stubbed
+// sequence must still sleep exactly [100, 200], proving the random
+// source is never consulted when jitter is off. The stub is
+// restored in a finally block, and the restore itself is asserted.
+await runJitterDelivery(JITTER_JITTER_MS);
+await runJitterDelivery(0);
+{
+  const originalRandom = Math.random;
+  const stubSequence = [0, 0.5];
+  let stubIndex = 0;
+  Math.random = () => stubSequence[stubIndex++ % stubSequence.length];
+  try {
+    const stubbed = await runJitterDelivery(JITTER_JITTER_MS);
+    if (stubbed[0] !== 100 || stubbed[1] !== 700) {
+      throw new Error(
+        "benchmark fixture failed: deliverSettlementWebhook jitterMs deterministic spread",
+      );
+    }
+    const stubbedZero = await runJitterDelivery(0);
+    if (stubbedZero[0] !== 100 || stubbedZero[1] !== 200) {
+      throw new Error(
+        "benchmark fixture failed: deliverSettlementWebhook jitterMs=0 ignores Math.random",
+      );
+    }
+  } finally {
+    Math.random = originalRandom;
+  }
+  if (Math.random !== originalRandom) {
+    throw new Error(
+      "benchmark fixture failed: Math.random not restored after jitter probe",
     );
   }
 }
@@ -7140,6 +7322,22 @@ async function benchDeliverSettlementWebhookHeaders(): Promise<number> {
   return ops;
 }
 
+async function benchDeliverSettlementWebhookJitter(): Promise<number> {
+  const ops = await measureAsync(async () => {
+    // One timed pass is two deliveries: the jittered script
+    // (sleeps inside [100, 1100] and [200, 1200]) and the
+    // zero-jitter control (sleeps exactly [100, 200]), each
+    // self-checked per iteration (see the jitter fixture above).
+    await runJitterDelivery(JITTER_JITTER_MS);
+    await runJitterDelivery(0);
+  }, ITERATIONS);
+  // The jitter fixture installs its own fake fetch per delivery;
+  // hand the global back to the genuine implementation (later rows
+  // install their own fakes regardless).
+  globalThis.fetch = ORIGINAL_FETCH;
+  return ops;
+}
+
 function benchSettlementEventDedupe(): number {
   const hitsBefore = dedupe.stats().hits;
   const ops = measure(() => {
@@ -8324,6 +8522,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "deliverSettlementWebhookToMany (fan-out limits, maxEndpoints/overallDeadlineMs)", ops: await benchDeliverSettlementWebhookToManyLimits() },
   { path: "deliverSettlementWebhook (single endpoint)", ops: await benchDeliverSettlementWebhook() },
   { path: "deliverSettlementWebhook (loopback header check, 500→200 retry)", ops: await benchDeliverSettlementWebhookHeaders() },
+  { path: "deliverSettlementWebhook (jitterMs backoff, 500/500→200)", ops: await benchDeliverSettlementWebhookJitter() },
   { path: "deliverSettlementWebhook (pre-aborted signal)", ops: await benchDeliverSettlementWebhookPreAborted() },
   { path: "deliverSettlementWebhook (maxRetryDelayMs clamp, 429 hint)", ops: await benchDeliverSettlementWebhookMaxRetryDelayClamp() },
   { path: "deliverSettlementWebhook (timeoutMs timeout)", ops: await benchDeliverSettlementWebhookTimeout() },

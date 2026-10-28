@@ -18,6 +18,22 @@ version changes.
 
 ### Added
 
+- Benchmark `deliverSettlementWebhook` jitterMs backoff row (2026-10-28,
+  backlog #680): `bench/bench.ts` now measures the #665 `jitterMs` option
+  as a cost path — every timed pass runs two deliveries over a fake fetch
+  answering 500, 500, 200 (backoffMs 100, retries 2), the jittered delivery
+  with its two backoff waits inside [100, 1100] and [200, 1200] and the
+  zero-jitter control with waits exactly [100, 200]. The delivery layer
+  exposes no sleep injection, so the waits are recorded by a `setTimeout`
+  wrapper installed for each delivery only (the #679 demo technique): it
+  keeps only timers created inside `sleepAbortable` and shortens those
+  timers to 0 ms, so the row measures delivery logic, not a wall-clock
+  backoff, and the wrapper is restored after every delivery. Outside the
+  timed loop a stubbed `Math.random` sequence [0, 0.5] pins the jittered
+  waits to exactly [100, 700] and the zero-jitter waits to exactly
+  [100, 200], with the stub's restore asserted. The README Benchmarks
+  table is refreshed from this run. Bench item only: no unit tests added,
+  no source change.
 - CLI demo `deliverSettlementWebhook` jitter backoff segment (2026-10-28, backlog
   #679): the demo now shows the #665 `jitterMs` option over a loopback
   server - the main webhook delivered on a 500/500/200 script under
