@@ -18,6 +18,25 @@ version changes.
 
 ### Added
 
+- CLI demo `deliverSettlementWebhook` jitter backoff segment (2026-10-28, backlog
+  #679): the demo now shows the #665 `jitterMs` option over a loopback
+  server - the main webhook delivered on a 500/500/200 script under
+  `backoffMs: 10, jitterMs: 50` succeeds in 3 attempts with the 2 backoff
+  waits inside [10, 60] and [20, 70], and the same script under `jitterMs: 0`
+  succeeds in 3 attempts with waits exactly [10, 20]; both paths capture 3
+  byte-identical bodies whose signature verifies under the demo secret, so
+  jitter is shown spreading waits only, never changing the signed payload
+  or the eventId. The waits are recorded by a `setTimeout` wrapper that
+  keeps only timers created inside `sleepAbortable` (per-attempt timeout
+  timers and transport timers are filtered out by their creation stack),
+  installed for the two deliveries only and restored afterwards, and the
+  random draws are never printed - only their intervals - so the new
+  closing section prints byte-identically across runs. `DemoResult` gains
+  `jitterResult`, `jitterSleeps`, `jitterCalls`, `jitterBodyVerifies`,
+  `jitterExactResult`, `jitterExactSleeps`, `jitterExactCalls`, and
+  `jitterExactBodyVerifies`, guarded by a fail-fast demo self-check; the
+  fan-out limit segment is no longer the demo's last section.
+  `test/demo.test.ts` (2 cases).
 - Settlement webhook payload × top-up coverage (2026-10-28, backlog
   #671): `test/webhookTopup.test.ts` (7 cases) pins the combination the
   `webhooks` and `settlementWebhooksBatch` suites never exercised — that

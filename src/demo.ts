@@ -660,6 +660,60 @@ export const DEMO_FANOUT_LIMIT_DEADLINE_ERROR =
   "settlement webhook delivery timed out: overall deadline of 100ms exceeded";
 
 /**
+ * Delivery-jitter fixtures for the closing segment: the
+ * `jitterMs` retry jitter that backlog #665 landed on
+ * `deliverSettlementWebhook` had no demo segment -
+ * `src/demo.ts` mentioned jitter nowhere, so a caller
+ * reading the demo learned the retry shape (500 then
+ * 200) but never saw that an opt-in uniform spread is
+ * added to each exponential backoff wait, nor that
+ * `jitterMs: 0` keeps the exact deterministic schedule.
+ * Hand-pinned expectations - written from the documented
+ * `deliverSettlementWebhook()` semantics in
+ * src/webhooks.ts (each backoff wait is
+ * `backoffMs * 2^(n-1) + Math.random() * jitterMs`, so
+ * with backoffMs 10 and jitterMs 50 the two waits of a
+ * 500/500/200 delivery fall inside [10, 60] and
+ * [20, 70]; with jitterMs 0 they are exactly [10, 20];
+ * jitter changes only the wait, never the signed body
+ * or the eventId), never derived by calling the delivery
+ * itself, and cross-checked against
+ * test/webhookDeliveryJitter.test.ts, which pins the same
+ * windows on the 5xx path:
+ * - the jittered path answers 500, 500, 200 -> the
+ *   result is exactly `{status: 200, attempts: 3}`
+ * - the exact path answers the same script under
+ *   `jitterMs: 0` -> the same `{status: 200, attempts: 3}`
+ * - both paths capture exactly 3 POSTs each, bodies
+ *   byte-identical to each other and to the canonical
+ *   body of the demo webhook, and the signature on the
+ *   first captured body verifies under
+ *   {@link DEMO_WEBHOOK_SECRET}
+ * The waits are recorded, not elapsed-timed: the segment
+ * wraps `globalThis.setTimeout` for the two deliveries
+ * only (the original is restored afterwards) and keeps
+ * only the timers created inside `sleepAbortable` - the
+ * delivery's own backoff sleeps - identified by that
+ * frame in the creation stack, so the per-attempt
+ * timeout timers (created inside `postOnce`) and any
+ * transport-internal timers never pollute the record.
+ * The small backoff/jitter scale keeps the real waits
+ * under 160 ms per demo run while preserving the
+ * interval semantics exactly. The random draws themselves
+ * are never printed - only the intervals they must fall
+ * in - so the output stays byte-identical across runs.
+ */
+export const DEMO_JITTER_PATH = "/settlement-jitter";
+export const DEMO_JITTER_EXACT_PATH = "/settlement-jitter-exact";
+export const DEMO_JITTER_BACKOFF_MS = 10;
+export const DEMO_JITTER_MS = 50;
+export const DEMO_JITTER_RETRIES = 2;
+export const DEMO_JITTER_TIMEOUT_MS = 10_000;
+export const DEMO_JITTER_SCRIPTED_STATUSES: readonly number[] = [
+  500, 500, 200,
+];
+
+/**
  * Watchdog fixtures for the closing section: three further escrows
  * screened on one fixed `now` (the morning after the batch webhook
  * timestamp) under two different axes. Hand-computed expectations —
@@ -3200,6 +3254,62 @@ export interface DemoResult {
    * request for the deadline call.
    */
   fanoutLimitCalls: Array<{ path: string }>;
+  /**
+   * Result of delivering the main escrow's signed webhook
+   * to {@link DEMO_JITTER_PATH} with
+   * `deliverSettlementWebhook()` under
+   * `backoffMs: 10, jitterMs: 50, retries: 2`: exactly
+   * `{status: 200, attempts: 3}` - the loopback endpoint
+   * answered 500 twice before the 200.
+   */
+  jitterResult: WebhookDeliveryResult;
+  /**
+   * The backoff waits the recording `setTimeout` wrapper
+   * captured during the jittered delivery: exactly 2,
+   * inside [10, 60] and [20, 70] respectively. The draws
+   * themselves are random, so two runs need not agree on
+   * them - only on the intervals.
+   */
+  jitterSleeps: number[];
+  /**
+   * Requests the loopback server captured during the
+   * jittered delivery: exactly 3, all POSTs to
+   * {@link DEMO_JITTER_PATH}.
+   */
+  jitterCalls: number;
+  /**
+   * True when the `X-Signature` on the first captured
+   * jittered attempt verifies over that attempt's raw
+   * body under the demo secret - jitter spreads the
+   * waits but never changes the signed payload.
+   */
+  jitterBodyVerifies: boolean;
+  /**
+   * Result of delivering the same webhook to
+   * {@link DEMO_JITTER_EXACT_PATH} under the same
+   * backoff and retries with `jitterMs: 0`: exactly
+   * `{status: 200, attempts: 3}` - the opt-in changes
+   * nothing when it is off.
+   */
+  jitterExactResult: WebhookDeliveryResult;
+  /**
+   * The backoff waits captured during the exact
+   * delivery: exactly [10, 20], the pure exponential
+   * schedule with no spread.
+   */
+  jitterExactSleeps: number[];
+  /**
+   * Requests the loopback server captured during the
+   * exact delivery: exactly 3, all POSTs to
+   * {@link DEMO_JITTER_EXACT_PATH}.
+   */
+  jitterExactCalls: number;
+  /**
+   * True when the `X-Signature` on the first captured
+   * exact attempt verifies over that attempt's raw body
+   * under the demo secret.
+   */
+  jitterExactBodyVerifies: boolean;
   lines: string[];
 }
 
@@ -7551,6 +7661,193 @@ export async function runDemo(): Promise<DemoResult> {
     `  aggregate: ${fanoutLimitDeadlineResult.delivered} delivered, ${fanoutLimitDeadlineResult.failed} failed, deadlineExceeded ${fanoutLimitDeadlineResult.deadlineExceeded} - the cap and the deadline are caller-side guards: the cap fails the call before any request, the deadline stops only the in-flight endpoints`,
   );
 
+  // --- Settlement webhook delivery jitter: deliverSettlementWebhook jitterMs (closing) ---
+  // The fan-out segment above proved one logical event reaches
+  // every endpoint, and the unit tests proved the jitter option -
+  // but no demo segment ever showed it: a caller reading the
+  // demo learned the retry shape (500 then 200) and never saw
+  // that an opt-in uniform spread is added to each exponential
+  // backoff wait, nor that jitterMs 0 keeps the exact
+  // deterministic schedule. Here the main escrow's signed
+  // webhook is delivered twice over a real loopback server
+  // (ephemeral port, paths pinned above - the port itself is
+  // never printed, so the output stays byte-identical across
+  // runs). Shape one is jittered: 500, 500, 200 under
+  // backoffMs 10 and jitterMs 50, so the two backoff waits
+  // must fall inside [10, 60] and [20, 70]. Shape two is the
+  // exact control: the same script under jitterMs 0, so the
+  // two waits must be exactly [10, 20]. The waits are
+  // recorded by wrapping globalThis.setTimeout for the two
+  // deliveries only (see the fixture comment above for why
+  // only sleepAbortable-created timers count) and the
+  // original is restored afterwards, even on failure. All
+  // of this is asserted HERE, outside the printing: a
+  // schedule that drifted, a retry that changed the body,
+  // or a signature that stopped verifying would fail the
+  // demo itself. Honest limit: jitter only spreads the
+  // waits - it never changes the signed payload, the
+  // eventId, or the per-attempt signature, and it is no
+  // cross-process coordination (two processes retrying
+  // together can still collide by chance).
+  const jitterCounts: Record<string, number> = {};
+  const jitterBodies: Record<string, string[]> = {};
+  const jitterServer = createServer((req, res) => {
+    void (async () => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) {
+        chunks.push(chunk as Buffer);
+      }
+      const path = req.url ?? "";
+      jitterCounts[path] = (jitterCounts[path] ?? 0) + 1;
+      (jitterBodies[path] ??= []).push(
+        Buffer.concat(chunks).toString("utf8"),
+      );
+      const scriptIndex = Math.min(
+        (jitterCounts[path] ?? 1) - 1,
+        DEMO_JITTER_SCRIPTED_STATUSES.length - 1,
+      );
+      res.writeHead(DEMO_JITTER_SCRIPTED_STATUSES[scriptIndex], {
+        "content-type": "application/json",
+      });
+      res.end("{}");
+    })();
+  });
+  await new Promise<void>((resolve, reject) => {
+    jitterServer.once("error", reject);
+    jitterServer.listen(0, "127.0.0.1", () => resolve());
+  });
+  const jitterAddress = jitterServer.address();
+  if (jitterAddress === null || typeof jitterAddress === "string") {
+    jitterServer.close();
+    throw new Error(
+      "demo fixture broken: delivery-jitter loopback server did not bind to a TCP port",
+    );
+  }
+  const jitterBase = `http://127.0.0.1:${jitterAddress.port}`;
+  const jitterSleeps: number[] = [];
+  const jitterExactSleeps: number[] = [];
+  let jitterActiveSleeps: number[] | null = null;
+  // Node's setTimeout function object carries a
+  // `__promisify__` property (and the DOM and Node
+  // declarations disagree on its return type), so a
+  // plain wrapper is not assignable to its type -
+  // assign through one narrow function type instead;
+  // at runtime this still replaces (and later restores)
+  // the same global timer.
+  type TimerFn = (
+    callback: (...args: never[]) => void,
+    ms?: number,
+    ...args: never[]
+  ) => unknown;
+  const globalTimers = globalThis as unknown as {
+    setTimeout: TimerFn;
+  };
+  const originalSetTimeout = globalTimers.setTimeout;
+  const recordingSetTimeout = (
+    callback: (...args: never[]) => void,
+    ms?: number,
+    ...args: never[]
+  ): unknown => {
+    if (
+      jitterActiveSleeps !== null &&
+      typeof ms === "number" &&
+      (new Error().stack ?? "").includes("sleepAbortable")
+    ) {
+      jitterActiveSleeps.push(ms);
+    }
+    return originalSetTimeout(callback, ms, ...args);
+  };
+  let jitterResult: WebhookDeliveryResult;
+  let jitterExactResult: WebhookDeliveryResult;
+  try {
+    globalTimers.setTimeout = recordingSetTimeout;
+    try {
+      jitterActiveSleeps = jitterSleeps;
+      jitterResult = await deliverSettlementWebhook(
+        `${jitterBase}${DEMO_JITTER_PATH}`,
+        webhook,
+        {
+          backoffMs: DEMO_JITTER_BACKOFF_MS,
+          jitterMs: DEMO_JITTER_MS,
+          retries: DEMO_JITTER_RETRIES,
+          timeoutMs: DEMO_JITTER_TIMEOUT_MS,
+          allowInsecureHttp: true,
+        },
+      );
+      jitterActiveSleeps = jitterExactSleeps;
+      jitterExactResult = await deliverSettlementWebhook(
+        `${jitterBase}${DEMO_JITTER_EXACT_PATH}`,
+        webhook,
+        {
+          backoffMs: DEMO_JITTER_BACKOFF_MS,
+          jitterMs: 0,
+          retries: DEMO_JITTER_RETRIES,
+          timeoutMs: DEMO_JITTER_TIMEOUT_MS,
+          allowInsecureHttp: true,
+        },
+      );
+    } finally {
+      jitterActiveSleeps = null;
+      globalTimers.setTimeout = originalSetTimeout;
+    }
+  } finally {
+    jitterServer.closeAllConnections();
+    await new Promise<void>((resolve) => {
+      jitterServer.close(() => resolve());
+    });
+  }
+  const jitterCalls = jitterCounts[DEMO_JITTER_PATH] ?? 0;
+  const jitterExactCalls = jitterCounts[DEMO_JITTER_EXACT_PATH] ?? 0;
+  const jitterBodiesForPath = jitterBodies[DEMO_JITTER_PATH] ?? [];
+  const jitterExactBodiesForPath =
+    jitterBodies[DEMO_JITTER_EXACT_PATH] ?? [];
+  const jitterBodyVerifies =
+    jitterBodiesForPath.length > 0 &&
+    verifySettlementWebhook(
+      jitterBodiesForPath[0],
+      webhook.signature,
+      DEMO_WEBHOOK_SECRET,
+    );
+  const jitterExactBodyVerifies =
+    jitterExactBodiesForPath.length > 0 &&
+    verifySettlementWebhook(
+      jitterExactBodiesForPath[0],
+      webhook.signature,
+      DEMO_WEBHOOK_SECRET,
+    );
+  if (
+    jitterResult.status !== 200 ||
+    jitterResult.attempts !== 3 ||
+    jitterExactResult.status !== 200 ||
+    jitterExactResult.attempts !== 3 ||
+    jitterSleeps.length !== 2 ||
+    jitterSleeps[0] < DEMO_JITTER_BACKOFF_MS ||
+    jitterSleeps[0] > DEMO_JITTER_BACKOFF_MS + DEMO_JITTER_MS ||
+    jitterSleeps[1] < 2 * DEMO_JITTER_BACKOFF_MS ||
+    jitterSleeps[1] >
+      2 * DEMO_JITTER_BACKOFF_MS + DEMO_JITTER_MS ||
+    jitterExactSleeps.length !== 2 ||
+    jitterExactSleeps[0] !== DEMO_JITTER_BACKOFF_MS ||
+    jitterExactSleeps[1] !== 2 * DEMO_JITTER_BACKOFF_MS ||
+    jitterCalls !== 3 ||
+    jitterExactCalls !== 3 ||
+    jitterBodiesForPath.some((body) => body !== webhookBody) ||
+    jitterExactBodiesForPath.some((body) => body !== webhookBody) ||
+    !jitterBodyVerifies ||
+    !jitterExactBodyVerifies
+  ) {
+    throw new Error(
+      "demo fixture broken: deliverSettlementWebhook jitter does not match the pinned shape (500/500/200 under backoffMs 10 and jitterMs 50 must succeed in 3 attempts with 2 backoff waits inside [10, 60] and [20, 70]; the same script under jitterMs 0 must succeed in 3 attempts with waits exactly [10, 20]; both paths must capture 3 byte-identical bodies whose signature verifies under the demo secret)",
+    );
+  }
+  lines.push(
+    "",
+    "Settlement webhook delivery jitter (deliverSettlementWebhook jitterMs retry backoff over a loopback server):",
+    `  jittered: ${DEMO_JITTER_PATH} answered 500, 500, 200 under backoffMs ${DEMO_JITTER_BACKOFF_MS}, jitterMs ${DEMO_JITTER_MS}, retries ${DEMO_JITTER_RETRIES} - result: status ${jitterResult.status}, attempts ${jitterResult.attempts}; the 2 backoff waits fell inside [${DEMO_JITTER_BACKOFF_MS}, ${DEMO_JITTER_BACKOFF_MS + DEMO_JITTER_MS}] and [${2 * DEMO_JITTER_BACKOFF_MS}, ${2 * DEMO_JITTER_BACKOFF_MS + DEMO_JITTER_MS}] (only the intervals are printed, never the random draws, so the output stays byte-identical across runs)`,
+    `  exact: ${DEMO_JITTER_EXACT_PATH} answered 500, 500, 200 under backoffMs ${DEMO_JITTER_BACKOFF_MS}, jitterMs 0 - result: status ${jitterExactResult.status}, attempts ${jitterExactResult.attempts}; the 2 backoff waits were exactly [${DEMO_JITTER_BACKOFF_MS}, ${2 * DEMO_JITTER_BACKOFF_MS}], the pure exponential schedule`,
+    `  unchanged: ${jitterCalls} captured POSTs on each path carried byte-identical bodies and the X-Signature verifies over the wire body under the demo secret (jittered ${jitterBodyVerifies}, exact ${jitterExactBodyVerifies}) - jitter only spreads the waits, it never changes the signed payload or the eventId ${DEMO_WEBHOOK_EVENT_ID}`,
+  );
+
   return {
     escrow,
     report,
@@ -7757,6 +8054,14 @@ export async function runDemo(): Promise<DemoResult> {
     fanoutLimitCapError,
     fanoutLimitDeadlineResult,
     fanoutLimitCalls,
+    jitterResult,
+    jitterSleeps,
+    jitterCalls,
+    jitterBodyVerifies,
+    jitterExactResult,
+    jitterExactSleeps,
+    jitterExactCalls,
+    jitterExactBodyVerifies,
     lines,
   };
 }

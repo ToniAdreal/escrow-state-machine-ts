@@ -151,6 +151,13 @@ import {
   DEMO_EVENT_ID_HEADER_RETRY_STATUSES,
   DEMO_IDEMPOTENCY_HEADER_RETRY_PATH,
   DEMO_IDEMPOTENCY_HEADER_RETRY_STATUSES,
+  DEMO_JITTER_BACKOFF_MS,
+  DEMO_JITTER_EXACT_PATH,
+  DEMO_JITTER_MS,
+  DEMO_JITTER_PATH,
+  DEMO_JITTER_RETRIES,
+  DEMO_JITTER_SCRIPTED_STATUSES,
+  DEMO_JITTER_TIMEOUT_MS,
   DEMO_SNAPSHOT_SERIALIZED_BYTES,
   DEMO_STALE_DAY_MS,
   DEMO_STALE_DEADLINE,
@@ -3101,7 +3108,8 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
   // signed webhook over a loopback server with the
   // same key on both attempts; the demo no longer ends
   // here - the fan-out limit segment (backlog #649)
-  // closes it after this one, on its aggregate line.
+  // follows it, and the delivery-jitter segment
+  // (backlog #679) closes the demo after that one.
   assert.match(
     out,
     /Settlement webhook Idempotency-Key header \(deliverSettlementWebhook retry over a loopback server\):/,
@@ -3112,10 +3120,34 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
     ),
   );
   assert.ok(
+    out.includes(
+      "  aggregate: 1 delivered, 1 failed, deadlineExceeded true - the cap and the deadline are caller-side guards: the cap fails the call before any request, the deadline stops only the in-flight endpoints",
+    ),
+  );
+  // Delivery-jitter tail: the closing segment delivers
+  // the same webhook on a 500/500/200 script twice -
+  // jittered waits inside their windows, exact waits on
+  // the pure schedule - and the demo ends on its
+  // unchanged-payload line.
+  assert.match(
+    out,
+    /Settlement webhook delivery jitter \(deliverSettlementWebhook jitterMs retry backoff over a loopback server\):/,
+  );
+  assert.ok(
+    out.includes(
+      `  jittered: ${DEMO_JITTER_PATH} answered 500, 500, 200 under backoffMs 10, jitterMs 50, retries 2 - result: status 200, attempts 3; the 2 backoff waits fell inside [10, 60] and [20, 70] (only the intervals are printed, never the random draws, so the output stays byte-identical across runs)`,
+    ),
+  );
+  assert.ok(
+    out.includes(
+      `  exact: ${DEMO_JITTER_EXACT_PATH} answered 500, 500, 200 under backoffMs 10, jitterMs 0 - result: status 200, attempts 3; the 2 backoff waits were exactly [10, 20], the pure exponential schedule`,
+    ),
+  );
+  assert.ok(
     out
       .trimEnd()
       .endsWith(
-        "  aggregate: 1 delivered, 1 failed, deadlineExceeded true - the cap and the deadline are caller-side guards: the cap fails the call before any request, the deadline stops only the in-flight endpoints",
+        `  unchanged: 3 captured POSTs on each path carried byte-identical bodies and the X-Signature verifies over the wire body under the demo secret (jittered true, exact true) - jitter only spreads the waits, it never changes the signed payload or the eventId ${DEMO_WEBHOOK_EVENT_ID}`,
       ),
   );
 });
@@ -6784,8 +6816,10 @@ test("demo shows fan-out limits: over-cap throws before any request, deadline ke
     DEMO_FANOUT_LIMIT_DEADLINE_ERROR,
   );
 
-  // The printed section is the demo's last section, after the
-  // Idempotency-Key section, and carries both pinned errors.
+  // The printed section follows the Idempotency-Key
+  // section, and carries both pinned errors. It no longer
+  // closes the demo: the delivery-jitter segment (backlog
+  // #679) closes it after this one.
   const text = lines.join("\n");
   const header =
     "Settlement webhook fan-out limits (deliverSettlementWebhookToMany maxEndpoints / overallDeadlineMs over a loopback server):";
@@ -6795,6 +6829,12 @@ test("demo shows fan-out limits: over-cap throws before any request, deadline ke
         "Settlement webhook Idempotency-Key header (deliverSettlementWebhook retry over a loopback server):",
       ),
     "fan-out limit segment must follow the Idempotency-Key segment",
+  );
+  assert.ok(
+    text.indexOf(
+      "Settlement webhook delivery jitter (deliverSettlementWebhook jitterMs retry backoff over a loopback server):",
+    ) > text.indexOf(header),
+    "delivery-jitter segment must follow the fan-out limit segment",
   );
   assert.ok(
     text.includes(
@@ -6816,9 +6856,17 @@ test("demo shows fan-out limits: over-cap throws before any request, deadline ke
 test("demo fan-out limit segment is deterministic: two runs print byte-identical limit lines", async () => {
   const header =
     "Settlement webhook fan-out limits (deliverSettlementWebhookToMany maxEndpoints / overallDeadlineMs over a loopback server):";
-  // The limit section is the demo's last section, so it runs
-  // from its header to the end of the lines.
-  const segment = (ls: string[]) => ls.slice(ls.indexOf(header));
+  // The limit section no longer closes the demo: the
+  // delivery-jitter segment (backlog #679) follows it, so
+  // the section runs from its header to the blank line
+  // before the jitter header.
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf(header),
+      ls.indexOf(
+        "Settlement webhook delivery jitter (deliverSettlementWebhook jitterMs retry backoff over a loopback server):",
+      ) - 1,
+    );
   const a = await runDemo();
   const b = await runDemo();
   // Header + over-cap + deadline + fast + hanging +
@@ -6848,4 +6896,118 @@ test("demo fan-out limit segment is deterministic: two runs print byte-identical
     a.fanoutLimitCalls.map((call) => call.path).sort(),
     b.fanoutLimitCalls.map((call) => call.path).sort(),
   );
+});
+
+test("demo shows delivery jitter: jittered waits fall inside the spread windows, jitterMs 0 keeps the exact schedule, bodies and signatures unchanged", async () => {
+  const {
+    jitterResult,
+    jitterSleeps,
+    jitterCalls,
+    jitterBodyVerifies,
+    jitterExactResult,
+    jitterExactSleeps,
+    jitterExactCalls,
+    jitterExactBodyVerifies,
+    lines,
+  } = await runDemo();
+
+  // Hand-pinned fixture shape: backoffMs 10, jitterMs 50,
+  // retries 2, per-attempt timeout 10,000 ms, and the
+  // 500/500/200 script on both paths.
+  assert.equal(DEMO_JITTER_BACKOFF_MS, 10);
+  assert.equal(DEMO_JITTER_MS, 50);
+  assert.equal(DEMO_JITTER_RETRIES, 2);
+  assert.equal(DEMO_JITTER_TIMEOUT_MS, 10_000);
+  assert.deepEqual(DEMO_JITTER_SCRIPTED_STATUSES, [500, 500, 200]);
+
+  // Both deliveries succeed on the third attempt.
+  assert.deepEqual(jitterResult, { status: 200, attempts: 3 });
+  assert.deepEqual(jitterExactResult, { status: 200, attempts: 3 });
+  assert.equal(jitterCalls, 3);
+  assert.equal(jitterExactCalls, 3);
+
+  // The jittered waits are random draws, so only their
+  // intervals are pinned: [backoff, backoff + jitter]
+  // and [2 * backoff, 2 * backoff + jitter].
+  assert.equal(jitterSleeps.length, 2);
+  assert.ok(
+    jitterSleeps[0] >= 10 && jitterSleeps[0] <= 60,
+    `first jittered wait ${jitterSleeps[0]} must fall inside [10, 60]`,
+  );
+  assert.ok(
+    jitterSleeps[1] >= 20 && jitterSleeps[1] <= 70,
+    `second jittered wait ${jitterSleeps[1]} must fall inside [20, 70]`,
+  );
+
+  // The exact control is deterministic: the pure
+  // exponential schedule, no spread at all.
+  assert.deepEqual(jitterExactSleeps, [10, 20]);
+
+  // Jitter spreads waits only: both paths' wire bodies
+  // still verify under the demo secret (the demo itself
+  // already asserted byte-identical bodies; the boolean
+  // here is the receiver-side half of that proof).
+  assert.equal(jitterBodyVerifies, true);
+  assert.equal(jitterExactBodyVerifies, true);
+
+  // The printed section is the demo's last section,
+  // after the fan-out limit section, and prints only
+  // intervals - never the random draws - for the
+  // jittered waits.
+  const text = lines.join("\n");
+  const header =
+    "Settlement webhook delivery jitter (deliverSettlementWebhook jitterMs retry backoff over a loopback server):";
+  assert.ok(
+    text.indexOf(header) >
+      text.indexOf(
+        "Settlement webhook fan-out limits (deliverSettlementWebhookToMany maxEndpoints / overallDeadlineMs over a loopback server):",
+      ),
+    "delivery-jitter segment must follow the fan-out limit segment",
+  );
+  assert.ok(
+    text.includes(
+      `  jittered: ${DEMO_JITTER_PATH} answered 500, 500, 200 under backoffMs 10, jitterMs 50, retries 2 - result: status 200, attempts 3; the 2 backoff waits fell inside [10, 60] and [20, 70] (only the intervals are printed, never the random draws, so the output stays byte-identical across runs)`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  exact: ${DEMO_JITTER_EXACT_PATH} answered 500, 500, 200 under backoffMs 10, jitterMs 0 - result: status 200, attempts 3; the 2 backoff waits were exactly [10, 20], the pure exponential schedule`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  unchanged: 3 captured POSTs on each path carried byte-identical bodies and the X-Signature verifies over the wire body under the demo secret (jittered true, exact true) - jitter only spreads the waits, it never changes the signed payload or the eventId ${DEMO_WEBHOOK_EVENT_ID}`,
+    ),
+  );
+});
+
+test("demo delivery-jitter segment is deterministic: two runs print byte-identical jitter lines", async () => {
+  const header =
+    "Settlement webhook delivery jitter (deliverSettlementWebhook jitterMs retry backoff over a loopback server):";
+  // The jitter section is the demo's last section, so it
+  // runs from its header to the end of the lines.
+  const segment = (ls: string[]) => ls.slice(ls.indexOf(header));
+  const a = await runDemo();
+  const b = await runDemo();
+  // Header + jittered + exact + unchanged; the random
+  // draws are never printed, only their intervals, so
+  // no normalization is needed.
+  const segA = segment(a.lines);
+  assert.equal(segA.length, 4);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(a.jitterResult, b.jitterResult);
+  assert.deepEqual(a.jitterExactResult, b.jitterExactResult);
+  assert.deepEqual(a.jitterExactSleeps, b.jitterExactSleeps);
+  assert.equal(a.jitterCalls, b.jitterCalls);
+  assert.equal(a.jitterExactCalls, b.jitterExactCalls);
+  assert.equal(a.jitterBodyVerifies, b.jitterBodyVerifies);
+  assert.equal(a.jitterExactBodyVerifies, b.jitterExactBodyVerifies);
+  // The jittered draws themselves are random: each run's
+  // waits must fall inside the windows, but the two runs
+  // need not agree on them.
+  for (const sleeps of [a.jitterSleeps, b.jitterSleeps]) {
+    assert.equal(sleeps.length, 2);
+    assert.ok(sleeps[0] >= 10 && sleeps[0] <= 60);
+    assert.ok(sleeps[1] >= 20 && sleeps[1] <= 70);
+  }
 });
