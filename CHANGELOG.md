@@ -18,6 +18,19 @@ version changes.
 
 ### Added
 
+- Fan-out x secret rotation combination tests (2026-10-28, backlog
+  #681): `test/webhookFanoutRotation.test.ts` pins the combination the
+  fan-out and rotation suites never tested together — one settlement
+  event fanned out via `deliverSettlementWebhookToMany` to a legacy
+  endpoint (old secret) and a migrated endpoint (new secret) carries
+  byte-identical bodies with per-endpoint signatures, and both copies
+  verify under the receiver's `{ secrets: [new, old] }` candidate list
+  in either order; a new-only list rejects the legacy copy while still
+  accepting the migrated copy (no masking), all-wrong candidates and
+  malformed signatures fail closed for both copies, tampered bodies
+  fail on both the raw-wire and object paths, and a failing legacy
+  endpoint (500, retried) neither blocks nor masks the migrated
+  endpoint's verification. Pure test commit: no source change.
 - Benchmark `deliverSettlementWebhook` jitterMs backoff row (2026-10-28,
   backlog #680): `bench/bench.ts` now measures the #665 `jitterMs` option
   as a cost path — every timed pass runs two deliveries over a fake fetch
