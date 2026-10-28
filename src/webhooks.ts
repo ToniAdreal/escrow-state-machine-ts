@@ -979,6 +979,21 @@ export interface DeliverWebhookOptions {
    */
   maxRetryDelayMs?: number;
   /**
+   * Opt-in jitter, in milliseconds, added on top of the exponential
+   * backoff between retries. Default `0` — the delay schedule is
+   * exactly the deterministic backoff sequence and behavior is
+   * unchanged. When greater than `0`, each backoff wait becomes
+   * `backoffMs * 2^(n-1) + Math.random() * jitterMs` (n is the 1-based
+   * retry number), spreading retries that failed together (a
+   * thundering herd after the receiver restarts) across the
+   * `[backoff, backoff + jitterMs]` window. `Math.random` is used
+   * only for de-synchronization — never for secrets or signatures —
+   * so a non-cryptographic RNG is fine. A 429 `Retry-After` hint is
+   * the receiver's own prescribed time and is always waited exactly,
+   * with no jitter added. Must be a finite non-negative number.
+   */
+  jitterMs?: number;
+  /**
    * Optional external abort signal. Wired into both the in-flight request
    * and the backoff sleep between retries: aborting the signal ends the
    * whole delivery (no further attempts) and the returned promise rejects
@@ -1034,21 +1049,44 @@ export function parseRetryAfter(
 }
 
 /**
+ * Exponential backoff with opt-in jitter for retry `attemptIndex`
+ * (0-based): `backoffMs * 2^attemptIndex`, plus a uniform
+ * `Math.random() * jitterMs` spread when `jitterMs > 0`. The default
+ * `jitterMs` of `0` keeps the deterministic pure-exponential schedule;
+ * the jitter is never applied to a 429 `Retry-After` hint, which is
+ * computed by {@link retryDelayMs} separately.
+ */
+function jitteredBackoffMs(
+  attemptIndex: number,
+  backoffMs: number,
+  jitterMs: number,
+): number {
+  const backoff = backoffMs * 2 ** attemptIndex;
+  if (jitterMs <= 0) return backoff;
+  // Math.random is only de-synchronizing retry schedules (spreading a
+  // thundering herd), never generating secret material — a
+  // non-cryptographic RNG is fine here.
+  return backoff + Math.random() * jitterMs;
+}
+
+/**
  * Wait before the next retry: a 429 `Retry-After` hint wins over backoff,
  * clamped to `maxRetryDelayMs` so a runaway hint can never stall delivery
- * longer than the caller allows.
+ * longer than the caller allows. The hint is the receiver's own
+ * prescribed time and is waited exactly — no jitter is added on top.
  */
 function retryDelayMs(
   response: Response,
   attempt: number,
   backoffMs: number,
   maxRetryDelayMs: number,
+  jitterMs: number,
 ): number {
   if (response.status === 429) {
     const hinted = parseRetryAfter(response.headers.get("retry-after"));
     if (hinted !== undefined) return Math.min(hinted, maxRetryDelayMs);
   }
-  return backoffMs * 2 ** attempt;
+  return jitteredBackoffMs(attempt, backoffMs, jitterMs);
 }
 
 /**
@@ -1133,6 +1171,7 @@ function assertDeliverOptionValues(
     backoffMs: number;
     timeoutMs: number;
     maxRetryDelayMs: number;
+    jitterMs: number;
   },
 ): void {
   if (!Number.isInteger(resolved.retries) || resolved.retries < 0) {
@@ -1160,6 +1199,13 @@ function assertDeliverOptionValues(
     throw new Error(
       `cannot deliver settlement webhook: maxRetryDelayMs must be a non-negative number, got ${String(
         options.maxRetryDelayMs,
+      )}`,
+    );
+  }
+  if (!Number.isFinite(resolved.jitterMs) || resolved.jitterMs < 0) {
+    throw new Error(
+      `cannot deliver settlement webhook: jitterMs must be a non-negative number, got ${String(
+        options.jitterMs,
       )}`,
     );
   }
@@ -1198,7 +1244,11 @@ function assertDeliverOptionValues(
  *   precedence over the computed backoff; an absent or unparsable value
  *   falls back to `backoffMs * 2^(n-1)`. The honored hint is clamped to
  *   `maxRetryDelayMs` (default 60s), so a faulty or hostile server cannot
- *   stall delivery beyond the cap.
+ *   stall delivery beyond the cap. Opt-in `jitterMs` spreads each
+ *   backoff wait by up to that many extra milliseconds
+ *   (`backoffMs * 2^(n-1) + Math.random() * jitterMs`, default 0 for the
+ *   exact deterministic schedule); it is never added to a `Retry-After`
+ *   hint, which is waited exactly.
  * - Other 3xx/4xx (400, 404, …) → the request itself is at fault; throws
  *   immediately, no retry. Redirects are never followed (`redirect:
  *   "manual"`): a 3xx response is returned as-is and lands in this branch,
@@ -1231,6 +1281,7 @@ export async function deliverSettlementWebhook(
   const backoffMs = options.backoffMs ?? 1000;
   const timeoutMs = options.timeoutMs ?? 10_000;
   const maxRetryDelayMs = options.maxRetryDelayMs ?? 60_000;
+  const jitterMs = options.jitterMs ?? 0;
   const signal = options.signal;
 
   assertDeliverSignalType(signal);
@@ -1245,6 +1296,7 @@ export async function deliverSettlementWebhook(
     backoffMs,
     timeoutMs,
     maxRetryDelayMs,
+    jitterMs,
   });
 
   let target: URL;
@@ -1300,7 +1352,10 @@ export async function deliverSettlementWebhook(
       lastError = err instanceof Error ? err : new Error(String(err));
       lastStatus = undefined;
       if (attempt < retries) {
-        await sleepAbortable(backoffMs * 2 ** attempt, signal);
+        await sleepAbortable(
+          jitteredBackoffMs(attempt, backoffMs, jitterMs),
+          signal,
+        );
         continue;
       }
       break;
@@ -1316,7 +1371,7 @@ export async function deliverSettlementWebhook(
       lastStatus = response.status;
       if (attempt < retries) {
         await sleepAbortable(
-          retryDelayMs(response, attempt, backoffMs, maxRetryDelayMs),
+          retryDelayMs(response, attempt, backoffMs, maxRetryDelayMs, jitterMs),
           signal,
         );
         continue;
@@ -1369,6 +1424,8 @@ export interface SettlementWebhookEndpoint {
   timeoutMs?: number;
   /** Per-endpoint override of the call-level `maxRetryDelayMs`. */
   maxRetryDelayMs?: number;
+  /** Per-endpoint override of the call-level `jitterMs`. */
+  jitterMs?: number;
   /** Per-endpoint override of the call-level `signal`. */
   signal?: AbortSignal;
   /** Per-endpoint override of the call-level `allowInsecureHttp`. */
@@ -1546,6 +1603,7 @@ export async function deliverSettlementWebhookToMany(
     backoffMs: opts.backoffMs ?? 1000,
     timeoutMs: opts.timeoutMs ?? 10_000,
     maxRetryDelayMs: opts.maxRetryDelayMs ?? 60_000,
+    jitterMs: opts.jitterMs ?? 0,
   });
   // Fan-out limits are call-level configuration too: validate them
   // before any request, with the same "cannot deliver settlement
@@ -1638,6 +1696,7 @@ export async function deliverSettlementWebhookToMany(
             backoffMs: endpoint.backoffMs ?? opts.backoffMs,
             timeoutMs: endpoint.timeoutMs ?? opts.timeoutMs,
             maxRetryDelayMs: endpoint.maxRetryDelayMs ?? opts.maxRetryDelayMs,
+            jitterMs: endpoint.jitterMs ?? opts.jitterMs,
             signal,
             allowInsecureHttp: endpoint.allowInsecureHttp ?? opts.allowInsecureHttp,
           });

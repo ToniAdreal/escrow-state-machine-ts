@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 914 tests, all local
+npm test   # 924 tests, all local
 ```
 
 ## Quickstart
@@ -724,7 +724,12 @@ so a receiver must verify the signature and then trust the body's
 `eventId`, never a header, as the deduplication key. 2xx returns
 `{ status, attempts }`; 429, 5xx,
 and network errors (including timeouts) are retried with exponential backoff
-(retry n waits `backoffMs * 2^(n-1)`). A 429 `Retry-After` response header
+(retry n waits `backoffMs * 2^(n-1)`). Opt-in `jitterMs` (default 0) adds a
+`Math.random() * jitterMs` spread on top of each backoff wait, so endpoints
+that failed together do not retry in lockstep and thundering-herd the
+receiver on restart. This is best-effort de-synchronization only: it does
+not guarantee a uniform spread of retries, and it does not coordinate
+retries across processes or restarts. A 429 `Retry-After` response header
 (delay seconds or an HTTP-date) takes precedence over the backoff; an
 absent or unparsable value falls back to it. The honored hint is clamped to
 `maxRetryDelayMs` (default 60,000ms): a faulty or hostile server returning
@@ -772,7 +777,7 @@ delivery). Each endpoint is delivered through
 `deliverSettlementWebhook` itself, so the retry/backoff/`Retry-After`
 semantics above apply unchanged, with retry budgets counted per
 endpoint; an endpoint can also override `retries`/`backoffMs`/
-`timeoutMs`/`maxRetryDelayMs`/`signal` for itself. One endpoint's
+`timeoutMs`/`maxRetryDelayMs`/`jitterMs`/`signal` for itself. One endpoint's
 failure — retries exhausted, network error, even an invalid URL or an
 empty secret — marks only that endpoint's result
 `{ ok: false, attempts, status?, error }` and never blocks the others.
@@ -875,7 +880,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 914 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 924 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

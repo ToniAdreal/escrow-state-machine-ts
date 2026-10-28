@@ -18,6 +18,22 @@ version changes.
 
 ### Added
 
+- Settlement webhook delivery `jitterMs` retry jitter (2026-10-28, backlog
+  #665): `DeliverWebhookOptions.jitterMs` (default 0, preserving the exact
+  deterministic backoff schedule) adds a `Math.random() * jitterMs` spread
+  on top of each exponential backoff wait, so endpoints that failed
+  together do not retry in lockstep; a 429 `Retry-After` hint is still
+  waited exactly with no jitter added. `deliverSettlementWebhookToMany`
+  forwards the option call-level and per endpoint (a per-endpoint
+  `jitterMs` overrides the call-level value, including 0 cancelling it),
+  an invalid value throws the existing `cannot deliver settlement
+  webhook: …` configuration error before any request (call-level) or
+  fails only its own endpoint (per-endpoint), and the README delivery
+  section documents the default-0, no-uniformity-guarantee, and
+  no-cross-process-coordination limits. `test/webhookDeliveryJitter.test.ts`
+  (10 cases: default-0 schedules on the 5xx and network-error paths,
+  stubbed-`Math.random` spread, exact `Retry-After` hint, invalid values,
+  and fan-out overrides).
 - Benchmark `deliverSettlementWebhook` loopback header-check path (2026-10-27, backlog
   #651): the bench now times the #567/#576 delivery-header contract over a real
   loopback HTTP server instead of a fake fetch — every iteration delivers the fixed
