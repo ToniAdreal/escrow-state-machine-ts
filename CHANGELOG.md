@@ -18,6 +18,19 @@ version changes.
 
 ### Added
 
+- Top-up x maxDeposit combination tests (2026-10-28, backlog
+  #682): `test/topupMaxDeposit.test.ts` pins the combination at a
+  realistic scale — cap 10000, initial FUND 9000, an over-cap top-up
+  of 2000 rejected with the verbatim `deposit cap exceeded` error and
+  no locked/history residue, then an exact-cap top-up of 1000
+  recovering cleanly (rejected attempts consume no sequence number);
+  once at the cap any further positive top-up is rejected, and the
+  cap is cumulative across several top-ups (5000 + 3000, then 3000
+  rejected, then 2000 to the cap). Pure test commit: no source
+  change. Honest correction to the backlog note: `maxDeposit.test.ts`
+  already pinned an exact-cap top-up at 700 + 300, so the new
+  coverage is the rejection-then-exact-cap-recovery order and the
+  multi-top-up cumulative path, not the exact-cap top-up itself.
 - Fan-out x secret rotation combination tests (2026-10-28, backlog
   #681): `test/webhookFanoutRotation.test.ts` pins the combination the
   fan-out and rotation suites never tested together — one settlement
