@@ -1090,6 +1090,34 @@
  *      intervals only, never exact values, because with live
  *      `Math.random` an exact wait is unknowable in advance.
  *
+ *  64. settlement webhook fan-out jitterMs — `deliverSettlementWebhookToMany()`
+ *      with call-level `jitterMs` over 4 fixed endpoints: one flaky
+ *      endpoint on a 500 / 500 / 200 script (backoffMs 100, retries 2)
+ *      plus three endpoints answering 200 immediately. One timed pass
+ *      is two fan-outs — the jittered fan-out, whose only two backoff
+ *      waits (the flaky endpoint's, the healthy endpoints never sleep)
+ *      must land inside [100, 1100] and [200, 1200], and the
+ *      zero-jitter control, whose waits must be exactly [100, 200].
+ *      This is the combination the plain fan-out row (#8) and the
+ *      single-target jitter row (#63) never exercise together: the
+ *      fan-out must not serialize, drop, or cross-wire the flaky
+ *      endpoint's jittered retries, and the healthy endpoints must
+ *      still deliver on their first attempt while the flaky one
+ *      backs off. The waits are recorded with the same `setTimeout`
+ *      wrapper as #63 (only timers created inside `sleepAbortable`
+ *      count, shortened to 0 ms, wrapper restored after every
+ *      fan-out), so the row measures fan-out + jitter logic, not a
+ *      wall-clock backoff, and no elapsed-time assertion is made
+ *      anywhere. Every timed iteration also pins the aggregate
+ *      (delivered 4 / failed 0), per-endpoint results in input order
+ *      (flaky attempts 3 / status 200, healthy attempts 1 / status
+ *      200), per-endpoint fetch call counts (3 / 1 / 1 / 1), and
+ *      that each endpoint's copy verifies under its own secret.
+ *      Outside the timed loop, a deterministic probe stubs
+ *      `Math.random` to [0, 0.5] and pins the jittered waits to
+ *      exactly [100, 700] and the zero-jitter waits to exactly
+ *      [100, 200], with the stub's restore asserted.
+ *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
  * dispatch timestamps (a fixed base instant plus per-step offsets),
@@ -3203,6 +3231,164 @@ await runJitterDelivery(0);
   if (Math.random !== originalRandom) {
     throw new Error(
       "benchmark fixture failed: Math.random not restored after jitter probe",
+    );
+  }
+}
+
+// Fan-out jitter fixture: the same settled report fanned out via
+// `deliverSettlementWebhookToMany` to 4 fixed endpoints — one flaky
+// endpoint on a 500 / 500 / 200 script plus three endpoints answering
+// 200 immediately — under call-level `jitterMs` (backoffMs 100,
+// retries 2, the same constants as the single-target jitter fixture
+// above). This is the combination the plain fan-out row and the
+// single-target jitter row never exercise together: the fan-out runs
+// its endpoints concurrently, so the flaky endpoint's two jittered
+// backoff waits must be recorded exactly once each (the healthy
+// endpoints never sleep), and the healthy endpoints must still
+// deliver on their first attempt while the flaky one backs off —
+// neither serialized behind the retries nor cross-wired with them.
+// The waits reuse the #63 `setTimeout` wrapper (only timers created
+// inside `sleepAbortable` count, shortened to 0 ms, restored in a
+// finally block after every fan-out), and the fake fetch counts
+// calls per URL so the per-endpoint attempt counts are pinned, not
+// just the aggregate. Each endpoint signs with its own secret, so
+// the one-time validation below also verifies every copy under its
+// own secret, exactly like the plain fan-out fixture.
+const FANOUT_JITTER_FLAKY_URL =
+  "https://flaky.example.com/hooks/settlement";
+const FANOUT_JITTER_ENDPOINTS: SettlementWebhookEndpoint[] = [
+  { url: FANOUT_JITTER_FLAKY_URL, secret: "bench-fanout-jitter-secret-flaky" },
+  { url: "https://billing.example.com/hooks/settlement", secret: "bench-fanout-jitter-secret-billing" },
+  { url: "https://risk.example.com/hooks/settlement", secret: "bench-fanout-jitter-secret-risk" },
+  { url: "https://ledger.example.com/hooks/settlement", secret: "bench-fanout-jitter-secret-ledger" },
+];
+let fanoutJitterCalls: Array<{ url: string; body: string; signature: string }> =
+  [];
+async function runFanoutJitterDelivery(jitterMs: number): Promise<number[]> {
+  const callsByUrl = new Map<string, number>();
+  fanoutJitterCalls = [];
+  const fanoutJitterFetch: typeof fetch = async (input, init) => {
+    const url = String(input);
+    fanoutJitterCalls.push({
+      url,
+      body: String(init?.body ?? ""),
+      signature: String(new Headers(init?.headers).get("x-signature") ?? ""),
+    });
+    const attempt = (callsByUrl.get(url) ?? 0) + 1;
+    callsByUrl.set(url, attempt);
+    const status = url === FANOUT_JITTER_FLAKY_URL && attempt < 3 ? 500 : 200;
+    return new Response(status === 200 ? "{}" : "boom", {
+      status,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  const sleeps: number[] = [];
+  globalThis.fetch = fanoutJitterFetch;
+  jitterActiveSleeps = sleeps;
+  jitterGlobalTimers.setTimeout = jitterRecordingSetTimeout;
+  try {
+    const out = await deliverSettlementWebhookToMany(
+      report,
+      FANOUT_JITTER_ENDPOINTS,
+      {
+        now: WEBHOOK_NOW,
+        eventId: WEBHOOK_EVENT_ID,
+        backoffMs: JITTER_BACKOFF_MS,
+        jitterMs,
+        retries: JITTER_RETRIES,
+      },
+    );
+    if (
+      out.results.length !== FANOUT_JITTER_ENDPOINTS.length ||
+      out.delivered !== FANOUT_JITTER_ENDPOINTS.length ||
+      out.failed !== 0 ||
+      out.results.some(
+        (r, i) => !r.ok || r.url !== FANOUT_JITTER_ENDPOINTS[i].url,
+      ) ||
+      out.results[0].attempts !== JITTER_RETRIES + 1 ||
+      out.results[0].status !== 200 ||
+      out.results.slice(1).some((r) => r.attempts !== 1 || r.status !== 200) ||
+      (callsByUrl.get(FANOUT_JITTER_FLAKY_URL) ?? 0) !== JITTER_RETRIES + 1 ||
+      FANOUT_JITTER_ENDPOINTS.slice(1).some(
+        (e) => (callsByUrl.get(e.url) ?? 0) !== 1,
+      ) ||
+      fanoutJitterCalls.length !== FANOUT_JITTER_ENDPOINTS.length + JITTER_RETRIES ||
+      sleeps.length !== JITTER_RETRIES
+    ) {
+      throw new Error(
+        "benchmark self-check failed: deliverSettlementWebhookToMany jitterMs fan-out",
+      );
+    }
+  } finally {
+    jitterActiveSleeps = null;
+    jitterGlobalTimers.setTimeout = jitterOriginalSetTimeout;
+  }
+  if (jitterMs > 0) {
+    const bases = [JITTER_BACKOFF_MS, JITTER_BACKOFF_MS * 2];
+    const inWindow = sleeps.every(
+      (sleep, i) => sleep >= bases[i] && sleep <= bases[i] + jitterMs,
+    );
+    if (!inWindow) {
+      throw new Error(
+        "benchmark self-check failed: deliverSettlementWebhookToMany jitterMs sleep outside [backoff, backoff + jitterMs]",
+      );
+    }
+  } else if (
+    sleeps[0] !== JITTER_BACKOFF_MS ||
+    sleeps[1] !== JITTER_BACKOFF_MS * 2
+  ) {
+    throw new Error(
+      "benchmark self-check failed: deliverSettlementWebhookToMany jitterMs=0 not pure exponential",
+    );
+  }
+  return sleeps;
+}
+
+// One-time fixture validation (outside the timed loop): one jittered
+// and one zero-jitter fan-out each, every endpoint's copy verified
+// under its own secret, then the deterministic jitter probe — with
+// Math.random stubbed to the fixed sequence [0, 0.5], the flaky
+// endpoint's two jittered waits must be exactly [100, 700] (the
+// healthy endpoints never consult the random source: they never
+// retry), and the zero-jitter waits exactly [100, 200]; the stub is
+// restored in a finally block, and the restore itself is asserted.
+await runFanoutJitterDelivery(JITTER_JITTER_MS);
+await runFanoutJitterDelivery(0);
+for (const endpoint of FANOUT_JITTER_ENDPOINTS) {
+  const call = fanoutJitterCalls.find((c) => c.url === endpoint.url);
+  if (
+    !call ||
+    !verifySettlementWebhook(call.body, call.signature, endpoint.secret)
+  ) {
+    throw new Error(
+      `benchmark fixture failed: fan-out jitter endpoint ${endpoint.url} signature does not verify`,
+    );
+  }
+}
+{
+  const originalRandom = Math.random;
+  const stubSequence = [0, 0.5];
+  let stubIndex = 0;
+  Math.random = () => stubSequence[stubIndex++ % stubSequence.length];
+  try {
+    const stubbed = await runFanoutJitterDelivery(JITTER_JITTER_MS);
+    if (stubbed[0] !== 100 || stubbed[1] !== 700) {
+      throw new Error(
+        "benchmark fixture failed: deliverSettlementWebhookToMany jitterMs deterministic spread",
+      );
+    }
+    const stubbedZero = await runFanoutJitterDelivery(0);
+    if (stubbedZero[0] !== 100 || stubbedZero[1] !== 200) {
+      throw new Error(
+        "benchmark fixture failed: deliverSettlementWebhookToMany jitterMs=0 ignores Math.random",
+      );
+    }
+  } finally {
+    Math.random = originalRandom;
+  }
+  if (Math.random !== originalRandom) {
+    throw new Error(
+      "benchmark fixture failed: Math.random not restored after fan-out jitter probe",
     );
   }
 }
@@ -7322,6 +7508,23 @@ async function benchDeliverSettlementWebhookHeaders(): Promise<number> {
   return ops;
 }
 
+async function benchDeliverSettlementWebhookToManyJitter(): Promise<number> {
+  const ops = await measureAsync(async () => {
+    // One timed pass is two fan-outs: the jittered fan-out (the
+    // flaky endpoint's sleeps inside [100, 1100] and [200, 1200],
+    // healthy endpoints on first attempt) and the zero-jitter
+    // control (sleeps exactly [100, 200]), each self-checked per
+    // iteration (see the fan-out jitter fixture above).
+    await runFanoutJitterDelivery(JITTER_JITTER_MS);
+    await runFanoutJitterDelivery(0);
+  }, ITERATIONS);
+  // The fan-out jitter fixture installs its own fake fetch per
+  // fan-out; hand the global back to the genuine implementation
+  // (later rows install their own fakes regardless).
+  globalThis.fetch = ORIGINAL_FETCH;
+  return ops;
+}
+
 async function benchDeliverSettlementWebhookJitter(): Promise<number> {
   const ops = await measureAsync(async () => {
     // One timed pass is two deliveries: the jittered script
@@ -8523,6 +8726,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "deliverSettlementWebhook (single endpoint)", ops: await benchDeliverSettlementWebhook() },
   { path: "deliverSettlementWebhook (loopback header check, 500→200 retry)", ops: await benchDeliverSettlementWebhookHeaders() },
   { path: "deliverSettlementWebhook (jitterMs backoff, 500/500→200)", ops: await benchDeliverSettlementWebhookJitter() },
+  { path: "deliverSettlementWebhookToMany (fan-out jitterMs, 4 endpoints, 500/500→200)", ops: await benchDeliverSettlementWebhookToManyJitter() },
   { path: "deliverSettlementWebhook (pre-aborted signal)", ops: await benchDeliverSettlementWebhookPreAborted() },
   { path: "deliverSettlementWebhook (maxRetryDelayMs clamp, 429 hint)", ops: await benchDeliverSettlementWebhookMaxRetryDelayClamp() },
   { path: "deliverSettlementWebhook (timeoutMs timeout)", ops: await benchDeliverSettlementWebhookTimeout() },

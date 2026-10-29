@@ -18,6 +18,27 @@ version changes.
 
 ### Added
 
+- Benchmark `deliverSettlementWebhookToMany` fan-out jitterMs row
+  (2026-10-29, backlog #694): `bench/bench.ts` now measures the
+  #665 `jitterMs` option crossed with fan-out as a cost path — every
+  timed pass runs two fan-outs to 4 endpoints (one flaky endpoint on
+  a 500, 500, 200 script plus three endpoints answering 200
+  immediately; backoffMs 100, retries 2), the jittered fan-out with
+  its two backoff waits inside [100, 1100] and [200, 1200] and the
+  zero-jitter control with waits exactly [100, 200]. Every timed
+  iteration also pins the aggregate (delivered 4 / failed 0),
+  per-endpoint results in input order (flaky attempts 3 / status 200,
+  healthy attempts 1 / status 200), per-endpoint fetch call counts
+  (3 / 1 / 1 / 1), and per-endpoint signature verification under each
+  endpoint's own secret. The waits are recorded with the same
+  `setTimeout` wrapper as the #680 row (only timers created inside
+  `sleepAbortable` count, shortened to 0 ms, wrapper restored after
+  every fan-out). Outside the timed loop a stubbed `Math.random`
+  sequence [0, 0.5] pins the jittered waits to exactly [100, 700] and
+  the zero-jitter waits to exactly [100, 200], with the stub's restore
+  asserted. This run: 118.3 ops/sec (8451.07 µs/op). The README
+  Benchmarks table is refreshed from this run. Bench item only: no
+  unit tests added, no source change.
 - Top-up x maxDeposit combination tests (2026-10-28, backlog
   #682): `test/topupMaxDeposit.test.ts` pins the combination at a
   realistic scale — cap 10000, initial FUND 9000, an over-cap top-up
