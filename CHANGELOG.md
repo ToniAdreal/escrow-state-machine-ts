@@ -18,6 +18,24 @@ version changes.
 
 ### Added
 
+- `actOnStaleEscrows` x rolePolicy combination tests (2026-10-29,
+  backlog #713): `test/actOnStaleRolePolicy.test.ts` pins the
+  combination the batch-executor and RBAC suites never tested together
+  — a stale batch where a no-policy escrow and a RELEASE-only-policy
+  escrow expire normally while an EXPIRE-listed escrow fails per-item
+  with the verbatim actor wording
+  `actor not authorized for EXPIRE: "watchdog" is not in [ops-lead]`
+  (the stale executor runs the caller's action verbatim, so the
+  wording tracks the action's actor — unlike #706, where the executor
+  itself dispatches with no actor and the failure is the missing-actor
+  wording, and unlike dataquest's executor, which dispatches with a
+  `system` actor); an allowlisted actor expires the gated escrow with
+  its audit entry intact, a blocked run consumes no sequence number
+  and leaves the policy in place, an action throw and a policy
+  rejection carry distinguishable errors, and transition legality
+  still runs before RBAC (a VERIFIED stale escrow fails with the
+  transition error, not the authorization error). Pure test commit:
+  no source change.
 - Settlement report x CSV after a top-up (2026-10-29, backlog #708):
   `test/settlementReportTopup.test.ts` pins the combination the
   top-up and CSV suites never tested together — a released escrow
