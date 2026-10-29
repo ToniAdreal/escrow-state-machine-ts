@@ -18,6 +18,18 @@ version changes.
 
 ### Added
 
+- Settlement report x CSV after a top-up (2026-10-29, backlog #708):
+  `test/settlementReportTopup.test.ts` pins the combination the
+  top-up and CSV suites never tested together — a released escrow
+  funded 10000 + 630 renders a report and CSV on the FUND total
+  10630 (creator 10098.50 / platform 531.50 at 5% pro fee), the CSV
+  parses back to the same subset and re-renders byte-identically,
+  a deposit disagreeing with the FUND total never reaches CSV
+  rendering, and an amount-less FUND pins the honest split:
+  `depositAmountFromHistory` refuses fail-fast while
+  `buildSettlementReport` keeps its documented caller-responsible
+  fallback, so such a CSV TOTAL is the caller's number, not an
+  audit-proven sum. Pure test commit: no source change.
 - `expireOverdueEscrows` x rolePolicy combination tests (2026-10-29,
   backlog #706): `test/expireOverdueRolePolicy.test.ts` pins the
   combination the batch-executor and RBAC suites never tested together
