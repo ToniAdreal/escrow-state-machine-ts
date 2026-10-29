@@ -18,6 +18,18 @@ version changes.
 
 ### Added
 
+- `deliverSettlementWebhookToMany` x maxRetryDelayMs combination tests
+  (2026-10-29, backlog #716):
+  `test/webhookFanoutMaxRetryDelay.test.ts` pins the combination the
+  fan-out and single-endpoint cap suites never tested together — a
+  call-level cap clamps a runaway `Retry-After` hint on the one hinted
+  endpoint while the other three answer 200 on their first attempt, a
+  per-endpoint cap overrides the call-level cap for that endpoint only,
+  two hinted endpoints clamp independently to their own caps with
+  results in input order and per-endpoint attempt counts, and a
+  hint-less 500 follows the exponential backoff schedule (100ms, then
+  200ms) even with a 10ms cap, proving the cap clamps hints only.
+  Pure test commit: no source change.
 - `actOnStaleEscrows` x rolePolicy combination tests (2026-10-29,
   backlog #713): `test/actOnStaleRolePolicy.test.ts` pins the
   combination the batch-executor and RBAC suites never tested together
