@@ -18,6 +18,24 @@ version changes.
 
 ### Added
 
+- `expireOverdueEscrows` x rolePolicy combination tests (2026-10-29,
+  backlog #706): `test/expireOverdueRolePolicy.test.ts` pins the
+  combination the batch-executor and RBAC suites never tested together
+  — a mixed overdue batch where a no-policy escrow and a
+  RELEASE-only-policy escrow expire normally while an EXPIRE-listed
+  escrow fails per-item with the verbatim missing-actor error
+  `actor not authorized for EXPIRE: policy requires an actor in
+  [ops-lead]` (the escrow executor dispatches with `{ at: now }` and
+  no actor, unlike dataquest's `system`-actor executor, so the
+  wording is deliberately not dataquest's `"system" is not in [...]`);
+  the blocked escrow leaves no history residue and does not block
+  later escrows, can still be expired manually by an allowlisted
+  actor with no sequence gap, a multi-role EXPIRE policy blocks the
+  executor but admits either listed role manually, a policy-listed
+  escrow that is not overdue is never attempted, and a VERIFIED
+  overdue escrow with an EXPIRE policy still fails with the
+  transition error because RBAC runs after transition legality.
+  Pure test commit: no source change.
 - Benchmark `deliverSettlementWebhookToMany` fan-out jitterMs row
   (2026-10-29, backlog #694): `bench/bench.ts` now measures the
   #665 `jitterMs` option crossed with fan-out as a cost path — every
