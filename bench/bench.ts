@@ -1118,6 +1118,34 @@
  *      exactly [100, 700] and the zero-jitter waits to exactly
  *      [100, 200], with the stub's restore asserted.
  *
+ *  65. settlement webhook fan-out maxRetryDelayMs —
+ *      `deliverSettlementWebhookToMany()` with a call-level
+ *      `maxRetryDelayMs` of 50 over 4 fixed endpoints: one
+ *      rate-limited endpoint answering 429 with
+ *      `Retry-After: 31536000` (a one-year hint, in seconds) on
+ *      its first attempt and 200 on the retry, plus three
+ *      endpoints answering 200 immediately. This is the
+ *      combination the plain fan-out row (#8), the fan-out
+ *      jitter row (#64), and the single-target clamp row (#48)
+ *      never exercise together: the fan-out must pass the
+ *      call-level cap through to the per-endpoint delivery, so
+ *      the runaway hint is clamped to exactly 50 ms for the
+ *      hinted endpoint only. Every timed iteration pins the
+ *      aggregate (delivered 4 / failed 0), per-endpoint results
+ *      in input order (hinted attempts 2 / status 200, healthy
+ *      attempts 1 / status 200), per-endpoint fetch call counts
+ *      (2 / 1 / 1 / 1), and exactly one recorded backoff wait
+ *      equal to the 50 ms cap (the healthy endpoints never
+ *      sleep). The wait is recorded with the same `setTimeout`
+ *      wrapper as #63/#64 (only timers created inside
+ *      `sleepAbortable` count, shortened to 0 ms, wrapper
+ *      restored after every fan-out), so the row measures
+ *      fan-out + clamp logic, not a wall-clock backoff, and no
+ *      elapsed-time assertion is made anywhere. Outside the
+ *      timed loop, every endpoint's copy is verified under its
+ *      own secret, and an illegal call-level cap (-1) is pinned
+ *      to its exact configuration error with zero fetch calls.
+ *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
  * dispatch timestamps (a fixed base instant plus per-step offsets),
@@ -3389,6 +3417,146 @@ for (const endpoint of FANOUT_JITTER_ENDPOINTS) {
   if (Math.random !== originalRandom) {
     throw new Error(
       "benchmark fixture failed: Math.random not restored after fan-out jitter probe",
+    );
+  }
+}
+
+// Fan-out maxRetryDelayMs fixture: the same settled report fanned out via
+// `deliverSettlementWebhookToMany` to 4 fixed endpoints — one rate-limited
+// endpoint answering 429 with `Retry-After: 31536000` (a one-year hint, in
+// seconds) on its first attempt and 200 on the retry, plus three endpoints
+// answering 200 immediately — under a call-level `maxRetryDelayMs` of 50.
+// This is the combination the plain fan-out row (#8), the fan-out jitter
+// row (#64), and the single-target clamp row (#48) never exercise
+// together: the fan-out must pass the call-level cap through to the
+// per-endpoint delivery (src/webhooks.ts, ToMany path), so the runaway
+// hint is clamped to exactly 50 ms for the hinted endpoint only, while
+// the healthy endpoints deliver on their first attempt and never sleep.
+// The wait is recorded with the same `setTimeout` wrapper as #63/#64
+// (only timers created inside `sleepAbortable` count, shortened to 0 ms,
+// wrapper restored after every fan-out), so the row measures fan-out +
+// clamp logic, not a wall-clock backoff, and no elapsed-time assertion
+// is made anywhere.
+const FANOUT_MAXRETRY_HINTED_URL =
+  "https://rate-limited.example.com/hooks/settlement";
+const FANOUT_MAXRETRY_CAP_MS = 50;
+const FANOUT_MAXRETRY_ENDPOINTS: SettlementWebhookEndpoint[] = [
+  { url: FANOUT_MAXRETRY_HINTED_URL, secret: "bench-fanout-maxretry-secret-limited" },
+  { url: "https://billing.example.com/hooks/settlement", secret: "bench-fanout-maxretry-secret-billing" },
+  { url: "https://risk.example.com/hooks/settlement", secret: "bench-fanout-maxretry-secret-risk" },
+  { url: "https://ledger.example.com/hooks/settlement", secret: "bench-fanout-maxretry-secret-ledger" },
+];
+let fanoutMaxRetryCalls: Array<{ url: string; body: string; signature: string }> =
+  [];
+async function runFanoutMaxRetryDelivery(): Promise<number[]> {
+  const callsByUrl = new Map<string, number>();
+  fanoutMaxRetryCalls = [];
+  const fanoutMaxRetryFetch: typeof fetch = async (input, init) => {
+    const url = String(input);
+    fanoutMaxRetryCalls.push({
+      url,
+      body: String(init?.body ?? ""),
+      signature: String(new Headers(init?.headers).get("x-signature") ?? ""),
+    });
+    const attempt = (callsByUrl.get(url) ?? 0) + 1;
+    callsByUrl.set(url, attempt);
+    const rateLimited = url === FANOUT_MAXRETRY_HINTED_URL && attempt === 1;
+    return new Response(rateLimited ? "rate limited" : "{}", {
+      status: rateLimited ? 429 : 200,
+      headers: rateLimited
+        ? { "content-type": "application/json", "retry-after": DELIVERY_MAX_RETRY_DELAY_HINT }
+        : { "content-type": "application/json" },
+    });
+  };
+  const sleeps: number[] = [];
+  globalThis.fetch = fanoutMaxRetryFetch;
+  jitterActiveSleeps = sleeps;
+  jitterGlobalTimers.setTimeout = jitterRecordingSetTimeout;
+  try {
+    const out = await deliverSettlementWebhookToMany(
+      report,
+      FANOUT_MAXRETRY_ENDPOINTS,
+      {
+        now: WEBHOOK_NOW,
+        eventId: WEBHOOK_EVENT_ID,
+        maxRetryDelayMs: FANOUT_MAXRETRY_CAP_MS,
+        backoffMs: 0,
+        retries: 2,
+      },
+    );
+    if (
+      out.results.length !== FANOUT_MAXRETRY_ENDPOINTS.length ||
+      out.delivered !== FANOUT_MAXRETRY_ENDPOINTS.length ||
+      out.failed !== 0 ||
+      out.results.some(
+        (r, i) => !r.ok || r.url !== FANOUT_MAXRETRY_ENDPOINTS[i].url,
+      ) ||
+      out.results[0].attempts !== 2 ||
+      out.results[0].status !== 200 ||
+      out.results.slice(1).some((r) => r.attempts !== 1 || r.status !== 200) ||
+      (callsByUrl.get(FANOUT_MAXRETRY_HINTED_URL) ?? 0) !== 2 ||
+      FANOUT_MAXRETRY_ENDPOINTS.slice(1).some(
+        (e) => (callsByUrl.get(e.url) ?? 0) !== 1,
+      ) ||
+      fanoutMaxRetryCalls.length !== FANOUT_MAXRETRY_ENDPOINTS.length + 1 ||
+      sleeps.length !== 1 ||
+      sleeps[0] !== FANOUT_MAXRETRY_CAP_MS
+    ) {
+      throw new Error(
+        "benchmark self-check failed: deliverSettlementWebhookToMany maxRetryDelayMs fan-out",
+      );
+    }
+  } finally {
+    jitterActiveSleeps = null;
+    jitterGlobalTimers.setTimeout = jitterOriginalSetTimeout;
+  }
+  return sleeps;
+}
+
+// One-time fixture validation (outside the timed loop): one clamped
+// fan-out, every endpoint's copy verified under its own secret, then an
+// illegal call-level cap pinned to its exact configuration error with
+// zero fetch calls (the call-level validation runs before any request,
+// exactly like the single-target clamp row).
+await runFanoutMaxRetryDelivery();
+for (const endpoint of FANOUT_MAXRETRY_ENDPOINTS) {
+  const call = fanoutMaxRetryCalls.find((c) => c.url === endpoint.url);
+  if (
+    !call ||
+    !verifySettlementWebhook(call.body, call.signature, endpoint.secret)
+  ) {
+    throw new Error(
+      `benchmark fixture failed: fan-out maxRetryDelay endpoint ${endpoint.url} signature does not verify`,
+    );
+  }
+}
+{
+  let illegalCalls = 0;
+  const illegalFetch: typeof fetch = async () => {
+    illegalCalls++;
+    return new Response("{}", {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  globalThis.fetch = illegalFetch;
+  let illegalError: unknown;
+  try {
+    await deliverSettlementWebhookToMany(report, FANOUT_MAXRETRY_ENDPOINTS, {
+      now: WEBHOOK_NOW,
+      eventId: WEBHOOK_EVENT_ID,
+      maxRetryDelayMs: -1,
+    });
+  } catch (err) {
+    illegalError = err;
+  }
+  if (
+    !(illegalError instanceof Error) ||
+    illegalError.message !== DELIVERY_MAX_RETRY_DELAY_ILLEGAL_ERROR ||
+    illegalCalls !== 0
+  ) {
+    throw new Error(
+      "benchmark fixture failed: deliverSettlementWebhookToMany maxRetryDelayMs illegal shape",
     );
   }
 }
@@ -7525,6 +7693,17 @@ async function benchDeliverSettlementWebhookToManyJitter(): Promise<number> {
   return ops;
 }
 
+async function benchDeliverSettlementWebhookToManyMaxRetryDelay(): Promise<number> {
+  const ops = await measureAsync(async () => {
+    await runFanoutMaxRetryDelivery();
+  }, ITERATIONS);
+  // The fan-out maxRetryDelay fixture installs its own fake fetch per
+  // fan-out; hand the global back to the genuine implementation
+  // (later rows install their own fakes regardless).
+  globalThis.fetch = ORIGINAL_FETCH;
+  return ops;
+}
+
 async function benchDeliverSettlementWebhookJitter(): Promise<number> {
   const ops = await measureAsync(async () => {
     // One timed pass is two deliveries: the jittered script
@@ -8727,6 +8906,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "deliverSettlementWebhook (loopback header check, 500→200 retry)", ops: await benchDeliverSettlementWebhookHeaders() },
   { path: "deliverSettlementWebhook (jitterMs backoff, 500/500→200)", ops: await benchDeliverSettlementWebhookJitter() },
   { path: "deliverSettlementWebhookToMany (fan-out jitterMs, 4 endpoints, 500/500→200)", ops: await benchDeliverSettlementWebhookToManyJitter() },
+  { path: "deliverSettlementWebhookToMany (fan-out maxRetryDelayMs, 4 endpoints, 429 hint)", ops: await benchDeliverSettlementWebhookToManyMaxRetryDelay() },
   { path: "deliverSettlementWebhook (pre-aborted signal)", ops: await benchDeliverSettlementWebhookPreAborted() },
   { path: "deliverSettlementWebhook (maxRetryDelayMs clamp, 429 hint)", ops: await benchDeliverSettlementWebhookMaxRetryDelayClamp() },
   { path: "deliverSettlementWebhook (timeoutMs timeout)", ops: await benchDeliverSettlementWebhookTimeout() },

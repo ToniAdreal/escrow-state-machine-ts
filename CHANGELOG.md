@@ -18,6 +18,18 @@ version changes.
 
 ### Added
 
+- Benchmark `deliverSettlementWebhookToMany` fan-out maxRetryDelayMs row
+  (2026-10-30, backlog #722): `bench/bench.ts` now measures the #716
+  combination as a cost path — one fan-out to 4 endpoints under a
+  call-level `maxRetryDelayMs` of 50, with one endpoint answering 429
+  with a one-year `Retry-After: 31536000` hint on its first attempt and
+  200 on the retry while the other three answer 200 immediately. Every
+  timed iteration pins the aggregate (delivered 4 / failed 0),
+  per-endpoint results in input order (hinted attempts 2 / status 200,
+  healthy attempts 1 / status 200), per-endpoint fetch call counts
+  (2 / 1 / 1 / 1), and exactly one recorded backoff wait equal to the
+  50 ms cap, proving the call-level cap passes through the fan-out to
+  the per-endpoint delivery. Bench-only change: no source change.
 - `deliverSettlementWebhookToMany` x maxRetryDelayMs combination tests
   (2026-10-29, backlog #716):
   `test/webhookFanoutMaxRetryDelay.test.ts` pins the combination the
