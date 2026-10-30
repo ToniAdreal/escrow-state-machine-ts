@@ -18,6 +18,26 @@ version changes.
 
 ### Added
 
+- `expireOverdueEscrows` x `subscribe` combination coverage
+  (2026-10-30, backlog #739): `test/expireOverdueSubscribe.test.ts`
+  pins the deadline-watchdog executor's notification behaviour,
+  mirroring #735 on the deadline path (the executor dispatches
+  `EXPIRE` itself, with no actor, rather than running a caller
+  supplied action): a successful executor EXPIRE notifies exactly
+  once with an entry equal to the history tail and the executor
+  report entry, a batch notifies only its attempted escrows while
+  not-overdue, deadline-free and terminal escrows stay silent, a
+  VERIFIED or DISPUTED overdue escrow fails per-escrow with zero
+  notifications and untouched state/history while the batch keeps
+  going, a gated escrow reports the no-actor policy error with zero
+  notifications, unsubscribing before the executor still expires
+  silently, a throwing listener stays isolated with its peer still
+  notified, an authorized manual dispatch after a refusal still
+  notifies, and a notification entry is a frozen detached copy that
+  cannot rewrite the audit history. No source change: the
+  combination was previously untested, not unimplemented. README
+  test counts realigned to the true suite total (1015 → 1024).
+
 - `actOnStaleEscrows` x `subscribe` combination coverage
   (2026-10-30, backlog #735): `test/staleActionSubscribe.test.ts`
   pins the watchdog executor's notification behaviour, mirroring
