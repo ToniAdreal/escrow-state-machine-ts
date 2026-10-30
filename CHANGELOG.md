@@ -18,6 +18,23 @@ version changes.
 
 ### Added
 
+- Benchmark `dispatchArbitration` x rolePolicy row (2026-10-30,
+  backlog #728): `bench/bench.ts` now measures the #719 combination
+  as a cost path — a DISPUTED escrow with `ARBITRATE_RELEASE`
+  allowlisted to moderator, rebuilt via `Escrow.fromHistory` from
+  its fixed 2-entry prefix with the policy installed through the
+  `fromHistory` opts, plus a threshold-reached 5/9 quorum rebuilt
+  on every iteration. Every timed iteration pins a contributor
+  arbitration dispatch rejected with the exact
+  actor-not-authorized error leaving state, history, and quorum
+  count untouched, and a moderator arbitration dispatch advancing
+  to RELEASED with one pinned entry and an intact hash chain;
+  a below-threshold quorum is pinned once outside the timed loop
+  to the quorum error, never the policy error. New row measured
+  at 2,662 ops/sec (375.68 µs/op) on Node v24.22.1; README
+  Benchmarks prose and the full 72-row table refreshed from this
+  run. Bench-only change: no source change.
+
 - Receiver-flow coverage for `verifySettlementWebhook` +
   `SettlementEventDedupe` (2026-10-30, backlog #725):
   `test/webhookVerifyDedupe.test.ts` pins the README receiver order —
