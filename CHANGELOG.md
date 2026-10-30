@@ -18,6 +18,25 @@ version changes.
 
 ### Added
 
+- Benchmark `deliverSettlementWebhookToMany` fan-out x
+  `SettlementEventDedupe` receiver-flow row (2026-10-30, backlog
+  #745): `bench/bench.ts` measures the #741 test row as a cost
+  path and the escrow-side peer of dataquest #744 — one measured
+  op is two fan-outs of the same fresh eventId to the 4 fixed
+  endpoints through a fake global fetch (immediate 200, no
+  network): the first fan-out delivers 4 / fails 0 with every
+  endpoint's copy verifying under its own secret and recording as
+  a first sighting in that endpoint's own dedupe, and the
+  redelivery delivers 4 / fails 0 again, verifies again, and
+  reports duplicate on all four dedupes. One measured op records
+  exactly one id per dedupe under a fixed injected clock at
+  capacity 100,000, so 3,200 warmup + timed ops stay far under
+  the cap with nothing expiring or evicted in the timed loop.
+  README Benchmarks prose and the full 74-row table refreshed
+  from this run (new row ~2,238 ops/sec, Node v24.22.1). No
+  source change: the combination was previously unmeasured, not
+  unimplemented. README test counts unchanged (1029).
+
 - `deliverSettlementWebhookToMany` x `SettlementEventDedupe`
   endpoint-isolation coverage (2026-10-30, backlog #741):
   `test/webhookFanoutDedupe.test.ts` pins the fan-out receiver
