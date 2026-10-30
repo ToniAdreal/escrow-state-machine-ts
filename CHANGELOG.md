@@ -18,6 +18,23 @@ version changes.
 
 ### Added
 
+- `deliverSettlementWebhookToMany` x `SettlementEventDedupe`
+  endpoint-isolation coverage (2026-10-30, backlog #741):
+  `test/webhookFanoutDedupe.test.ts` pins the fan-out receiver
+  semantics, mirroring dataquest #740: one fan-out to 4 loopback
+  endpoints leaves every receiver accepting its own
+  per-endpoint-signed copy as a first sighting with each dedupe at
+  size 1 despite the shared eventId, re-delivery to the same
+  endpoint reports duplicate on all four receivers with per-receiver
+  stats hits 1 / misses 1, an eventId recorded at endpoint A alone
+  does not make the same eventId a duplicate at endpoint B while
+  untouched endpoints C and D stay at size 0, a tampered delivery
+  verifies false and records nothing so the true delivery is still
+  first-seen, and A's wire body presented to B's receiver is
+  rejected and leaves B's dedupe untouched. No source change: the
+  combination was previously untested, not unimplemented. README
+  test counts realigned to the true suite total (1024 → 1029).
+
 - `expireOverdueEscrows` x `subscribe` combination coverage
   (2026-10-30, backlog #739): `test/expireOverdueSubscribe.test.ts`
   pins the deadline-watchdog executor's notification behaviour,
