@@ -18,6 +18,17 @@ version changes.
 
 ### Added
 
+- Receiver-flow coverage for `verifySettlementWebhook` +
+  `SettlementEventDedupe` (2026-10-30, backlog #725):
+  `test/webhookVerifyDedupe.test.ts` pins the README receiver order —
+  verify the raw body first, only then `checkAndRecord(eventId)`: a
+  first delivery processes, a re-delivery verifies but is dropped as a
+  duplicate, a tampered or wrong-secret delivery is rejected without
+  touching the dedupe store (so the genuine delivery of that `eventId`
+  afterwards is still a first sighting), and the same `eventId` counts
+  as unseen again once its TTL expires. No source change: the
+  combination was previously untested, not unimplemented.
+
 - Benchmark `deliverSettlementWebhookToMany` fan-out maxRetryDelayMs row
   (2026-10-30, backlog #722): `bench/bench.ts` now measures the #716
   combination as a cost path — one fan-out to 4 endpoints under a
