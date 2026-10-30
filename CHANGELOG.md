@@ -18,6 +18,22 @@ version changes.
 
 ### Added
 
+- Benchmark `verifySettlementWebhook` x `SettlementEventDedupe`
+  receiver-flow row (2026-10-30, backlog #731): `bench/bench.ts` now
+  measures the #725 test row as a cost path — one measured op is
+  three deliveries against a dedicated dedupe under a fixed injected
+  clock at capacity 100,000: a first sighting that verifies and
+  records as new, a redelivery that verifies again but reports
+  duplicate, and a tampered body that fails verification and never
+  reaches the dedupe step, proven by the tampered delivery's claimed
+  id still recording as new afterwards. The verify step reuses the
+  fixed signed webhook and its signature; the dedupe step uses
+  per-iteration synthetic ids standing in for `payload.eventId`,
+  because the fixed body's own id can only be first-seen once. New
+  row measured at 33,139 ops/sec (30.18 µs/op) on Node v24.22.1;
+  README Benchmarks prose and the full 73-row table refreshed from
+  this run. Bench-only change: no source change.
+
 - Benchmark `dispatchArbitration` x rolePolicy row (2026-10-30,
   backlog #728): `bench/bench.ts` now measures the #719 combination
   as a cost path — a DISPUTED escrow with `ARBITRATE_RELEASE`
