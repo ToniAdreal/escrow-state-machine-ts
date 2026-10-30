@@ -18,6 +18,23 @@ version changes.
 
 ### Added
 
+- `actOnStaleEscrows` x `subscribe` combination coverage
+  (2026-10-30, backlog #735): `test/staleActionSubscribe.test.ts`
+  pins the watchdog executor's notification behaviour, mirroring
+  dataquest #732 with no default action (the action is caller
+  supplied): an executor EXPIRE notifies exactly once with an entry
+  equal to the history tail and the executor report entry, a batch
+  notifies only its acted escrows while fresh and terminal escrows
+  stay silent, a policy refusal and a failed VERIFIED transition
+  report per-escrow errors with zero notifications and untouched
+  state/history, a notify-only action acts with no entry and no
+  notification, unsubscribing before the executor still expires
+  silently, a throwing listener stays isolated with its peer still
+  notified, and an authorized manual dispatch after a refusal still
+  notifies. No source change: the combination was previously
+  untested, not unimplemented. README test counts realigned to the
+  true suite total (1004 was 3 behind after backlog #734).
+
 - Benchmark `verifySettlementWebhook` x `SettlementEventDedupe`
   receiver-flow row (2026-10-30, backlog #731): `bench/bench.ts` now
   measures the #725 test row as a cost path — one measured op is
