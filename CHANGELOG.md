@@ -18,6 +18,23 @@ version changes.
 
 ### Added
 
+- Benchmark `actOnStaleEscrows` x `subscribe` notification row
+  (2026-10-31, backlog #749): `bench/bench.ts` measures the #735
+  test row as a cost path — one measured op is one batch action
+  over fresh rebuilds of the same 100-escrow watchdog batch, with
+  one collecting listener subscribed to every escrow: 70 stale
+  escrows EXPIRE and exactly 70 notifications arrive, each
+  carrying the appended EXPIRE entry field for field against that
+  escrow's history tail and the executor's report entry. Outside
+  the timed loop, a notify-only action is pinned to zero
+  notifications with all 70 stale escrows still acted, and an
+  unsubscribe-before-the-executor run is pinned to zero
+  notifications with all 70 still expiring. README Benchmarks
+  prose and the full 75-row table refreshed from this run (new
+  row ~365.7 ops/sec, Node v24.22.1). No source change: the
+  combination was previously unmeasured, not unimplemented.
+  README test counts unchanged (1029).
+
 - Benchmark `deliverSettlementWebhookToMany` fan-out x
   `SettlementEventDedupe` receiver-flow row (2026-10-30, backlog
   #745): `bench/bench.ts` measures the #741 test row as a cost
