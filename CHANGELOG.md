@@ -18,6 +18,21 @@ version changes.
 
 ### Added
 
+- Test NDJSON x snapshot RBAC recovery asymmetry (2026-10-31,
+  backlog #770): `test/ndjsonRbacAsymmetry.test.ts` is the escrow
+  mirror of the dataquest lifecycle's #764 test — a JSON snapshot
+  round-trip preserves the arbitration rolePolicy (envelope carries
+  it; a non-listed creator is still refused ARBITRATE_RELEASE and
+  the listed dao-arbitrator still releases), NDJSON history alone
+  restores state and history but NOT the policy (the log text
+  contains neither `rolePolicy` nor the arbitrator name, and the
+  fromHistory rebuild arbitrates with no actor at all, seq
+  continuing), re-attaching the same policy via fromHistory opts
+  gates again (creator refused ARBITRATE_REFUND, dao-arbitrator
+  refunds), and the original escrow is still gated before any
+  export. No source change: the combination was previously
+  untested, not unimplemented. README test counts 1044 to 1048.
+
 - Bench settlement webhook fan-out x secrets-rotation verify x
   `SettlementEventDedupe` receiver flow (2026-10-31, backlog #765):
   `bench/bench.ts` adds `runFanoutRotationDedupeFlow` +
