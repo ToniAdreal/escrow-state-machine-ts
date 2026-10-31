@@ -18,6 +18,22 @@ version changes.
 
 ### Added
 
+- Test `webhookFanoutDedupe` x secret rotation combination
+  (2026-10-31, backlog #755): `test/webhookFanoutDedupeRotation.test.ts`
+  closes the gap between the #741 fan-out dedupe file (one secret per
+  endpoint, no rotation list) and the #681 fan-out rotation file (a
+  `[new, old]` candidate list, no dedupe) — one old-signed eventId
+  fanned out to 4 loopback endpoints, each receiver verifying under
+  `[new, old]` and recording a first sighting in its own
+  `SettlementEventDedupe`; re-deliveries duplicate on all four;
+  a tampered delivery records nothing and the true delivery is
+  still first-seen; a post-rotation new-signed copy of the same
+  eventId is still a duplicate (dedupe is keyed by eventId, not by
+  signature version) while a new-signed fresh eventId is
+  processed; an unrelated-secret copy is rejected with the dedupe
+  untouched. No source change: the combination was previously
+  untested, not unimplemented. README test counts 1029 to 1034.
+
 - Benchmark `expireOverdueEscrows` x `subscribe` notification row
   (2026-10-31, backlog #750): `bench/bench.ts` measures the #739
   test row as a cost path — one measured op is one batch execution
