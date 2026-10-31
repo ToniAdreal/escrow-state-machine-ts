@@ -18,6 +18,21 @@ version changes.
 
 ### Added
 
+- Test `buildSettlementWebhooks` batch x `SettlementEventDedupe`
+  combination (2026-10-31, backlog #763):
+  `test/settlementWebhooksBatchDedupe.test.ts` closes the gap between
+  the batch file (distinct eventId per report, duplicate factory ids
+  fail unsigned) and the dedupe file (no batch coverage) — a 3-report
+  batch verifies and all 3 eventIds are first sightings, a whole-batch
+  re-delivery reports duplicate for all 3 with the store unchanged, a
+  duplicate factory id leaves the later report unsigned and adds no
+  dedupe entry (the failed settlement still delivers under a fresh id,
+  while a rebuild under the delivered twin's id is correctly a
+  duplicate), and a failed build does not claim its factory id, so a
+  later true report reusing that id is a first sighting. No source
+  change: the combination was previously untested, not unimplemented.
+  README test counts 1040 to 1044.
+
 - Test top-up settlement webhook x `SettlementEventDedupe` combination
   (2026-10-31, backlog #760): `test/webhookTopupDedupe.test.ts`
   closes the gap between the #671 top-up webhook file (summed deposit,
