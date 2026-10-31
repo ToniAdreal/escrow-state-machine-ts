@@ -18,6 +18,20 @@ version changes.
 
 ### Added
 
+- Test `buildSettlementWebhooks` batch x secret rotation combination
+  (2026-10-31, backlog #772):
+  `test/settlementWebhooksBatchRotation.test.ts` pins the batch
+  signed with the old key verifying under the receiver's [new, old]
+  candidate list with all 3 eventIds as first sightings, a
+  whole-batch re-delivery reporting duplicate for all 3 with the
+  store unchanged, a re-sign of the same eventIds with the new key
+  still verifying but correctly reporting duplicate (rotation does
+  not reset dedupe), and a batch signed with a stranger key failing
+  verification and recording nothing so the true batch under the
+  same eventIds is still a first sighting. No source change: the
+  combination was previously untested, not unimplemented. README
+  test counts 1054 to 1058.
+
 - Test settlement webhook `Idempotency-Key` x `SettlementEventDedupe`
   combination (2026-10-31, backlog #771):
   `test/settlementWebhookIdempotencyKeyDedupe.test.ts` is the escrow
