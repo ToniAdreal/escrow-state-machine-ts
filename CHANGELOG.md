@@ -18,6 +18,23 @@ version changes.
 
 ### Added
 
+- Benchmark `expireOverdueEscrows` x `subscribe` notification row
+  (2026-10-31, backlog #750): `bench/bench.ts` measures the #739
+  test row as a cost path — one measured op is one batch execution
+  over fresh rebuilds of the same 100-escrow watchdog batch, with
+  one collecting listener subscribed to every escrow: 40 overdue
+  escrows EXPIRE and exactly 40 notifications arrive, each
+  carrying the appended EXPIRE entry field for field against that
+  escrow's history tail and the executor's report entry. Outside
+  the timed loop, a failure-isolated VERIFIED overdue escrow is
+  pinned to zero notifications with the batch still expiring the
+  rest, and an unsubscribe-before-the-executor run is pinned to
+  zero notifications with all 40 still expiring. README Benchmarks
+  prose and the full 76-row table refreshed from this run (new
+  row ~535.8 ops/sec, Node v24.22.1). No source change: the
+  combination was previously unmeasured, not unimplemented.
+  README test counts unchanged (1029).
+
 - Benchmark `actOnStaleEscrows` x `subscribe` notification row
   (2026-10-31, backlog #749): `bench/bench.ts` measures the #735
   test row as a cost path — one measured op is one batch action

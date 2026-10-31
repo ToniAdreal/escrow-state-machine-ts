@@ -1242,6 +1242,25 @@
  *      and an unsubscribe-before-the-executor run is pinned to
  *      zero notifications with all 70 still expiring. Fixed
  *      timestamps, no network, no randomness.
+ *  70. watchdog deadline-expiry x subscribe notification —
+ *      `expireOverdueEscrows()` over fresh rebuilds of the same
+ *      100-escrow watchdog batch as group 16, with one collecting
+ *      listener subscribed to every escrow in the batch. This is the
+ *      #739 test row's bench variant: the plain deadline-expiry row
+ *      never pays a notification, and the plain subscribe row never
+ *      runs a watchdog batch, so neither measures the batch EXPIRE +
+ *      fan-out cost a watchdog deployment actually pays. One
+ *      measured op is one batch execution: 40 overdue escrows EXPIRE
+ *      and exactly 40 notifications arrive, one per expired escrow,
+ *      each carrying the appended EXPIRE audit entry field for
+ *      field (seq/event/from/to/at) against that escrow's history
+ *      tail and the executor's report entry. The fresh-fixture
+ *      rebuild cost is inside the timed region, as in group 16.
+ *      Outside the timed loop, a failure-isolated VERIFIED overdue
+ *      escrow is pinned to zero notifications with the batch still
+ *      expiring the rest, and an unsubscribe-before-the-executor run
+ *      is pinned to zero notifications with all 40 still expiring.
+ *      Fixed timestamps, no network, no randomness.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -4997,6 +5016,60 @@ function runActOnStaleEscrowsSubscribe(): {
   );
   return { results, notifications };
 }
+// The #739 test row's bench variant (backlog #750): the same
+// deadline-expiry batch as checkExpireOverdueResults, plus the
+// subscribe fan-out. One notification per expired escrow, in batch
+// order, each carrying the appended EXPIRE entry field for field
+// against both the escrow's history tail and the executor's report
+// entry — so a notification that cites the wrong audit record, or a
+// batch that notifies twice / drops one, fails the timed loop
+// itself, not just a one-time fixture check.
+function checkExpireOverdueSubscribeResults(
+  results: ReturnType<typeof expireOverdueEscrows>,
+  notifications: SubscribeNotification[],
+  label: string,
+): void {
+  checkExpireOverdueResults(results, label);
+  if (notifications.length !== results.length) {
+    throw new Error(`benchmark watchdog check failed: ${label}`);
+  }
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i];
+    const n = notifications[i];
+    const last = r.escrow.history[r.escrow.history.length - 1];
+    if (
+      n.event !== "EXPIRE" ||
+      n.to !== "EXPIRED" ||
+      r.entry === undefined ||
+      n.entry.seq !== r.entry.seq ||
+      n.entry.event !== last.event ||
+      n.entry.from !== last.from ||
+      n.entry.to !== last.to ||
+      n.entry.at !== last.at ||
+      r.entry.seq !== last.seq ||
+      r.entry.event !== last.event ||
+      r.entry.from !== last.from ||
+      r.entry.to !== last.to ||
+      r.entry.at !== last.at
+    ) {
+      throw new Error(`benchmark watchdog check failed: ${label}`);
+    }
+  }
+}
+function runExpireOverdueEscrowsSubscribe(): {
+  results: ReturnType<typeof expireOverdueEscrows>;
+  notifications: SubscribeNotification[];
+} {
+  const batch = buildWatchdogBatch();
+  const notifications: SubscribeNotification[] = [];
+  for (const escrow of batch) {
+    escrow.subscribe((event, from, to, entry) => {
+      notifications.push({ event, from, to, entry });
+    });
+  }
+  const results = expireOverdueEscrows(batch, WATCHDOG_NOW);
+  return { results, notifications };
+}
 // One-time executor validation (outside the timed loops), each on a
 // throwaway fresh batch so the module-scope screening batch above
 // stays unmutated for its own paths.
@@ -5080,6 +5153,88 @@ checkActOnStaleResults(
     );
   }
   checkActOnStaleResults(results, "actOnStaleEscrows x subscribe unsubscribe fixture");
+}
+// One-time deadline-expiry x subscribe validation (backlog #750,
+// outside the timed loop): the subscribed timed path itself, plus
+// the two silent shapes the timed loop cannot show — a
+// failure-isolated VERIFIED overdue escrow (attempted, refused,
+// zero notifications, untouched, batch still expiring the rest) and
+// unsubscribe-before-the-executor (all 40 still expire, zero
+// notifications).
+{
+  const { results, notifications } = runExpireOverdueEscrowsSubscribe();
+  checkExpireOverdueSubscribeResults(
+    results,
+    notifications,
+    "expireOverdueEscrows x subscribe fixture",
+  );
+}
+{
+  // VERIFIED escrow past its deadline: overdue, but no EXPIRE edge,
+  // so the executor isolates it as a per-item failure.
+  const stuck = watchdogFunded(
+    "BENCH-WD-STUCK-01",
+    BASE_MS,
+    BASE_MS + 30 * DAY_MS,
+  );
+  stuck.dispatch("SUBMIT_MILESTONE", undefined, undefined, {
+    at: isoAt(BASE_MS + 50 * DAY_MS),
+  });
+  stuck.dispatch("VERIFY_PASS", undefined, undefined, {
+    at: isoAt(BASE_MS + 51 * DAY_MS),
+  });
+  const open = watchdogFunded(
+    "BENCH-WD-OPEN-01",
+    BASE_MS,
+    BASE_MS + 30 * DAY_MS,
+  );
+  const notifications: SubscribeNotification[] = [];
+  for (const escrow of [stuck, open]) {
+    escrow.subscribe((event, from, to, entry) => {
+      notifications.push({ event, from, to, entry });
+    });
+  }
+  const results = expireOverdueEscrows([stuck, open], WATCHDOG_NOW);
+  if (
+    results.length !== 2 ||
+    results[0].expired !== false ||
+    results[0].error !== "invalid transition: EXPIRE from VERIFIED" ||
+    "entry" in results[0] ||
+    results[1].expired !== true ||
+    results[1].error !== undefined ||
+    notifications.length !== 1 ||
+    notifications[0].event !== "EXPIRE" ||
+    stuck.state !== "VERIFIED" ||
+    stuck.history.length !== 3 ||
+    open.state !== "EXPIRED"
+  ) {
+    throw new Error(
+      "benchmark watchdog check failed: expireOverdueEscrows x subscribe failure-isolation fixture",
+    );
+  }
+}
+{
+  const batch = buildWatchdogBatch();
+  const notifications: SubscribeNotification[] = [];
+  const unsubscribes: Array<() => void> = [];
+  for (const escrow of batch) {
+    unsubscribes.push(
+      escrow.subscribe((event, from, to, entry) => {
+        notifications.push({ event, from, to, entry });
+      }),
+    );
+  }
+  for (const unsubscribe of unsubscribes) unsubscribe();
+  const results = expireOverdueEscrows(batch, WATCHDOG_NOW);
+  if (notifications.length !== 0) {
+    throw new Error(
+      "benchmark watchdog check failed: expireOverdueEscrows x subscribe unsubscribe fixture",
+    );
+  }
+  checkExpireOverdueResults(
+    results,
+    "expireOverdueEscrows x subscribe unsubscribe fixture",
+  );
 }
 
 const ndjsonFixture = historyToNdjson(ndjsonHistoryFixture);
@@ -8397,6 +8552,25 @@ function benchActOnStaleEscrowsSubscribe(): number {
   }, ITERATIONS);
 }
 
+function benchExpireOverdueEscrowsSubscribe(): number {
+  return measure(() => {
+    // Fresh fixture per iteration, same reason as the plain
+    // deadline-expiry row: the executor dispatches EXPIRE on every
+    // overdue escrow it expires, and the collecting listeners
+    // must be re-subscribed to the fresh escrows. The rebuild +
+    // subscribe cost is inside the timed region, as in group 16.
+    // Per-iteration self-check: 40 expiries, exactly 40
+    // notifications, each carrying the appended EXPIRE entry
+    // field for field against history and the report entry.
+    const { results, notifications } = runExpireOverdueEscrowsSubscribe();
+    checkExpireOverdueSubscribeResults(
+      results,
+      notifications,
+      "expireOverdueEscrows x subscribe",
+    );
+  }, ITERATIONS);
+}
+
 function benchAllowedEvents(): number {
   return measure(() => {
     checkAllowedEventsPass();
@@ -9556,6 +9730,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "expireOverdueEscrows (batch 100 escrows)", ops: benchExpireOverdueEscrows() },
   { path: "actOnStaleEscrows (batch 100 escrows)", ops: benchActOnStaleEscrows() },
   { path: "actOnStaleEscrows x subscribe (batch 100 escrows, 70 notifications)", ops: benchActOnStaleEscrowsSubscribe() },
+  { path: "expireOverdueEscrows x subscribe (batch 100 escrows, 40 notifications)", ops: benchExpireOverdueEscrowsSubscribe() },
   { path: "allowedEvents (all 8 states)", ops: benchAllowedEvents() },
   { path: "calculateDeposit (3-shape corpus)", ops: benchCalculateDeposit() },
   { path: "dispatchArbitration (refund, rebuilt fixture)", ops: benchDispatchArbitration() },
