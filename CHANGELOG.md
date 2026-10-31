@@ -18,6 +18,19 @@ version changes.
 
 ### Added
 
+- Test `webhookFanoutLimits` x `SettlementEventDedupe` combination
+  (2026-10-31, backlog #758): `test/webhookFanoutLimitsDedupe.test.ts`
+  closes the gap between the #630 limits file (no dedupe) and the
+  #741 fan-out dedupe file (no endpoint cap) — an over-`maxEndpoints`
+  batch is refused before any request, so all four receivers' dedupes
+  stay empty; in a 3-endpoint batch where one endpoint keeps returning
+  500 until its retries are exhausted, the two healthy endpoints'
+  first deliveries are first sightings (re-delivery a duplicate) while
+  the failed endpoint's dedupe stays empty, and that endpoint's later
+  true delivery of the same eventId is still a first sighting. No
+  source change: the combination was previously untested, not
+  unimplemented. README test counts 1034 to 1036.
+
 - Test `webhookFanoutDedupe` x secret rotation combination
   (2026-10-31, backlog #755): `test/webhookFanoutDedupeRotation.test.ts`
   closes the gap between the #741 fan-out dedupe file (one secret per
