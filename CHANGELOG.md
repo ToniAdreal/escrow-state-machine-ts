@@ -18,6 +18,24 @@ version changes.
 
 ### Added
 
+- Test settlement webhook `Idempotency-Key` x `SettlementEventDedupe`
+  combination (2026-10-31, backlog #771):
+  `test/settlementWebhookIdempotencyKeyDedupe.test.ts` is the escrow
+  mirror of the dataquest lifecycle's #768 test — a webhook built
+  twice with the same eventId carries a byte-identical
+  `Idempotency-Key` header on both loopback deliveries and the
+  receiver processes the first and reports the second as a
+  duplicate, different eventIds carry different headers and are
+  both first sightings, a tampered body fails verification and
+  records nothing (the genuine delivery afterwards is still a
+  first sighting), a spoofed presented header never drives the
+  dedupe decision (the verified body eventId does), retry
+  attempts share the header and count as redeliveries, and the
+  same eventId reused across two escrows still dedupes the
+  second delivery. No source change: the combination was
+  previously untested, not unimplemented. README test counts
+  1048 to 1054.
+
 - Test NDJSON x snapshot RBAC recovery asymmetry (2026-10-31,
   backlog #770): `test/ndjsonRbacAsymmetry.test.ts` is the escrow
   mirror of the dataquest lifecycle's #764 test — a JSON snapshot
