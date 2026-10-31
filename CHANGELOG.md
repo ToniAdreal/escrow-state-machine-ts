@@ -18,6 +18,25 @@ version changes.
 
 ### Added
 
+- Bench settlement webhook fan-out x secrets-rotation verify x
+  `SettlementEventDedupe` receiver flow (2026-10-31, backlog #765):
+  `bench/bench.ts` adds `runFanoutRotationDedupeFlow` +
+  `benchDeliverSettlementWebhookToManyRotationDedupe` (one measured
+  op = two fan-outs of the same fresh eventId to 4 rotation
+  endpoints, each copy verifying under its own [new, old] candidate
+  list — signed under the old secret, so one failed HMAC trial
+  before the match — and recording as a first sighting in that
+  endpoint's own dedupe, the redelivery verifying again and
+  reporting duplicate on all four dedupes, plus one tampered-copy
+  probe per endpoint that fails verification and records nothing,
+  proven by each tampered id still recording as new afterwards;
+  6,400 live entries per dedupe stay far under the 100,000 cap
+  under a fixed injected clock). Bench-only, no source change:
+  the combination was previously unmeasured, not unimplemented.
+  README Benchmarks prose + full table refreshed from this run's
+  real numbers (77 rows; new row 2,823 ops/sec, 354.17 µs/op,
+  Node v24.22.1); test count unchanged at 1044.
+
 - Test `buildSettlementWebhooks` batch x `SettlementEventDedupe`
   combination (2026-10-31, backlog #763):
   `test/settlementWebhooksBatchDedupe.test.ts` closes the gap between
