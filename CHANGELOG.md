@@ -18,6 +18,18 @@ version changes.
 
 ### Added
 
+- Test top-up settlement webhook x `SettlementEventDedupe` combination
+  (2026-10-31, backlog #760): `test/webhookTopupDedupe.test.ts`
+  closes the gap between the #671 top-up webhook file (summed deposit,
+  no dedupe) and the #741 fan-out dedupe file (no top-up settlement) —
+  a top-up settlement webhook built with a fixed eventId is a first
+  sighting on first delivery and a duplicate on re-delivery, a tampered
+  delivery verifies false and records nothing so the true delivery is
+  still first-seen, and a second top-up event with a different eventId
+  is still a first sighting. No source change: the combination was
+  previously untested, not unimplemented. README test counts 1036 to
+  1040.
+
 - Test `webhookFanoutLimits` x `SettlementEventDedupe` combination
   (2026-10-31, backlog #758): `test/webhookFanoutLimitsDedupe.test.ts`
   closes the gap between the #630 limits file (no dedupe) and the
