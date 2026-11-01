@@ -1319,6 +1319,21 @@
  *      and an invalid `maxEndpoints: 0` is pinned to its exact
  *      configuration error with zero fetch calls. Fixed
  *      timestamps, no network, no randomness.
+ *  73. settlement batch reports x top-up —
+ *      `buildSettlementReports(...)` over a 2-escrow batch. This is
+ *      the #695 test row's bench variant: the plain batch row (#5)
+ *      never contains a topped-up escrow, so it never exercises
+ *      the FUND-summation path a reconciliation job actually pays
+ *      when a deposit arrives in two wires. One measured op builds
+ *      the batch — a topped-up released escrow (FUND 10000 + 630,
+ *      5 entries) plus a single-FUND released control (FUND 5000,
+ *      4 entries) — and summarizes the two results for the
+ *      balanced check. The per-iteration self-check pins the
+ *      top-up report's deposit at 10630 (the FUND sum, not the
+ *      first FUND), outcome released, and balanced; the control
+ *      report's deposit at 5000 and balanced; and the summary at
+ *      totalDeposit / totalInflow / totalOutflow 15630 with
+ *      balanced true. Fixed timestamps, no network, no randomness.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -1767,6 +1782,103 @@ function checkBatchSummary(
   }
 }
 checkBatchSummary(summarizeSettlementReports(batchResults));
+// Top-up batch fixture (backlog #789, the bench variant of the #695
+// test row): the plain batch above never contains a topped-up escrow,
+// so it never exercises the FUND-summation path. One measured op
+// builds a 2-report batch — a topped-up released escrow (FUND 10000
+// + 630, 5 entries) plus a single-FUND released control (FUND 5000,
+// 4 entries) — and summarizes the two results for the balanced
+// check. Hand-derived expectations (NOT produced by the
+// implementation): the top-up report's deposit is the FUND sum
+// 10630, outcome released, balanced; the control report's deposit
+// is the single FUND 5000, outcome released, balanced; the summary
+// is total 2 / reports 2 / errors 0, totalDeposit = totalInflow =
+// totalOutflow = 10630 + 5000 = 15630, balanced true (sponsor
+// outflow 15630, creator inflow 10098.50 + 4750 = 14848.50,
+// platform inflow 531.50 + 250 = 781.50).
+function runTopupReleasedLifecycle(id: string): Escrow {
+  const escrow = new Escrow(id);
+  const steps: Array<{ event: EscrowEvent; amount?: number }> = [
+    { event: "FUND", amount: 10000 },
+    { event: "FUND", amount: 630 },
+    { event: "SUBMIT_MILESTONE" },
+    { event: "VERIFY_PASS" },
+    { event: "RELEASE" },
+  ];
+  steps.forEach(({ event, amount }, i) => {
+    escrow.dispatch(event, undefined, amount, {
+      at: new Date(BASE_MS + i * 1000).toISOString(),
+    });
+  });
+  return escrow;
+}
+function runSingleFundReleasedLifecycle(id: string): Escrow {
+  const escrow = new Escrow(id);
+  const steps: Array<{ event: EscrowEvent; amount?: number }> = [
+    { event: "FUND", amount: 5000 },
+    { event: "SUBMIT_MILESTONE" },
+    { event: "VERIFY_PASS" },
+    { event: "RELEASE" },
+  ];
+  steps.forEach(({ event, amount }, i) => {
+    escrow.dispatch(event, undefined, amount, {
+      at: new Date(BASE_MS + i * 1000).toISOString(),
+    });
+  });
+  return escrow;
+}
+const topupControlDeposit = calculateDeposit({
+  creatorPool: 4370,
+  baseFee: 600,
+  complexityMultiplier: 1.0,
+  loyaltyDiscount: 30,
+  oracleFee: 60,
+});
+if (topupControlDeposit.deposit !== 5000) {
+  throw new Error("benchmark fixture failed: top-up control deposit mismatch");
+}
+const topupBatchInputs: SettlementReportInputs[] = [
+  settlementInputsFor(runTopupReleasedLifecycle("BENCH-TOPUP-001")),
+  {
+    ...settlementInputsFor(runSingleFundReleasedLifecycle("BENCH-TOPUP-002")),
+    deposit: topupControlDeposit,
+  },
+];
+function checkTopupBatchResults(
+  results: ReturnType<typeof buildSettlementReports>,
+): void {
+  if (results.length !== topupBatchInputs.length) {
+    throw new Error("benchmark top-up batch check failed: result count mismatch");
+  }
+  const [topup, control] = results;
+  if (
+    topup.escrowId !== topupBatchInputs[0].escrowId ||
+    control.escrowId !== topupBatchInputs[1].escrowId ||
+    topup.error !== undefined ||
+    topup.report?.outcome !== "released" ||
+    topup.report?.deposit.deposit !== 10630 ||
+    topup.report?.balanced !== true ||
+    control.error !== undefined ||
+    control.report?.outcome !== "released" ||
+    control.report?.deposit.deposit !== 5000 ||
+    control.report?.balanced !== true
+  ) {
+    throw new Error("benchmark top-up batch check failed: report mismatch");
+  }
+  const summary = summarizeSettlementReports(results);
+  if (
+    summary.total !== 2 ||
+    summary.reports !== 2 ||
+    summary.errors !== 0 ||
+    summary.totalDeposit !== 15630 ||
+    summary.totalInflow !== 15630 ||
+    summary.totalOutflow !== 15630 ||
+    summary.balanced !== true
+  ) {
+    throw new Error("benchmark top-up batch check failed: summary mismatch");
+  }
+}
+checkTopupBatchResults(buildSettlementReports(topupBatchInputs));
 // Batch-webhook fixture: the pre-built batch results above are piped
 // straight into `buildSettlementWebhooks` — the reports -> webhooks
 // hand-off the batch API is designed for. Expectations are hand-derived
@@ -8392,6 +8504,12 @@ function benchBuildSettlementReports(): number {
   }, ITERATIONS);
 }
 
+function benchBuildSettlementReportsTopup(): number {
+  return measure(() => {
+    checkTopupBatchResults(buildSettlementReports(topupBatchInputs));
+  }, ITERATIONS);
+}
+
 function benchSummarizeSettlementReports(): number {
   return measure(() => {
     checkBatchSummary(summarizeSettlementReports(batchResults));
@@ -10112,6 +10230,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "parseSettlementReportCsv (released report, 4 parties)", ops: benchParseSettlementReportCsv() },
   { path: "depositAmountFromHistory (4-shape corpus)", ops: benchDepositAmountFromHistory() },
   { path: "buildSettlementReports (batch 4 x 4 entries)", ops: benchBuildSettlementReports() },
+  { path: "buildSettlementReports x top-up (batch 2, FUND sum 10630)", ops: benchBuildSettlementReportsTopup() },
   { path: "summarizeSettlementReports (batch 4 results)", ops: benchSummarizeSettlementReports() },
   { path: "buildSettlementWebhooks (batch 4 results)", ops: benchBuildSettlementWebhooks() },
   { path: "buildSettlementWebhook (sign)", ops: benchBuildSettlementWebhook() },

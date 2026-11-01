@@ -18,6 +18,23 @@ version changes.
 
 ### Added
 
+- Bench `buildSettlementReports` batch x top-up row (2026-11-01,
+  backlog #789): `bench/bench.ts` adds `runTopupReleasedLifecycle` /
+  `runSingleFundReleasedLifecycle` + `checkTopupBatchResults` +
+  `benchBuildSettlementReportsTopup` (one measured op = building a
+  2-report batch — a topped-up released escrow (FUND 10000 + 630,
+  5 entries) plus a single-FUND released control (FUND 5000,
+  4 entries) — and summarizing the two results for the balanced
+  check, pinning the top-up report's deposit at 10630 (the FUND
+  sum, not the first FUND), outcome released, and balanced, the
+  control report's deposit at 5000 and balanced, and the summary
+  at totalDeposit / totalInflow / totalOutflow 15630 with
+  balanced true). The new row measures 40,563 ops/sec
+  (24.65 µs/op) on this run; the README benchmark table is
+  refreshed from the same run. No source change and no test-count
+  change: the combination was previously unmeasured, not
+  unimplemented.
+
 - Test webhook top-up event x ToMany fan-out combination (2026-11-01,
   backlog #788): `test/webhookTopupFanout.test.ts` pins the previously
   untested combination of a top-up settlement event (FUND 10000 + 630)
