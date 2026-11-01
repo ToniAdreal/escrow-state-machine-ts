@@ -18,6 +18,24 @@ version changes.
 
 ### Added
 
+- Test top-up escrow x arbitration quorum combination (2026-11-01,
+  backlog #800): `test/arbitrationTopup.test.ts` pins the previously
+  untested path from a topped-up DISPUTED escrow through the quorum
+  gate: FUND 10000 + top-up FUND 630 settles on the summed 10630
+  (not the first FUND alone); a below-quorum (4/9) release or refund
+  throws `arbitration requires quorum: 4/5 approvals`, leaves state
+  and history untouched, and builds no settlement report, while
+  gathering the 5th approval afterwards lets the same escrow
+  arbitrate with no seq gap; a reached-quorum (5/9) release yields a
+  `released` report with releasePath `DISPUTE → ARBITRATE_RELEASE`
+  and the 5% pro-fee split over 10630 (creator 10098.50, platform
+  531.50); a reached-quorum refund yields a `refunded` report with
+  no `releasePath` key and the full 10630 back to the sponsor; and
+  the gate is independent of the locked total — a 20000 escrow
+  (10000 + 10000 top-up) still needs exactly 5 approvals. No source
+  change: the combination was previously untested, not
+  unimplemented.
+
 - Test arbitration result x settlement webhook combination (2026-11-01,
   backlog #799): `test/settlementWebhookArbitration.test.ts` pins the
   previously untested path from the quorum gate through the webhook: a
