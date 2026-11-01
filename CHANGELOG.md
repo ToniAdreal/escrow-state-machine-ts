@@ -18,6 +18,17 @@ version changes.
 
 ### Added
 
+- Test webhook top-up event x ToMany fan-out combination (2026-11-01,
+  backlog #788): `test/webhookTopupFanout.test.ts` pins the previously
+  untested combination of a top-up settlement event (FUND 10000 + 630)
+  fanned out via `deliverSettlementWebhookToMany` to 4 endpoints — every
+  endpoint receives the same eventId carrying the summed deposit 10630
+  and verifies only with its own secret, one endpoint 500s once then
+  succeeds on retry (attempts 2, others 1), and re-delivery of the same
+  eventId reports duplicate on all four per-endpoint receivers. No source
+  change: the combination was previously untested, not unimplemented.
+  README test counts 1070 to 1072.
+
 - Test `buildSettlementReports` batch x hash chain combination (2026-11-01,
   backlog #787): `test/settlementReportsBatchHashChain.test.ts` pins the
   read-first finding that a `SettlementReport` carries no hash-chain
