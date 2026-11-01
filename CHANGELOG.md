@@ -18,6 +18,20 @@ version changes.
 
 ### Added
 
+- Test `settlementReportsBatch` x `buildSettlementWebhooks` end to end
+  (2026-11-01, backlog #797): `test/settlementReportsBatchWebhooks.test.ts`
+  pipes batch reports (released / refunded / expired / non-terminal)
+  straight into `buildSettlementWebhooks` and pins that the three
+  success items each yield exactly one webhook whose outcome and
+  deposit match the report (including `expired`, which omits
+  `releasePath`), the non-terminal item is a forwarded per-item error
+  with no webhook and consumes no `eventId` (a counting factory issues
+  evt-1..evt-3 in order), every batch webhook verifies under the batch
+  secret and fails under a stranger secret, and per-item secrets
+  cross-check: a webhook signed for one escrow fails under the other
+  escrows' secrets. No source change: the combination was previously
+  untested, not unimplemented.
+
 - Bench `buildSettlementReports` batch x top-up row (2026-11-01,
   backlog #789): `bench/bench.ts` adds `runTopupReleasedLifecycle` /
   `runSingleFundReleasedLifecycle` + `checkTopupBatchResults` +
