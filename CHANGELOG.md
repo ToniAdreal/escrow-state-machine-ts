@@ -18,6 +18,22 @@ version changes.
 
 ### Added
 
+- Test arbitration result x settlement webhook combination (2026-11-01,
+  backlog #799): `test/settlementWebhookArbitration.test.ts` pins the
+  previously untested path from the quorum gate through the webhook: a
+  DISPUTED escrow released by a reached 5/9 quorum yields a report with
+  outcome `released` and releasePath `DISPUTE → ARBITRATE_RELEASE` and a
+  webhook with the same outcome and path, split 5% pro-fee over the
+  10630 deposit (creator 10098.50, platform 531.50), verified under the
+  correct secret and rejected under a stranger secret; a DISPUTED
+  escrow refunded by a reached quorum yields a `refunded` webhook with
+  no `releasePath` key and the full deposit refunded to the sponsor
+  (sponsor inflow == outflow == deposit, all other parties zero); and
+  a below-quorum (4/9) arbitration throws, leaves state and history
+  untouched, and builds no settlement report, so no webhook can be
+  made from it. No source change: the combination was previously
+  untested, not unimplemented.
+
 - Test expired escrow x settlement webhook combination (2026-11-01,
   backlog #798): `test/settlementWebhookExpired.test.ts` pins the
   previously untested path from the watchdog through the webhook: an
