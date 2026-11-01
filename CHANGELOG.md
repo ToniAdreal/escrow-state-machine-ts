@@ -18,6 +18,23 @@ version changes.
 
 ### Added
 
+- Test expired escrow x settlement webhook combination (2026-11-01,
+  backlog #798): `test/settlementWebhookExpired.test.ts` pins the
+  previously untested path from the watchdog through the webhook: an
+  overdue FUNDED escrow expired by `expireOverdueEscrows` yields a
+  report with outcome `expired` and a webhook with the same outcome,
+  the full deposit (10630) refunded to the sponsor (sponsor inflow ==
+  outflow == deposit, all other parties zero) and no `releasePath` key;
+  in one `buildSettlementWebhooks` batch the expired webhook sits next
+  to a released control whose outcome and `releasePath` are untouched;
+  a not-overdue FUNDED escrow in the same watchdog batch stays FUNDED
+  with its history untouched and forwards as a per-item error with no
+  webhook, consuming no `eventId`; and the expired event fanned out
+  via `deliverSettlementWebhookToMany` to 4 loopback endpoints reaches
+  every endpoint as the same eventId and verifies only under that
+  endpoint's own secret. No source change: the combination was
+  previously untested, not unimplemented.
+
 - Test `settlementReportsBatch` x `buildSettlementWebhooks` end to end
   (2026-11-01, backlog #797): `test/settlementReportsBatchWebhooks.test.ts`
   pipes batch reports (released / refunded / expired / non-terminal)
