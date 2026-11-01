@@ -18,6 +18,20 @@ version changes.
 
 ### Added
 
+- Test `buildSettlementReports` batch x hash chain combination (2026-11-01,
+  backlog #787): `test/settlementReportsBatchHashChain.test.ts` pins the
+  read-first finding that a `SettlementReport` carries no hash-chain
+  field — the chain is the entry gate inside `buildSettlementReport`,
+  so an intact chained batch matches the single-escrow reports entry
+  for entry, a tampered FUND amount, a deleted middle entry, or a
+  mixed chained/hashless history in one escrow yields a per-item
+  `hash chain` error without blocking its companion, a fully hashless
+  (legacy) batch passes through like the single reports, and a
+  tampered entry contributes zero to `summarizeSettlementReports`
+  totals (summary identical to the companion alone). No source change:
+  the combination was previously untested, not unimplemented. README
+  test counts 1063 to 1070.
+
 - Test `buildSettlementReports` batch x quorum combination (2026-11-01,
   backlog #786): `test/settlementReportsBatchQuorum.test.ts` pins the
   read-first finding that a `SettlementReport` carries no quorum field —
