@@ -18,6 +18,25 @@ version changes.
 
 ### Added
 
+- Bench settlement webhook fan-out limits x `SettlementEventDedupe`
+  receiver flow (2026-11-01, backlog #776):
+  `bench/bench.ts` adds `runFanoutLimitsDedupe` +
+  `benchDeliverSettlementWebhookToManyLimitsDedupe` (one measured
+  op = a 4-endpoint batch under `maxEndpoints: 3` that throws the
+  pinned cap error before any request with zero fetch calls and
+  records nothing, plus two fan-outs of the same fresh eventId to
+  the 4 fixed endpoints — the first fan-out delivers 4 / fails 0
+  with every endpoint's copy verifying under its own secret and
+  recording as a first sighting in that endpoint's own dedupe,
+  which also proves the refused batch recorded nothing, and the
+  redelivery delivers 4 / fails 0 again, verifies again, and
+  reports duplicate on all four dedupes; 3,200 live entries per
+  dedupe stay far under the 100,000 cap under a fixed injected
+  clock). The new row measures 2,836 ops/sec (352.67 µs/op) on
+  this run; the README benchmark table is refreshed from the same
+  run. No source change and no test-count change: the combination
+  was previously unmeasured, not unimplemented.
+
 - Test `buildSettlementWebhooks` batch x secret rotation combination
   (2026-10-31, backlog #772):
   `test/settlementWebhooksBatchRotation.test.ts` pins the batch
