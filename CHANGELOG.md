@@ -18,6 +18,19 @@ version changes.
 
 ### Added
 
+- Test `buildSettlementReports` batch x quorum combination (2026-11-01,
+  backlog #786): `test/settlementReportsBatchQuorum.test.ts` pins the
+  read-first finding that a `SettlementReport` carries no quorum field —
+  approval state shows as the reached escrow's outcome/releasePath
+  (`DISPUTE → ARBITRATE_RELEASE`) plus the `quorum 5/5` audit note, while
+  a below-threshold DISPUTED escrow yields a per-item error (no report)
+  and contributes zero to `summarizeSettlementReports` totals; a
+  reached release + reached refund pair matches the single-escrow
+  reports entry for entry with summary totals recomputed party by
+  party, and a revoked-below-threshold entry errors without blocking
+  its companion. No source change: the combination was previously
+  untested, not unimplemented. README test counts 1058 to 1063.
+
 - Bench settlement webhook fan-out limits x `SettlementEventDedupe`
   receiver flow (2026-11-01, backlog #776):
   `bench/bench.ts` adds `runFanoutLimitsDedupe` +
