@@ -18,6 +18,27 @@ version changes.
 
 ### Added
 
+- Benchmark day-end pipeline: `buildSettlementReports` x
+  `buildSettlementWebhooks` x `deliverSettlementWebhookToMany` row
+  (2026-11-02, backlog #812): `bench/bench.ts` adds
+  `runBatchPipelineDelivery` + `benchBuildSettlementReportsWebhookFanout`
+  (one measured op = building the fixed 4-input batch — released /
+  refunded / released / per-item error — building its 3 signed
+  webhooks with bench-batch-event-1..3 and the error forwarded, then
+  fanning each successful report out to the 4 fixed endpoints — 3
+  settlements x 4 endpoints = 12 first-attempt deliveries through a
+  fake fetch answering 200 immediately — pinning each fan-out at
+  delivered 4 / failed 0 with results in endpoint order (attempts 1,
+  status 200), exactly 12 fetch calls, each endpoint's 3 bodies in
+  batch order byte-identical to the built webhook payloads, and no
+  call carrying the batch's error escrow, with every endpoint's copy
+  pinned once outside the timed loop to verify under its own secret
+  and no other's). The new row measures 2,389 ops/sec
+  (418.55 µs/op) on this run; the README benchmark table is
+  refreshed from the same run. No source change and no test-count
+  change: the combination was previously unmeasured, not
+  unimplemented.
+
 - Test quorum approval expiry x settlement webhook combination
   (2026-11-02, backlog #810):
   `test/settlementWebhookQuorumExpiry.test.ts` pins the previously

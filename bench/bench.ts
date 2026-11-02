@@ -1334,6 +1334,26 @@
  *      report's deposit at 5000 and balanced; and the summary at
  *      totalDeposit / totalInflow / totalOutflow 15630 with
  *      balanced true. Fixed timestamps, no network, no randomness.
+ *  74. day-end pipeline — `buildSettlementReports(...)` ->
+ *      `buildSettlementWebhooks(...)` ->
+ *      `deliverSettlementWebhookToMany(...)`. This is the #809 test
+ *      row's bench variant: the batch-report row, the batch-webhook
+ *      row, and the fan-out row never ran as one measured op, so the
+ *      whole reconciliation job had no steady-state cost row. One
+ *      measured op builds the fixed 4-input batch (released /
+ *      refunded / released / per-item error), builds its 3 signed
+ *      webhooks (bench-batch-event-1..3, error forwarded, no eventId
+ *      consumed), then fans each successful report out to the 4
+ *      fixed endpoints — 3 settlements x 4 endpoints = 12
+ *      first-attempt deliveries through a fake fetch answering 200
+ *      immediately. The per-iteration self-check pins each fan-out
+ *      at delivered 4 / failed 0 with results in endpoint order
+ *      (attempts 1, status 200), exactly 12 fetch calls, each
+ *      endpoint's 3 bodies in batch order byte-identical to the
+ *      built webhook payloads, and no call carrying the batch's
+ *      error escrow; the per-endpoint signature check runs once,
+ *      outside the timed loop. Fixed timestamps, no network, no
+ *      randomness.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -2755,6 +2775,142 @@ for (const [i, endpoint] of FANOUT_ENDPOINTS.entries()) {
     throw new Error(
       `benchmark fixture failed: fan-out endpoint ${i} signature does not verify`,
     );
+  }
+}
+
+// Day-end pipeline fixture (backlog #812, the bench variant of the
+// #809 test row): the batch-report row, the batch-webhook row, and
+// the fan-out row never ran as one measured op, so the whole
+// reconciliation job — reports -> webhooks -> first delivery to 4
+// endpoints — had no steady-state cost row. One measured op is:
+//   buildSettlementReports(batchInputs) — the fixed 4-input batch
+//     (released / refunded / released / per-item error, checked by
+//     checkBatchResults);
+//   buildSettlementWebhooks(results, { secret: WEBHOOK_SECRET,
+//     now: WEBHOOK_NOW, eventIdFactory: fresh counter }) — 3 signed
+//     webhooks with bench-batch-event-1..3, error forwarded, checked
+//     by checkBatchWebhooks (which re-verifies every signature);
+//   deliverSettlementWebhookToMany(report, FANOUT_ENDPOINTS,
+//     { now: WEBHOOK_NOW, eventId: built eventId }) per successful
+//     report — 3 settlements x 4 endpoints = 12 first-attempt
+//     deliveries through a fake global fetch answering 200
+//     immediately. Zero network, no retry sleep is ever reached.
+// Per-iteration self-check: each fan-out reports delivered 4 /
+// failed 0 with results in endpoint order (attempts 1, status 200),
+// exactly 12 fetch calls, each endpoint receiving its 3 settlements
+// in batch order with bodies byte-identical to the built webhook
+// payloads, and no call carrying the batch's error escrow
+// (BENCH-BATCH-004). The delivery layer rebuilds the payload from
+// the report (see the #809 honesty note), so threading the built
+// eventId back in as the fan-out option is what makes the delivered
+// body byte-identical to the built one — that threading is exactly
+// what this row pins.
+// Outside the timed loop, every endpoint's copy is pinned to verify
+// under that endpoint's own secret and under no other endpoint's
+// secret (the per-iteration check pins body identity, not crypto,
+// so the crypto check runs once).
+let batchPipelineCalls: Array<{ url: string; body: string; signature: string }> = [];
+const batchPipelineFetch: typeof fetch = async (input, init) => {
+  batchPipelineCalls.push({
+    url: String(input),
+    body: String(init?.body ?? ""),
+    signature: String(new Headers(init?.headers).get("x-signature") ?? ""),
+  });
+  return new Response("{}", {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+};
+
+async function runBatchPipelineDelivery(): Promise<void> {
+  batchPipelineCalls = [];
+  globalThis.fetch = batchPipelineFetch;
+  const results = buildSettlementReports(batchInputs);
+  checkBatchResults(results);
+  const built = buildSettlementWebhooks(results, {
+    secret: WEBHOOK_SECRET,
+    now: WEBHOOK_NOW,
+    eventIdFactory: batchWebhookEventIdFactory(),
+  });
+  checkBatchWebhooks(built);
+  const successful = built.filter((entry) => entry.webhook !== undefined);
+  for (let i = 0; i < built.length; i++) {
+    const entry = built[i];
+    if (entry.webhook === undefined || results[i].report === undefined) {
+      continue;
+    }
+    const out = await deliverSettlementWebhookToMany(
+      results[i].report!,
+      FANOUT_ENDPOINTS,
+      {
+        now: WEBHOOK_NOW,
+        eventId: entry.webhook.payload.eventId,
+      },
+    );
+    if (
+      out.delivered !== FANOUT_ENDPOINTS.length ||
+      out.failed !== 0 ||
+      out.results.some(
+        (r, j) =>
+          !r.ok ||
+          r.attempts !== 1 ||
+          r.status !== 200 ||
+          r.url !== FANOUT_ENDPOINTS[j].url,
+      )
+    ) {
+      throw new Error(
+        "benchmark self-check failed: batch pipeline delivery fan-out",
+      );
+    }
+  }
+  if (batchPipelineCalls.length !== 12) {
+    throw new Error(
+      "benchmark self-check failed: batch pipeline delivery call count",
+    );
+  }
+  if (batchPipelineCalls.some((c) => c.body.includes("BENCH-BATCH-004"))) {
+    throw new Error(
+      "benchmark self-check failed: batch pipeline delivered the error escrow",
+    );
+  }
+  for (const endpoint of FANOUT_ENDPOINTS) {
+    const mine = batchPipelineCalls.filter((c) => c.url === endpoint.url);
+    if (mine.length !== successful.length) {
+      throw new Error(
+        "benchmark self-check failed: batch pipeline delivery per-endpoint count",
+      );
+    }
+    for (let i = 0; i < successful.length; i++) {
+      if (mine[i].body !== JSON.stringify(successful[i].webhook!.payload)) {
+        throw new Error(
+          "benchmark self-check failed: batch pipeline delivery body mismatch",
+        );
+      }
+    }
+  }
+}
+
+// One-time fixture validation (outside the timed loop): every
+// endpoint's copy verifies under its own secret and no other's.
+await runBatchPipelineDelivery();
+for (const endpoint of FANOUT_ENDPOINTS) {
+  const mine = batchPipelineCalls.filter((c) => c.url === endpoint.url);
+  for (const call of mine) {
+    if (!verifySettlementWebhook(call.body, call.signature, endpoint.secret)) {
+      throw new Error(
+        "benchmark fixture failed: batch pipeline endpoint signature does not verify",
+      );
+    }
+    for (const other of FANOUT_ENDPOINTS) {
+      if (
+        other.url !== endpoint.url &&
+        verifySettlementWebhook(call.body, call.signature, other.secret)
+      ) {
+        throw new Error(
+          "benchmark fixture failed: batch pipeline signature verifies under a foreign secret",
+        );
+      }
+    }
   }
 }
 
@@ -8528,6 +8684,17 @@ function benchBuildSettlementWebhooks(): number {
   }, ITERATIONS);
 }
 
+async function benchBuildSettlementReportsWebhookFanout(): Promise<number> {
+  const ops = await measureAsync(async () => {
+    await runBatchPipelineDelivery();
+  }, ITERATIONS);
+  // The pipeline fixture installs its own fake fetch per run; hand
+  // the global back to the genuine implementation (later rows
+  // install their own fakes regardless).
+  globalThis.fetch = ORIGINAL_FETCH;
+  return ops;
+}
+
 function benchBuildSettlementWebhook(): number {
   return measure(() => {
     const built = buildSettlementWebhook(report, {
@@ -10233,6 +10400,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "buildSettlementReports x top-up (batch 2, FUND sum 10630)", ops: benchBuildSettlementReportsTopup() },
   { path: "summarizeSettlementReports (batch 4 results)", ops: benchSummarizeSettlementReports() },
   { path: "buildSettlementWebhooks (batch 4 results)", ops: benchBuildSettlementWebhooks() },
+  { path: "buildSettlementReports x buildSettlementWebhooks x deliverSettlementWebhookToMany (batch 4, 3 settlements x 4 endpoints)", ops: await benchBuildSettlementReportsWebhookFanout() },
   { path: "buildSettlementWebhook (sign)", ops: benchBuildSettlementWebhook() },
   { path: "verifySettlementWebhook", ops: benchVerifySettlementWebhook() },
   { path: "verifySettlementWebhook (secrets rotation, 2 candidates)", ops: benchVerifySettlementWebhookSecretsRotation() },
