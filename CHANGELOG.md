@@ -18,6 +18,18 @@ version changes.
 
 ### Added
 
+- Test batch settlement reports over mixed audit keys
+  (2026-11-02, backlog #818):
+  `test/settlementReportsBatchAuditKey.test.ts` adds 6 cases — a wrong
+  key fails alone in the middle of a batch without blocking later
+  items, a keyed escrow given no key fails alone, two escrows under
+  two different keys succeed with no key leakage (swapped keys fail
+  both ways), a Buffer-form per-item key matches a string-built
+  chain, the summary counts and sums only successful reports, and
+  batch results match the single-escrow builder entry for entry
+  (including the exact error text). No source change: the batch
+  wrapper already delegates per entry to `buildSettlementReport`.
+
 - Benchmark day-end pipeline: `buildSettlementReports` x
   `buildSettlementWebhooks` x `deliverSettlementWebhookToMany` row
   (2026-11-02, backlog #812): `bench/bench.ts` adds
