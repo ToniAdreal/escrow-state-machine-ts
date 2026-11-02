@@ -1787,6 +1787,35 @@ export const DEMO_AUDIT_KEY_TAMPERED_NOTE =
   "Deliverable URLs + IPFS metadata hash (rewritten)";
 
 /**
+ * Keyed-batch fixtures for the batch-over-keyed-chains
+ * section that follows the keyed audit chain section:
+ * two fresh branch escrows that walk the same
+ * FUND -> SUBMIT_MILESTONE -> VERIFY_PASS -> RELEASE
+ * lifecycle as DEMO-ESC-019 on fixed timestamps the
+ * next day, so the three batch entries differ ONLY in
+ * their key mode — the comparison the section exists
+ * to show:
+ * - DEMO-ESC-026 (unkeyed): no `auditKey` at all, so
+ *   its plain SHA-256 chain reports with no key passed
+ * - DEMO-ESC-027 (keyed, reported under the wrong
+ *   key): constructed with {@link DEMO_AUDIT_KEY} like
+ *   DEMO-ESC-019, but the batch input passes
+ *   {@link DEMO_AUDIT_WRONG_KEY}, so its entry must
+ *   fail closed as an isolated per-item error while
+ *   the other two reports still build
+ * Both carry the golden deposit (10630) and the same
+ * 5% pro fee, so the summary money is hand-computable:
+ * 2 reports x 10630 = 21260 in every total, and the
+ * error entry contributes nothing.
+ */
+export const DEMO_KEYED_BATCH_UNKEYED_ESCROW_ID = "DEMO-ESC-026";
+export const DEMO_KEYED_BATCH_WRONG_KEY_ESCROW_ID = "DEMO-ESC-027";
+export const DEMO_KEYED_BATCH_FUND_AT = "2026-03-21T09:00:00.000Z";
+export const DEMO_KEYED_BATCH_SUBMIT_AT = "2026-03-21T10:00:00.000Z";
+export const DEMO_KEYED_BATCH_VERIFY_AT = "2026-03-21T11:00:00.000Z";
+export const DEMO_KEYED_BATCH_RELEASE_AT = "2026-03-21T11:01:00.000Z";
+
+/**
  * Webhook timeout fixtures for the final closing segment:
  * the main escrow's signed webhook is delivered three
  * more times while the per-attempt `timeoutMs` bound of
@@ -3144,6 +3173,22 @@ export interface DemoResult {
   auditKeyTamperedNote: string;
   /** History length of the keyed escrow: exactly 4. */
   auditKeyHistoryLength: number;
+  /**
+   * Per-item results of the keyed-batch section, in
+   * batch order: the correct-key keyed escrow and the
+   * unkeyed escrow each produce a `released` report,
+   * the wrong-key keyed escrow produces an isolated
+   * `{escrowId, error}` entry.
+   */
+  keyedBatchResults: SettlementReportResult[];
+  /**
+   * Reconciliation summary over
+   * {@link DemoResult.keyedBatchResults}: 3 escrows,
+   * 2 reports, 1 error; the error entry contributes
+   * nothing, so every money total is 21260 and the
+   * batch is balanced.
+   */
+  keyedBatchSummary: SettlementReportsSummary;
   /**
    * Error message of delivering the main webhook to a
    * hanging endpoint with `timeoutMs`
@@ -7221,6 +7266,174 @@ export async function runDemo(): Promise<DemoResult> {
     `  original history after the tamper check: verifyHistoryChain: ${auditKeyRecheckVerified} (detached copy — the escrow's own history is untouched; the demo key is a printed placeholder, not a real secret)`,
   );
 
+  // --- Batch settlement reports over keyed audit chains: buildSettlementReports with per-escrow auditKey (final closing) ---
+  // The batch section above ran over unkeyed histories
+  // and the keyed-chain section above verified one
+  // keyed history in isolation — but a day-end batch
+  // mixes both, and the question the batch reader
+  // actually faces is per-item: does each escrow
+  // report under ITS OWN key mode, and does one
+  // wrong key poison only its own entry? Three fresh
+  // inputs, identical except for key mode: the
+  // DEMO-ESC-019 keyed escrow reported under the
+  // correct key, a new unkeyed escrow reported with
+  // no key, and a new keyed escrow reported under
+  // the wrong key. The batch wrapper delegates to
+  // `buildSettlementReport` unchanged, so the wrong
+  // key fails closed exactly as the single-report
+  // path does — the entry lands as {escrowId, error}
+  // and never blocks the reports around it — and
+  // `summarizeSettlementReports` counts the error
+  // while summing money over the successful reports
+  // only. Hand-pinned expectations (see the fixture
+  // comment above), asserted HERE, outside the
+  // printing: a wrong-key entry that produced a
+  // report, or an error entry leaking into the money
+  // totals, would fail the demo itself, not just a
+  // test. Zero network, zero randomness, fixed
+  // timestamps.
+  const keyedBatchUnkeyedEscrow = new Escrow(
+    DEMO_KEYED_BATCH_UNKEYED_ESCROW_ID,
+  );
+  keyedBatchUnkeyedEscrow.dispatch(
+    "FUND",
+    "Deposit locked (wire received)",
+    10630,
+    {
+      actor: "sponsor",
+      at: DEMO_KEYED_BATCH_FUND_AT,
+    },
+  );
+  keyedBatchUnkeyedEscrow.dispatch(
+    "SUBMIT_MILESTONE",
+    DEMO_AUDIT_KEY_SUBMIT_NOTE,
+    undefined,
+    {
+      actor: "creator",
+      at: DEMO_KEYED_BATCH_SUBMIT_AT,
+    },
+  );
+  keyedBatchUnkeyedEscrow.dispatch(
+    "VERIFY_PASS",
+    "KPIs validated by oracle",
+    undefined,
+    {
+      actor: "oracle",
+      at: DEMO_KEYED_BATCH_VERIFY_AT,
+    },
+  );
+  keyedBatchUnkeyedEscrow.dispatch(
+    "RELEASE",
+    "Verification passed — release funds",
+    undefined,
+    {
+      actor: "system",
+      at: DEMO_KEYED_BATCH_RELEASE_AT,
+    },
+  );
+  const keyedBatchWrongKeyEscrow = new Escrow(
+    DEMO_KEYED_BATCH_WRONG_KEY_ESCROW_ID,
+    {
+      auditKey: DEMO_AUDIT_KEY,
+    },
+  );
+  keyedBatchWrongKeyEscrow.dispatch(
+    "FUND",
+    "Deposit locked (wire received)",
+    10630,
+    {
+      actor: "sponsor",
+      at: DEMO_KEYED_BATCH_FUND_AT,
+    },
+  );
+  keyedBatchWrongKeyEscrow.dispatch(
+    "SUBMIT_MILESTONE",
+    DEMO_AUDIT_KEY_SUBMIT_NOTE,
+    undefined,
+    {
+      actor: "creator",
+      at: DEMO_KEYED_BATCH_SUBMIT_AT,
+    },
+  );
+  keyedBatchWrongKeyEscrow.dispatch(
+    "VERIFY_PASS",
+    "KPIs validated by oracle",
+    undefined,
+    {
+      actor: "oracle",
+      at: DEMO_KEYED_BATCH_VERIFY_AT,
+    },
+  );
+  keyedBatchWrongKeyEscrow.dispatch(
+    "RELEASE",
+    "Verification passed — release funds",
+    undefined,
+    {
+      actor: "system",
+      at: DEMO_KEYED_BATCH_RELEASE_AT,
+    },
+  );
+  const keyedBatchResults = buildSettlementReports([
+    {
+      escrowId: auditKeyEscrow.id,
+      history: auditKeyEscrow.history,
+      finalState: auditKeyEscrow.state,
+      deposit: fees,
+      settlement: { proFeeBps: DEMO_PRO_FEE_BPS },
+      auditKey: DEMO_AUDIT_KEY,
+    },
+    {
+      escrowId: keyedBatchUnkeyedEscrow.id,
+      history: keyedBatchUnkeyedEscrow.history,
+      finalState: keyedBatchUnkeyedEscrow.state,
+      deposit: fees,
+      settlement: { proFeeBps: DEMO_PRO_FEE_BPS },
+    },
+    {
+      escrowId: keyedBatchWrongKeyEscrow.id,
+      history: keyedBatchWrongKeyEscrow.history,
+      finalState: keyedBatchWrongKeyEscrow.state,
+      deposit: fees,
+      settlement: { proFeeBps: DEMO_PRO_FEE_BPS },
+      auditKey: DEMO_AUDIT_WRONG_KEY,
+    },
+  ]);
+  const keyedBatchSummary = summarizeSettlementReports(keyedBatchResults);
+  const keyedBatchWrongKeyError = `cannot build settlement report for ${DEMO_KEYED_BATCH_WRONG_KEY_ESCROW_ID}: audit history hash chain is broken or mixes chained and hashless entries (an entry was tampered with, deleted, or reordered)`;
+  if (
+    keyedBatchResults.length !== 3 ||
+    keyedBatchResults[0]?.report?.outcome !== "released" ||
+    keyedBatchResults[0]?.report?.deposit.deposit !== 10630 ||
+    keyedBatchResults[1]?.report?.outcome !== "released" ||
+    keyedBatchResults[1]?.report?.deposit.deposit !== 10630 ||
+    keyedBatchResults[2]?.report !== undefined ||
+    keyedBatchResults[2]?.error !== keyedBatchWrongKeyError ||
+    keyedBatchSummary.total !== 3 ||
+    keyedBatchSummary.reports !== 2 ||
+    keyedBatchSummary.errors !== 1 ||
+    keyedBatchSummary.outcomes.released !== 2 ||
+    keyedBatchSummary.outcomes.refunded !== 0 ||
+    keyedBatchSummary.outcomes.expired !== 0 ||
+    keyedBatchSummary.totalDeposit !== 21260 ||
+    keyedBatchSummary.totalInflow !== 21260 ||
+    keyedBatchSummary.totalOutflow !== 21260 ||
+    keyedBatchSummary.balanced !== true
+  ) {
+    throw new Error(
+      "demo fixture broken: keyed batch settlement does not match the pinned shape (the correct-key and unkeyed escrows each report released at 10630, the wrong-key escrow is an isolated error, and the summary sums only the two successful reports)",
+    );
+  }
+  lines.push(
+    "",
+    "Batch settlement reports over keyed audit chains (buildSettlementReports with per-escrow auditKey):",
+    `  ${auditKeyEscrow.id} (keyed, correct key): report — outcome released, deposit 10630, balanced true`,
+    `  ${keyedBatchUnkeyedEscrow.id} (unkeyed, no key): report — outcome released, deposit 10630, balanced true`,
+    `  ${keyedBatchWrongKeyEscrow.id} (keyed, wrong key): error — ${keyedBatchWrongKeyError}`,
+    `  summary: ${keyedBatchSummary.total} escrows — ${keyedBatchSummary.reports} reports, ${keyedBatchSummary.errors} error (released ${keyedBatchSummary.outcomes.released}, refunded ${keyedBatchSummary.outcomes.refunded}, expired ${keyedBatchSummary.outcomes.expired})`,
+    `  summary totals: deposit ${keyedBatchSummary.totalDeposit}, inflow ${keyedBatchSummary.totalInflow}, outflow ${keyedBatchSummary.totalOutflow} — ${keyedBatchSummary.balanced ? "balanced ✓" : "UNBALANCED ✗"} (the error entry contributes nothing to any total)`,
+    `  summary parties: ${keyedBatchSummary.parties.map((p) => `${p.party} net ${p.net}`).join(", ")}`,
+  );
+
   // --- Webhook delivery timeout: deliverSettlementWebhook timeoutMs (final closing) ---
   // Every delivery segment above answered promptly (or
   // was cancelled by the caller): a SLOW endpoint that
@@ -8043,6 +8256,8 @@ export async function runDemo(): Promise<DemoResult> {
     auditKeyTamperedVerified,
     auditKeyTamperedNote,
     auditKeyHistoryLength,
+    keyedBatchResults,
+    keyedBatchSummary,
     timeoutDeliveryError,
     timeoutDeliveryFetchCalls,
     timeoutInvalidError,

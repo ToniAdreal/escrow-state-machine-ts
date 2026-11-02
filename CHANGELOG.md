@@ -18,6 +18,18 @@ version changes.
 
 ### Added
 
+- Demo batch settlement reports over keyed audit chains
+  (2026-11-02, backlog #823):
+  `src/demo.ts` adds a closing section that runs
+  `buildSettlementReports` over three escrows differing only in
+  key mode — DEMO-ESC-019 keyed under the correct key, DEMO-ESC-026
+  unkeyed, DEMO-ESC-027 keyed but reported under the wrong key —
+  and prints each report/error plus the summary (3 escrows,
+  2 reports, 1 error; every money total 21260; balanced). The
+  wrong-key entry is isolated per-item error text and contributes
+  nothing to any total. `test/demo.test.ts` adds 2 cases (verbatim
+  lines + ordering, byte-identical determinism slice) and re-points
+  the auditKey determinism slice at the new section header.
 - Test keyed audit chain x top-up settlement report combination
   (2026-11-02, backlog #821):
   `test/settlementReportTopupAuditKey.test.ts` adds 5 cases — a

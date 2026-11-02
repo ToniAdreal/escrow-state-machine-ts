@@ -22,6 +22,12 @@ import {
   DEMO_AUDIT_KEY_VERIFY_AT,
   DEMO_AUDIT_KEY_VERIFY_EVIDENCE,
   DEMO_AUDIT_WRONG_KEY,
+  DEMO_KEYED_BATCH_FUND_AT,
+  DEMO_KEYED_BATCH_RELEASE_AT,
+  DEMO_KEYED_BATCH_SUBMIT_AT,
+  DEMO_KEYED_BATCH_UNKEYED_ESCROW_ID,
+  DEMO_KEYED_BATCH_VERIFY_AT,
+  DEMO_KEYED_BATCH_WRONG_KEY_ESCROW_ID,
   DEMO_DEDUPE_CLEAR_EVENT_ID,
   DEMO_DEDUPE_CLEAR_START_MS,
   DEMO_DEPOSIT_CAP_ESCROW_ID,
@@ -6181,8 +6187,9 @@ test("demo shows verifyHistoryChain auditKey keyed chain: the correct key verifi
   assert.equal(verifyHistoryChain(probePlain.history, DEMO_AUDIT_KEY), false);
 
   // The segment follows the verifyEvidence segment
-  // and prints its lines verbatim; the timeout
-  // segment closes the demo after it.
+  // and prints its lines verbatim; the keyed-batch
+  // segment follows it, and the timeout segment
+  // follows that.
   const verifyEvidenceAt = text.indexOf(
     "Verify evidence gate (EscrowOptions.requireVerifyEvidence on branch escrows):",
   );
@@ -6219,7 +6226,7 @@ test("demo auditKey segment is deterministic: two runs print byte-identical audi
         "Keyed audit chain (verifyHistoryChain with EscrowOptions.auditKey on a branch escrow):",
       ),
       ls.indexOf(
-        "Webhook delivery timeout (deliverSettlementWebhook timeoutMs via hanging fake fetch, zero network):",
+        "Batch settlement reports over keyed audit chains (buildSettlementReports with per-escrow auditKey):",
       ) - 1,
     );
   const a = await runDemo();
@@ -6238,6 +6245,115 @@ test("demo auditKey segment is deterministic: two runs print byte-identical audi
   assert.equal(a.auditKeyTamperedVerified, b.auditKeyTamperedVerified);
   assert.equal(a.auditKeyTamperedNote, b.auditKeyTamperedNote);
   assert.equal(a.auditKeyHistoryLength, b.auditKeyHistoryLength);
+});
+
+test("demo shows batch settlement reports over keyed audit chains: the correct-key and unkeyed escrows report, the wrong-key escrow is an isolated error, and the summary sums only the successful reports", async () => {
+  const { keyedBatchResults, keyedBatchSummary, lines } = await runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned fixture shape: the two new branch
+  // escrows walk the same lifecycle as DEMO-ESC-019
+  // the next day, and the wrong-key error text is the
+  // exact string src/settlementReport.ts produces
+  // when verifyHistoryChain fails closed.
+  assert.equal(DEMO_KEYED_BATCH_UNKEYED_ESCROW_ID, "DEMO-ESC-026");
+  assert.equal(DEMO_KEYED_BATCH_WRONG_KEY_ESCROW_ID, "DEMO-ESC-027");
+  assert.equal(DEMO_KEYED_BATCH_FUND_AT, "2026-03-21T09:00:00.000Z");
+  assert.equal(DEMO_KEYED_BATCH_SUBMIT_AT, "2026-03-21T10:00:00.000Z");
+  assert.equal(DEMO_KEYED_BATCH_VERIFY_AT, "2026-03-21T11:00:00.000Z");
+  assert.equal(DEMO_KEYED_BATCH_RELEASE_AT, "2026-03-21T11:01:00.000Z");
+
+  assert.equal(keyedBatchResults.length, 3);
+  assert.equal(keyedBatchResults[0]?.escrowId, DEMO_AUDIT_KEY_ESCROW_ID);
+  assert.equal(keyedBatchResults[0]?.report?.outcome, "released");
+  assert.equal(keyedBatchResults[0]?.report?.deposit.deposit, 10630);
+  assert.equal(keyedBatchResults[0]?.report?.balanced, true);
+  assert.equal(keyedBatchResults[1]?.escrowId, DEMO_KEYED_BATCH_UNKEYED_ESCROW_ID);
+  assert.equal(keyedBatchResults[1]?.report?.outcome, "released");
+  assert.equal(keyedBatchResults[1]?.report?.deposit.deposit, 10630);
+  assert.equal(keyedBatchResults[1]?.report?.balanced, true);
+  assert.equal(keyedBatchResults[2]?.escrowId, DEMO_KEYED_BATCH_WRONG_KEY_ESCROW_ID);
+  assert.equal(keyedBatchResults[2]?.report, undefined);
+  assert.equal(
+    keyedBatchResults[2]?.error,
+    `cannot build settlement report for ${DEMO_KEYED_BATCH_WRONG_KEY_ESCROW_ID}: audit history hash chain is broken or mixes chained and hashless entries (an entry was tampered with, deleted, or reordered)`,
+  );
+  assert.equal(keyedBatchSummary.total, 3);
+  assert.equal(keyedBatchSummary.reports, 2);
+  assert.equal(keyedBatchSummary.errors, 1);
+  assert.deepEqual(keyedBatchSummary.outcomes, {
+    released: 2,
+    refunded: 0,
+    expired: 0,
+  });
+  assert.equal(keyedBatchSummary.totalDeposit, 21260);
+  assert.equal(keyedBatchSummary.totalInflow, 21260);
+  assert.equal(keyedBatchSummary.totalOutflow, 21260);
+  assert.equal(keyedBatchSummary.balanced, true);
+  assert.deepEqual(
+    keyedBatchSummary.parties.map((p) => [p.party, p.net]),
+    [
+      ["sponsor", -21260],
+      ["creator", 20197],
+      ["platform", 1063],
+      ["referrer", 0],
+    ],
+  );
+
+  // The segment follows the auditKey segment and
+  // prints its lines verbatim; the timeout segment
+  // follows it.
+  const auditKeyAt = text.indexOf(
+    "Keyed audit chain (verifyHistoryChain with EscrowOptions.auditKey on a branch escrow):",
+  );
+  const keyedBatchAt = text.indexOf(
+    "Batch settlement reports over keyed audit chains (buildSettlementReports with per-escrow auditKey):",
+  );
+  assert.ok(
+    keyedBatchAt > auditKeyAt,
+    "keyed-batch segment must follow the auditKey segment",
+  );
+  for (const line of [
+    `  ${DEMO_AUDIT_KEY_ESCROW_ID} (keyed, correct key): report — outcome released, deposit 10630, balanced true`,
+    `  ${DEMO_KEYED_BATCH_UNKEYED_ESCROW_ID} (unkeyed, no key): report — outcome released, deposit 10630, balanced true`,
+    `  ${DEMO_KEYED_BATCH_WRONG_KEY_ESCROW_ID} (keyed, wrong key): error — cannot build settlement report for ${DEMO_KEYED_BATCH_WRONG_KEY_ESCROW_ID}: audit history hash chain is broken or mixes chained and hashless entries (an entry was tampered with, deleted, or reordered)`,
+    `  summary: 3 escrows — 2 reports, 1 error (released 2, refunded 0, expired 0)`,
+    `  summary totals: deposit 21260, inflow 21260, outflow 21260 — balanced ✓ (the error entry contributes nothing to any total)`,
+    `  summary parties: sponsor net -21260, creator net 20197, platform net 1063, referrer net 0`,
+  ]) {
+    assert.ok(text.includes(line), `missing keyed-batch line: ${line}`);
+  }
+  const timeoutAt = text.indexOf(
+    "Webhook delivery timeout (deliverSettlementWebhook timeoutMs via hanging fake fetch, zero network):",
+  );
+  assert.ok(
+    timeoutAt > keyedBatchAt,
+    "timeout segment must follow the keyed-batch segment",
+  );
+});
+
+test("demo keyed-batch segment is deterministic: two runs print byte-identical keyed-batch lines", async () => {
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf(
+        "Batch settlement reports over keyed audit chains (buildSettlementReports with per-escrow auditKey):",
+      ),
+      ls.indexOf(
+        "Webhook delivery timeout (deliverSettlementWebhook timeoutMs via hanging fake fetch, zero network):",
+      ) - 1,
+    );
+  const a = await runDemo();
+  const b = await runDemo();
+  const segA = segment(a.lines);
+  // Header + the correct-key line + the unkeyed line
+  // + the wrong-key error line + the summary line +
+  // the totals line + the parties line; every value is
+  // derived from the fixed fixtures alone, so no
+  // normalization is needed.
+  assert.equal(segA.length, 7);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(a.keyedBatchResults, b.keyedBatchResults);
+  assert.deepEqual(a.keyedBatchSummary, b.keyedBatchSummary);
 });
 
 test("demo shows deliverSettlementWebhook timeoutMs: a hanging endpoint times out after one attempt, timeoutMs 0 throws before any fetch, and a generous timeout succeeds unchanged", async () => {
