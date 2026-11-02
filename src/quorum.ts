@@ -58,6 +58,16 @@ export interface ApprovalLogEntry {
   readonly signerId: string;
   /** Canonical ISO-8601 timestamp of when the approval was recorded. */
   readonly at: string;
+  /**
+   * Optional caller-supplied reference to the off-chain evidence
+   * behind this approval — e.g. a vote-record link, a governance
+   * proposal id, or an attestation reference. Present only when
+   * `approve()` was called with one. The quorum records the claim;
+   * it does NOT verify that the referenced evidence is real and
+   * performs no signature verification on it — the same honest scope
+   * as the VERIFY_PASS evidence reference on escrow history entries.
+   */
+  readonly evidence?: string;
 }
 
 /**
@@ -101,11 +111,22 @@ export interface Quorum {
   readonly signerCount: number;
   /**
    * Record an approval. Idempotent while the signer's current approval
-   * still counts: re-approving is a no-op. If the signer's approval has
-   * expired (see `maxApprovalAgeMs`), approving again appends a fresh
-   * log entry with a new timestamp and the signer counts again.
+   * still counts: re-approving is a no-op and does not replace the
+   * evidence recorded on the original entry (revoke, then approve
+   * again, to change it). If the signer's approval has expired (see
+   * `maxApprovalAgeMs`), approving again appends a fresh log entry
+   * with a new timestamp and the signer counts again, and the fresh
+   * entry carries the new evidence (if any) — the counting views
+   * always follow the signer's latest entry.
+   *
+   * The optional `evidence` is a caller-asserted reference to
+   * off-chain evidence behind the vote (a vote-record link, a
+   * governance proposal id, an attestation reference). It must be a
+   * non-empty string when given; the quorum records it verbatim and
+   * never verifies it. Counting (`hasQuorum` / `approvalCount` /
+   * `approvals`) is unaffected by whether evidence is present.
    */
-  approve(signerId: string): void;
+  approve(signerId: string, evidence?: string): void;
   /**
    * Withdraw a previously recorded approval (real multi-sigs let signers
    * change their vote before the threshold is reached). Throws for unknown
@@ -183,6 +204,7 @@ function assertValidConfig({
 interface TimedApproval {
   readonly signerId: string;
   readonly atMs: number;
+  readonly evidence?: string;
 }
 
 function buildQuorum(
@@ -218,12 +240,23 @@ function buildQuorum(
   return {
     threshold,
     signerCount: signers.size,
-    approve(signerId: string): void {
+    approve(signerId: string, evidence?: string): void {
       if (!signers.has(signerId))
         throw new Error(`unknown quorum signer: ${JSON.stringify(signerId)}`);
+      if (
+        evidence !== undefined &&
+        (typeof evidence !== "string" || evidence.length === 0)
+      )
+        throw new Error(
+          "quorum approval evidence must be a non-empty string"
+        );
       const current = latestBySigner().get(signerId);
-      if (current !== undefined && isCounted(current)) return; // still counts — no-op
-      log.push({ signerId, atMs: now() });
+      if (current !== undefined && isCounted(current)) return; // still counts — no-op, evidence unchanged
+      log.push({
+        signerId,
+        atMs: now(),
+        ...(evidence !== undefined ? { evidence } : {}),
+      });
     },
     revoke(signerId: string): void {
       if (!signers.has(signerId))
@@ -253,6 +286,7 @@ function buildQuorum(
       return log.map((e) => ({
         signerId: e.signerId,
         at: new Date(e.atMs).toISOString(),
+        ...(e.evidence !== undefined ? { evidence: e.evidence } : {}),
       }));
     },
     snapshot(): QuorumSnapshot {
@@ -264,6 +298,7 @@ function buildQuorum(
         approvals: log.map((e) => ({
           signerId: e.signerId,
           at: new Date(e.atMs).toISOString(),
+          ...(e.evidence !== undefined ? { evidence: e.evidence } : {}),
         })),
       };
     },
@@ -302,11 +337,13 @@ const QUORUM_SNAPSHOT_FIELDS = new Set([
  *  - `threshold`, the `signers` set, or `maxApprovalAgeMs` differing
  *    from `config` (restoring under a different counting rule would
  *    silently re-interpret approvals collected under another one)
- *  - an approval entry that is not exactly `{ signerId, at }`, names
- *    an unknown signer, carries a non-canonical-ISO timestamp, is an
- *    exact duplicate of an earlier entry (same signer, same
- *    timestamp), or is out of record order (timestamps must be
- *    non-decreasing, the same bar this repo's snapshot parsers set)
+ *  - an approval entry that is not exactly `{ signerId, at }` plus
+ *    an optional `evidence`, names an unknown signer, carries a
+ *    non-canonical-ISO timestamp, carries an `evidence` that is
+ *    present but not a non-empty string, is an exact duplicate of an
+ *    earlier entry (same signer, same timestamp), or is out of record
+ *    order (timestamps must be non-decreasing, the same bar this
+ *    repo's snapshot parsers set)
  *
  * A signer may legitimately appear several times with *different*
  * timestamps (re-approval after expiry appends a fresh entry), so
@@ -376,7 +413,7 @@ export function restoreQuorum(
       fail(`${tag} must be an object { signerId, at }`);
     const entry = raw as Record<string, unknown>;
     for (const key of Object.keys(entry)) {
-      if (key !== "signerId" && key !== "at")
+      if (key !== "signerId" && key !== "at" && key !== "evidence")
         fail(`${tag}: unknown field ${JSON.stringify(key)}`);
     }
     if (typeof entry.signerId !== "string" || entry.signerId.length === 0)
@@ -390,6 +427,12 @@ export function restoreQuorum(
       );
     const at = entry.at as string;
     const atMs = Date.parse(at);
+    let evidence: string | undefined;
+    if (entry.evidence !== undefined) {
+      if (typeof entry.evidence !== "string" || entry.evidence.length === 0)
+        fail(`${tag}: evidence must be a non-empty string`);
+      evidence = entry.evidence as string;
+    }
     const pairKey = `${signerId}\u0000${at}`;
     if (seenPairs.has(pairKey))
       fail(`${tag}: duplicate approval entry for signer ${JSON.stringify(signerId)} at ${at}`);
@@ -397,7 +440,11 @@ export function restoreQuorum(
     if (atMs < prevMs)
       fail(`${tag}: approvals must be in non-decreasing timestamp order`);
     prevMs = atMs;
-    entries.push({ signerId, atMs });
+    entries.push({
+      signerId,
+      atMs,
+      ...(evidence !== undefined ? { evidence } : {}),
+    });
   }
   return buildQuorum(config, entries);
 }

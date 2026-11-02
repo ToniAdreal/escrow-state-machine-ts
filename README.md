@@ -468,6 +468,12 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   reached, `hasQuorum()` — see the usage example
   in its JSDoc). `approvalLog()` records who approved and when
   (timestamps injectable via `QuorumConfig.now` for deterministic tests).
+  `approve()` also accepts an optional `evidence` reference — a
+  vote-record link, governance proposal id, or attestation reference —
+  carried on the log entry and the snapshot. Evidence is a caller
+  assertion, exactly like `VERIFY_PASS` evidence: the quorum records
+  it verbatim, never verifies that it is real, and counting is
+  identical with or without it.
   An optional `maxApprovalAgeMs` gives approvals a shelf life: past the
   window (boundary inclusive) they stop counting toward the threshold —
   `hasQuorum()` can fall back to false — but they stay in `approvalLog()`,
@@ -488,8 +494,9 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   process restart: `quorum.snapshot()` exports the full approval log
   plus the configuration it was collected under as plain JSON, and
   `restoreQuorum(config, snapshot)` restores it under strict
-  validation (unknown signers, duplicate entries, bad timestamps, and
-  config mismatches are rejected; expiry keeps aging from the original
+  validation (unknown signers, duplicate entries, bad timestamps,
+  illegal evidence, and config mismatches are rejected; expiry keeps
+  aging from the original
   timestamps, never refreshed by the restore). The snapshot is an
   export format, not a built-in store, and restored approvals are
   still unsigned. There is still no signature verification, no key
@@ -897,7 +904,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1129 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1141 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

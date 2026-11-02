@@ -18,6 +18,20 @@ version changes.
 
 ### Added
 
+- Quorum approval evidence references (2026-11-02, backlog #831):
+  `Quorum.approve(signerId, evidence?)` records an optional non-empty
+  string reference (vote-record link, governance proposal id,
+  attestation reference) on `ApprovalLogEntry.evidence`, carried by
+  `approvalLog()` and `QuorumSnapshot.approvals` only when present, so
+  evidence-free approvals keep the exact legacy shape; evidence is a
+  caller assertion the quorum records verbatim and never verifies
+  (the VERIFY_PASS scope), counting is unchanged, a counted
+  re-approval stays a no-op and keeps the original evidence, an
+  expired re-approval appends a fresh entry with the new evidence,
+  revoke removes the signer's evidence with its entries, and
+  `restoreQuorum` rejects evidence that is present but empty or
+  non-string as `invalid quorum snapshot`. `test/quorumEvidence.test.ts`
+  adds 12 cases.
 - Constructor-time deadline (2026-11-02, backlog #828):
   `EscrowOptions` gains `deadline?: Date | string`, installed by the
   constructor through the exact `setDeadline` validation (canonical
