@@ -18,6 +18,20 @@ version changes.
 
 ### Added
 
+- Constructor-time deadline (2026-11-02, backlog #828):
+  `EscrowOptions` gains `deadline?: Date | string`, installed by the
+  constructor through the exact `setDeadline` validation (canonical
+  ISO storage, unparseable input throws before any instance exists),
+  so `Escrow.fromHistory(id, history, { deadline })` can carry a
+  deadline into a history-only rebuild; `toJSON()` shape is unchanged
+  (it already carried `deadline`), and on `fromJSON` an explicit
+  `opts.deadline` overrides the snapshot's deadline, mirroring the
+  `rolePolicy` override rule. `test/constructorDeadline.test.ts`
+  adds 12 cases (canonical/Date/non-canonical inputs, fail-fast with
+  no instance, `isOverdue` agreement, `toJSON`/`fromJSON` round-trip
+  and override, both `fromHistory` paths, and the five-field legal
+  options set); the unknown-fields test's all-fields case now covers
+  all five legal options.
 - Test keyed batch settlement x webhook build x fan-out delivery chain
   (2026-11-02, backlog #825):
   `test/settlementBatchAuditKeyDelivery.test.ts` adds 3 cases — the

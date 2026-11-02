@@ -21,14 +21,16 @@ function bareSnapshot() {
 }
 
 describe("EscrowOptions unknown-field fail-closed", () => {
-  it("accepts all four legal option fields together", () => {
+  it("accepts all five legal option fields together", () => {
     const escrow = new Escrow("ok-all", {
       requireVerifyEvidence: true,
       maxDeposit: 10000,
       auditKey: "k1",
       rolePolicy: { VERIFY_PASS: ["moderator"] },
+      deadline: "2027-01-01T00:00:00.000Z",
     });
     assert.equal(escrow.id, "ok-all");
+    assert.equal(escrow.getDeadline(), "2027-01-01T00:00:00.000Z");
   });
 
   it("accepts each legal field in isolation", () => {

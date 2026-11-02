@@ -292,6 +292,7 @@ const ESCROW_OPTION_FIELDS = new Set([
   "maxDeposit",
   "auditKey",
   "rolePolicy",
+  "deadline",
 ]);
 
 /**
@@ -1218,6 +1219,29 @@ export interface EscrowOptions {
    * verifies who the caller is. See SECURITY.md.
    */
   rolePolicy?: RolePolicy;
+
+  /**
+   * Optional advisory deadline attached at construction — the
+   * constructor-time equivalent of {@link Escrow.setDeadline}: a Date
+   * or a parseable string, stored as canonical ISO-8601, with the
+   * exact same fail-fast validation (an unparseable value throws
+   * `invalid deadline: …` from the constructor, so no instance is
+   * produced). The deadline is advisory only — it never moves the
+   * escrow by itself; a watchdog reads `isOverdue()` and dispatches
+   * `EXPIRE` explicitly.
+   *
+   * This closes the asymmetry with `setDeadline()` for the
+   * history-only restore path: `Escrow.fromHistory(id, history,
+   * { deadline })` installs the deadline through the constructor,
+   * where a bare history alone carries none. Like `rolePolicy`
+   * (and unlike `requireVerifyEvidence`/`maxDeposit`/`auditKey`),
+   * the deadline IS snapshot state: `toJSON()` includes it when
+   * set, and on `Escrow.fromJSON` an explicit `opts.deadline`
+   * overrides the snapshot's deadline entirely, mirroring the
+   * `rolePolicy` override semantics; when omitted, the snapshot's
+   * deadline is restored as-is.
+   */
+  deadline?: Date | string;
 }
 
 /** Stateful escrow with an append-only audit history. */
@@ -1280,6 +1304,14 @@ export class Escrow {
     // so later caller mutation of the options object cannot change
     // the policy this escrow enforces. Tag mirrors dataquest.
     this._rolePolicy = assertRolePolicy(opts?.rolePolicy, "invalid option");
+    // A construction-time deadline reuses setDeadline's validation
+    // verbatim (canonical ISO storage, unparseable input throws), so
+    // a bad deadline fails the constructor and produces no instance.
+    // This is what lets fromHistory() carry a deadline: the log
+    // itself holds none, the option is the only source.
+    if (opts?.deadline !== undefined) {
+      this.setDeadline(opts.deadline);
+    }
   }
 
   get state(): EscrowState {
@@ -1828,6 +1860,12 @@ export class Escrow {
    *   as-is. This mirrors how a caller would deliberately tighten,
    *   loosen, or clear a policy on restore.
    *
+   *   `opts.deadline` follows the same override semantics: the
+   *   deadline IS snapshot state too, so an explicit
+   *   `opts.deadline` replaces the snapshot's deadline entirely
+   *   (the constructor installs it before the restore runs); when
+   *   omitted, the snapshot's deadline is restored as-is.
+   *
    *   `opts.auditKey` additionally feeds the snapshot's hash-chain
    *   re-verification: a snapshot chained in keyed mode (see
    *   {@link EscrowOptions.auditKey}) only restores when the same key
@@ -1843,7 +1881,14 @@ export class Escrow {
     const escrow = new Escrow(parsed.id, opts);
     escrow._state = parsed.state;
     escrow._history = chainHistoryEntries(parsed.history, opts?.auditKey);
-    escrow._deadline = parsed.deadline;
+    // The deadline is snapshot state like rolePolicy (see below), so
+    // an explicit opts.deadline overrides the snapshot's deadline
+    // entirely — the constructor already installed it, and blindly
+    // overwriting it here would silently drop the caller's choice.
+    // When omitted, the snapshot's deadline is restored as-is.
+    if (opts?.deadline === undefined) {
+      escrow._deadline = parsed.deadline;
+    }
     // Unlike the constructor options above, the consumed idempotency-key
     // set IS snapshot state: restore it so a post-restart replay of an
     // already-consumed key stays a no-op (see EscrowSnapshot).
@@ -1910,13 +1955,16 @@ export class Escrow {
    *   is installed by the constructor, when omitted the rebuilt
    *   escrow is unrestricted.
    *
-   *   What a bare history cannot restore at all: the advisory
-   *   deadline, the consumed idempotency-key set, and subscriptions
-   *   live only in the snapshot envelope / in memory, never in the
-   *   log. A `fromHistory` rebuild therefore starts with no
-   *   deadline, an EMPTY idempotency-key set (a dispatch key
-   *   consumed before the log was taken would re-execute), and zero
-   *   listeners. Use `fromJSON` when those must survive a restart.
+   *   What a bare history cannot restore by itself: the log carries
+   *   no deadline, so a rebuild without `opts.deadline` starts with
+   *   no deadline — pass `opts.deadline` to attach one at rebuild
+   *   (installed by the constructor, with the same validation as
+   *   `setDeadline`). The consumed idempotency-key set and
+   *   subscriptions live only in the snapshot envelope / in memory,
+   *   never in the log, so a `fromHistory` rebuild always starts
+   *   with an EMPTY idempotency-key set (a dispatch key consumed
+   *   before the log was taken would re-execute) and zero listeners.
+   *   Use `fromJSON` when those must survive a restart.
    */
   static fromHistory(
     id: string,

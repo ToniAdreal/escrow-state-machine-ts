@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1117 tests, all local
+npm test   # 1129 tests, all local
 ```
 
 ## Quickstart
@@ -288,7 +288,15 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   restored the same snapshot can still race, and cross-process writers
   need compare-and-swap in the durable store itself.
 - Deadlines (advisory): `escrow.setDeadline(date)` attaches a deadline
-  (stored as canonical ISO-8601; unparseable input throws),
+  (stored as canonical ISO-8601; unparseable input throws), and
+  `new Escrow(id, { deadline })` attaches the same deadline at
+  construction (same validation, so a bad deadline fails the
+  constructor) — which also lets `Escrow.fromHistory(id, history,
+  { deadline })` carry a deadline into a history-only rebuild, where
+  the bare log itself holds none; on `fromJSON`, an explicit
+  `opts.deadline` overrides the snapshot's deadline, mirroring the
+  `rolePolicy` override rule, and omitting it restores the snapshot's
+  deadline as before.
   `getDeadline()`/`clearDeadline()` read and remove it. The deadline is
   *advisory*: nothing auto-expires — a watchdog (or a human) reads
   `isOverdue(escrow)` and dispatches `EXPIRE` explicitly, so expiry stays
@@ -889,7 +897,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1117 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1129 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
