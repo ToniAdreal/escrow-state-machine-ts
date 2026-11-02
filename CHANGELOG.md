@@ -18,6 +18,20 @@ version changes.
 
 ### Added
 
+- Test keyed audit chain x top-up settlement report combination
+  (2026-11-02, backlog #821):
+  `test/settlementReportTopupAuditKey.test.ts` adds 5 cases — a
+  keyed escrow funded twice (10630 + 2000) reports under the correct
+  key with deposit 12630 and the 5% split (creator 11998.50,
+  platform 631.50), the same escrow with no key or with the wrong
+  key is refused, tampering only the second FUND amount (2000 →
+  2001) is refused under the correct key, and the unkeyed chain
+  check on the keyed history returns false while the keyed check
+  returns true (fail-closed对照). No source change: the report
+  path already summed every FUND and delegated chain verification
+  to `verifyHistoryChain`; the combination was previously
+  untested, not unimplemented.
+
 - Test batch settlement reports over mixed audit keys
   (2026-11-02, backlog #818):
   `test/settlementReportsBatchAuditKey.test.ts` adds 6 cases — a wrong
