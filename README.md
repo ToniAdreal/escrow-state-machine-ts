@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1092 tests, all local
+npm test   # 1101 tests, all local
 ```
 
 ## Quickstart
@@ -816,6 +816,15 @@ already cent-rounded figures from each report (aggregates are `round2`
 as well); error entries are counted but never enter the money totals,
 and an empty batch yields an all-zero summary.
 
+Keyed histories: an escrow built with `EscrowOptions.auditKey` produces
+an HMAC-chained history, so its report must be built with the same key
+(`buildSettlementReport({ ..., auditKey })`); without it, or with the
+wrong key, the chain check fails closed and no report is produced. The
+batch wrapper takes the same per-escrow `auditKey` through the shared
+inputs shape, so a batch mixing keyed and unkeyed escrows reports each
+under its own key. An invalid key (empty, or not a string/Buffer) throws
+`invalid audit key: …` before any money math runs.
+
 For bookkeeping imports, `renderReportCsv(report)` renders the same
 report as CSV — the machine-readable counterpart to `renderReport`'s
 human-readable text, so an importer never has to parse prose lines:
@@ -880,7 +889,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1092 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1101 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

@@ -21,6 +21,7 @@
  */
 
 import {
+  type AuditKey,
   type EscrowEvent,
   type EscrowHistoryEntry,
   type EscrowState,
@@ -61,6 +62,17 @@ export interface SettlementReportInputs {
    * report can never disagree with the locked deposit.
    */
   settlement?: { proFeeBps: number; referralCredits?: number };
+  /**
+   * Key for a keyed (HMAC) audit hash chain, as produced by an escrow
+   * constructed with `EscrowOptions.auditKey`. A keyed history must be
+   * reported with the same key, otherwise the chain check fails closed
+   * and no report is produced. Omit for unkeyed chains (the previous
+   * behavior is unchanged). An empty key, or a key that is neither a
+   * string nor a Buffer, throws `invalid audit key: …` before any
+   * money math runs — the same fail-fast wording `verifyHistoryChain`
+   * uses, since the check is delegated to it.
+   */
+  auditKey?: AuditKey;
 }
 
 export interface SettlementReport {
@@ -153,12 +165,16 @@ function ledger(
  * escrow has an empty history (the audit trail is the evidence; no trail,
  * no report), or when the caller-supplied deposit disagrees with the FUND
  * amount recorded in the audit history (fail fast instead of accounting for
- * money the trail never saw).
+ * money the trail never saw). A keyed history must be reported with the
+ * same `auditKey` the escrow was built with: without it, or with the
+ * wrong key, the chain check fails closed and no report is produced —
+ * a keyed escrow previously could not be reported at all, because the
+ * report path had no way to pass the key through.
  */
 export function buildSettlementReport(
   inputs: SettlementReportInputs,
 ): SettlementReport {
-  const { escrowId, history, finalState, deposit } = inputs;
+  const { escrowId, history, finalState, deposit, auditKey } = inputs;
   const depositAmount = deposit.deposit;
 
   // The audit history is the sole evidence for every figure below, so it
@@ -169,7 +185,7 @@ export function buildSettlementReport(
   // to verify), while a mix of chained and hashless entries is rejected —
   // exactly the semantics of verifyHistoryChain, aligned with the snapshot
   // parser's rules.
-  if (!verifyHistoryChain(history)) {
+  if (!verifyHistoryChain(history, auditKey)) {
     throw new Error(
       `cannot build settlement report for ${escrowId}: audit history hash chain is broken or mixes chained and hashless entries (an entry was tampered with, deleted, or reordered)`,
     );
@@ -305,7 +321,10 @@ export type SettlementReportResult =
  * Pure: building a report never mutates any escrow state or history, and
  * this batch wrapper adds no mutation of its own — the input list and its
  * entries are only read. The result has one entry per input, in input
- * order, each carrying the input's `escrowId`.
+ * order, each carrying the input's `escrowId`. A per-escrow `auditKey`
+ * rides along in the same inputs shape (the wrapper delegates to
+ * {@link buildSettlementReport} unchanged), so a batch mixing keyed and
+ * unkeyed escrows reports each under its own key.
  */
 export function buildSettlementReports(
   inputsList: readonly SettlementReportInputs[],
