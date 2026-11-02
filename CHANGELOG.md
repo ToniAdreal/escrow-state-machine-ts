@@ -18,6 +18,24 @@ version changes.
 
 ### Added
 
+- Test quorum approval expiry x settlement webhook combination
+  (2026-11-02, backlog #810):
+  `test/settlementWebhookQuorumExpiry.test.ts` pins the previously
+  untested expired side of the arbitration-webhook combination: a 5/9
+  quorum whose approvals age past `maxApprovalAgeMs` refuses
+  arbitration with `arbitration requires quorum: 0/5 approvals`,
+  leaving the escrow in DISPUTED with state and history untouched,
+  and `buildSettlementReport` refuses the still-DISPUTED escrow
+  (`no settlement has happened yet`), so no webhook can be built
+  under the stale pre-expiry quorum; re-approving all five signers
+  (fresh approvals inside the window) restores clean arbitration to
+  RELEASED, a report with outcome `released` and path
+  `DISPUTE → ARBITRATE_RELEASE` carrying the 5% pro-fee split of
+  the 10630 deposit (creator 10098.50, platform 531.50), and a
+  webhook whose signature verifies under the right secret only.
+  No source change: expiry was already fail-closed, just untested
+  at the webhook boundary.
+
 - Test settlement reports batch x fan-out delivery combination
   (2026-11-02, backlog #809):
   `test/settlementReportsBatchDelivery.test.ts` pins the previously
