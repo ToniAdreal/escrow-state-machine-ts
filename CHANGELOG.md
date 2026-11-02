@@ -18,6 +18,17 @@ version changes.
 
 ### Added
 
+- Test keyed batch settlement x webhook build x fan-out delivery chain
+  (2026-11-02, backlog #825):
+  `test/settlementBatchAuditKeyDelivery.test.ts` adds 3 cases — the
+  wrong-key entry's error is forwarded verbatim into the webhook
+  batch and consumes no `eventId` (the second good entry draws
+  evt-key-2), the two good settlements fan out to 3 endpoints with
+  per-endpoint verification and first-sighting dedupe, and
+  re-delivery still succeeds while receivers flag duplicates; the
+  wrong-key escrow is never fetched in either round and no dedupe
+  ever records an event for it. No source change: the isolation
+  already held end to end, this pins it.
 - Demo batch settlement reports over keyed audit chains
   (2026-11-02, backlog #823):
   `src/demo.ts` adds a closing section that runs
