@@ -18,6 +18,29 @@ version changes.
 
 ### Added
 
+- Test settlement reports batch x fan-out delivery combination
+  (2026-11-02, backlog #809):
+  `test/settlementReportsBatchDelivery.test.ts` pins the previously
+  untested day-end pipeline from batch reports through fan-out
+  delivery: a released / refunded / expired / non-terminal batch
+  yields three built webhooks and one forwarded per-item error, the
+  non-terminal entry consuming no eventId; fanning each successful
+  report to 4 endpoints (stubbed global fetch, zero network)
+  delivers all three settlements to every endpoint, each copy's
+  body byte-identical to its built webhook payload, its signature
+  verifying only under that endpoint's own secret, and its
+  `X-Event-Id` / `Idempotency-Key` headers carrying the built
+  eventId; one endpoint answering 500 on its first attempt retries
+  to success with attempts 2 on that settlement only, leaving the
+  other endpoints at attempts 1; re-delivering the same batch still
+  reports delivery success while every endpoint's
+  `SettlementEventDedupe` receiver flags the second round as
+  duplicates. No source change: the pipeline was previously
+  untested end to end, not unimplemented. Note:
+  `deliverSettlementWebhookToMany` rebuilds the payload from the
+  report, so the built webhook's eventId and `at` are passed back
+  in as fan-out options to thread the same logical event through.
+
 - Test top-up escrow x arbitration quorum combination (2026-11-01,
   backlog #800): `test/arbitrationTopup.test.ts` pins the previously
   untested path from a topped-up DISPUTED escrow through the quorum
