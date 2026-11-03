@@ -18,6 +18,15 @@ version changes.
 
 ### Added
 
+- Scheduler demo segment (2026-11-03, backlog #846): the CLI
+  demo closes with a `nextEscrowDeadline` section over a mixed
+  seven-escrow batch on the watchdog sections' fixed `now` —
+  the earliest upcoming deadline wins, a tie keeps input order,
+  and the terminal, overdue, deadline-less, and due-now members
+  are each excluded for a distinct pinned reason — plus a
+  no-candidate control batch returning undefined and a purity
+  assertion (the call dispatches nothing). `test/demo.test.ts`
+  adds 2 cases.
 - Batch filter helpers (2026-11-03, backlog #843):
   `escrowsByState(escrows, state)` and `escrowsByActor(escrows, actor)`
   mirror the dataquest lifecycle's `tasksByState` / `tasksByActor`:

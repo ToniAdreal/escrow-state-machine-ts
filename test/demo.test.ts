@@ -164,6 +164,29 @@ import {
   DEMO_JITTER_RETRIES,
   DEMO_JITTER_SCRIPTED_STATUSES,
   DEMO_JITTER_TIMEOUT_MS,
+  DEMO_SCHED_DUE_NOW_DEADLINE,
+  DEMO_SCHED_DUE_NOW_FUND_AT,
+  DEMO_SCHED_DUE_NOW_ID,
+  DEMO_SCHED_EARLIEST_DEADLINE,
+  DEMO_SCHED_EARLIEST_FUND_AT,
+  DEMO_SCHED_EARLIEST_ID,
+  DEMO_SCHED_LATER_DEADLINE,
+  DEMO_SCHED_LATER_FUND_AT,
+  DEMO_SCHED_LATER_ID,
+  DEMO_SCHED_NO_DEADLINE_FUND_AT,
+  DEMO_SCHED_NO_DEADLINE_ID,
+  DEMO_SCHED_OVERDUE_DEADLINE,
+  DEMO_SCHED_OVERDUE_FUND_AT,
+  DEMO_SCHED_OVERDUE_ID,
+  DEMO_SCHED_TERMINAL_DEADLINE,
+  DEMO_SCHED_TERMINAL_FUND_AT,
+  DEMO_SCHED_TERMINAL_ID,
+  DEMO_SCHED_TERMINAL_RELEASE_AT,
+  DEMO_SCHED_TERMINAL_SUBMIT_AT,
+  DEMO_SCHED_TERMINAL_VERIFY_AT,
+  DEMO_SCHED_TIE_DEADLINE,
+  DEMO_SCHED_TIE_FUND_AT,
+  DEMO_SCHED_TIE_ID,
   DEMO_SNAPSHOT_SERIALIZED_BYTES,
   DEMO_STALE_DAY_MS,
   DEMO_STALE_DEADLINE,
@@ -3130,11 +3153,12 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
       "  aggregate: 1 delivered, 1 failed, deadlineExceeded true - the cap and the deadline are caller-side guards: the cap fails the call before any request, the deadline stops only the in-flight endpoints",
     ),
   );
-  // Delivery-jitter tail: the closing segment delivers
+  // Delivery-jitter tail: the segment delivers
   // the same webhook on a 500/500/200 script twice -
   // jittered waits inside their windows, exact waits on
-  // the pure schedule - and the demo ends on its
-  // unchanged-payload line.
+  // the pure schedule. It no longer closes the demo:
+  // the scheduler next-deadline segment (backlog #846)
+  // follows it.
   assert.match(
     out,
     /Settlement webhook delivery jitter \(deliverSettlementWebhook jitterMs retry backoff over a loopback server\):/,
@@ -3150,10 +3174,43 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
     ),
   );
   assert.ok(
+    out.includes(
+      `  unchanged: 3 captured POSTs on each path carried byte-identical bodies and the X-Signature verifies over the wire body under the demo secret (jittered true, exact true) - jitter only spreads the waits, it never changes the signed payload or the eventId ${DEMO_WEBHOOK_EVENT_ID}`,
+    ),
+  );
+  // Scheduler next-deadline tail: the closing segment
+  // screens the mixed seven-escrow batch, prints one
+  // verdict line per member, and ends the demo on its
+  // purity line.
+  assert.match(
+    out,
+    /Scheduler next deadline \(nextEscrowDeadline over a mixed batch\):/,
+  );
+  assert.ok(
+    out.includes(
+      `  fixed now: ${DEMO_STALE_NOW} — only non-terminal escrows with a deadline strictly in the future qualify; ties keep input order`,
+    ),
+  );
+  assert.ok(
+    out.includes(
+      `  ${DEMO_SCHED_EARLIEST_ID}: FUNDED, deadline ${DEMO_SCHED_EARLIEST_DEADLINE} — earliest upcoming, the scheduler wakes for this one`,
+    ),
+  );
+  assert.ok(
+    out.includes(
+      `  ${DEMO_SCHED_TERMINAL_ID}: RELEASED (terminal), deadline ${DEMO_SCHED_TERMINAL_DEADLINE} — future and earlier than the winner, yet excluded: a settled escrow's deadline schedules nothing`,
+    ),
+  );
+  assert.ok(
+    out.includes(
+      `  next: ${DEMO_SCHED_EARLIEST_ID} at ${DEMO_SCHED_EARLIEST_DEADLINE} — arm one timer for this deadline; when it fires, re-screen with expiredEscrows and expire via expireOverdueEscrows, so a deadline that moved (or an escrow that settled) between arming and firing cannot expire something that should no longer expire`,
+    ),
+  );
+  assert.ok(
     out
       .trimEnd()
       .endsWith(
-        `  unchanged: 3 captured POSTs on each path carried byte-identical bodies and the X-Signature verifies over the wire body under the demo secret (jittered true, exact true) - jitter only spreads the waits, it never changes the signed payload or the eventId ${DEMO_WEBHOOK_EVENT_ID}`,
+        `  pure: the call dispatched nothing — all seven escrows keep their state and history length`,
       ),
   );
 });
@@ -7066,10 +7123,11 @@ test("demo shows delivery jitter: jittered waits fall inside the spread windows,
   assert.equal(jitterBodyVerifies, true);
   assert.equal(jitterExactBodyVerifies, true);
 
-  // The printed section is the demo's last section,
-  // after the fan-out limit section, and prints only
-  // intervals - never the random draws - for the
-  // jittered waits.
+  // The printed section follows the fan-out limit
+  // section; the scheduler next-deadline segment
+  // (backlog #846) follows it, so it is no longer the
+  // demo's last section — and it prints only intervals,
+  // never the random draws, for the jittered waits.
   const text = lines.join("\n");
   const header =
     "Settlement webhook delivery jitter (deliverSettlementWebhook jitterMs retry backoff over a loopback server):";
@@ -7100,9 +7158,14 @@ test("demo shows delivery jitter: jittered waits fall inside the spread windows,
 test("demo delivery-jitter segment is deterministic: two runs print byte-identical jitter lines", async () => {
   const header =
     "Settlement webhook delivery jitter (deliverSettlementWebhook jitterMs retry backoff over a loopback server):";
-  // The jitter section is the demo's last section, so it
-  // runs from its header to the end of the lines.
-  const segment = (ls: string[]) => ls.slice(ls.indexOf(header));
+  const schedulerHeader =
+    "Scheduler next deadline (nextEscrowDeadline over a mixed batch):";
+  // The jitter section no longer closes the demo: the
+  // scheduler segment (backlog #846) follows it, so the
+  // section runs from its header to the blank line
+  // before the scheduler header.
+  const segment = (ls: string[]) =>
+    ls.slice(ls.indexOf(header), ls.indexOf(schedulerHeader) - 1);
   const a = await runDemo();
   const b = await runDemo();
   // Header + jittered + exact + unchanged; the random
@@ -7126,4 +7189,127 @@ test("demo delivery-jitter segment is deterministic: two runs print byte-identic
     assert.ok(sleeps[0] >= 10 && sleeps[0] <= 60);
     assert.ok(sleeps[1] >= 20 && sleeps[1] <= 70);
   }
+});
+
+test("demo shows scheduler next deadline: earliest upcoming wins, tie keeps input order, terminal/overdue/deadline-less/due-now excluded, no-candidate batch returns undefined", async () => {
+  const {
+    schedulerEscrowIds,
+    schedulerWinnerId,
+    schedulerWinnerDeadline,
+    schedulerNoCandidate,
+    lines,
+  } = await runDemo();
+
+  // Hand-pinned fixture shape: fixed now 2026-03-09T09:00,
+  // winner DEMO-SCHED-01 at 2026-03-12T09:00, tie on the
+  // same deadline, terminal escrow earlier than the winner
+  // yet excluded, due-now escrow exactly at `now`.
+  assert.equal(DEMO_STALE_NOW, "2026-03-09T09:00:00.000Z");
+  assert.equal(DEMO_SCHED_EARLIEST_ID, "DEMO-SCHED-01");
+  assert.equal(DEMO_SCHED_EARLIEST_DEADLINE, "2026-03-12T09:00:00.000Z");
+  assert.equal(DEMO_SCHED_TIE_DEADLINE, DEMO_SCHED_EARLIEST_DEADLINE);
+  assert.equal(DEMO_SCHED_TERMINAL_DEADLINE, "2026-03-10T09:00:00.000Z");
+  assert.equal(DEMO_SCHED_DUE_NOW_DEADLINE, DEMO_STALE_NOW);
+
+  assert.deepEqual(schedulerEscrowIds, [
+    DEMO_SCHED_EARLIEST_ID,
+    DEMO_SCHED_TIE_ID,
+    DEMO_SCHED_LATER_ID,
+    DEMO_SCHED_OVERDUE_ID,
+    DEMO_SCHED_NO_DEADLINE_ID,
+    DEMO_SCHED_TERMINAL_ID,
+    DEMO_SCHED_DUE_NOW_ID,
+  ]);
+  assert.equal(schedulerWinnerId, DEMO_SCHED_EARLIEST_ID);
+  assert.equal(schedulerWinnerDeadline, DEMO_SCHED_EARLIEST_DEADLINE);
+  assert.equal(schedulerNoCandidate, true);
+
+  // The printed section is the demo's last section,
+  // after the delivery-jitter section.
+  const text = lines.join("\n");
+  const header =
+    "Scheduler next deadline (nextEscrowDeadline over a mixed batch):";
+  assert.ok(
+    text.indexOf(header) >
+      text.indexOf(
+        "Settlement webhook delivery jitter (deliverSettlementWebhook jitterMs retry backoff over a loopback server):",
+      ),
+    "scheduler segment must follow the delivery-jitter segment",
+  );
+  assert.ok(
+    text.includes(
+      `  fixed now: ${DEMO_STALE_NOW} — only non-terminal escrows with a deadline strictly in the future qualify; ties keep input order`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_SCHED_EARLIEST_ID}: FUNDED, deadline ${DEMO_SCHED_EARLIEST_DEADLINE} — earliest upcoming, the scheduler wakes for this one`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_SCHED_TIE_ID}: FUNDED, deadline ${DEMO_SCHED_TIE_DEADLINE} — same deadline as the winner, input order keeps the first`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_SCHED_LATER_ID}: FUNDED, deadline ${DEMO_SCHED_LATER_DEADLINE} — upcoming but later, not earliest`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_SCHED_OVERDUE_ID}: FUNDED, deadline ${DEMO_SCHED_OVERDUE_DEADLINE} — already past, belongs to expiredEscrows, not scheduled`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_SCHED_NO_DEADLINE_ID}: FUNDED, no deadline — nothing to schedule`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_SCHED_TERMINAL_ID}: RELEASED (terminal), deadline ${DEMO_SCHED_TERMINAL_DEADLINE} — future and earlier than the winner, yet excluded: a settled escrow's deadline schedules nothing`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_SCHED_DUE_NOW_ID}: FUNDED, deadline ${DEMO_SCHED_DUE_NOW_DEADLINE} — due exactly now, not upcoming`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  next: ${DEMO_SCHED_EARLIEST_ID} at ${DEMO_SCHED_EARLIEST_DEADLINE} — arm one timer for this deadline; when it fires, re-screen with expiredEscrows and expire via expireOverdueEscrows, so a deadline that moved (or an escrow that settled) between arming and firing cannot expire something that should no longer expire`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  no candidate: the batch of only the four excluded escrows returns undefined — the scheduler arms nothing`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  pure: the call dispatched nothing — all seven escrows keep their state and history length`,
+    ),
+  );
+});
+
+test("demo scheduler next-deadline segment is deterministic: two runs print byte-identical scheduler lines", async () => {
+  const header =
+    "Scheduler next deadline (nextEscrowDeadline over a mixed batch):";
+  // The scheduler section is the demo's last section, so it
+  // runs from its header to the end of the lines.
+  const segment = (ls: string[]) => ls.slice(ls.indexOf(header));
+  const a = await runDemo();
+  const b = await runDemo();
+  // Header + fixed-now + 7 member verdicts + next +
+  // no-candidate + purity; every printed value is derived
+  // from the pinned fixtures alone, so no normalization
+  // is needed.
+  const segA = segment(a.lines);
+  assert.equal(segA.length, 12);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(a.schedulerEscrowIds, b.schedulerEscrowIds);
+  assert.equal(a.schedulerWinnerId, b.schedulerWinnerId);
+  assert.equal(a.schedulerWinnerDeadline, b.schedulerWinnerDeadline);
+  assert.equal(a.schedulerNoCandidate, b.schedulerNoCandidate);
 });

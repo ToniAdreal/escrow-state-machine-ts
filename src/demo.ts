@@ -402,6 +402,7 @@ import {
   historyFromNdjson,
   historyToNdjson,
   isOverdue,
+  nextEscrowDeadline,
   parseEscrowHistory,
   parseRetryAfter,
   parseSettlementReportCsv,
@@ -786,6 +787,61 @@ export const DEMO_EXPIRABLE_DEADLINE = "2026-03-08T12:00:00.000Z";
 export const DEMO_DEADLINE_STALE_ESCROW_ID = "DEMO-ESC-009";
 export const DEMO_DEADLINE_STALE_FUND_AT = "2026-02-20T09:00:00.000Z";
 export const DEMO_DEADLINE_STALE_DEADLINE = "2026-04-01T09:00:00.000Z";
+
+/**
+ * Scheduler fixtures (backlog #846): seven escrows screened by
+ * `nextEscrowDeadline` on the SAME fixed `now` as the watchdog
+ * sections (DEMO_STALE_NOW, 2026-03-09T09:00) — the scheduler
+ * counterpart to the past-due screens: instead of "what is already
+ * overdue", it answers "which escrow comes due next, and when",
+ * so a caller can arm one timer instead of polling the whole
+ * batch. Hand-computed expectations (only non-terminal escrows
+ * with a deadline strictly in the future qualify; ties keep
+ * input order):
+ * - DEMO-SCHED-01 (winner): FUNDED, deadline 2026-03-12T09:00 —
+ *   the earliest upcoming deadline in the batch.
+ * - DEMO-SCHED-02 (tie): FUNDED, the same deadline
+ *   2026-03-12T09:00 — loses to input order; the first carrier
+ *   of the earliest deadline wins.
+ * - DEMO-SCHED-03 (later): FUNDED, deadline 2026-04-01T09:00 —
+ *   upcoming but not earliest.
+ * - DEMO-SCHED-04 (overdue): FUNDED, deadline 2026-03-08T12:00 —
+ *   already past at `now`; it belongs to `expiredEscrows`,
+ *   not to the scheduler.
+ * - DEMO-SCHED-05 (no deadline): FUNDED, no deadline —
+ *   nothing to schedule.
+ * - DEMO-SCHED-06 (terminal): RELEASED via the full chain,
+ *   deadline 2026-03-10T09:00 — future AND earlier than the
+ *   winner's, yet excluded: a settled escrow's deadline
+ *   schedules nothing.
+ * - DEMO-SCHED-07 (due now): FUNDED, deadline exactly `now` —
+ *   due, not upcoming (the strictly-future rule).
+ * The no-candidate control reuses the four excluded members
+ * (06, 04, 05, 07): that batch must return undefined.
+ */
+export const DEMO_SCHED_EARLIEST_ID = "DEMO-SCHED-01";
+export const DEMO_SCHED_EARLIEST_FUND_AT = "2026-03-08T09:00:00.000Z";
+export const DEMO_SCHED_EARLIEST_DEADLINE = "2026-03-12T09:00:00.000Z";
+export const DEMO_SCHED_TIE_ID = "DEMO-SCHED-02";
+export const DEMO_SCHED_TIE_FUND_AT = "2026-03-08T09:00:00.000Z";
+export const DEMO_SCHED_TIE_DEADLINE = "2026-03-12T09:00:00.000Z";
+export const DEMO_SCHED_LATER_ID = "DEMO-SCHED-03";
+export const DEMO_SCHED_LATER_FUND_AT = "2026-03-08T09:00:00.000Z";
+export const DEMO_SCHED_LATER_DEADLINE = "2026-04-01T09:00:00.000Z";
+export const DEMO_SCHED_OVERDUE_ID = "DEMO-SCHED-04";
+export const DEMO_SCHED_OVERDUE_FUND_AT = "2026-03-08T09:00:00.000Z";
+export const DEMO_SCHED_OVERDUE_DEADLINE = "2026-03-08T12:00:00.000Z";
+export const DEMO_SCHED_NO_DEADLINE_ID = "DEMO-SCHED-05";
+export const DEMO_SCHED_NO_DEADLINE_FUND_AT = "2026-03-08T09:00:00.000Z";
+export const DEMO_SCHED_TERMINAL_ID = "DEMO-SCHED-06";
+export const DEMO_SCHED_TERMINAL_FUND_AT = "2026-03-02T09:00:00.000Z";
+export const DEMO_SCHED_TERMINAL_SUBMIT_AT = "2026-03-03T09:00:00.000Z";
+export const DEMO_SCHED_TERMINAL_VERIFY_AT = "2026-03-04T09:00:00.000Z";
+export const DEMO_SCHED_TERMINAL_RELEASE_AT = "2026-03-05T09:00:00.000Z";
+export const DEMO_SCHED_TERMINAL_DEADLINE = "2026-03-10T09:00:00.000Z";
+export const DEMO_SCHED_DUE_NOW_ID = "DEMO-SCHED-07";
+export const DEMO_SCHED_DUE_NOW_FUND_AT = "2026-03-08T09:00:00.000Z";
+export const DEMO_SCHED_DUE_NOW_DEADLINE = DEMO_STALE_NOW;
 
 /**
  * Stale-patrol fixtures (backlog #506): five further escrows screened
@@ -3355,6 +3411,32 @@ export interface DemoResult {
    * under the demo secret.
    */
   jitterExactBodyVerifies: boolean;
+  /**
+   * The mixed scheduler batch, in screening order: the
+   * winner, the tie, the later deadline, the overdue
+   * escrow, the deadline-less escrow, the terminal escrow,
+   * and the due-now escrow (see the scheduler fixture
+   * comment above for the pinned verdict on each).
+   */
+  schedulerEscrowIds: string[];
+  /**
+   * The escrow `nextEscrowDeadline` picks from the
+   * scheduler batch: DEMO-SCHED-01, the first carrier of
+   * the earliest upcoming deadline.
+   */
+  schedulerWinnerId: string;
+  /**
+   * That escrow's deadline, canonical ISO-8601:
+   * 2026-03-12T09:00:00.000Z.
+   */
+  schedulerWinnerDeadline: string;
+  /**
+   * True when the control batch of only the four excluded
+   * scheduler escrows (terminal, overdue, deadline-less,
+   * due-now) returns undefined — the scheduler arms
+   * nothing when nothing qualifies.
+   */
+  schedulerNoCandidate: boolean;
   lines: string[];
 }
 
@@ -8061,6 +8143,134 @@ export async function runDemo(): Promise<DemoResult> {
     `  unchanged: ${jitterCalls} captured POSTs on each path carried byte-identical bodies and the X-Signature verifies over the wire body under the demo secret (jittered ${jitterBodyVerifies}, exact ${jitterExactBodyVerifies}) - jitter only spreads the waits, it never changes the signed payload or the eventId ${DEMO_WEBHOOK_EVENT_ID}`,
   );
 
+  // --- Scheduler: nextEscrowDeadline over a mixed batch ---
+  // The watchdog sections answer "what is already overdue or
+  // stale"; the scheduler answers the complementary question —
+  // "which escrow comes due next, and when" — so a caller can
+  // arm one timer for the earliest upcoming deadline instead
+  // of polling the whole batch. All seven escrows are built
+  // on the same fixed `now` as the watchdog sections
+  // (DEMO_STALE_NOW); see the fixture comment above for the
+  // hand-computed verdict on each member. The call is pure:
+  // it dispatches nothing and mutates no escrow, and the
+  // section asserts that (states and history lengths
+  // identical before and after the call). The closed loop is
+  // the point of the helper: when the armed timer fires, the
+  // caller re-screens with `expiredEscrows` and expires via
+  // `expireOverdueEscrows` — a deadline that moved (or an
+  // escrow that settled) between arming and firing must not
+  // expire something that should no longer expire.
+  const schedEarliest = new Escrow(DEMO_SCHED_EARLIEST_ID);
+  schedEarliest.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "sponsor",
+    at: DEMO_SCHED_EARLIEST_FUND_AT,
+  });
+  schedEarliest.setDeadline(DEMO_SCHED_EARLIEST_DEADLINE);
+  const schedTie = new Escrow(DEMO_SCHED_TIE_ID);
+  schedTie.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "sponsor",
+    at: DEMO_SCHED_TIE_FUND_AT,
+  });
+  schedTie.setDeadline(DEMO_SCHED_TIE_DEADLINE);
+  const schedLater = new Escrow(DEMO_SCHED_LATER_ID);
+  schedLater.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "sponsor",
+    at: DEMO_SCHED_LATER_FUND_AT,
+  });
+  schedLater.setDeadline(DEMO_SCHED_LATER_DEADLINE);
+  const schedOverdue = new Escrow(DEMO_SCHED_OVERDUE_ID);
+  schedOverdue.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "sponsor",
+    at: DEMO_SCHED_OVERDUE_FUND_AT,
+  });
+  schedOverdue.setDeadline(DEMO_SCHED_OVERDUE_DEADLINE);
+  const schedNoDeadline = new Escrow(DEMO_SCHED_NO_DEADLINE_ID);
+  schedNoDeadline.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "sponsor",
+    at: DEMO_SCHED_NO_DEADLINE_FUND_AT,
+  });
+  const schedTerminal = new Escrow(DEMO_SCHED_TERMINAL_ID);
+  schedTerminal.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "sponsor",
+    at: DEMO_SCHED_TERMINAL_FUND_AT,
+  });
+  schedTerminal.dispatch(
+    "SUBMIT_MILESTONE",
+    "Deliverable URLs + IPFS metadata hash",
+    undefined,
+    { actor: "creator", at: DEMO_SCHED_TERMINAL_SUBMIT_AT },
+  );
+  schedTerminal.dispatch("VERIFY_PASS", "KPIs validated by oracle", undefined, {
+    actor: "oracle",
+    at: DEMO_SCHED_TERMINAL_VERIFY_AT,
+  });
+  schedTerminal.dispatch("RELEASE", "Release approved", undefined, {
+    actor: "treasury",
+    at: DEMO_SCHED_TERMINAL_RELEASE_AT,
+  });
+  schedTerminal.setDeadline(DEMO_SCHED_TERMINAL_DEADLINE);
+  const schedDueNow = new Escrow(DEMO_SCHED_DUE_NOW_ID);
+  schedDueNow.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "sponsor",
+    at: DEMO_SCHED_DUE_NOW_FUND_AT,
+  });
+  schedDueNow.setDeadline(DEMO_SCHED_DUE_NOW_DEADLINE);
+  const schedulerEscrows = [
+    schedEarliest,
+    schedTie,
+    schedLater,
+    schedOverdue,
+    schedNoDeadline,
+    schedTerminal,
+    schedDueNow,
+  ];
+  const schedulerStatesBefore = schedulerEscrows.map((e) => e.state);
+  const schedulerHistoryLengthsBefore = schedulerEscrows.map(
+    (e) => e.history.length,
+  );
+  const schedulerNext = nextEscrowDeadline(
+    schedulerEscrows,
+    new Date(DEMO_STALE_NOW),
+  );
+  const schedulerNoCandidateResult = nextEscrowDeadline(
+    [schedTerminal, schedOverdue, schedNoDeadline, schedDueNow],
+    new Date(DEMO_STALE_NOW),
+  );
+  if (
+    schedulerNext === undefined ||
+    schedulerNext.escrow.id !== DEMO_SCHED_EARLIEST_ID ||
+    schedulerNext.deadline !== DEMO_SCHED_EARLIEST_DEADLINE ||
+    schedulerNoCandidateResult !== undefined ||
+    schedulerEscrows.some(
+      (e, i) =>
+        e.state !== schedulerStatesBefore[i] ||
+        e.history.length !== schedulerHistoryLengthsBefore[i],
+    )
+  ) {
+    throw new Error(
+      "demo fixture broken: nextEscrowDeadline scheduler batch does not match the pinned shape (winner DEMO-SCHED-01 at 2026-03-12T09:00:00.000Z; the batch of only the four excluded escrows must return undefined; the call must dispatch nothing and change no state or history length)",
+    );
+  }
+  const schedulerEscrowIds = schedulerEscrows.map((e) => e.id);
+  const schedulerWinnerId = schedulerNext.escrow.id;
+  const schedulerWinnerDeadline = schedulerNext.deadline;
+  const schedulerNoCandidate = schedulerNoCandidateResult === undefined;
+  lines.push(
+    "",
+    "Scheduler next deadline (nextEscrowDeadline over a mixed batch):",
+    `  fixed now: ${DEMO_STALE_NOW} — only non-terminal escrows with a deadline strictly in the future qualify; ties keep input order`,
+    `  ${schedEarliest.id}: ${schedEarliest.state}, deadline ${schedEarliest.getDeadline()} — earliest upcoming, the scheduler wakes for this one`,
+    `  ${schedTie.id}: ${schedTie.state}, deadline ${schedTie.getDeadline()} — same deadline as the winner, input order keeps the first`,
+    `  ${schedLater.id}: ${schedLater.state}, deadline ${schedLater.getDeadline()} — upcoming but later, not earliest`,
+    `  ${schedOverdue.id}: ${schedOverdue.state}, deadline ${schedOverdue.getDeadline()} — already past, belongs to expiredEscrows, not scheduled`,
+    `  ${schedNoDeadline.id}: ${schedNoDeadline.state}, no deadline — nothing to schedule`,
+    `  ${schedTerminal.id}: ${schedTerminal.state} (terminal), deadline ${schedTerminal.getDeadline()} — future and earlier than the winner, yet excluded: a settled escrow's deadline schedules nothing`,
+    `  ${schedDueNow.id}: ${schedDueNow.state}, deadline ${schedDueNow.getDeadline()} — due exactly now, not upcoming`,
+    `  next: ${schedulerWinnerId} at ${schedulerWinnerDeadline} — arm one timer for this deadline; when it fires, re-screen with expiredEscrows and expire via expireOverdueEscrows, so a deadline that moved (or an escrow that settled) between arming and firing cannot expire something that should no longer expire`,
+    `  no candidate: the batch of only the four excluded escrows returns undefined — the scheduler arms nothing`,
+    `  pure: the call dispatched nothing — all seven escrows keep their state and history length`,
+  );
+
   return {
     escrow,
     report,
@@ -8277,6 +8487,10 @@ export async function runDemo(): Promise<DemoResult> {
     jitterExactSleeps,
     jitterExactCalls,
     jitterExactBodyVerifies,
+    schedulerEscrowIds,
+    schedulerWinnerId,
+    schedulerWinnerDeadline,
+    schedulerNoCandidate,
     lines,
   };
 }
