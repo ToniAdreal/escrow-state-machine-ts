@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1197 tests, all local
+npm test   # 1207 tests, all local
 ```
 
 ## Quickstart
@@ -633,6 +633,13 @@ key entirely. It sits between `outcome` and `deposit` in the canonical key
 order and is covered by the signature — tampering with or stripping it
 fails verification.
 
+`currency` is present only when the report was built with one: it is the
+report's `currency` copied verbatim (e.g. `"USD"`), sits after `deposit`
+in the canonical key order, and is covered by the signature — changing
+it or stripping it fails verification. Reports built without a currency
+keep the legacy payload shape exactly. The code is a label only: no
+conversion is performed anywhere, and the CSV export does not carry it.
+
 `eventId` is the receiver's idempotency key: every build generates a fresh
 UUID v4 (inject your own via `BuildWebhookOptions.eventId` for deterministic
 tests), and the signature covers it, so tampering with it fails verification.
@@ -872,6 +879,17 @@ already cent-rounded figures from each report (aggregates are `round2`
 as well); error entries are counted but never enter the money totals,
 and an empty batch yields an all-zero summary.
 
+Currency: `buildSettlementReport({ ..., currency: "USD" })` accepts an
+optional ISO 4217 alpha-3 code — exactly three uppercase letters, checked
+for shape only, not against the published registry. Anything else throws
+`invalid settlement currency: …` before any money math runs, and in the
+batch wrapper that failure is recorded per escrow, never aborting the
+batch. The code rides the report, the webhook payload, and both batch
+wrappers verbatim; omit it and every shape stays exactly as before. It
+is a label only: amounts are never converted, so a batch mixing
+currencies still sums raw figures and the caller must not read that sum
+as single-currency money.
+
 Keyed histories: an escrow built with `EscrowOptions.auditKey` produces
 an HMAC-chained history, so its report must be built with the same key
 (`buildSettlementReport({ ..., auditKey })`); without it, or with the
@@ -945,7 +963,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1197 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1207 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

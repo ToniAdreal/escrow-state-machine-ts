@@ -50,12 +50,50 @@ export interface PartyLedger {
   net: number;
 }
 
+/** ISO 4217 alpha-3 code shape: exactly three uppercase ASCII letters. */
+const ISO_4217_ALPHA3 = /^[A-Z]{3}$/;
+
+/**
+ * Validate an optional settlement currency. This checks the code shape
+ * only (three uppercase letters, e.g. "USD", "EUR"); it does not verify
+ * membership in the published ISO 4217 registry, and it performs no
+ * conversion — the code is a label on the figures, which stay in the
+ * caller's units. An illegal value throws before any money math runs,
+ * so a mistyped code can never ship inside a signed report or webhook.
+ */
+function assertSettlementCurrency(
+  currency: unknown,
+  escrowId: string,
+): asserts currency is string | undefined {
+  if (currency === undefined) return;
+  if (typeof currency !== "string" || !ISO_4217_ALPHA3.test(currency)) {
+    const shown =
+      typeof currency === "string" ? JSON.stringify(currency) : String(currency);
+    throw new Error(
+      `invalid settlement currency for ${escrowId}: ${shown} must be a 3-letter uppercase ISO 4217 code (e.g. "USD")`,
+    );
+  }
+}
+
 export interface SettlementReportInputs {
   escrowId: string;
   /** Append-only audit history, in seq order. */
   history: readonly EscrowHistoryEntry[];
   finalState: EscrowState;
   deposit: FeeBreakdown;
+  /**
+   * Optional ISO 4217 alpha-3 currency code for the figures in this
+   * report (e.g. "USD"). When given it is carried verbatim onto the
+   * report, the settlement webhook payload, and the batch paths, and is
+   * covered by the webhook signature like every other payload field.
+   * Omit it and the report keeps its previous shape exactly: no
+   * `currency` key is emitted, so existing snapshots, CSV exports, and
+   * receivers see zero change. An illegal value (lowercase, wrong
+   * length, non-letters, non-string) throws `invalid settlement
+   * currency: …` before any money math runs. The code is a label only:
+   * amounts are never converted, and no exchange rate is applied.
+   */
+  currency?: string;
   /**
    * Settlement parameters; used only when the outcome is `released`.
    * `gross` is ignored and always taken from `deposit.deposit`, so the
@@ -77,6 +115,13 @@ export interface SettlementReportInputs {
 
 export interface SettlementReport {
   escrowId: string;
+  /**
+   * ISO 4217 alpha-3 currency code carried from
+   * {@link SettlementReportInputs.currency}, when the caller supplied
+   * one. Absent when the report was built without a currency — the key
+   * is omitted entirely, never present-but-undefined on the wire.
+   */
+  currency?: string;
   outcome: SettlementOutcome;
   /** e.g. "VERIFY_PASS → RELEASE" for released, undefined otherwise */
   releasePath?: string;
@@ -174,8 +219,13 @@ function ledger(
 export function buildSettlementReport(
   inputs: SettlementReportInputs,
 ): SettlementReport {
-  const { escrowId, history, finalState, deposit, auditKey } = inputs;
+  const { escrowId, history, finalState, deposit, auditKey, currency } = inputs;
   const depositAmount = deposit.deposit;
+
+  // Caller configuration first: an illegal currency is the caller's bug
+  // and must fail fast even before the history chain is inspected, so
+  // it can never be masked by (or mask) a chain failure.
+  assertSettlementCurrency(currency, escrowId);
 
   // The audit history is the sole evidence for every figure below, so it
   // must be integrity-checked before any money math runs: an attacker who
@@ -212,6 +262,9 @@ export function buildSettlementReport(
 
   const base = {
     escrowId,
+    // Omitted entirely when no currency was supplied, so a
+    // currency-less report serializes exactly as before.
+    ...(currency !== undefined ? { currency } : {}),
     deposit,
     eventCount: history.length,
     firstEventAt: history[0]?.at,
@@ -907,6 +960,11 @@ function assertReportShape(
     throw new Error(`${prefix}: ${reason}`);
   };
   const r = report as Record<string, unknown>;
+  if (
+    r.currency !== undefined &&
+    (typeof r.currency !== "string" || !ISO_4217_ALPHA3.test(r.currency))
+  )
+    fail("currency must be a 3-letter uppercase ISO 4217 code when present");
   if (typeof r.deposit !== "object" || r.deposit === null || Array.isArray(r.deposit))
     fail("deposit must be a FeeBreakdown object");
   const deposit = r.deposit as Record<string, unknown>;
@@ -1025,6 +1083,7 @@ export function renderReport(report: SettlementReport): string {
   const lines: string[] = [
     `Escrow settlement report — ${report.escrowId}`,
     `Outcome: ${report.outcome}${report.releasePath ? ` (via ${report.releasePath})` : ""}`,
+    ...(report.currency !== undefined ? [`Currency: ${report.currency}`] : []),
     `Deposit: ${money(d.deposit)} (pool ${money(d.creatorPool)} + base ${money(d.baseFee)}×${d.complexityMultiplier} − loyalty ${money(d.loyaltyDiscount)} + oracle ${money(d.oracleFee)})`,
     "",
     "Party".padEnd(30) + "Inflow".padStart(14) + "Outflow".padStart(14) + "Net".padStart(14),

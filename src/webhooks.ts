@@ -57,6 +57,15 @@ export interface SettlementWebhookPayload {
   releasePath?: string;
   /** Locked deposit total (same `deposit.deposit` the report accounts for). */
   deposit: number;
+  /**
+   * ISO 4217 alpha-3 currency code copied verbatim from
+   * `SettlementReport.currency`, when the report carries one. Present
+   * only then: currency-less reports keep the legacy payload shape
+   * exactly. It sits after `deposit` in the canonical key order and is
+   * covered by the signature, so changing it (or stripping it) fails
+   * verification. A label only — no conversion is performed anywhere.
+   */
+  currency?: string;
   parties: Array<{ party: PartyRole; inflow: number; outflow: number; net: number }>;
   /** ISO-8601 timestamp of when the payload was built. */
   at: string;
@@ -181,6 +190,24 @@ function buildPayload(
   }
   const eventId = options.eventId ?? randomUUID();
 
+  // Same currency rule as the report builder (mirrored here so a
+  // hand-built report carrying a mistyped code can never be signed and
+  // shipped): three uppercase letters, or the key absent. Reports built
+  // by buildSettlementReport already passed this check, so this only
+  // fires for caller-assembled reports.
+  if (
+    report.currency !== undefined &&
+    (typeof report.currency !== "string" || !/^[A-Z]{3}$/.test(report.currency))
+  ) {
+    const shown =
+      typeof report.currency === "string"
+        ? JSON.stringify(report.currency)
+        : String(report.currency);
+    throw new Error(
+      `cannot build settlement webhook: invalid settlement currency for ${report.escrowId}: ${shown} must be a 3-letter uppercase ISO 4217 code (e.g. "USD")`,
+    );
+  }
+
   const payload: SettlementWebhookPayload = {
     event: "escrow.settled",
     eventId,
@@ -193,6 +220,10 @@ function buildPayload(
       ? { releasePath: report.releasePath }
       : {}),
     deposit: report.deposit.deposit,
+    // Same omission rule as releasePath: a currency-less report keeps
+    // the legacy payload shape, so pinned field-set tests for legacy
+    // payloads stay exact.
+    ...(report.currency !== undefined ? { currency: report.currency } : {}),
     parties: report.parties.map((p) => ({
       party: p.party,
       inflow: p.inflow,

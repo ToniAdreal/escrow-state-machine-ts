@@ -18,6 +18,15 @@ version changes.
 
 ### Added
 
+- Settlement report currency (2026-11-03, backlog
+  #855): `SettlementReportInputs.currency` accepts an optional ISO
+  4217 alpha-3 code (exactly three uppercase letters, shape-checked
+  only, no conversion); it rides the report, the settlement webhook
+  payload (after `deposit`, signature-covered), and both batch
+  wrappers verbatim, while an illegal value throws
+  `invalid settlement currency: …` before any money math runs (per
+  escrow in the batch wrapper). Omitting it keeps every legacy shape
+  exactly. `test/settlementCurrency.test.ts` adds 10 cases.
 - Partial-release settlement helper (2026-11-03, backlog
   #852): `settlePartialRelease({ gross, released, proFeeBps,
   referralCredits? })` charges the platform fee on the released
