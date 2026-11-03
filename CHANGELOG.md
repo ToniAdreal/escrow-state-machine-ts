@@ -18,6 +18,19 @@ version changes.
 
 ### Added
 
+- Quorum approval-evidence demo segment (2026-11-03, backlog
+  #849): the CLI demo gains a section between the approval-log
+  and single-target delivery sections, over a fresh 2-of-3 quorum
+  on a fixed clock — arb-1 approves with an evidence reference
+  (`gov-proposal-2026-031`) and arb-2 approves without one, the
+  trail is printed with its evidence fields, a `snapshot()` ->
+  JSON -> `restoreQuorum()` round-trip preserves the evidence
+  with its original timestamp, and arb-1's `revoke()` on the
+  restored quorum drops the count below threshold and leaves
+  only arb-2's evidence-free entry in the trail. `DemoResult`
+  gains the segment's quorum, logs, and counts, and
+  `test/demo.test.ts` adds 2 cases (segment shape with an
+  independent probe quorum, plus byte-identical determinism).
 - Scheduler demo segment (2026-11-03, backlog #846): the CLI
   demo closes with a `nextEscrowDeadline` section over a mixed
   seven-escrow batch on the watchdog sections' fixed `now` —

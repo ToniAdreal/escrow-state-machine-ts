@@ -264,6 +264,21 @@
  * expiry never deletes the audit trail; only `revoke()`
  * removes a signer's entries. Both sides are asserted
  * outside the printing against hand-pinned expectations.
+ * The demo then shows a quorum approval-evidence
+ * segment: a fresh quorum on a fixed clock (2-of-3, same signer ids
+ * as the dispute quorum) collects two votes on the same quorum —
+ * arb-1 approves with an evidence reference (a governance proposal
+ * id) and arb-2 approves without one — and `approvalLog()` prints
+ * both entries with their evidence fields (present for arb-1, absent
+ * for arb-2); the quorum is snapshotted, round-tripped through JSON
+ * and restored with `restoreQuorum`, and the restored trail is
+ * identical — the evidence survived the restart with its original
+ * timestamp — and then arb-1 `revoke()`s on the restored quorum,
+ * so the count drops below threshold and the trail keeps only
+ * arb-2's entry: revoke removes the signer's entries together with
+ * their evidence. Evidence is a caller-asserted reference the quorum
+ * records verbatim and never verifies; all sides are asserted
+ * outside the printing against hand-pinned expectations.
  * The demo then shows a single-target delivery
  * segment: the main escrow's signed settlement webhook
  * is delivered with `deliverSettlementWebhook()` alone —
@@ -1192,6 +1207,49 @@ export const DEMO_APPROVAL_LOG_ENTRIES: readonly ApprovalLogEntry[] = [
   { signerId: "arb-1", at: "2026-03-16T09:00:00.000Z" },
   { signerId: "arb-2", at: "2026-03-16T09:00:30.000Z" },
 ];
+
+/**
+ * Quorum approval-evidence fixtures for the final closing
+ * segment: a fresh quorum (2-of-3, same signer ids as the
+ * dispute quorum) on a fixed clock. Hand-pinned expectations —
+ * written from the documented `approve()` evidence semantics
+ * in src/quorum.ts (an approval may carry an optional
+ * non-empty string evidence reference, recorded verbatim on
+ * the log entry and on the snapshot, never verified; an
+ * approval without evidence keeps the exact legacy
+ * `{signerId, at}` shape; `restoreQuorum` carries evidence
+ * through a JSON round-trip unchanged; `revoke()` removes
+ * all of the signer's log entries, evidence included),
+ * never derived by calling `approve()` itself, and
+ * cross-checked against test/quorumEvidence.test.ts:
+ * - arb-1 approves at {@link DEMO_QUORUM_EVIDENCE_FIRST_AT}
+ *   with evidence {@link DEMO_QUORUM_EVIDENCE_REF} and
+ *   arb-2 approves at {@link DEMO_QUORUM_EVIDENCE_SECOND_AT}
+ *   without evidence: approvalCount 2, hasQuorum true,
+ *   approvals [arb-1, arb-2]
+ * - after `snapshot()` -> JSON -> `restoreQuorum`, the
+ *   trail is exactly {@link DEMO_QUORUM_EVIDENCE_LOG_BEFORE}
+ *   again — evidence and timestamps unchanged
+ * - arb-1 revokes on the restored quorum: approvalCount 1,
+ *   hasQuorum false, approvals exactly [arb-2], and the
+ *   trail keeps only arb-2's evidence-free entry
+ * Every timestamp is a fixed literal: no network, no
+ * randomness, no wall clock (the quorum's clock is a
+ * variable the segment sets to fixed instants only).
+ */
+export const DEMO_QUORUM_EVIDENCE_FIRST_AT = "2026-03-16T10:00:00.000Z";
+export const DEMO_QUORUM_EVIDENCE_SECOND_AT = "2026-03-16T10:01:00.000Z";
+export const DEMO_QUORUM_EVIDENCE_REF = "gov-proposal-2026-031";
+export const DEMO_QUORUM_EVIDENCE_LOG_BEFORE: readonly ApprovalLogEntry[] = [
+  {
+    signerId: "arb-1",
+    at: "2026-03-16T10:00:00.000Z",
+    evidence: "gov-proposal-2026-031",
+  },
+  { signerId: "arb-2", at: "2026-03-16T10:01:00.000Z" },
+];
+export const DEMO_QUORUM_EVIDENCE_LOG_AFTER_REVOKE: readonly ApprovalLogEntry[] =
+  [{ signerId: "arb-2", at: "2026-03-16T10:01:00.000Z" }];
 
 /**
  * Single-target delivery fixtures for the final closing
@@ -2706,6 +2764,46 @@ export interface DemoResult {
    * expiry never deletes the audit trail.
    */
   approvalLogExpiryLogAfter: ReadonlyArray<ApprovalLogEntry>;
+  /**
+   * The final closing segment's fresh quorum (2-of-3, same
+   * signer ids as the dispute quorum) for approval evidence,
+   * after the snapshot round-trip and arb-1's revoke:
+   * approvalCount 1, hasQuorum false, approvals exactly
+   * [arb-2] — the revoked vote's evidence left with it.
+   */
+  quorumEvidenceQuorum: Quorum;
+  /**
+   * `approvalLog()` of the evidence quorum before the
+   * snapshot round-trip: exactly
+   * {@link DEMO_QUORUM_EVIDENCE_LOG_BEFORE} — arb-1 with
+   * evidence {@link DEMO_QUORUM_EVIDENCE_REF}, arb-2
+   * without any evidence key.
+   */
+  quorumEvidenceLogBefore: ReadonlyArray<ApprovalLogEntry>;
+  /** Counted approvals of the evidence quorum before the restore: 2. */
+  quorumEvidenceCountBefore: number;
+  /** `hasQuorum()` of the evidence quorum before the restore: `true`. */
+  quorumEvidenceHasQuorumBefore: boolean;
+  /**
+   * `approvalLog()` of the quorum restored from the JSON
+   * round-trip: identical to
+   * {@link DEMO_QUORUM_EVIDENCE_LOG_BEFORE} — the evidence
+   * survived the restart with its original timestamp.
+   */
+  quorumEvidenceLogAfterRestore: ReadonlyArray<ApprovalLogEntry>;
+  /**
+   * `approvalLog()` after arb-1 revokes on the restored
+   * quorum: exactly
+   * {@link DEMO_QUORUM_EVIDENCE_LOG_AFTER_REVOKE} — only
+   * arb-2's evidence-free entry remains.
+   */
+  quorumEvidenceLogAfterRevoke: ReadonlyArray<ApprovalLogEntry>;
+  /** Counted approvals after arb-1 revokes: 1 — below threshold. */
+  quorumEvidenceCountAfterRevoke: number;
+  /** `hasQuorum()` after the revoke: `false`. */
+  quorumEvidenceHasQuorumAfterRevoke: boolean;
+  /** `approvals()` after the revoke: exactly [arb-2]. */
+  quorumEvidenceApprovalsAfterRevoke: readonly string[];
   /**
    * Result of delivering the main escrow's signed webhook
    * alone to {@link DEMO_SINGLE_DELIVERY_URL} with
@@ -5994,6 +6092,115 @@ export async function runDemo(): Promise<DemoResult> {
     `  approvalLog() after expiry: ${approvalLogExpiryLogAfter.length} entries retained (${approvalLogExpiryLogAfter.map((e) => e.signerId).join(", ")}) — expiry never deletes the audit trail; only revoke() removes a signer's entries`,
   );
 
+  // --- Quorum approval evidence: approve() evidence references (final closing) ---
+  // The approval-log segment above prints the dispute quorum's
+  // trail, but every vote there is evidence-free, so the
+  // evidence references #831 added to `approve()` never
+  // appear in the demo: a vote can carry a caller-supplied
+  // reference (a vote-record link, a governance proposal
+  // id) that the quorum records verbatim on the log entry
+  // and on the snapshot — it never verifies the reference,
+  // and counting is identical with or without it. Here a
+  // fresh quorum on a fixed clock (same signer ids and
+  // threshold as the dispute quorum) collects two votes on
+  // the same quorum: arb-1 with an evidence reference, arb-2
+  // without one. The trail is printed with its evidence
+  // fields; the quorum is snapshotted, round-tripped
+  // through JSON text and restored with `restoreQuorum`
+  // (the restart shape the dispute branch already uses);
+  // then arb-1 revokes on the restored quorum, so the
+  // count drops below threshold and the trail keeps only
+  // arb-2's entry — revoke removes the signer's entries
+  // together with their evidence. Hand-pinned expectations
+  // (see the fixture comment above), asserted HERE,
+  // outside the printing: an evidence reference dropped,
+  // re-stamped, or left behind by a revoke would fail the
+  // demo itself, not just a test. Zero network, zero
+  // randomness; the quorum's clock is set to fixed
+  // instants only.
+  let quorumEvidenceNowMs = Date.parse(DEMO_QUORUM_EVIDENCE_FIRST_AT);
+  const quorumEvidenceSourceQuorum = createQuorum({
+    threshold: DEMO_QUORUM_THRESHOLD,
+    signers: [...DEMO_QUORUM_SIGNERS],
+    now: () => quorumEvidenceNowMs,
+  });
+  quorumEvidenceSourceQuorum.approve(
+    DEMO_QUORUM_SIGNERS[0],
+    DEMO_QUORUM_EVIDENCE_REF,
+  );
+  quorumEvidenceNowMs = Date.parse(DEMO_QUORUM_EVIDENCE_SECOND_AT);
+  quorumEvidenceSourceQuorum.approve(DEMO_QUORUM_SIGNERS[1]);
+  const quorumEvidenceLogBefore = quorumEvidenceSourceQuorum.approvalLog();
+  const quorumEvidenceCountBefore =
+    quorumEvidenceSourceQuorum.approvalCount();
+  const quorumEvidenceHasQuorumBefore =
+    quorumEvidenceSourceQuorum.hasQuorum();
+  const quorumEvidenceQuorum = restoreQuorum(
+    {
+      threshold: DEMO_QUORUM_THRESHOLD,
+      signers: [...DEMO_QUORUM_SIGNERS],
+      now: () => quorumEvidenceNowMs,
+    },
+    JSON.parse(JSON.stringify(quorumEvidenceSourceQuorum.snapshot())),
+  );
+  const quorumEvidenceLogAfterRestore = quorumEvidenceQuorum.approvalLog();
+  const quorumEvidenceSnapshotMatches =
+    JSON.stringify(quorumEvidenceQuorum.snapshot()) ===
+    JSON.stringify(quorumEvidenceSourceQuorum.snapshot());
+  quorumEvidenceQuorum.revoke(DEMO_QUORUM_SIGNERS[0]);
+  const quorumEvidenceCountAfterRevoke = quorumEvidenceQuorum.approvalCount();
+  const quorumEvidenceHasQuorumAfterRevoke =
+    quorumEvidenceQuorum.hasQuorum();
+  const quorumEvidenceApprovalsAfterRevoke = quorumEvidenceQuorum.approvals();
+  const quorumEvidenceLogAfterRevoke = quorumEvidenceQuorum.approvalLog();
+  const sameApprovalEntriesWithEvidence = (
+    actual: ReadonlyArray<ApprovalLogEntry>,
+    expected: readonly ApprovalLogEntry[],
+  ): boolean =>
+    actual.length === expected.length &&
+    actual.every(
+      (e, i) =>
+        e.signerId === expected[i].signerId &&
+        e.at === expected[i].at &&
+        e.evidence === expected[i].evidence,
+    );
+  if (
+    quorumEvidenceCountBefore !== 2 ||
+    quorumEvidenceHasQuorumBefore !== true ||
+    !sameApprovalEntriesWithEvidence(
+      quorumEvidenceLogBefore,
+      DEMO_QUORUM_EVIDENCE_LOG_BEFORE,
+    ) ||
+    !sameApprovalEntriesWithEvidence(
+      quorumEvidenceLogAfterRestore,
+      DEMO_QUORUM_EVIDENCE_LOG_BEFORE,
+    ) ||
+    !quorumEvidenceSnapshotMatches ||
+    quorumEvidenceCountAfterRevoke !== 1 ||
+    quorumEvidenceHasQuorumAfterRevoke !== false ||
+    quorumEvidenceApprovalsAfterRevoke.length !== 1 ||
+    quorumEvidenceApprovalsAfterRevoke[0] !== DEMO_QUORUM_SIGNERS[1] ||
+    !sameApprovalEntriesWithEvidence(
+      quorumEvidenceLogAfterRevoke,
+      DEMO_QUORUM_EVIDENCE_LOG_AFTER_REVOKE,
+    )
+  ) {
+    throw new Error(
+      "demo fixture broken: quorum approval evidence does not match the pinned shape (arb-1 with evidence + arb-2 without, 2 counted / quorum before; snapshot JSON round-trip preserves the evidence and timestamps; revoke drops arb-1 to 1 counted / no quorum with only arb-2's evidence-free entry in the trail)",
+    );
+  }
+  lines.push(
+    "",
+    "Quorum approval evidence (approve() evidence references):",
+    `  quorum (${DEMO_QUORUM_THRESHOLD}-of-${DEMO_QUORUM_SIGNERS.length}): arb-1 approves at ${DEMO_QUORUM_EVIDENCE_FIRST_AT} with evidence "${DEMO_QUORUM_EVIDENCE_REF}", arb-2 approves at ${DEMO_QUORUM_EVIDENCE_SECOND_AT} without evidence — approvalCount ${quorumEvidenceCountBefore}, hasQuorum: ${quorumEvidenceHasQuorumBefore}`,
+    ...quorumEvidenceLogBefore.map(
+      (e, i) =>
+        `  approval ${i + 1}: ${e.signerId} at ${e.at} — evidence: ${e.evidence ?? "none"}`,
+    ),
+    `  snapshot() -> JSON -> restoreQuorum(): the restored trail is identical — arb-1's evidence "${DEMO_QUORUM_EVIDENCE_REF}" survived the restart with its original timestamp ${DEMO_QUORUM_EVIDENCE_FIRST_AT} (evidence is a caller assertion: the quorum records it, it does not verify it)`,
+    `  revoke ${DEMO_QUORUM_SIGNERS[0]} on the restored quorum: approvalCount ${quorumEvidenceCountAfterRevoke}, hasQuorum: ${quorumEvidenceHasQuorumAfterRevoke} — approvals now [${quorumEvidenceApprovalsAfterRevoke.join(", ")}], approvalLog keeps ${quorumEvidenceLogAfterRevoke.length} entry (revoke removes the signer's entries together with their evidence)`,
+  );
+
   // --- Single-target delivery: deliverSettlementWebhook (final closing) ---
   // Every delivery shown so far went through the fan-out
   // wrapper; the single-endpoint entry point underneath it
@@ -8384,6 +8591,15 @@ export async function runDemo(): Promise<DemoResult> {
     approvalLogExpiryCountAfter,
     approvalLogExpiryHasQuorumAfter,
     approvalLogExpiryLogAfter,
+    quorumEvidenceQuorum,
+    quorumEvidenceLogBefore,
+    quorumEvidenceCountBefore,
+    quorumEvidenceHasQuorumBefore,
+    quorumEvidenceLogAfterRestore,
+    quorumEvidenceLogAfterRevoke,
+    quorumEvidenceCountAfterRevoke,
+    quorumEvidenceHasQuorumAfterRevoke,
+    quorumEvidenceApprovalsAfterRevoke,
     singleDeliveryResult,
     singleDeliveryCalls,
     singleDeliverySignatureVerified,

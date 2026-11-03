@@ -128,6 +128,11 @@ import {
   DEMO_PENDING_ESCROW_ID,
   DEMO_PRO_FEE_BPS,
   DEMO_QUORUM_APPROVAL_ATS,
+  DEMO_QUORUM_EVIDENCE_FIRST_AT,
+  DEMO_QUORUM_EVIDENCE_LOG_AFTER_REVOKE,
+  DEMO_QUORUM_EVIDENCE_LOG_BEFORE,
+  DEMO_QUORUM_EVIDENCE_REF,
+  DEMO_QUORUM_EVIDENCE_SECOND_AT,
   DEMO_QUORUM_SIGNERS,
   DEMO_QUORUM_THRESHOLD,
   DEMO_REVOKE_FIRST_AT,
@@ -4379,7 +4384,7 @@ test("demo shows the quorum approval log: full trail in record order, and expire
   assert.equal(probeExpiry.hasQuorum(), false);
   assert.deepEqual(probeExpiry.approvalLog(), DEMO_APPROVAL_LOG_ENTRIES);
   // The segment follows the deadline-clearing segment and
-  // precedes the closing single-target delivery segment;
+  // precedes the quorum approval-evidence segment;
   // it prints its lines verbatim, and its retained-entries
   // line is the segment's last line.
   const logAt = text.indexOf("Quorum approval log (approvalLog audit trail):");
@@ -4402,7 +4407,7 @@ test("demo shows the quorum approval log: full trail in record order, and expire
   const logSegment = lines.slice(
     lines.indexOf("Quorum approval log (approvalLog audit trail):"),
     lines.indexOf(
-      "Single-target webhook delivery (deliverSettlementWebhook via scripted fake fetch, zero network):",
+      "Quorum approval evidence (approve() evidence references):",
     ) - 1,
   );
   assert.equal(
@@ -4416,7 +4421,7 @@ test("demo quorum approval-log segment is deterministic: two runs print byte-ide
     ls.slice(
       ls.indexOf("Quorum approval log (approvalLog audit trail):"),
       ls.indexOf(
-        "Single-target webhook delivery (deliverSettlementWebhook via scripted fake fetch, zero network):",
+        "Quorum approval evidence (approve() evidence references):",
       ) - 1,
     );
   const a = await runDemo();
@@ -4440,6 +4445,168 @@ test("demo quorum approval-log segment is deterministic: two runs print byte-ide
   assert.equal(
     a.approvalLogExpiryHasQuorumAfter,
     b.approvalLogExpiryHasQuorumAfter,
+  );
+});
+
+test("demo shows quorum approval evidence: one vote with a proposal reference, one without, evidence surviving a snapshot restore and leaving with a revoke", async () => {
+  const {
+    quorumEvidenceQuorum,
+    quorumEvidenceLogBefore,
+    quorumEvidenceCountBefore,
+    quorumEvidenceHasQuorumBefore,
+    quorumEvidenceLogAfterRestore,
+    quorumEvidenceLogAfterRevoke,
+    quorumEvidenceCountAfterRevoke,
+    quorumEvidenceHasQuorumAfterRevoke,
+    quorumEvidenceApprovalsAfterRevoke,
+    lines,
+  } = await runDemo();
+  const text = lines.join("\n");
+
+  assert.equal(quorumEvidenceCountBefore, 2);
+  assert.equal(quorumEvidenceHasQuorumBefore, true);
+  assert.deepEqual(
+    quorumEvidenceLogBefore,
+    DEMO_QUORUM_EVIDENCE_LOG_BEFORE,
+  );
+  assert.equal(
+    quorumEvidenceLogBefore[0].evidence,
+    DEMO_QUORUM_EVIDENCE_REF,
+  );
+  assert.equal("evidence" in quorumEvidenceLogBefore[1], false);
+  assert.deepEqual(
+    quorumEvidenceLogAfterRestore,
+    DEMO_QUORUM_EVIDENCE_LOG_BEFORE,
+  );
+  assert.equal(quorumEvidenceCountAfterRevoke, 1);
+  assert.equal(quorumEvidenceHasQuorumAfterRevoke, false);
+  assert.deepEqual(quorumEvidenceApprovalsAfterRevoke, [
+    DEMO_QUORUM_SIGNERS[1],
+  ]);
+  assert.deepEqual(
+    quorumEvidenceLogAfterRevoke,
+    DEMO_QUORUM_EVIDENCE_LOG_AFTER_REVOKE,
+  );
+  assert.equal(quorumEvidenceQuorum.threshold, DEMO_QUORUM_THRESHOLD);
+  assert.deepEqual(
+    quorumEvidenceQuorum.approvalLog(),
+    DEMO_QUORUM_EVIDENCE_LOG_AFTER_REVOKE,
+  );
+  // Independent cross-check: a fresh quorum reproduces the
+  // shape — the demo segment is not self-certifying.
+  let probeNow = Date.parse(DEMO_QUORUM_EVIDENCE_FIRST_AT);
+  const probe = createQuorum({
+    threshold: DEMO_QUORUM_THRESHOLD,
+    signers: [...DEMO_QUORUM_SIGNERS],
+    now: () => probeNow,
+  });
+  probe.approve(DEMO_QUORUM_SIGNERS[0], DEMO_QUORUM_EVIDENCE_REF);
+  probeNow = Date.parse(DEMO_QUORUM_EVIDENCE_SECOND_AT);
+  probe.approve(DEMO_QUORUM_SIGNERS[1]);
+  const probeRestored = restoreQuorum(
+    {
+      threshold: DEMO_QUORUM_THRESHOLD,
+      signers: [...DEMO_QUORUM_SIGNERS],
+      now: () => probeNow,
+    },
+    JSON.parse(JSON.stringify(probe.snapshot())),
+  );
+  assert.deepEqual(
+    probeRestored.approvalLog(),
+    DEMO_QUORUM_EVIDENCE_LOG_BEFORE,
+  );
+  probeRestored.revoke(DEMO_QUORUM_SIGNERS[0]);
+  assert.equal(probeRestored.approvalCount(), 1);
+  assert.equal(probeRestored.hasQuorum(), false);
+  assert.deepEqual(
+    probeRestored.approvalLog(),
+    DEMO_QUORUM_EVIDENCE_LOG_AFTER_REVOKE,
+  );
+  // The segment follows the approval-log segment and
+  // precedes the single-target delivery segment; it prints
+  // its lines verbatim, and its revoke line is the
+  // segment's last line.
+  const evidenceAt = text.indexOf(
+    "Quorum approval evidence (approve() evidence references):",
+  );
+  assert.ok(
+    evidenceAt >
+      text.indexOf("Quorum approval log (approvalLog audit trail):"),
+    "approval-evidence segment must follow the approval-log segment",
+  );
+  assert.ok(
+    evidenceAt <
+      text.indexOf(
+        "Single-target webhook delivery (deliverSettlementWebhook via scripted fake fetch, zero network):",
+      ),
+    "approval-evidence segment must precede the single-target delivery segment",
+  );
+  for (const line of [
+    `  quorum (${DEMO_QUORUM_THRESHOLD}-of-${DEMO_QUORUM_SIGNERS.length}): ${DEMO_QUORUM_SIGNERS[0]} approves at ${DEMO_QUORUM_EVIDENCE_FIRST_AT} with evidence "${DEMO_QUORUM_EVIDENCE_REF}", ${DEMO_QUORUM_SIGNERS[1]} approves at ${DEMO_QUORUM_EVIDENCE_SECOND_AT} without evidence — approvalCount 2, hasQuorum: true`,
+    `  approval 1: ${DEMO_QUORUM_SIGNERS[0]} at ${DEMO_QUORUM_EVIDENCE_FIRST_AT} — evidence: ${DEMO_QUORUM_EVIDENCE_REF}`,
+    `  approval 2: ${DEMO_QUORUM_SIGNERS[1]} at ${DEMO_QUORUM_EVIDENCE_SECOND_AT} — evidence: none`,
+    `  snapshot() -> JSON -> restoreQuorum(): the restored trail is identical — ${DEMO_QUORUM_SIGNERS[0]}'s evidence "${DEMO_QUORUM_EVIDENCE_REF}" survived the restart with its original timestamp ${DEMO_QUORUM_EVIDENCE_FIRST_AT} (evidence is a caller assertion: the quorum records it, it does not verify it)`,
+    `  revoke ${DEMO_QUORUM_SIGNERS[0]} on the restored quorum: approvalCount 1, hasQuorum: false — approvals now [${DEMO_QUORUM_SIGNERS[1]}], approvalLog keeps 1 entry (revoke removes the signer's entries together with their evidence)`,
+  ]) {
+    assert.ok(text.includes(line), `missing approval-evidence line: ${line}`);
+  }
+  const evidenceSegment = lines.slice(
+    lines.indexOf(
+      "Quorum approval evidence (approve() evidence references):",
+    ),
+    lines.indexOf(
+      "Single-target webhook delivery (deliverSettlementWebhook via scripted fake fetch, zero network):",
+    ) - 1,
+  );
+  assert.equal(
+    evidenceSegment[evidenceSegment.length - 1],
+    `  revoke ${DEMO_QUORUM_SIGNERS[0]} on the restored quorum: approvalCount 1, hasQuorum: false — approvals now [${DEMO_QUORUM_SIGNERS[1]}], approvalLog keeps 1 entry (revoke removes the signer's entries together with their evidence)`,
+  );
+});
+
+test("demo quorum approval-evidence segment is deterministic: two runs print byte-identical evidence lines", async () => {
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf(
+        "Quorum approval evidence (approve() evidence references):",
+      ),
+      ls.indexOf(
+        "Single-target webhook delivery (deliverSettlementWebhook via scripted fake fetch, zero network):",
+      ) - 1,
+    );
+  const a = await runDemo();
+  const b = await runDemo();
+  const segA = segment(a.lines);
+  // Header + the quorum line + 2 approval lines +
+  // the restore line + the revoke line; every value is
+  // derived from the fixed fixtures alone, so no
+  // normalization is needed.
+  assert.equal(segA.length, 6);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(a.quorumEvidenceLogBefore, b.quorumEvidenceLogBefore);
+  assert.deepEqual(
+    a.quorumEvidenceLogAfterRestore,
+    b.quorumEvidenceLogAfterRestore,
+  );
+  assert.deepEqual(
+    a.quorumEvidenceLogAfterRevoke,
+    b.quorumEvidenceLogAfterRevoke,
+  );
+  assert.equal(
+    a.quorumEvidenceCountBefore,
+    b.quorumEvidenceCountBefore,
+  );
+  assert.equal(
+    a.quorumEvidenceCountAfterRevoke,
+    b.quorumEvidenceCountAfterRevoke,
+  );
+  assert.equal(
+    a.quorumEvidenceHasQuorumBefore,
+    b.quorumEvidenceHasQuorumBefore,
+  );
+  assert.equal(
+    a.quorumEvidenceHasQuorumAfterRevoke,
+    b.quorumEvidenceHasQuorumAfterRevoke,
   );
 });
 
