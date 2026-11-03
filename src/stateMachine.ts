@@ -2117,6 +2117,67 @@ export function expireOverdueEscrows(
 }
 
 /**
+ * The next deadline a scheduler should wake up for.
+ */
+export interface NextEscrowDeadline {
+  /** The escrow carrying the earliest upcoming deadline. */
+  escrow: Escrow;
+  /** That escrow's deadline, as canonical ISO-8601 (as stored by the escrow). */
+  deadline: string;
+}
+
+/**
+ * Scheduler helper: from a batch of escrows, return the one whose
+ * deadline comes first — and when — so a caller can arm a single timer
+ * for it instead of polling the whole batch.
+ *
+ * Only non-terminal escrows with a deadline strictly in the future
+ * qualify: terminal escrows are settled (their deadline no longer
+ * schedules anything), overdue escrows belong to {@link expiredEscrows}
+ * (they should already have been acted on, not scheduled), escrows
+ * with no deadline have nothing to schedule, and an escrow whose
+ * deadline is exactly `now` is due, not upcoming. Ties keep input
+ * order — the first escrow carrying the earliest deadline wins — so
+ * the result is deterministic for a fixed batch and `now`.
+ *
+ * Pure: reads the escrows, never mutates or dispatches, and never
+ * transitions anything itself. Scheduling is the caller's job: when
+ * the timer fires, re-screen with {@link expiredEscrows} and expire
+ * via {@link expireOverdueEscrows}, so a deadline that moved (or an
+ * escrow that settled) between arming and firing cannot expire
+ * something that should no longer expire. An invalid `now` throws
+ * fail-fast, matching `staleEscrows()`. Returns undefined when no
+ * escrow qualifies. The `now` default is the real clock, so unit
+ * tests pin it to a fixed date.
+ */
+export function nextEscrowDeadline(
+  escrows: readonly Escrow[],
+  now: Date = new Date()
+): NextEscrowDeadline | undefined {
+  const nowMs = now.getTime();
+  if (!Number.isFinite(nowMs)) {
+    throw new Error("invalid now: expected a valid Date");
+  }
+  let best: NextEscrowDeadline | undefined;
+  for (const escrow of escrows) {
+    if (escrow.isTerminal) continue;
+    const deadline = escrow.getDeadline();
+    if (deadline === undefined) continue;
+    // getDeadline() only ever returns canonical ISO (setDeadline
+    // normalizes on the way in, snapshot parsing rejects the rest),
+    // so this parse cannot fail on library-produced escrows; the
+    // finiteness guard is belt-and-braces against a hand-built one.
+    const deadlineMs = Date.parse(deadline);
+    if (!Number.isFinite(deadlineMs) || deadlineMs <= nowMs) continue;
+    if (best !== undefined && deadlineMs >= Date.parse(best.deadline)) {
+      continue;
+    }
+    best = { escrow, deadline };
+  }
+  return best;
+}
+
+/**
  * Fail-fast validation for `staleEscrows()` configuration.
  *
  * Every key must be a known `EscrowState`, every value a non-negative

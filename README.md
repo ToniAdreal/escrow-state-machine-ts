@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1129 tests, all local
+npm test   # 1150 tests, all local
 ```
 
 ## Quickstart
@@ -322,6 +322,17 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   `now` must not predate an escrow's last history entry; a backdated
   `now` lands as a per-escrow `{expired: false, error}` and the batch
   continues.)
+  The scheduler companion is `nextEscrowDeadline(escrows, now?)`: it
+  returns the non-terminal escrow whose deadline comes first, as
+  `{ escrow, deadline }` (canonical ISO), or `undefined` when none
+  qualifies — terminal escrows are settled, overdue ones belong to
+  `expiredEscrows`, deadline-less ones have nothing to schedule, and a
+  deadline exactly at `now` is due, not upcoming; ties keep batch
+  order. It is pure (no mutation, no dispatch): a caller arms one
+  timer for the returned deadline and, when it fires, re-screens with
+  `expiredEscrows` and expires via `expireOverdueEscrows`, so a
+  deadline that moved or an escrow that settled in between cannot
+  expire something that should no longer expire.
   The deadline rides along in `toJSON()`/`fromJSON()` snapshots (a
   tampered or non-canonical deadline is rejected by snapshot validation).
   A distinct screening is `staleEscrows(escrows, maxAgeByState, now?)`:
@@ -545,7 +556,9 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   on top of it (the library cannot verify who an actor really is), a real deadline
   scheduler (this repo has an advisory deadline field with
   `isOverdue()`/`expiredEscrows()` watchdog helpers plus an
-  `expireOverdueEscrows()` batch executor, but no background
+  `expireOverdueEscrows()` batch executor and a
+  `nextEscrowDeadline()` scheduler helper that names the next due
+  escrow, but no background
   timer or auto-expire), and a shared/distributed idempotency store
   (this repo's consumed keys persist only inside each escrow's own
   snapshot); the `Escrow` class is in-memory.
@@ -904,7 +917,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1141 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1150 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
