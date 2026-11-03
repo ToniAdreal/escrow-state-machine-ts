@@ -20,6 +20,56 @@ export interface Settlement {
   net: number;
 }
 
+export interface PartialSettlementInputs {
+  gross: number;
+  /** Amount released now; the rest stays locked (remaining = gross - released). */
+  released: number;
+  /** Platform fee in basis points, e.g. 500 = 5%; charged on the released amount only. */
+  proFeeBps: number;
+  referralCredits?: number;
+}
+
+export interface PartialSettlement {
+  released: number;
+  proFee: number;
+  referralCredits: number;
+  net: number;
+  remaining: number;
+}
+
+/**
+ * Partial-release settlement: split out one release from a larger locked
+ * gross without touching escrow state. The fee is charged on the released
+ * amount only (not on the whole gross), so a second partial release later
+ * charges its own fee on its own amount and the fees never double-count.
+ * Validation, rounding, overflow, and negative-net guards are delegated to
+ * {@link settleRelease} with gross = released, so the two paths cannot drift
+ * apart on fee or net semantics. State advancement still goes through
+ * `dispatch`; this function is a pure arithmetic helper only.
+ */
+export function settlePartialRelease(
+  inputs: PartialSettlementInputs,
+): PartialSettlement {
+  const { gross, released, proFeeBps, referralCredits = 0 } = inputs;
+  if (!Number.isFinite(gross) || gross < 0)
+    throw new Error("gross must be a finite non-negative number");
+  if (!Number.isFinite(released) || released < 0)
+    throw new Error("released must be a finite non-negative number");
+  if (released > gross)
+    throw new Error("released must not exceed gross");
+  // settleRelease re-validates proFeeBps / referralCredits, rounds the fee
+  // to cents, guards overflow, and rejects a negative net.
+  const { proFee, net } = settleRelease({
+    gross: released,
+    proFeeBps,
+    referralCredits,
+  });
+  const remaining = round2(gross - released);
+  if (!Number.isFinite(remaining))
+    throw new Error("settlement computation overflowed: inputs too large");
+  return { released, proFee, referralCredits, net, remaining };
+}
+
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }

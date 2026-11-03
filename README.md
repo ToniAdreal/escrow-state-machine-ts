@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1185 tests, all local
+npm test   # 1197 tests, all local
 ```
 
 ## Quickstart
@@ -137,7 +137,11 @@ golden deposit in isolation — gross 10,630 at the main escrow's
 creator net with zero referral credits, the three parts summing
 back to the deposit exactly — the same split the settlement
 report above was built on, shown as the pure function's own
-input and output:
+input and output. For a partial release, `settlePartialRelease`
+charges the fee on the released amount only and returns the
+remaining locked balance; it is pure arithmetic and does not
+change escrow state — state advancement still goes through
+`dispatch`.
 
 ```bash
 npm run demo
@@ -941,7 +945,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1185 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1197 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

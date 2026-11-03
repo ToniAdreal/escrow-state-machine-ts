@@ -18,6 +18,17 @@ version changes.
 
 ### Added
 
+- Partial-release settlement helper (2026-11-03, backlog
+  #852): `settlePartialRelease({ gross, released, proFeeBps,
+  referralCredits? })` charges the platform fee on the released
+  amount only (via `settleRelease` with gross = released, so
+  validation, cent rounding, overflow, and negative-net guards
+  cannot drift between the two paths) and returns
+  `{ released, proFee, referralCredits, net, remaining }`;
+  released above gross, negative, or non-finite inputs fail
+  fast, and the function is pure arithmetic — it does not
+  change escrow state. `test/settlePartialRelease.test.ts`
+  adds 12 cases.
 - Quorum approval-evidence demo segment (2026-11-03, backlog
   #849): the CLI demo gains a section between the approval-log
   and single-target delivery sections, over a fresh 2-of-3 quorum
