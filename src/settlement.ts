@@ -35,6 +35,19 @@ export function settleRelease(inputs: SettlementInputs): Settlement {
 
   const proFee = round2((gross * proFeeBps) / 10000);
   const net = round2(gross - proFee - referralCredits);
+  // Overflow: finite-but-huge inputs can push the intermediate arithmetic
+  // past Number.MAX_VALUE, and round2(Infinity) is still Infinity. With
+  // proFeeBps 0 the net itself overflows (gross 1e308 -> net Infinity, and
+  // `Infinity < 0` is false, so the negative check below would silently let
+  // it escape); with proFeeBps > 0 the fee overflows first and the net goes
+  // to -Infinity, which the negative check would mislabel as a negative
+  // payout. An infinite net would poison every downstream money sum
+  // (buildSettlementReport party ledgers, webhook payloads), so fail fast
+  // with an explicit overflow error instead of returning { net: Infinity }.
+  // This check runs before the negative check on purpose: a non-finite
+  // result is an overflow, not a merely-negative payout.
+  if (!Number.isFinite(proFee) || !Number.isFinite(net))
+    throw new Error("settlement computation overflowed: inputs too large");
   if (net < 0) throw new Error("net payout would be negative");
   return { gross, proFee, referralCredits, net };
 }

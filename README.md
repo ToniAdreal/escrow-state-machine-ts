@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1150 tests, all local
+npm test   # 1158 tests, all local
 ```
 
 ## Quickstart
@@ -524,7 +524,11 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   to `Infinity` are rejected: `calculateDeposit` throws
   `deposit computation overflowed: inputs too large` instead of returning
   `{ deposit: Infinity }`, which would poison every downstream settlement
-  ledger. Invariant tests assert fund conservation within ±1 cent. This is
+  ledger. The release path has the same guard: `settleRelease` throws
+  `settlement computation overflowed: inputs too large` when the fee or the
+  net overflows (a 0 bps fee on a 1e308 gross would otherwise return
+  `{ net: Infinity }`, since the negative check never fires on `Infinity`).
+  Invariant tests assert fund conservation within ±1 cent. This is
   not big-decimal arithmetic and has not been audited.
 
 - **Can I use this in production?**
@@ -917,7 +921,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1150 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1158 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
