@@ -18,6 +18,15 @@ version changes.
 
 ### Added
 
+- Approaching-deadline screening helper (2026-11-03, backlog #840):
+  `escrowsApproachingDeadline(escrows, withinMs, now?)` returns the
+  non-terminal escrows whose deadline falls inside the half-open window
+  `(now, now + withinMs]` — the warn-before-it-is-too-late counterpart
+  to `expiredEscrows`, with no double-reporting (a deadline at or
+  before `now` belongs to `expiredEscrows` only) and an inclusive upper
+  bound; invalid `withinMs` or `now` throws fail-fast, and the helper
+  is pure (no mutation, no dispatch). `test/escrowsApproachingDeadline.test.ts`
+  adds 12 cases.
 - Quorum approval evidence references (2026-11-02, backlog #831):
   `Quorum.approve(signerId, evidence?)` records an optional non-empty
   string reference (vote-record link, governance proposal id,

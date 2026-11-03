@@ -2178,6 +2178,67 @@ export function nextEscrowDeadline(
 }
 
 /**
+ * Watchdog helper: from a batch of escrows, return the ones whose
+ * deadline is coming up — non-terminal AND with a deadline inside the
+ * half-open window `(now, now + withinMs]`.
+ *
+ * This is the "warn before it is too late" counterpart to
+ * {@link expiredEscrows}: an overdue escrow (deadline at or before
+ * `now`) belongs to `expiredEscrows`, not here — the window's lower
+ * bound is exclusive, so an escrow that just crossed its deadline is
+ * never reported twice, once by each helper. An escrow whose deadline
+ * lands exactly on `now + withinMs` is included (the upper bound is
+ * inclusive: a deadline "within 24 hours" includes one exactly 24
+ * hours out). Terminal escrows are never selected, even when their
+ * deadline falls inside the window, and escrows with no deadline are
+ * never selected.
+ *
+ * Pure: reads the escrows, never mutates or dispatches. Screening is
+ * the caller's job after this: nudge the parties (or re-check the
+ * deadline) for the returned escrows, and when a deadline actually
+ * passes, re-screen with {@link expiredEscrows} and expire via
+ * {@link expireOverdueEscrows} — this helper never transitions
+ * anything itself. `withinMs` must be a non-negative finite number
+ * of milliseconds; an invalid value (or an invalid `now`) fails fast
+ * instead of silently returning an empty list. The `now` default is
+ * the real clock, so unit tests pin it to a fixed date.
+ *
+ *   const atRisk = escrowsApproachingDeadline(allEscrows, 24 * 3600_000, now);
+ *   // nudge the parties, before the deadline passes
+ */
+export function escrowsApproachingDeadline(
+  escrows: readonly Escrow[],
+  withinMs: number,
+  now: Date = new Date()
+): Escrow[] {
+  if (
+    typeof withinMs !== "number" ||
+    !Number.isFinite(withinMs) ||
+    withinMs < 0
+  ) {
+    throw new Error(
+      "invalid escrowsApproachingDeadline: withinMs must be a non-negative finite number of milliseconds"
+    );
+  }
+  const nowMs = now.getTime();
+  if (!Number.isFinite(nowMs)) {
+    throw new Error("invalid now: expected a valid Date");
+  }
+  return escrows.filter((escrow) => {
+    if (escrow.isTerminal) return false;
+    const deadline = escrow.getDeadline();
+    if (deadline === undefined) return false;
+    // getDeadline() only ever returns canonical ISO (setDeadline
+    // normalizes on the way in, snapshot parsing rejects the rest),
+    // so this parse cannot fail on library-produced escrows; the
+    // finiteness guard is belt-and-braces against a hand-built one.
+    const deadlineMs = Date.parse(deadline);
+    if (!Number.isFinite(deadlineMs)) return false;
+    return deadlineMs > nowMs && deadlineMs <= nowMs + withinMs;
+  });
+}
+
+/**
  * Fail-fast validation for `staleEscrows()` configuration.
  *
  * Every key must be a known `EscrowState`, every value a non-negative

@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1158 tests, all local
+npm test   # 1170 tests, all local
 ```
 
 ## Quickstart
@@ -333,6 +333,18 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   `expiredEscrows` and expires via `expireOverdueEscrows`, so a
   deadline that moved or an escrow that settled in between cannot
   expire something that should no longer expire.
+  The warn-before-it-is-too-late companion is
+  `escrowsApproachingDeadline(escrows, withinMs, now?)`: it returns the
+  non-terminal escrows whose deadline falls inside the half-open window
+  `(now, now + withinMs]` — a deadline exactly at `now` is due, not
+  upcoming, and belongs to `expiredEscrows`, so the two helpers never
+  double-report the same escrow, while a deadline exactly at
+  `now + withinMs` is included. It is pure (no mutation, no dispatch):
+  a caller takes the returned list, nudges the parties, and when a
+  deadline actually passes still expires via `expireOverdueEscrows`.
+  An invalid `withinMs` (negative, non-finite, non-number) or an
+  invalid `now` throws fail-fast instead of silently returning an
+  empty list.
   The deadline rides along in `toJSON()`/`fromJSON()` snapshots (a
   tampered or non-canonical deadline is rejected by snapshot validation).
   A distinct screening is `staleEscrows(escrows, maxAgeByState, now?)`:
@@ -921,7 +933,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1158 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1170 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
