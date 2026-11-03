@@ -2178,6 +2178,81 @@ export function nextEscrowDeadline(
 }
 
 /**
+ * Batch filter: from a batch of escrows, return the ones currently in
+ * the given state, in input order.
+ *
+ * This is the generic counterpart to the watchdog screens:
+ * `expiredEscrows()` answers "past an absolute deadline" and
+ * `staleEscrows()` answers "stuck in this state too long", but a
+ * caller that simply wants to list every FUNDED escrow had to
+ * hand-write the same filter — and a hand-written filter has no
+ * shared answer for an unknown state string, so a typo silently
+ * returned an empty list. This helper gives that listing one shared,
+ * pure entry point, mirroring the dataquest lifecycle's
+ * `tasksByState`:
+ *
+ *   const funded = escrowsByState(allEscrows, "FUNDED");
+ *
+ * Pure: reads the escrows' current states, never mutates, dispatches,
+ * or copies the escrows — the returned array holds the same escrow
+ * objects, in input order, so callers can act on them directly. An
+ * unknown state (anything outside the EscrowState set) fails fast
+ * instead of silently returning an empty list, so a typo ("funded",
+ * "FUNDEDD") cannot masquerade as "no escrows in this state".
+ * Terminal states filter exactly like any other state — unlike the
+ * watchdog screens, this helper has no terminal exclusion to apply.
+ */
+export function escrowsByState(
+  escrows: readonly Escrow[],
+  state: EscrowState,
+): Escrow[] {
+  if (!ESCROW_STATES.has(state)) {
+    throw new Error(`invalid escrowsByState: unknown state "${String(state)}"`);
+  }
+  return escrows.filter((escrow) => escrow.state === state);
+}
+
+/**
+ * Batch filter: from a batch of escrows, return the ones whose audit
+ * history contains at least one entry signed by the given actor, in
+ * input order.
+ *
+ * This is the actor counterpart to {@link escrowsByState}: a caller
+ * that wants to list every escrow a given operator ever touched had
+ * to hand-write the same history scan — and a hand-written scan has
+ * no shared answer for an empty actor string (which dispatch itself
+ * rejects: `undefined` is the anonymous form, an empty string is not
+ * an actor at all). This helper gives that listing one shared, pure
+ * entry point, mirroring the dataquest lifecycle's `tasksByActor`:
+ *
+ *   const touched = escrowsByActor(allEscrows, "operator");
+ *
+ * Pure: reads the escrows' histories, never mutates, dispatches, or
+ * copies the escrows — the returned array holds the same escrow
+ * objects, in input order, so callers can act on them directly. An
+ * escrow matches as soon as any one history entry carries the actor,
+ * and matches only once no matter how many of its entries do.
+ * Entries without an actor never match, so anonymous work is never
+ * attributed to anyone. An empty or non-string actor fails fast
+ * instead of silently returning an empty list, so a typo or a
+ * missing variable cannot masquerade as "this actor touched
+ * nothing".
+ */
+export function escrowsByActor(
+  escrows: readonly Escrow[],
+  actor: string,
+): Escrow[] {
+  if (typeof actor !== "string" || actor.length === 0) {
+    throw new Error(
+      `invalid escrowsByActor: actor must be a non-empty string, got ${JSON.stringify(actor)}`,
+    );
+  }
+  return escrows.filter((escrow) =>
+    escrow.history.some((entry) => entry.actor === actor),
+  );
+}
+
+/**
  * Watchdog helper: from a batch of escrows, return the ones whose
  * deadline is coming up — non-terminal AND with a deadline inside the
  * half-open window `(now, now + withinMs]`.

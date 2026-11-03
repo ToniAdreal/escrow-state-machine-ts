@@ -18,6 +18,18 @@ version changes.
 
 ### Added
 
+- Batch filter helpers (2026-11-03, backlog #843):
+  `escrowsByState(escrows, state)` and `escrowsByActor(escrows, actor)`
+  mirror the dataquest lifecycle's `tasksByState` / `tasksByActor`:
+  the first returns every escrow currently in the given state
+  (terminal states included), the second every escrow whose audit
+  history carries at least one entry by that actor (note-only,
+  actor-less entries never match, an escrow matches once no matter
+  how many of its entries carry the actor). Both are pure (same
+  objects, input order, no dispatch, no history change) and fail fast
+  on an unknown state or an empty/non-string actor instead of
+  silently returning an empty list. `test/escrowsByFilters.test.ts`
+  adds 11 cases.
 - Approaching-deadline screening helper (2026-11-03, backlog #840):
   `escrowsApproachingDeadline(escrows, withinMs, now?)` returns the
   non-terminal escrows whose deadline falls inside the half-open window

@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1170 tests, all local
+npm test   # 1181 tests, all local
 ```
 
 ## Quickstart
@@ -345,6 +345,14 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   An invalid `withinMs` (negative, non-finite, non-number) or an
   invalid `now` throws fail-fast instead of silently returning an
   empty list.
+  The plain listing companions are `escrowsByState(escrows, state)`
+  and `escrowsByActor(escrows, actor)`: the first returns every
+  escrow currently in the given state (terminal states included), the
+  second every escrow whose audit history carries at least one entry
+  by that actor (note-only, actor-less entries never match). Both
+  are pure, return the same escrow objects in input order, and fail
+  fast on an unknown state or an empty/non-string actor instead of
+  silently returning an empty list.
   The deadline rides along in `toJSON()`/`fromJSON()` snapshots (a
   tampered or non-canonical deadline is rejected by snapshot validation).
   A distinct screening is `staleEscrows(escrows, maxAgeByState, now?)`:
@@ -933,7 +941,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1170 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1181 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
