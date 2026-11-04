@@ -427,6 +427,7 @@ import {
   dispatchArbitration,
   expiredEscrows,
   expireOverdueEscrows,
+  escrowsApproachingDeadline,
   historyFromNdjson,
   historyToNdjson,
   isOverdue,
@@ -876,6 +877,62 @@ export const DEMO_SCHED_TERMINAL_DEADLINE = "2026-03-10T09:00:00.000Z";
 export const DEMO_SCHED_DUE_NOW_ID = "DEMO-SCHED-07";
 export const DEMO_SCHED_DUE_NOW_FUND_AT = "2026-03-08T09:00:00.000Z";
 export const DEMO_SCHED_DUE_NOW_DEADLINE = DEMO_STALE_NOW;
+
+/**
+ * Deadline-warning fixtures (backlog #887): seven escrows screened
+ * by `escrowsApproachingDeadline` on the SAME fixed `now` as the
+ * watchdog and scheduler sections (DEMO_STALE_NOW, 2026-03-09T09:00)
+ * under a 7-day window — the window's upper bound is
+ * 2026-03-16T09:00, so the half-open window is
+ * (2026-03-09T09:00, 2026-03-16T09:00]. Hand-computed
+ * expectations (non-terminal, deadline strictly after `now` and
+ * at or before `now + window`):
+ * - DEMO-WARN-01 (in window): FUNDED, deadline 2026-03-12T09:00 —
+ *   3 days out, selected.
+ * - DEMO-WARN-02 (window edge): FUNDED, deadline exactly
+ *   2026-03-16T09:00 — the inclusive upper bound, selected.
+ * - DEMO-WARN-03 (beyond window): FUNDED, deadline
+ *   2026-04-01T09:00 — upcoming but outside the window,
+ *   excluded.
+ * - DEMO-WARN-04 (terminal): RELEASED via the full chain,
+ *   deadline 2026-03-10T09:00 — inside the window yet
+ *   excluded: a settled escrow needs no warning.
+ * - DEMO-WARN-05 (overdue): FUNDED, deadline 2026-03-08T12:00 —
+ *   already past at `now`; it belongs to `expiredEscrows`,
+ *   not to the warning list.
+ * - DEMO-WARN-06 (no deadline): FUNDED, no deadline —
+ *   nothing to warn about.
+ * - DEMO-WARN-07 (due now): FUNDED, deadline exactly `now` —
+ *   the exclusive lower bound, excluded.
+ * The zero-window control reuses the whole batch: with
+ * `withinMs` 0 no deadline can fall inside (now, now], so the
+ * result must be empty even though two members are in-window
+ * under the 7-day window.
+ */
+export const DEMO_WARN_WINDOW_MS = 7 * 24 * 3600_000;
+export const DEMO_WARN_IN_WINDOW_ID = "DEMO-WARN-01";
+export const DEMO_WARN_IN_WINDOW_FUND_AT = "2026-03-08T09:00:00.000Z";
+export const DEMO_WARN_IN_WINDOW_DEADLINE = "2026-03-12T09:00:00.000Z";
+export const DEMO_WARN_EDGE_ID = "DEMO-WARN-02";
+export const DEMO_WARN_EDGE_FUND_AT = "2026-03-08T09:00:00.000Z";
+export const DEMO_WARN_EDGE_DEADLINE = "2026-03-16T09:00:00.000Z";
+export const DEMO_WARN_BEYOND_ID = "DEMO-WARN-03";
+export const DEMO_WARN_BEYOND_FUND_AT = "2026-03-08T09:00:00.000Z";
+export const DEMO_WARN_BEYOND_DEADLINE = "2026-04-01T09:00:00.000Z";
+export const DEMO_WARN_TERMINAL_ID = "DEMO-WARN-04";
+export const DEMO_WARN_TERMINAL_FUND_AT = "2026-03-02T09:00:00.000Z";
+export const DEMO_WARN_TERMINAL_SUBMIT_AT = "2026-03-03T09:00:00.000Z";
+export const DEMO_WARN_TERMINAL_VERIFY_AT = "2026-03-04T09:00:00.000Z";
+export const DEMO_WARN_TERMINAL_RELEASE_AT = "2026-03-05T09:00:00.000Z";
+export const DEMO_WARN_TERMINAL_DEADLINE = "2026-03-10T09:00:00.000Z";
+export const DEMO_WARN_OVERDUE_ID = "DEMO-WARN-05";
+export const DEMO_WARN_OVERDUE_FUND_AT = "2026-03-08T09:00:00.000Z";
+export const DEMO_WARN_OVERDUE_DEADLINE = "2026-03-08T12:00:00.000Z";
+export const DEMO_WARN_NO_DEADLINE_ID = "DEMO-WARN-06";
+export const DEMO_WARN_NO_DEADLINE_FUND_AT = "2026-03-08T09:00:00.000Z";
+export const DEMO_WARN_DUE_NOW_ID = "DEMO-WARN-07";
+export const DEMO_WARN_DUE_NOW_FUND_AT = "2026-03-08T09:00:00.000Z";
+export const DEMO_WARN_DUE_NOW_DEADLINE = DEMO_STALE_NOW;
 
 /**
  * Stale-patrol fixtures (backlog #506): five further escrows screened
@@ -3615,6 +3672,32 @@ export interface DemoResult {
    * nothing when nothing qualifies.
    */
   schedulerNoCandidate: boolean;
+  /**
+   * The mixed deadline-warning batch, in screening order: the
+   * in-window escrow, the window-edge escrow, the beyond-window
+   * escrow, the terminal escrow, the overdue escrow, the
+   * deadline-less escrow, and the due-now escrow (see the
+   * warning fixture comment above for the pinned verdict on
+   * each).
+   */
+  warningEscrowIds: string[];
+  /**
+   * The ids `escrowsApproachingDeadline` selects from the
+   * warning batch under the 7-day window: DEMO-WARN-01 and
+   * DEMO-WARN-02, in input order.
+   */
+  warningSelectedIds: string[];
+  /**
+   * The 7-day warning window in milliseconds
+   * (DEMO_WARN_WINDOW_MS).
+   */
+  warningWindowMs: number;
+  /**
+   * True when the zero-window control over the whole warning
+   * batch returns an empty list — with no window, even an
+   * in-window deadline is not approaching.
+   */
+  warningZeroWindowEmpty: boolean;
   /**
    * The refund-settlement escrow (DEMO-ESC-028): walked to REFUNDED
    * on its own via quorum arbitration, so the `settleRefund`
@@ -8604,6 +8687,136 @@ export async function runDemo(): Promise<DemoResult> {
     `  pure: the call dispatched nothing — all seven escrows keep their state and history length`,
   );
 
+  // --- Deadline warning: escrowsApproachingDeadline over a mixed batch ---
+  // The scheduler answers "which escrow comes due next"; the
+  // warning screen answers the complementary question — "which
+  // escrows come due SOON, so the parties can be nudged before
+  // the deadline passes". It is the "warn before it is too late"
+  // counterpart to `expiredEscrows`: overdue escrows belong to
+  // the expired screen, never to both. All seven escrows are
+  // built on the same fixed `now` as the scheduler batch
+  // (DEMO_STALE_NOW); see the fixture comment above for the
+  // hand-computed verdict on each member. The call is pure:
+  // it dispatches nothing and mutates no escrow, and the
+  // section asserts that (states and history lengths
+  // identical before and after the call). The closed loop is
+  // the point of the helper: nudge the parties for the
+  // returned escrows now; when a deadline actually passes,
+  // re-screen with `expiredEscrows` and expire via
+  // `expireOverdueEscrows`.
+  const warnInWindow = new Escrow(DEMO_WARN_IN_WINDOW_ID);
+  warnInWindow.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "sponsor",
+    at: DEMO_WARN_IN_WINDOW_FUND_AT,
+  });
+  warnInWindow.setDeadline(DEMO_WARN_IN_WINDOW_DEADLINE);
+  const warnEdge = new Escrow(DEMO_WARN_EDGE_ID);
+  warnEdge.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "sponsor",
+    at: DEMO_WARN_EDGE_FUND_AT,
+  });
+  warnEdge.setDeadline(DEMO_WARN_EDGE_DEADLINE);
+  const warnBeyond = new Escrow(DEMO_WARN_BEYOND_ID);
+  warnBeyond.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "sponsor",
+    at: DEMO_WARN_BEYOND_FUND_AT,
+  });
+  warnBeyond.setDeadline(DEMO_WARN_BEYOND_DEADLINE);
+  const warnTerminal = new Escrow(DEMO_WARN_TERMINAL_ID);
+  warnTerminal.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "sponsor",
+    at: DEMO_WARN_TERMINAL_FUND_AT,
+  });
+  warnTerminal.dispatch(
+    "SUBMIT_MILESTONE",
+    "Deliverable URLs + IPFS metadata hash",
+    undefined,
+    { actor: "creator", at: DEMO_WARN_TERMINAL_SUBMIT_AT },
+  );
+  warnTerminal.dispatch("VERIFY_PASS", "KPIs validated by oracle", undefined, {
+    actor: "oracle",
+    at: DEMO_WARN_TERMINAL_VERIFY_AT,
+  });
+  warnTerminal.dispatch("RELEASE", "Release approved", undefined, {
+    actor: "treasury",
+    at: DEMO_WARN_TERMINAL_RELEASE_AT,
+  });
+  warnTerminal.setDeadline(DEMO_WARN_TERMINAL_DEADLINE);
+  const warnOverdue = new Escrow(DEMO_WARN_OVERDUE_ID);
+  warnOverdue.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "sponsor",
+    at: DEMO_WARN_OVERDUE_FUND_AT,
+  });
+  warnOverdue.setDeadline(DEMO_WARN_OVERDUE_DEADLINE);
+  const warnNoDeadline = new Escrow(DEMO_WARN_NO_DEADLINE_ID);
+  warnNoDeadline.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "sponsor",
+    at: DEMO_WARN_NO_DEADLINE_FUND_AT,
+  });
+  const warnDueNow = new Escrow(DEMO_WARN_DUE_NOW_ID);
+  warnDueNow.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "sponsor",
+    at: DEMO_WARN_DUE_NOW_FUND_AT,
+  });
+  warnDueNow.setDeadline(DEMO_WARN_DUE_NOW_DEADLINE);
+  const warningEscrows = [
+    warnInWindow,
+    warnEdge,
+    warnBeyond,
+    warnTerminal,
+    warnOverdue,
+    warnNoDeadline,
+    warnDueNow,
+  ];
+  const warningStatesBefore = warningEscrows.map((e) => e.state);
+  const warningHistoryLengthsBefore = warningEscrows.map(
+    (e) => e.history.length,
+  );
+  const warningSelected = escrowsApproachingDeadline(
+    warningEscrows,
+    DEMO_WARN_WINDOW_MS,
+    new Date(DEMO_STALE_NOW),
+  );
+  const warningZeroWindow = escrowsApproachingDeadline(
+    warningEscrows,
+    0,
+    new Date(DEMO_STALE_NOW),
+  );
+  if (
+    warningSelected.length !== 2 ||
+    warningSelected[0].id !== DEMO_WARN_IN_WINDOW_ID ||
+    warningSelected[1].id !== DEMO_WARN_EDGE_ID ||
+    warningZeroWindow.length !== 0 ||
+    warningEscrows.some(
+      (e, i) =>
+        e.state !== warningStatesBefore[i] ||
+        e.history.length !== warningHistoryLengthsBefore[i],
+    )
+  ) {
+    throw new Error(
+      "demo fixture broken: escrowsApproachingDeadline warning batch does not match the pinned shape (7-day window from 2026-03-09T09:00 selects exactly DEMO-WARN-01 at 2026-03-12T09:00 and DEMO-WARN-02 at the 2026-03-16T09:00 window edge; the zero-window control over the whole batch must return []; the call must dispatch nothing and change no state or history length)",
+    );
+  }
+  const warningEscrowIds = warningEscrows.map((e) => e.id);
+  const warningSelectedIds = warningSelected.map((e) => e.id);
+  const warningWindowMs = DEMO_WARN_WINDOW_MS;
+  const warningZeroWindowEmpty = warningZeroWindow.length === 0;
+  lines.push(
+    "",
+    "Deadline warning (escrowsApproachingDeadline over a mixed batch):",
+    `  fixed now: ${DEMO_STALE_NOW} — 7-day window (now, now + 7 days]: the lower bound is exclusive, the upper bound inclusive`,
+    `  ${warnInWindow.id}: ${warnInWindow.state}, deadline ${warnInWindow.getDeadline()} — inside the window, warn the parties now`,
+    `  ${warnEdge.id}: ${warnEdge.state}, deadline ${warnEdge.getDeadline()} — exactly at now + 7 days, the inclusive upper bound, still warned`,
+    `  ${warnBeyond.id}: ${warnBeyond.state}, deadline ${warnBeyond.getDeadline()} — upcoming but beyond the window, not warned yet`,
+    `  ${warnTerminal.id}: ${warnTerminal.state} (terminal), deadline ${warnTerminal.getDeadline()} — inside the window, yet excluded: a settled escrow needs no warning`,
+    `  ${warnOverdue.id}: ${warnOverdue.state}, deadline ${warnOverdue.getDeadline()} — already past, belongs to expiredEscrows, not warned twice`,
+    `  ${warnNoDeadline.id}: ${warnNoDeadline.state}, no deadline — nothing to warn about`,
+    `  ${warnDueNow.id}: ${warnDueNow.state}, deadline ${warnDueNow.getDeadline()} — due exactly now, the exclusive lower bound, not approaching`,
+    `  selected: ${warningSelectedIds[0]} at ${DEMO_WARN_IN_WINDOW_DEADLINE}, ${warningSelectedIds[1]} at ${DEMO_WARN_EDGE_DEADLINE} — nudge the parties for these two before their deadlines pass; when one passes, re-screen with expiredEscrows and expire via expireOverdueEscrows`,
+    `  zero window: escrowsApproachingDeadline(batch, 0, now) returns [] — with no window, even an in-window deadline is not approaching`,
+    `  pure: the call dispatched nothing — all seven escrows keep their state and history length`,
+  );
+
   // --- Refund settlement: settleRefund on a REFUNDED escrow ---
   // The dispute branch above settles its refund through the report
   // layer only; the pure `settleRefund` helper itself never got a
@@ -9102,6 +9315,10 @@ export async function runDemo(): Promise<DemoResult> {
     schedulerWinnerId,
     schedulerWinnerDeadline,
     schedulerNoCandidate,
+    warningEscrowIds,
+    warningSelectedIds,
+    warningWindowMs,
+    warningZeroWindowEmpty,
     refundEscrow,
     refundSettlement,
     reconcileResult,

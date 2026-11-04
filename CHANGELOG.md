@@ -18,6 +18,24 @@ version changes.
 
 ### Added
 
+- Deadline-warning demo segment (2026-11-04, backlog #887):
+  `src/demo.ts` adds a "Deadline warning" section over a mixed
+  seven-escrow batch on the same fixed `now` as the scheduler
+  section (2026-03-09T09:00): a 7-day window selects exactly
+  DEMO-WARN-01 (2026-03-12T09:00) and DEMO-WARN-02 (the
+  2026-03-16T09:00 inclusive window edge), while a beyond-window
+  escrow, a terminal escrow with an in-window deadline, an
+  overdue escrow, a deadline-less escrow, and a due-now escrow
+  are each excluded with a printed reason; a zero-window
+  control over the whole batch returns empty, and the call is
+  asserted pure (no dispatch, no state or history change).
+  `DemoResult` gains `warningEscrowIds`, `warningSelectedIds`,
+  `warningWindowMs`, and `warningZeroWindowEmpty`; the
+  scheduler determinism test now slices to the warning header,
+  and two new demo tests pin the segment's lines and its
+  byte-identical reruns. No source change to the helper
+  itself: `escrowsApproachingDeadline` already held the
+  (now, now + withinMs] semantics.
 - Settlement webhook freshness x dedupe coverage (2026-11-04,
   backlog #884): `test/settlementWebhookFreshnessDedupe.test.ts`
   is the escrow-side counterpart of dataquest #819 — a stale

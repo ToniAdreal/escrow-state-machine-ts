@@ -257,6 +257,30 @@ import {
   DEMO_WEBHOOK_FRESHNESS_MAX_FUTURE_SKEW_MS,
   DEMO_WEBHOOK_FRESHNESS_WITHIN_NOW_MS,
   DEMO_WEBHOOK_ROTATION_EMPTY_SECRETS_ERROR,
+  DEMO_WARN_BEYOND_DEADLINE,
+  DEMO_WARN_BEYOND_FUND_AT,
+  DEMO_WARN_BEYOND_ID,
+  DEMO_WARN_DUE_NOW_DEADLINE,
+  DEMO_WARN_DUE_NOW_FUND_AT,
+  DEMO_WARN_DUE_NOW_ID,
+  DEMO_WARN_EDGE_DEADLINE,
+  DEMO_WARN_EDGE_FUND_AT,
+  DEMO_WARN_EDGE_ID,
+  DEMO_WARN_IN_WINDOW_DEADLINE,
+  DEMO_WARN_IN_WINDOW_FUND_AT,
+  DEMO_WARN_IN_WINDOW_ID,
+  DEMO_WARN_NO_DEADLINE_FUND_AT,
+  DEMO_WARN_NO_DEADLINE_ID,
+  DEMO_WARN_OVERDUE_DEADLINE,
+  DEMO_WARN_OVERDUE_FUND_AT,
+  DEMO_WARN_OVERDUE_ID,
+  DEMO_WARN_TERMINAL_DEADLINE,
+  DEMO_WARN_TERMINAL_FUND_AT,
+  DEMO_WARN_TERMINAL_ID,
+  DEMO_WARN_TERMINAL_RELEASE_AT,
+  DEMO_WARN_TERMINAL_SUBMIT_AT,
+  DEMO_WARN_TERMINAL_VERIFY_AT,
+  DEMO_WARN_WINDOW_MS,
   DEMO_WEBHOOK_ROTATION_NEW_SECRET,
   DEMO_WEBHOOK_ROTATION_UNRELATED_SECRET,
   DEMO_WEBHOOK_SECRET,
@@ -7527,12 +7551,14 @@ test("demo shows scheduler next deadline: earliest upcoming wins, tie keeps inpu
 test("demo scheduler next-deadline segment is deterministic: two runs print byte-identical scheduler lines", async () => {
   const header =
     "Scheduler next deadline (nextEscrowDeadline over a mixed batch):";
-  const refundHeader =
-    "Refund settlement (settleRefund on a refunded escrow):";
+  const warningHeader =
+    "Deadline warning (escrowsApproachingDeadline over a mixed batch):";
   // The scheduler section runs from its header to the
-  // refund-settlement header that now closes the demo.
+  // deadline-warning header that now follows it (backlog
+  // #887 inserts the warning segment between the scheduler
+  // and refund-settlement segments).
   const segment = (ls: string[]) =>
-    ls.slice(ls.indexOf(header), ls.indexOf(refundHeader) - 1);
+    ls.slice(ls.indexOf(header), ls.indexOf(warningHeader) - 1);
   const a = await runDemo();
   const b = await runDemo();
   // Header + fixed-now + 7 member verdicts + next +
@@ -7546,6 +7572,138 @@ test("demo scheduler next-deadline segment is deterministic: two runs print byte
   assert.equal(a.schedulerWinnerId, b.schedulerWinnerId);
   assert.equal(a.schedulerWinnerDeadline, b.schedulerWinnerDeadline);
   assert.equal(a.schedulerNoCandidate, b.schedulerNoCandidate);
+});
+
+test("demo shows deadline warning: 7-day window selects in-window and window-edge escrows, excludes terminal/overdue/deadline-less/due-now/beyond-window, zero window returns empty", async () => {
+  const {
+    warningEscrowIds,
+    warningSelectedIds,
+    warningWindowMs,
+    warningZeroWindowEmpty,
+    lines,
+  } = await runDemo();
+
+  // Hand-pinned fixture shape: fixed now 2026-03-09T09:00,
+  // 7-day window ending 2026-03-16T09:00 inclusive.
+  assert.equal(DEMO_STALE_NOW, "2026-03-09T09:00:00.000Z");
+  assert.equal(DEMO_WARN_WINDOW_MS, 7 * 24 * 3600_000);
+  assert.equal(DEMO_WARN_IN_WINDOW_ID, "DEMO-WARN-01");
+  assert.equal(DEMO_WARN_IN_WINDOW_DEADLINE, "2026-03-12T09:00:00.000Z");
+  assert.equal(DEMO_WARN_EDGE_DEADLINE, "2026-03-16T09:00:00.000Z");
+  assert.equal(DEMO_WARN_TERMINAL_DEADLINE, "2026-03-10T09:00:00.000Z");
+  assert.equal(DEMO_WARN_DUE_NOW_DEADLINE, DEMO_STALE_NOW);
+
+  assert.deepEqual(warningEscrowIds, [
+    DEMO_WARN_IN_WINDOW_ID,
+    DEMO_WARN_EDGE_ID,
+    DEMO_WARN_BEYOND_ID,
+    DEMO_WARN_TERMINAL_ID,
+    DEMO_WARN_OVERDUE_ID,
+    DEMO_WARN_NO_DEADLINE_ID,
+    DEMO_WARN_DUE_NOW_ID,
+  ]);
+  assert.deepEqual(warningSelectedIds, [
+    DEMO_WARN_IN_WINDOW_ID,
+    DEMO_WARN_EDGE_ID,
+  ]);
+  assert.equal(warningWindowMs, DEMO_WARN_WINDOW_MS);
+  assert.equal(warningZeroWindowEmpty, true);
+
+  const text = lines.join("\n");
+  const header =
+    "Deadline warning (escrowsApproachingDeadline over a mixed batch):";
+  assert.ok(
+    text.indexOf(header) >
+      text.indexOf(
+        "Scheduler next deadline (nextEscrowDeadline over a mixed batch):",
+      ),
+    "deadline-warning segment must follow the scheduler segment",
+  );
+  assert.ok(
+    text.indexOf(
+      "Refund settlement (settleRefund on a refunded escrow):",
+    ) > text.indexOf(header),
+    "refund-settlement segment must follow the deadline-warning segment",
+  );
+  assert.ok(
+    text.includes(
+      `  fixed now: ${DEMO_STALE_NOW} — 7-day window (now, now + 7 days]: the lower bound is exclusive, the upper bound inclusive`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_WARN_IN_WINDOW_ID}: FUNDED, deadline ${DEMO_WARN_IN_WINDOW_DEADLINE} — inside the window, warn the parties now`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_WARN_EDGE_ID}: FUNDED, deadline ${DEMO_WARN_EDGE_DEADLINE} — exactly at now + 7 days, the inclusive upper bound, still warned`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_WARN_BEYOND_ID}: FUNDED, deadline ${DEMO_WARN_BEYOND_DEADLINE} — upcoming but beyond the window, not warned yet`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_WARN_TERMINAL_ID}: RELEASED (terminal), deadline ${DEMO_WARN_TERMINAL_DEADLINE} — inside the window, yet excluded: a settled escrow needs no warning`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_WARN_OVERDUE_ID}: FUNDED, deadline ${DEMO_WARN_OVERDUE_DEADLINE} — already past, belongs to expiredEscrows, not warned twice`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_WARN_NO_DEADLINE_ID}: FUNDED, no deadline — nothing to warn about`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_WARN_DUE_NOW_ID}: FUNDED, deadline ${DEMO_WARN_DUE_NOW_DEADLINE} — due exactly now, the exclusive lower bound, not approaching`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  selected: ${DEMO_WARN_IN_WINDOW_ID} at ${DEMO_WARN_IN_WINDOW_DEADLINE}, ${DEMO_WARN_EDGE_ID} at ${DEMO_WARN_EDGE_DEADLINE} — nudge the parties for these two before their deadlines pass; when one passes, re-screen with expiredEscrows and expire via expireOverdueEscrows`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  zero window: escrowsApproachingDeadline(batch, 0, now) returns [] — with no window, even an in-window deadline is not approaching`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  pure: the call dispatched nothing — all seven escrows keep their state and history length`,
+    ),
+  );
+});
+
+test("demo deadline-warning segment is deterministic: two runs print byte-identical warning lines", async () => {
+  const header =
+    "Deadline warning (escrowsApproachingDeadline over a mixed batch):";
+  const refundHeader =
+    "Refund settlement (settleRefund on a refunded escrow):";
+  // The warning section runs from its header to the
+  // refund-settlement header that follows it.
+  const segment = (ls: string[]) =>
+    ls.slice(ls.indexOf(header), ls.indexOf(refundHeader) - 1);
+  const a = await runDemo();
+  const b = await runDemo();
+  // Header + fixed-now + 7 member verdicts + selected +
+  // zero-window + purity; every printed value is derived
+  // from the pinned fixtures alone, so no normalization
+  // is needed.
+  const segA = segment(a.lines);
+  assert.equal(segA.length, 12);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(a.warningEscrowIds, b.warningEscrowIds);
+  assert.deepEqual(a.warningSelectedIds, b.warningSelectedIds);
+  assert.equal(a.warningWindowMs, b.warningWindowMs);
+  assert.equal(a.warningZeroWindowEmpty, b.warningZeroWindowEmpty);
 });
 
 test("demo shows refund settlement: settleRefund on a REFUNDED escrow returns the full deposit to the sponsor and balances", async () => {
