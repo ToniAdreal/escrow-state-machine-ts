@@ -1367,6 +1367,20 @@
  *      a negative deposit is pinned once, outside the timed loop,
  *      to throw the exact `deposit must be a finite non-negative
  *      number` error. Pure arithmetic, no state, no network.
+ *  76. settlement reconciliation — `reconcileSettlements(reports,
+ *      ledger)` over a fixed 3-report / 3-row fixture (one matched,
+ *      one report-only, one amount mismatch, plus one ledger-only
+ *      row): the #863 helper's bench counterpart to the batch-report
+ *      and summary rows, which aggregate what the reports claim but
+ *      never pair them against an external ledger, so the cost of
+ *      closing that gap in both directions had no measured
+ *      baseline. Every timed iteration checks the four group counts
+ *      (1 / 1 / 1 / 1), the group ids in input order, the
+ *      mismatch's report / ledger amounts (10,630 / 10,000), and
+ *      the matched outflow total (10,630); a duplicated ledger id
+ *      is pinned once, outside the timed loop, to throw the exact
+ *      duplicate-ledger error. Pure pairing, no dispatch, no
+ *      network.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -1411,6 +1425,7 @@ import {
   parseRetryAfter,
   parseSettlementReportCsv,
   parseSettlementReportJson,
+  reconcileSettlements,
   renderReport,
   renderReportCsv,
   renderReportJson,
@@ -9277,6 +9292,133 @@ function benchSettleRefund(): number {
   }, ITERATIONS);
 }
 
+// ---------------------------------------------------------------------
+// reconcileSettlements fixture: 3 settled reports against a 3-row
+// external ledger, one representative per group (the #863 helper's
+// bench counterpart, mirroring the demo's reconciliation segment
+// and the four-groups unit test — expectations written by hand
+// here, never re-derived through reconcileSettlements):
+//   matched: released escrow BENCH-RECONCILE-MATCHED, golden deposit
+//     10,630 at 500 bps, report outflow 10,630, ledger row 10,630.
+//   report-only: expired escrow BENCH-RECONCILE-REPORT-ONLY, small
+//     deposit 1,100 (1,000 pool + 100 base fee), report outflow
+//     1,100, no ledger row carries it.
+//   amount mismatch: released escrow BENCH-RECONCILE-MISMATCH,
+//     golden deposit 10,630, report outflow 10,630, ledger row
+//     10,000.
+//   ledger-only: ledger row BENCH-RECONCILE-LEDGER-ONLY at 500, no
+//     report accounts for it.
+// Hand-pinned expectations: matched 1 / report-only 1 / ledger-only
+// 1 / amount mismatch 1, matched outflow total 10,630, mismatch
+// report 10,630 vs ledger 10,000. The helper is pure (it reads both
+// inputs and dispatches nothing), so the same reports and ledger
+// are re-paired on every iteration.
+// ---------------------------------------------------------------------
+const RECONCILE_SMALL_DEPOSIT = calculateDeposit({
+  creatorPool: 1000,
+  baseFee: 100,
+  complexityMultiplier: 1.0,
+  loyaltyDiscount: 0,
+  oracleFee: 0,
+});
+if (RECONCILE_SMALL_DEPOSIT.deposit !== 1100) {
+  throw new Error("benchmark fixture failed: reconcile small deposit mismatch");
+}
+const reconcileReportOnlyEscrow = new Escrow("BENCH-RECONCILE-REPORT-ONLY");
+reconcileReportOnlyEscrow.dispatch("FUND", undefined, 1100, {
+  at: new Date(BASE_MS).toISOString(),
+});
+reconcileReportOnlyEscrow.dispatch("EXPIRE", undefined, undefined, {
+  at: new Date(BASE_MS + 1000).toISOString(),
+});
+const RECONCILE_REPORTS = [
+  buildSettlementReport({
+    escrowId: "BENCH-RECONCILE-MATCHED",
+    history: runReleasedLifecycle("BENCH-RECONCILE-MATCHED").history.map(
+      (e) => ({ ...e }),
+    ),
+    finalState: "RELEASED",
+    deposit,
+    settlement: { proFeeBps: 500 },
+  }),
+  buildSettlementReport({
+    escrowId: reconcileReportOnlyEscrow.id,
+    history: reconcileReportOnlyEscrow.history.map((e) => ({ ...e })),
+    finalState: reconcileReportOnlyEscrow.state,
+    deposit: RECONCILE_SMALL_DEPOSIT,
+  }),
+  buildSettlementReport({
+    escrowId: "BENCH-RECONCILE-MISMATCH",
+    history: runReleasedLifecycle("BENCH-RECONCILE-MISMATCH").history.map(
+      (e) => ({ ...e }),
+    ),
+    finalState: "RELEASED",
+    deposit,
+    settlement: { proFeeBps: 500 },
+  }),
+];
+const RECONCILE_LEDGER = [
+  { escrowId: "BENCH-RECONCILE-MATCHED", amount: 10630 },
+  { escrowId: "BENCH-RECONCILE-MISMATCH", amount: 10000 },
+  { escrowId: "BENCH-RECONCILE-LEDGER-ONLY", amount: 500 },
+];
+
+function checkReconcileSettlements(
+  result: ReturnType<typeof reconcileSettlements>,
+): void {
+  const matchedTotal = result.matched.reduce(
+    (sum, r) => sum + r.totalOutflow,
+    0,
+  );
+  if (
+    result.matched.map((r) => r.escrowId).join(",") !==
+      "BENCH-RECONCILE-MATCHED" ||
+    result.reportOnly.map((r) => r.escrowId).join(",") !==
+      "BENCH-RECONCILE-REPORT-ONLY" ||
+    result.ledgerOnly.map((r) => r.escrowId).join(",") !==
+      "BENCH-RECONCILE-LEDGER-ONLY" ||
+    result.amountMismatch.length !== 1 ||
+    result.amountMismatch[0].report.escrowId !== "BENCH-RECONCILE-MISMATCH" ||
+    result.amountMismatch[0].reportAmount !== 10630 ||
+    result.amountMismatch[0].ledgerAmount !== 10000 ||
+    matchedTotal !== 10630
+  ) {
+    throw new Error("benchmark self-check failed: reconcileSettlements");
+  }
+}
+
+// Pre-check outside timing: the timed shape itself is correct, and a
+// duplicated ledger id fails fast with the exact configuration error
+// (never timed).
+checkReconcileSettlements(
+  reconcileSettlements(RECONCILE_REPORTS, RECONCILE_LEDGER),
+);
+try {
+  reconcileSettlements(RECONCILE_REPORTS, [
+    ...RECONCILE_LEDGER,
+    { escrowId: "BENCH-RECONCILE-MATCHED", amount: 10630 },
+  ]);
+  throw new Error(
+    "benchmark self-check failed: reconcileSettlements duplicate ledger",
+  );
+} catch (e) {
+  if (
+    !(e instanceof Error) ||
+    e.message !==
+      'invalid reconcileSettlements: duplicate ledger escrowId: "BENCH-RECONCILE-MATCHED"'
+  ) {
+    throw e;
+  }
+}
+
+function benchReconcileSettlements(): number {
+  return measure(() => {
+    checkReconcileSettlements(
+      reconcileSettlements(RECONCILE_REPORTS, RECONCILE_LEDGER),
+    );
+  }, ITERATIONS);
+}
+
 function benchExpiredEscrows(): number {
   return measure(() => {
     checkWatchdogIds(
@@ -10489,6 +10631,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "buildSettlementReports (batch 4 x 4 entries)", ops: benchBuildSettlementReports() },
   { path: "buildSettlementReports x top-up (batch 2, FUND sum 10630)", ops: benchBuildSettlementReportsTopup() },
   { path: "summarizeSettlementReports (batch 4 results)", ops: benchSummarizeSettlementReports() },
+  { path: "reconcileSettlements (3 reports, 3 ledger rows, 4 groups)", ops: benchReconcileSettlements() },
   { path: "buildSettlementWebhooks (batch 4 results)", ops: benchBuildSettlementWebhooks() },
   { path: "buildSettlementReports x buildSettlementWebhooks x deliverSettlementWebhookToMany (batch 4, 3 settlements x 4 endpoints)", ops: await benchBuildSettlementReportsWebhookFanout() },
   { path: "buildSettlementWebhook (sign)", ops: benchBuildSettlementWebhook() },

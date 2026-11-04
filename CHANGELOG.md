@@ -18,6 +18,18 @@ version changes.
 
 ### Added
 
+- Benchmark settlement-reconciliation row (2026-11-04, backlog
+  #874): `bench/bench.ts` adds `benchReconcileSettlements` over a
+  fixed 3-report / 3-row fixture (one matched, one report-only,
+  one amount mismatch, plus one ledger-only row), checked on every
+  iteration for the four group counts (1 / 1 / 1 / 1), the group
+  ids in input order, the mismatch's report / ledger amounts
+  (10,630 / 10,000), and the matched outflow total (10,630),
+  with a duplicated ledger id pinned once outside the timed loop
+  to the exact duplicate-ledger error and a mutated matched
+  total pinned to fail the bench self-check. The new row
+  measures 62,175 ops/sec (16.08 µs/op) on this run's machine,
+  and the README Benchmarks table is refreshed from this run.
 - Demo settlement-reconciliation segment (2026-11-04, backlog
   #871): `npm run demo` now closes with a `reconcileSettlements`
   segment — three settled escrows (released on the golden deposit,
