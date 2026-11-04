@@ -18,6 +18,13 @@ version changes.
 
 ### Added
 
+- Refund settlement helper (2026-11-04, backlog
+  #862): `settleRefund({ deposit })` returns the full deposit to
+  the sponsor with creator, platform, and referrer at 0, no fee
+  charged, and a computed `balanced` flag — the pure-arithmetic
+  counterpart of `buildSettlementReport`'s REFUNDED branch, which
+  it agrees with party for party. Negative or non-finite deposits
+  fail fast. `test/settleRefund.test.ts` adds 5 cases.
 - Snapshot diff helper (2026-11-04, backlog
   #858): `diffEscrowSnapshots(before, after)` reports only what
   actually changed between two snapshots of the same escrow —

@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1219 tests, all local
+npm test   # 1224 tests, all local
 ```
 
 ## Quickstart
@@ -141,7 +141,9 @@ input and output. For a partial release, `settlePartialRelease`
 charges the fee on the released amount only and returns the
 remaining locked balance; it is pure arithmetic and does not
 change escrow state — state advancement still goes through
-`dispatch`.
+`dispatch`. For a refund, `settleRefund` returns the full deposit
+to the sponsor with every other party at 0 and no fee charged,
+matching the REFUNDED branch of `buildSettlementReport` exactly.
 
 ```bash
 npm run demo
@@ -968,7 +970,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1219 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1224 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
