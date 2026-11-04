@@ -18,6 +18,20 @@ version changes.
 
 ### Added
 
+- Benchmark snapshot-comparison row (2026-11-04, backlog
+  #881): `bench/bench.ts` adds `benchDiffEscrowSnapshots` over a
+  fixed pair of snapshots of one escrow with a long history (FUND
+  10,630 plus 20 top-ups of 100, then one more top-up and a
+  SUBMIT_MILESTONE step), checked on every iteration for the
+  change-key set (exactly stateChanged + historyAppended), the
+  FUNDED -> MILESTONE_SUBMITTED transition, and the appended seq
+  range 22..23 with the top-up entry first, with an identical pair
+  reporting {} and a rewritten history entry pinned once outside
+  the timed loop to the exact divergence error and a mutated
+  change-key expectation pinned to fail the bench self-check. The
+  new row measures 2,734 ops/sec (365.73 µs/op) on this run's
+  machine, and the README Benchmarks table is refreshed from this
+  run.
 - Demo snapshot-comparison segment (2026-11-04, backlog
   #876): `npm run demo` now closes with a `diffEscrowSnapshots`
   segment — one escrow (DEMO-ESC-033) funded, snapshotted,

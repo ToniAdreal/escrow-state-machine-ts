@@ -1381,6 +1381,20 @@
  *      is pinned once, outside the timed loop, to throw the exact
  *      duplicate-ledger error. Pure pairing, no dispatch, no
  *      network.
+ *  77. snapshot comparison — `diffEscrowSnapshots(before, after)`
+ *      over a fixed pair of snapshots of one escrow with a long
+ *      history (FUND 10,630 plus 20 top-ups of 100, then one more
+ *      top-up and a SUBMIT_MILESTONE step): the #858 helper's bench
+ *      counterpart — the prefix-extension check canonicalizes every
+ *      history entry of the before snapshot on every call, so the
+ *      cost of comparing a long audit log had no measured
+ *      baseline. Every timed iteration checks the change-key set
+ *      (exactly stateChanged + historyAppended), the state
+ *      transition FUNDED -> MILESTONE_SUBMITTED, and the appended
+ *      seq range 22..23 with the top-up entry first; an identical
+ *      pair reporting {} and a rewritten history entry throwing
+ *      the exact divergence error are pinned once, outside the
+ *      timed loop. Pure comparison, no dispatch, no network.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -1412,6 +1426,7 @@ import {
   deliverSettlementWebhook,
   deliverSettlementWebhookToMany,
   depositAmountFromHistory,
+  diffEscrowSnapshots,
   dispatchArbitration,
   Escrow,
   GENESIS_PREV_HASH,
@@ -9419,6 +9434,83 @@ function benchReconcileSettlements(): number {
   }, ITERATIONS);
 }
 
+// ---------------------------------------------------------------------
+// diffEscrowSnapshots fixture: one escrow with a long history — FUND
+// 10,630 plus 20 top-ups of 100 (seq 1..21, state FUNDED) —
+// snapshotted, then advanced by one more top-up and a
+// SUBMIT_MILESTONE step (seq 22..23, state MILESTONE_SUBMITTED) and
+// snapshotted again. The before snapshot is fixed at capture time
+// (`toJSON()` detaches history entries), so the pair is safe to reuse
+// across timed iterations; the diff itself is pure.
+const DIFF_ESCROW = new Escrow("BENCH-DIFF");
+DIFF_ESCROW.dispatch("FUND", undefined, 10630, {
+  at: new Date(BASE_MS).toISOString(),
+});
+for (let i = 0; i < 20; i++) {
+  DIFF_ESCROW.dispatch("FUND", undefined, 100, {
+    at: new Date(BASE_MS + (i + 1) * 1000).toISOString(),
+  });
+}
+const DIFF_BEFORE = DIFF_ESCROW.toJSON();
+DIFF_ESCROW.dispatch("FUND", undefined, 100, {
+  at: new Date(BASE_MS + 21 * 1000).toISOString(),
+});
+DIFF_ESCROW.dispatch("SUBMIT_MILESTONE", undefined, undefined, {
+  at: new Date(BASE_MS + 22 * 1000).toISOString(),
+});
+const DIFF_AFTER = DIFF_ESCROW.toJSON();
+
+function checkDiffEscrowSnapshots(
+  diff: ReturnType<typeof diffEscrowSnapshots>,
+): void {
+  const keys = Object.keys(diff).sort().join(",");
+  if (
+    keys !== "historyAppended,stateChanged" ||
+    diff.stateChanged?.from !== "FUNDED" ||
+    diff.stateChanged?.to !== "MILESTONE_SUBMITTED" ||
+    diff.historyAppended?.fromSeq !== 22 ||
+    diff.historyAppended?.toSeq !== 23 ||
+    diff.historyAppended?.entries.length !== 2 ||
+    diff.historyAppended?.entries[0].event !== "FUND" ||
+    diff.historyAppended?.entries[0].amount !== 100 ||
+    diff.historyAppended?.entries[1].event !== "SUBMIT_MILESTONE"
+  ) {
+    throw new Error("benchmark self-check failed: diffEscrowSnapshots");
+  }
+}
+
+// Pre-checks outside timing: the timed shape itself is correct, an
+// identical pair reports no change, and a rewritten history entry
+// fails fast with the exact divergence error (never timed).
+checkDiffEscrowSnapshots(diffEscrowSnapshots(DIFF_BEFORE, DIFF_AFTER));
+if (Object.keys(diffEscrowSnapshots(DIFF_BEFORE, DIFF_BEFORE)).length !== 0) {
+  throw new Error(
+    "benchmark self-check failed: diffEscrowSnapshots identical pair",
+  );
+}
+const DIFF_TAMPERED = JSON.parse(JSON.stringify(DIFF_AFTER)) as typeof DIFF_AFTER;
+DIFF_TAMPERED.history[0].amount = 10631;
+try {
+  diffEscrowSnapshots(DIFF_BEFORE, DIFF_TAMPERED);
+  throw new Error(
+    "benchmark self-check failed: diffEscrowSnapshots rewritten history",
+  );
+} catch (e) {
+  if (
+    !(e instanceof Error) ||
+    e.message !==
+      'snapshot diff failed: history of escrow "BENCH-DIFF" diverged at entry 1 (b is not an append-only extension of a)'
+  ) {
+    throw e;
+  }
+}
+
+function benchDiffEscrowSnapshots(): number {
+  return measure(() => {
+    checkDiffEscrowSnapshots(diffEscrowSnapshots(DIFF_BEFORE, DIFF_AFTER));
+  }, ITERATIONS);
+}
+
 function benchExpiredEscrows(): number {
   return measure(() => {
     checkWatchdogIds(
@@ -10632,6 +10724,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "buildSettlementReports x top-up (batch 2, FUND sum 10630)", ops: benchBuildSettlementReportsTopup() },
   { path: "summarizeSettlementReports (batch 4 results)", ops: benchSummarizeSettlementReports() },
   { path: "reconcileSettlements (3 reports, 3 ledger rows, 4 groups)", ops: benchReconcileSettlements() },
+  { path: "diffEscrowSnapshots (23-entry history, 2 appended)", ops: benchDiffEscrowSnapshots() },
   { path: "buildSettlementWebhooks (batch 4 results)", ops: benchBuildSettlementWebhooks() },
   { path: "buildSettlementReports x buildSettlementWebhooks x deliverSettlementWebhookToMany (batch 4, 3 settlements x 4 endpoints)", ops: await benchBuildSettlementReportsWebhookFanout() },
   { path: "buildSettlementWebhook (sign)", ops: benchBuildSettlementWebhook() },
