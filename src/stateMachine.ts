@@ -734,6 +734,152 @@ export function parseEscrowHistory(
 }
 
 /**
+ * Structured difference between two snapshots of the same escrow.
+ * Only keys that actually changed are present; two identical snapshots
+ * diff to an empty object. `historyAppended` reports the seq range of
+ * the appended entries (`fromSeq` is the first appended entry's seq,
+ * `toSeq` the last) plus detached copies of those entries.
+ */
+export interface EscrowSnapshotDiff {
+  stateChanged?: { from: EscrowState; to: EscrowState };
+  deadlineChanged?: { from: string | undefined; to: string | undefined };
+  historyAppended?: {
+    fromSeq: number;
+    toSeq: number;
+    entries: EscrowHistoryEntry[];
+  };
+  rolePolicyChanged?: boolean;
+}
+
+/**
+ * Canonical JSON for value comparison: object keys sorted recursively,
+ * `undefined` fields dropped (the JSON semantics `toJSON()` already
+ * produces), so two entries that differ only in key order compare
+ * equal. Used only by {@link diffEscrowSnapshots}; it is not a
+ * serializer — values that JSON cannot represent keep JSON's answer.
+ */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
+  }
+  if (isRecord(value)) {
+    const entries = Object.keys(value)
+      .sort()
+      .filter((key) => value[key] !== undefined)
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`);
+    return `{${entries.join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+/**
+ * Role-policy comparison key: event names sorted, each event's roles
+ * sorted and deduped. A policy is a whitelist set, not an ordered
+ * list, so reordering roles (or listing a role twice) is not a change.
+ * An absent policy and an empty policy compare equal — `toJSON()`
+ * omits an empty policy, so the two spellings are the same state.
+ */
+function rolePolicyKey(policy: RolePolicy | undefined): string {
+  if (policy === undefined) return "{}";
+  const events = Object.keys(policy).sort();
+  const parts = events.map((event) => {
+    const roles = policy[event as EscrowEvent] ?? [];
+    const unique = [...new Set(roles)].sort();
+    return `${JSON.stringify(event)}:${JSON.stringify(unique)}`;
+  });
+  return `{${parts.join(",")}}`;
+}
+
+/**
+ * Compare two snapshots of the same escrow and report what changed
+ * between them — the audit/change-review question ("what moved since
+ * the last snapshot I stored?") without hand-written field compares
+ * that disagree about what counts as a history change.
+ *
+ * Dimensions compared, and only these: live `state`, advisory
+ * `deadline` (setting or clearing one is a change even though it
+ * appends no history entry — `setDeadline`/`clearDeadline` touch no
+ * audit log), `rolePolicy` (as a whitelist set; see
+ * {@link EscrowSnapshot.rolePolicy}), and history appends. `v` and
+ * `idempotencyKeys` are deliberately not reported: the version is
+ * schema metadata, and the consumed-key set is replay protection,
+ * not escrow state.
+ *
+ * History is append-only, so `b`'s history must be an extension of
+ * `a`'s: same entries in the same order, then zero or more new ones.
+ * A shorter `b`, a rewritten entry, or any other divergence throws
+ * `snapshot diff failed: history diverged …` instead of being
+ * silently reported as an append — a rewritten audit entry is
+ * tampering (or a restore from a different lineage), not progress.
+ * Snapshots of different escrows throw the same way: diffing across
+ * ids would report nonsense as if it were one escrow's evolution.
+ *
+ * Pure: reads both snapshots, never mutates them, and the returned
+ * `historyAppended.entries` are detached copies. This is a
+ * comparison, not a validation — it does not re-check transition
+ * legality, seq continuity, or the hash chain; run a snapshot
+ * through `fromJSON` (or its history through
+ * {@link verifyHistoryChain}) when the input itself is untrusted.
+ *
+ *   const before = escrow.toJSON();
+ *   escrow.dispatch("SUBMIT_MILESTONE");
+ *   diffEscrowSnapshots(before, escrow.toJSON());
+ *   // { stateChanged: { from: "FUNDED", to: "MILESTONE_SUBMITTED" },
+ *   //   historyAppended: { fromSeq: 2, toSeq: 2, entries: [...] } }
+ */
+export function diffEscrowSnapshots(
+  a: EscrowSnapshot,
+  b: EscrowSnapshot,
+): EscrowSnapshotDiff {
+  if (!isRecord(a) || !isRecord(b)) {
+    throw new Error(
+      "invalid snapshot diff: both snapshots must be objects",
+    );
+  }
+  if (a.id !== b.id) {
+    throw new Error(
+      `snapshot diff failed: cannot diff snapshots of different escrows (${JSON.stringify(a.id)} vs ${JSON.stringify(b.id)})`,
+    );
+  }
+  if (!Array.isArray(a.history) || !Array.isArray(b.history)) {
+    throw new Error(
+      `snapshot diff failed: history of escrow ${JSON.stringify(a.id)} must be an array in both snapshots`,
+    );
+  }
+  for (let i = 0; i < a.history.length; i++) {
+    if (
+      i >= b.history.length ||
+      canonicalJson(a.history[i]) !== canonicalJson(b.history[i])
+    ) {
+      throw new Error(
+        `snapshot diff failed: history of escrow ${JSON.stringify(a.id)} diverged at entry ${i + 1} (b is not an append-only extension of a)`,
+      );
+    }
+  }
+  const diff: EscrowSnapshotDiff = {};
+  if (a.state !== b.state) {
+    diff.stateChanged = { from: a.state, to: b.state };
+  }
+  if (a.deadline !== b.deadline) {
+    diff.deadlineChanged = { from: a.deadline, to: b.deadline };
+  }
+  if (rolePolicyKey(a.rolePolicy) !== rolePolicyKey(b.rolePolicy)) {
+    diff.rolePolicyChanged = true;
+  }
+  if (b.history.length > a.history.length) {
+    const appended = b.history
+      .slice(a.history.length)
+      .map((entry) => ({ ...entry }));
+    diff.historyAppended = {
+      fromSeq: appended[0].seq,
+      toSeq: appended[appended.length - 1].seq,
+      entries: appended,
+    };
+  }
+  return diff;
+}
+
+/**
  * Boundary check for monetary inputs: must be a finite, non-negative number.
  * Throws a descriptive Error on anything else (negative, NaN, ±Infinity,
  * non-number), so invalid caller input fails fast instead of silently

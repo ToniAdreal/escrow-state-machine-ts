@@ -18,6 +18,18 @@ version changes.
 
 ### Added
 
+- Snapshot diff helper (2026-11-04, backlog
+  #858): `diffEscrowSnapshots(before, after)` reports only what
+  actually changed between two snapshots of the same escrow —
+  `stateChanged`, `deadlineChanged`, `historyAppended` (seq range
+  plus detached copies of the appended entries), and
+  `rolePolicyChanged` (whitelist-set comparison, so role
+  reordering is not a change) — and throws
+  `snapshot diff failed: …` when the later history is not an
+  append-only extension of the earlier one, or when the ids
+  differ, instead of reporting tampering or a cross-escrow
+  compare as progress. `test/diffEscrowSnapshots.test.ts`
+  adds 12 cases.
 - Settlement report currency (2026-11-03, backlog
   #855): `SettlementReportInputs.currency` accepts an optional ISO
   4217 alpha-3 code (exactly three uppercase letters, shape-checked
