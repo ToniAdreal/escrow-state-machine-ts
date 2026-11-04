@@ -165,6 +165,10 @@ import {
   DEMO_RECONCILE_REPORT_ONLY_ID,
   DEMO_RECONCILE_SUBMIT_AT,
   DEMO_RECONCILE_VERIFY_PASS_AT,
+  DEMO_SNAPSHOT_DIFF_FUND_AT,
+  DEMO_SNAPSHOT_DIFF_ID,
+  DEMO_SNAPSHOT_DIFF_OTHER_ID,
+  DEMO_SNAPSHOT_DIFF_SUBMIT_AT,
   DEMO_RETRY_AFTER_DELIVERY_HINT,
   DEMO_RETRY_AFTER_DELIVERY_HINT_MS,
   DEMO_RETRY_AFTER_DELIVERY_SCRIPTED_STATUSES,
@@ -3243,9 +3247,8 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
       `  totalOutflow: 10630 — balanced: true (outflow equals the deposit exactly)`,
     ),
   );
-  // Reconciliation tail: the closing segment pairs three
-  // settlement reports against an external ledger into all
-  // four groups and ends on the group summary line.
+  // Reconciliation tail: the segment pairs three settlement
+  // reports against an external ledger into all four groups.
   assert.match(
     out,
     /Settlement reconciliation \(reconcileSettlements against an external ledger\):/,
@@ -3256,10 +3259,27 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
     ),
   );
   assert.ok(
+    out.includes(
+      "  groups: matched 1, report-only 1, ledger-only 1, amount mismatch 1 — matched outflow 10630",
+    ),
+  );
+  // Snapshot-comparison tail: the closing segment diffs two
+  // snapshots of one escrow and ends on the cross-escrow
+  // rejection line.
+  assert.match(
+    out,
+    /Snapshot comparison \(diffEscrowSnapshots between two snapshots of one escrow\):/,
+  );
+  assert.ok(
+    out.includes(
+      `  ${DEMO_SNAPSHOT_DIFF_ID}: FUNDED -> MILESTONE_SUBMITTED — stateChanged, history appended seq 2..2 (SUBMIT_MILESTONE)`,
+    ),
+  );
+  assert.ok(
     out
       .trimEnd()
       .endsWith(
-        "  groups: matched 1, report-only 1, ledger-only 1, amount mismatch 1 — matched outflow 10630",
+        `  cross-escrow diff rejected: snapshot diff failed: cannot diff snapshots of different escrows ("DEMO-ESC-033" vs "DEMO-ESC-034")`,
       ),
   );
 });
@@ -7660,8 +7680,8 @@ test("demo shows settlement reconciliation: reconcileSettlements pairs three rep
   assert.equal(reconcileResult.amountMismatch[0].reportAmount, 10630);
   assert.equal(reconcileResult.amountMismatch[0].ledgerAmount, 10000);
 
-  // The printed section is the demo's closing section, after the
-  // refund-settlement segment.
+  // The printed section follows the refund-settlement segment and
+  // is itself followed by the snapshot-comparison segment.
   const header =
     "Settlement reconciliation (reconcileSettlements against an external ledger):";
   assert.ok(
@@ -7701,9 +7721,13 @@ test("demo shows settlement reconciliation: reconcileSettlements pairs three rep
 test("demo settlement-reconciliation segment is deterministic: two runs print byte-identical reconciliation lines", async () => {
   const header =
     "Settlement reconciliation (reconcileSettlements against an external ledger):";
-  // The reconciliation section is the demo's last section, so it
-  // runs from the blank line before its header to the end.
-  const segment = (ls: string[]) => ls.slice(ls.indexOf(header) - 1);
+  const snapshotHeader =
+    "Snapshot comparison (diffEscrowSnapshots between two snapshots of one escrow):";
+  // The reconciliation section runs from the blank line before its
+  // header to the blank line before the snapshot-comparison header
+  // that now closes the demo.
+  const segment = (ls: string[]) =>
+    ls.slice(ls.indexOf(header) - 1, ls.indexOf(snapshotHeader) - 1);
   const a = await runDemo();
   const b = await runDemo();
   // Blank + header + four group lines + summary; every printed
@@ -7713,4 +7737,89 @@ test("demo settlement-reconciliation segment is deterministic: two runs print by
   assert.equal(segA.length, 7);
   assert.deepEqual(segA, segment(b.lines));
   assert.deepEqual(a.reconcileResult, b.reconcileResult);
+});
+
+test("demo shows snapshot comparison: diffEscrowSnapshots reports the state change and appended entry, {} for identical snapshots, and a pinned cross-escrow rejection", async () => {
+  const {
+    snapshotDiffEscrow,
+    snapshotDiff,
+    snapshotDiffIdentical,
+    snapshotDiffCrossIdError,
+    lines,
+  } = await runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned fixture shape: DEMO-ESC-033 funded, then advanced
+  // one step to MILESTONE_SUBMITTED between its two snapshots;
+  // DEMO-ESC-034 is the different escrow for the negative example.
+  assert.equal(DEMO_SNAPSHOT_DIFF_ID, "DEMO-ESC-033");
+  assert.equal(DEMO_SNAPSHOT_DIFF_OTHER_ID, "DEMO-ESC-034");
+  assert.equal(DEMO_SNAPSHOT_DIFF_FUND_AT, "2026-03-14T09:00:00.000Z");
+  assert.equal(DEMO_SNAPSHOT_DIFF_SUBMIT_AT, "2026-03-14T10:00:00.000Z");
+
+  assert.equal(snapshotDiffEscrow.id, DEMO_SNAPSHOT_DIFF_ID);
+  assert.equal(snapshotDiffEscrow.state, "MILESTONE_SUBMITTED");
+  assert.deepEqual(snapshotDiffEscrow.history.map((h) => h.event), [
+    "FUND",
+    "SUBMIT_MILESTONE",
+  ]);
+  assert.deepEqual(snapshotDiff.stateChanged, {
+    from: "FUNDED",
+    to: "MILESTONE_SUBMITTED",
+  });
+  assert.equal(snapshotDiff.deadlineChanged, undefined);
+  assert.equal(snapshotDiff.rolePolicyChanged, undefined);
+  assert.equal(snapshotDiff.historyAppended?.fromSeq, 2);
+  assert.equal(snapshotDiff.historyAppended?.toSeq, 2);
+  assert.equal(snapshotDiff.historyAppended?.entries.length, 1);
+  assert.equal(snapshotDiff.historyAppended?.entries[0].event, "SUBMIT_MILESTONE");
+  assert.deepEqual(snapshotDiffIdentical, {});
+  assert.equal(
+    snapshotDiffCrossIdError,
+    `snapshot diff failed: cannot diff snapshots of different escrows ("DEMO-ESC-033" vs "DEMO-ESC-034")`,
+  );
+
+  // The printed section is the demo's closing section, after the
+  // settlement-reconciliation segment.
+  const header =
+    "Snapshot comparison (diffEscrowSnapshots between two snapshots of one escrow):";
+  assert.ok(
+    text.indexOf(header) >
+      text.indexOf(
+        "Settlement reconciliation (reconcileSettlements against an external ledger):",
+      ),
+    "snapshot-comparison segment must follow the reconciliation segment",
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_SNAPSHOT_DIFF_ID}: FUNDED -> MILESTONE_SUBMITTED — stateChanged, history appended seq 2..2 (SUBMIT_MILESTONE)`,
+    ),
+  );
+  assert.ok(
+    text.includes(`  identical snapshots: {} — no change key reported`),
+  );
+  assert.ok(
+    text.includes(
+      `  cross-escrow diff rejected: snapshot diff failed: cannot diff snapshots of different escrows ("DEMO-ESC-033" vs "DEMO-ESC-034")`,
+    ),
+  );
+});
+
+test("demo snapshot-comparison segment is deterministic: two runs print byte-identical snapshot lines", async () => {
+  const header =
+    "Snapshot comparison (diffEscrowSnapshots between two snapshots of one escrow):";
+  // The snapshot section is the demo's last section, so it runs
+  // from the blank line before its header to the end.
+  const segment = (ls: string[]) => ls.slice(ls.indexOf(header) - 1);
+  const a = await runDemo();
+  const b = await runDemo();
+  // Blank + header + change line + identical line + rejection
+  // line; every printed value derives from the pinned fixtures
+  // alone, so no normalization is needed.
+  const segA = segment(a.lines);
+  assert.equal(segA.length, 5);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(a.snapshotDiff, b.snapshotDiff);
+  assert.deepEqual(a.snapshotDiffIdentical, b.snapshotDiffIdentical);
+  assert.equal(a.snapshotDiffCrossIdError, b.snapshotDiffCrossIdError);
 });

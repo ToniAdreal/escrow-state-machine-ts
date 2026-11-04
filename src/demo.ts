@@ -423,6 +423,7 @@ import {
   deliverSettlementWebhook,
   deliverSettlementWebhookToMany,
   depositAmountFromHistory,
+  diffEscrowSnapshots,
   dispatchArbitration,
   expiredEscrows,
   expireOverdueEscrows,
@@ -454,6 +455,7 @@ import {
   type EscrowEvent,
   type EscrowHistoryEntry,
   type EscrowSnapshot,
+  type EscrowSnapshotDiff,
   type EscrowState,
   type ExpireOverdueResult,
   type FeeBreakdown,
@@ -2165,6 +2167,20 @@ export const DEMO_RECONCILE_EXPIRE_AT = "2026-03-13T09:00:00.000Z";
 export const DEMO_RECONCILE_LEDGER_MISMATCH_AMOUNT = 10000;
 export const DEMO_RECONCILE_LEDGER_ONLY_AMOUNT = 500;
 
+/**
+ * Snapshot-comparison fixtures (backlog #876): one escrow whose
+ * before/after snapshots differ by exactly one state advance, so
+ * `diffEscrowSnapshots` has a real change to report — plus the two
+ * negative controls the demo prints alongside it (an identical
+ * snapshot pair, and a snapshot of a different escrow). All
+ * timestamps fixed; the printed lines carry ids and state names
+ * only, so no wall clock enters the output.
+ */
+export const DEMO_SNAPSHOT_DIFF_ID = "DEMO-ESC-033";
+export const DEMO_SNAPSHOT_DIFF_OTHER_ID = "DEMO-ESC-034";
+export const DEMO_SNAPSHOT_DIFF_FUND_AT = "2026-03-14T09:00:00.000Z";
+export const DEMO_SNAPSHOT_DIFF_SUBMIT_AT = "2026-03-14T10:00:00.000Z";
+
 export interface DemoResult {
   escrow: Escrow;
   report: SettlementReport;
@@ -3618,6 +3634,33 @@ export interface DemoResult {
    * order, that a reconciliation run hands to operations.
    */
   reconcileResult: ReconcileSettlementsResult;
+  /**
+   * The snapshot-comparison escrow (DEMO-ESC-033): funded, then
+   * advanced one step to MILESTONE_SUBMITTED between its two
+   * snapshots, so the diff has a state change and one appended
+   * history entry to report.
+   */
+  snapshotDiffEscrow: Escrow;
+  /**
+   * `diffEscrowSnapshots(before, after)` on that escrow: exactly
+   * `stateChanged` FUNDED -> MILESTONE_SUBMITTED and
+   * `historyAppended` seq 2..2 (the SUBMIT_MILESTONE entry) — no
+   * deadline or role-policy change, so no other key appears.
+   */
+  snapshotDiff: EscrowSnapshotDiff;
+  /**
+   * `diffEscrowSnapshots(after, after)` on the same snapshot:
+   * `{}` — an identical pair reports no change key at all.
+   */
+  snapshotDiffIdentical: EscrowSnapshotDiff;
+  /**
+   * The pinned rejection for diffing the escrow's snapshot against
+   * a different escrow's snapshot (DEMO-ESC-034): exactly
+   * `snapshot diff failed: cannot diff snapshots of different
+   * escrows ("DEMO-ESC-033" vs "DEMO-ESC-034")` — printed as a
+   * negative example, never a demo failure.
+   */
+  snapshotDiffCrossIdError: string;
   lines: string[];
 }
 
@@ -8766,6 +8809,70 @@ export async function runDemo(): Promise<DemoResult> {
     `  groups: matched ${reconcileResult.matched.length}, report-only ${reconcileResult.reportOnly.length}, ledger-only ${reconcileResult.ledgerOnly.length}, amount mismatch ${reconcileResult.amountMismatch.length} — matched outflow ${reconcileMatchedTotalOutflow}`,
   );
 
+  // --- Snapshot comparison: what changed between two snapshots ---
+  // The reconciliation segment answers "does the money agree with
+  // the ledger"; this one answers the change-review question "what
+  // moved since the last snapshot I stored". One escrow is funded,
+  // snapshotted, advanced one step (SUBMIT_MILESTONE), and
+  // snapshotted again — the diff reports exactly the state change
+  // and the one appended history entry, and nothing else. Two
+  // negative controls ride along: diffing a snapshot against
+  // itself reports no change key, and diffing against a different
+  // escrow's snapshot is rejected with a pinned error — printed
+  // here as a negative example, never a demo failure, because a
+  // cross-escrow diff would report nonsense as if it were one
+  // escrow's evolution.
+  const snapshotDiffEscrow = new Escrow(DEMO_SNAPSHOT_DIFF_ID);
+  snapshotDiffEscrow.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "sponsor",
+    at: DEMO_SNAPSHOT_DIFF_FUND_AT,
+  });
+  const snapshotDiffBefore = snapshotDiffEscrow.toJSON();
+  snapshotDiffEscrow.dispatch(
+    "SUBMIT_MILESTONE",
+    "Deliverable URLs + IPFS metadata hash",
+    undefined,
+    { actor: "creator", at: DEMO_SNAPSHOT_DIFF_SUBMIT_AT },
+  );
+  const snapshotDiffAfter = snapshotDiffEscrow.toJSON();
+  const snapshotDiff = diffEscrowSnapshots(snapshotDiffBefore, snapshotDiffAfter);
+  const snapshotDiffIdentical = diffEscrowSnapshots(
+    snapshotDiffAfter,
+    snapshotDiffAfter,
+  );
+  const snapshotDiffOtherEscrow = new Escrow(DEMO_SNAPSHOT_DIFF_OTHER_ID);
+  let snapshotDiffCrossIdError = "";
+  try {
+    diffEscrowSnapshots(snapshotDiffAfter, snapshotDiffOtherEscrow.toJSON());
+  } catch (error) {
+    snapshotDiffCrossIdError =
+      error instanceof Error ? error.message : String(error);
+  }
+  if (
+    snapshotDiff.stateChanged?.from !== "FUNDED" ||
+    snapshotDiff.stateChanged?.to !== "MILESTONE_SUBMITTED" ||
+    snapshotDiff.deadlineChanged !== undefined ||
+    snapshotDiff.rolePolicyChanged !== undefined ||
+    snapshotDiff.historyAppended?.fromSeq !== 2 ||
+    snapshotDiff.historyAppended?.toSeq !== 2 ||
+    snapshotDiff.historyAppended?.entries.length !== 1 ||
+    snapshotDiff.historyAppended?.entries[0].event !== "SUBMIT_MILESTONE" ||
+    Object.keys(snapshotDiffIdentical).length !== 0 ||
+    snapshotDiffCrossIdError !==
+      `snapshot diff failed: cannot diff snapshots of different escrows (${JSON.stringify(DEMO_SNAPSHOT_DIFF_ID)} vs ${JSON.stringify(DEMO_SNAPSHOT_DIFF_OTHER_ID)})`
+  ) {
+    throw new Error(
+      "demo fixture broken: diffEscrowSnapshots segment does not match the pinned shape (FUNDED -> MILESTONE_SUBMITTED with history appended seq 2..2, identical pair {}, cross-escrow diff rejected with the pinned error)",
+    );
+  }
+  lines.push(
+    "",
+    "Snapshot comparison (diffEscrowSnapshots between two snapshots of one escrow):",
+    `  ${DEMO_SNAPSHOT_DIFF_ID}: FUNDED -> MILESTONE_SUBMITTED — stateChanged, history appended seq 2..2 (SUBMIT_MILESTONE)`,
+    `  identical snapshots: {} — no change key reported`,
+    `  cross-escrow diff rejected: ${snapshotDiffCrossIdError}`,
+  );
+
   return {
     escrow,
     report,
@@ -8998,6 +9105,10 @@ export async function runDemo(): Promise<DemoResult> {
     refundEscrow,
     refundSettlement,
     reconcileResult,
+    snapshotDiffEscrow,
+    snapshotDiff,
+    snapshotDiffIdentical,
+    snapshotDiffCrossIdError,
     lines,
   };
 }

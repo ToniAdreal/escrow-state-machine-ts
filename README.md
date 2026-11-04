@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1238 tests, all local
+npm test   # 1240 tests, all local
 ```
 
 ## Quickstart
@@ -143,7 +143,7 @@ remaining locked balance; it is pure arithmetic and does not
 change escrow state — state advancement still goes through
 `dispatch`. For a refund, `settleRefund` returns the full deposit
 to the sponsor with every other party at 0 and no fee charged,
-matching the REFUNDED branch of `buildSettlementReport` exactly. The demo finally closes with a settlement-reconciliation segment: `reconcileSettlements` pairs three settled reports against a four-row external ledger — one matched at 10,630, one report-only at 1,100, one amount mismatch (report 10,630 vs ledger 10,000), and one ledger-only row at 500.
+matching the REFUNDED branch of `buildSettlementReport` exactly. The demo then shows a settlement-reconciliation segment: `reconcileSettlements` pairs three settled reports against a four-row external ledger — one matched at 10,630, one report-only at 1,100, one amount mismatch (report 10,630 vs ledger 10,000), and one ledger-only row at 500. The demo finally closes with a snapshot-comparison segment: `diffEscrowSnapshots` diffs one escrow's before/after snapshots across a single SUBMIT_MILESTONE step — stateChanged FUNDED -> MILESTONE_SUBMITTED with history appended seq 2..2 — alongside an identical pair reporting {} and a cross-escrow diff rejected with the pinned error.
 
 ```bash
 npm run demo
@@ -981,7 +981,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1238 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1240 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

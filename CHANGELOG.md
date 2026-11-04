@@ -18,6 +18,19 @@ version changes.
 
 ### Added
 
+- Demo snapshot-comparison segment (2026-11-04, backlog
+  #876): `npm run demo` now closes with a `diffEscrowSnapshots`
+  segment — one escrow (DEMO-ESC-033) funded, snapshotted,
+  advanced one step to MILESTONE_SUBMITTED, and snapshotted
+  again, printing exactly stateChanged FUNDED ->
+  MILESTONE_SUBMITTED with history appended seq 2..2, plus an
+  identical pair reporting {} and a cross-escrow diff (against
+  DEMO-ESC-034) rejected with the pinned error, printed as a
+  negative example rather than a demo failure. The demo's
+  fail-fast check pins all three shapes, and `test/demo.test.ts`
+  adds 2 cases and updates the closing-section assertions (the
+  compiled-demo tail now ends on the cross-escrow rejection
+  line).
 - Benchmark settlement-reconciliation row (2026-11-04, backlog
   #874): `bench/bench.ts` adds `benchReconcileSettlements` over a
   fixed 3-report / 3-row fixture (one matched, one report-only,
