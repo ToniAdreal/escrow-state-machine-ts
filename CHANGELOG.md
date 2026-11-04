@@ -18,6 +18,15 @@ version changes.
 
 ### Added
 
+- Demo refund-settlement segment (2026-11-04, backlog
+  #866): `npm run demo` closes with a further escrow walked to
+  REFUNDED on its own (FUND, SUBMIT_MILESTONE, VERIFY_FAIL,
+  quorum arbitration, ARBITRATE_REFUND) and settled with
+  `settleRefund` on the golden deposit — sponsor 10,630,
+  creator, platform, and referrer 0, balanced — the first demo
+  segment to show the refund arithmetic itself rather than only
+  the dispute branch's settlement report. `test/demo.test.ts`
+  adds 2 cases and updates the closing-section assertions.
 - External-ledger settlement reconciliation (2026-11-04, backlog
   #863): `reconcileSettlements(reports, ledger)` pairs settlement
   reports with external payment-ledger rows by `escrowId` and returns

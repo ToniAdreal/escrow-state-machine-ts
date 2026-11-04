@@ -148,6 +148,12 @@ import {
   DEMO_REVOKE_UNKNOWN_ERROR,
   DEMO_REVOKE_UNKNOWN_SIGNER,
   DEMO_REBUILT_DEADLINE,
+  DEMO_REFUND_ARBITRATION_AT,
+  DEMO_REFUND_ESCROW_ID,
+  DEMO_REFUND_FUND_AT,
+  DEMO_REFUND_QUORUM_NOW_MS,
+  DEMO_REFUND_SUBMIT_AT,
+  DEMO_REFUND_VERIFY_FAIL_AT,
   DEMO_RETRY_AFTER_DELIVERY_HINT,
   DEMO_RETRY_AFTER_DELIVERY_HINT_MS,
   DEMO_RETRY_AFTER_DELIVERY_SCRIPTED_STATUSES,
@@ -3183,10 +3189,12 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
       `  unchanged: 3 captured POSTs on each path carried byte-identical bodies and the X-Signature verifies over the wire body under the demo secret (jittered true, exact true) - jitter only spreads the waits, it never changes the signed payload or the eventId ${DEMO_WEBHOOK_EVENT_ID}`,
     ),
   );
-  // Scheduler next-deadline tail: the closing segment
+  // Scheduler next-deadline segment, followed by the
+  // refund-settlement closing segment: the scheduler
   // screens the mixed seven-escrow batch, prints one
-  // verdict line per member, and ends the demo on its
-  // purity line.
+  // verdict line per member, and ends on its purity line;
+  // the demo itself ends on the refund segment's
+  // balanced line.
   assert.match(
     out,
     /Scheduler next deadline \(nextEscrowDeadline over a mixed batch\):/,
@@ -3212,10 +3220,18 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
     ),
   );
   assert.ok(
+    out.includes(
+      `  pure: the call dispatched nothing — all seven escrows keep their state and history length`,
+    ),
+  );
+  // Refund-settlement tail: the closing segment walks a
+  // further escrow to REFUNDED and settles it with
+  // settleRefund — sponsor whole, others 0, balanced.
+  assert.ok(
     out
       .trimEnd()
       .endsWith(
-        `  pure: the call dispatched nothing — all seven escrows keep their state and history length`,
+        `  totalOutflow: 10630 — balanced: true (outflow equals the deposit exactly)`,
       ),
   );
 });
@@ -7463,9 +7479,12 @@ test("demo shows scheduler next deadline: earliest upcoming wins, tie keeps inpu
 test("demo scheduler next-deadline segment is deterministic: two runs print byte-identical scheduler lines", async () => {
   const header =
     "Scheduler next deadline (nextEscrowDeadline over a mixed batch):";
-  // The scheduler section is the demo's last section, so it
-  // runs from its header to the end of the lines.
-  const segment = (ls: string[]) => ls.slice(ls.indexOf(header));
+  const refundHeader =
+    "Refund settlement (settleRefund on a refunded escrow):";
+  // The scheduler section runs from its header to the
+  // refund-settlement header that now closes the demo.
+  const segment = (ls: string[]) =>
+    ls.slice(ls.indexOf(header), ls.indexOf(refundHeader) - 1);
   const a = await runDemo();
   const b = await runDemo();
   // Header + fixed-now + 7 member verdicts + next +
@@ -7479,4 +7498,87 @@ test("demo scheduler next-deadline segment is deterministic: two runs print byte
   assert.equal(a.schedulerWinnerId, b.schedulerWinnerId);
   assert.equal(a.schedulerWinnerDeadline, b.schedulerWinnerDeadline);
   assert.equal(a.schedulerNoCandidate, b.schedulerNoCandidate);
+});
+
+test("demo shows refund settlement: settleRefund on a REFUNDED escrow returns the full deposit to the sponsor and balances", async () => {
+  const { refundEscrow, refundSettlement, lines } = await runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned fixture shape: DEMO-ESC-028 funded with the
+  // golden deposit, walked to REFUNDED via quorum arbitration,
+  // settled with settleRefund — no fee on a refund.
+  assert.equal(DEMO_REFUND_ESCROW_ID, "DEMO-ESC-028");
+  assert.equal(DEMO_REFUND_FUND_AT, "2026-03-10T09:00:00.000Z");
+  assert.equal(DEMO_REFUND_SUBMIT_AT, "2026-03-10T10:00:00.000Z");
+  assert.equal(DEMO_REFUND_VERIFY_FAIL_AT, "2026-03-11T09:00:00.000Z");
+  assert.equal(DEMO_REFUND_ARBITRATION_AT, "2026-03-11T10:00:00.000Z");
+  assert.equal(
+    DEMO_REFUND_QUORUM_NOW_MS,
+    Date.parse("2026-03-11T09:30:00.000Z"),
+  );
+
+  assert.equal(refundEscrow.id, DEMO_REFUND_ESCROW_ID);
+  assert.equal(refundEscrow.state, "REFUNDED");
+  assert.equal(refundEscrow.isTerminal, true);
+  assert.deepEqual(refundEscrow.history.map((h) => h.event), [
+    "FUND",
+    "SUBMIT_MILESTONE",
+    "VERIFY_FAIL",
+    "ARBITRATE_REFUND",
+  ]);
+  assert.deepEqual(refundSettlement, {
+    deposit: 10630,
+    sponsor: 10630,
+    creator: 0,
+    platform: 0,
+    referrer: 0,
+    totalOutflow: 10630,
+    balanced: true,
+  });
+
+  // The printed section is the demo's closing section,
+  // after the scheduler segment.
+  const header = "Refund settlement (settleRefund on a refunded escrow):";
+  assert.ok(
+    text.indexOf(header) >
+      text.indexOf(
+        "Scheduler next deadline (nextEscrowDeadline over a mixed batch):",
+      ),
+    "refund-settlement segment must follow the scheduler segment",
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_REFUND_ESCROW_ID}: DISPUTED -> REFUNDED via quorum arbitration (${DEMO_QUORUM_THRESHOLD}-of-${DEMO_QUORUM_SIGNERS.length}) — the REFUNDED path the dispute branch settles only through its report`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  deposit: 10630 — settleRefund returns it in full, no fee deducted (the 5% pro fee is a release-time charge)`,
+    ),
+  );
+  assert.ok(
+    text.includes(`  sponsor: +10630 / creator: 0 / platform: 0 / referrer: 0`),
+  );
+  assert.ok(
+    text.includes(
+      `  totalOutflow: 10630 — balanced: true (outflow equals the deposit exactly)`,
+    ),
+  );
+});
+
+test("demo refund-settlement segment is deterministic: two runs print byte-identical refund lines", async () => {
+  const header = "Refund settlement (settleRefund on a refunded escrow):";
+  // The refund section is the demo's last section, so it
+  // runs from the blank line before its header to the end.
+  const segment = (ls: string[]) => ls.slice(ls.indexOf(header) - 1);
+  const a = await runDemo();
+  const b = await runDemo();
+  // Blank + header + path + deposit + parties + balanced;
+  // every printed value derives from the pinned fixtures
+  // alone, so no normalization is needed.
+  const segA = segment(a.lines);
+  assert.equal(segA.length, 6);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(a.refundSettlement, b.refundSettlement);
+  assert.equal(a.refundEscrow.state, b.refundEscrow.state);
 });

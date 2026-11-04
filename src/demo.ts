@@ -381,6 +381,18 @@
  * exact errors and leave the quorum untouched; all sides
  * are asserted outside the printing against hand-pinned
  * expectations.
+ * The demo then shows a refund-settlement
+ * segment: a further escrow walks the REFUNDED path on its
+ * own (FUND -> SUBMIT_MILESTONE -> VERIFY_FAIL -> quorum
+ * arbitration -> ARBITRATE_REFUND) and is settled with the
+ * pure `settleRefund` helper on the golden deposit — the
+ * sponsor is returned the full 10,630, every other party
+ * reads 0, and the split balances exactly, because a refund
+ * charges no fee (the 5% pro fee is a release-time charge);
+ * the dispute branch above settles its refund only through
+ * the report layer, so this is the first segment that shows
+ * the refund arithmetic itself. All sides are asserted
+ * outside the printing against hand-pinned expectations.
  *
  * Usage: `npm run demo` (builds with tsc, then runs node on the compiled
  * output). Zero runtime dependencies: this file only imports the library
@@ -426,6 +438,7 @@ import {
   renderReportCsv,
   renderReportJson,
   restoreQuorum,
+  settleRefund,
   settleRelease,
   staleEscrows,
   stateDiagram,
@@ -447,6 +460,7 @@ import {
   type Quorum,
   type QuorumConfig,
   type QuorumSnapshot,
+  type RefundSettlement,
   type Settlement,
   type SettlementEventDedupeSnapshot,
   type SettlementEventDedupeStats,
@@ -2101,6 +2115,27 @@ const disputeSteps: Array<{
   },
 ];
 
+/**
+ * Refund-settlement fixtures (backlog #866): a further escrow that
+ * walks the REFUNDED path on its own — funded with the same golden
+ * deposit, milestone submitted, verification failed, then refunded
+ * by a fresh 2-of-3 quorum — so `settleRefund` gets a demo segment
+ * of its own instead of only appearing inside the dispute branch's
+ * settlement report. Hand-pinned expectations: the refund returns
+ * the full 10,630 to the sponsor, every other party reads 0, and
+ * the split balances exactly (no fee is charged on a refund — the
+ * 5% pro fee is a release-time charge, see `settleRefund`'s doc
+ * comment). All timestamps fixed; no wall clock enters the segment.
+ */
+export const DEMO_REFUND_ESCROW_ID = "DEMO-ESC-028";
+export const DEMO_REFUND_FUND_AT = "2026-03-10T09:00:00.000Z";
+export const DEMO_REFUND_SUBMIT_AT = "2026-03-10T10:00:00.000Z";
+export const DEMO_REFUND_VERIFY_FAIL_AT = "2026-03-11T09:00:00.000Z";
+export const DEMO_REFUND_ARBITRATION_AT = "2026-03-11T10:00:00.000Z";
+export const DEMO_REFUND_QUORUM_NOW_MS = Date.parse(
+  "2026-03-11T09:30:00.000Z",
+);
+
 export interface DemoResult {
   escrow: Escrow;
   report: SettlementReport;
@@ -3535,6 +3570,18 @@ export interface DemoResult {
    * nothing when nothing qualifies.
    */
   schedulerNoCandidate: boolean;
+  /**
+   * The refund-settlement escrow (DEMO-ESC-028): walked to REFUNDED
+   * on its own via quorum arbitration, so the `settleRefund`
+   * segment has an escrow to point at.
+   */
+  refundEscrow: Escrow;
+  /**
+   * `settleRefund({ deposit: 10630 })` on that escrow: sponsor
+   * 10630, creator/platform/referrer 0, totalOutflow 10630,
+   * balanced true — a refund charges no fee.
+   */
+  refundSettlement: RefundSettlement;
   lines: string[];
 }
 
@@ -8478,6 +8525,72 @@ export async function runDemo(): Promise<DemoResult> {
     `  pure: the call dispatched nothing — all seven escrows keep their state and history length`,
   );
 
+  // --- Refund settlement: settleRefund on a REFUNDED escrow ---
+  // The dispute branch above settles its refund through the report
+  // layer only; the pure `settleRefund` helper itself never got a
+  // demo segment — a reader saw the RELEASE split in isolation but
+  // never the refund split. This escrow walks the full REFUNDED
+  // path on its own (FUND -> SUBMIT_MILESTONE -> VERIFY_FAIL ->
+  // quorum arbitration -> ARBITRATE_REFUND) and is then settled
+  // with `settleRefund` on the golden deposit: the sponsor is made
+  // whole, every other party reads 0, and the split balances.
+  const refundEscrow = new Escrow(DEMO_REFUND_ESCROW_ID);
+  refundEscrow.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "sponsor",
+    at: DEMO_REFUND_FUND_AT,
+  });
+  refundEscrow.dispatch(
+    "SUBMIT_MILESTONE",
+    "Deliverable URLs + IPFS metadata hash",
+    undefined,
+    { actor: "creator", at: DEMO_REFUND_SUBMIT_AT },
+  );
+  refundEscrow.dispatch(
+    "VERIFY_FAIL",
+    "KPIs missed — verification failed, dispute opened",
+    undefined,
+    { actor: "oracle", at: DEMO_REFUND_VERIFY_FAIL_AT },
+  );
+  const refundQuorum = createQuorum({
+    threshold: DEMO_QUORUM_THRESHOLD,
+    signers: [...DEMO_QUORUM_SIGNERS],
+    now: () => DEMO_REFUND_QUORUM_NOW_MS,
+  });
+  refundQuorum.approve(DEMO_QUORUM_SIGNERS[0]);
+  refundQuorum.approve(DEMO_QUORUM_SIGNERS[1]);
+  const refundFrom = refundEscrow.state;
+  const refundTo = dispatchArbitration(
+    refundEscrow,
+    refundQuorum,
+    "refund",
+    "Dispute upheld — refund the sponsor",
+    { actor: DEMO_QUORUM_SIGNERS[1], at: DEMO_REFUND_ARBITRATION_AT },
+  );
+  const refundSettlement = settleRefund({ deposit: 10630 });
+  if (
+    refundEscrow.state !== "REFUNDED" ||
+    refundTo !== "REFUNDED" ||
+    refundSettlement.deposit !== 10630 ||
+    refundSettlement.sponsor !== 10630 ||
+    refundSettlement.creator !== 0 ||
+    refundSettlement.platform !== 0 ||
+    refundSettlement.referrer !== 0 ||
+    refundSettlement.totalOutflow !== 10630 ||
+    refundSettlement.balanced !== true
+  ) {
+    throw new Error(
+      "demo fixture broken: settleRefund refund segment does not match the pinned shape (escrow REFUNDED via ARBITRATE_REFUND; sponsor 10630, creator/platform/referrer 0, totalOutflow 10630, balanced true — a refund charges no fee)",
+    );
+  }
+  lines.push(
+    "",
+    "Refund settlement (settleRefund on a refunded escrow):",
+    `  ${refundEscrow.id}: ${refundFrom} -> ${refundTo} via quorum arbitration (${DEMO_QUORUM_THRESHOLD}-of-${DEMO_QUORUM_SIGNERS.length}) — the REFUNDED path the dispute branch settles only through its report`,
+    `  deposit: ${refundSettlement.deposit} — settleRefund returns it in full, no fee deducted (the 5% pro fee is a release-time charge)`,
+    `  sponsor: +${refundSettlement.sponsor} / creator: ${refundSettlement.creator} / platform: ${refundSettlement.platform} / referrer: ${refundSettlement.referrer}`,
+    `  totalOutflow: ${refundSettlement.totalOutflow} — balanced: ${refundSettlement.balanced} (outflow equals the deposit exactly)`,
+  );
+
   return {
     escrow,
     report,
@@ -8707,6 +8820,8 @@ export async function runDemo(): Promise<DemoResult> {
     schedulerWinnerId,
     schedulerWinnerDeadline,
     schedulerNoCandidate,
+    refundEscrow,
+    refundSettlement,
     lines,
   };
 }
