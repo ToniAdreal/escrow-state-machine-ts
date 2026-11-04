@@ -18,6 +18,19 @@ version changes.
 
 ### Added
 
+- Settlement webhook freshness x dedupe coverage (2026-11-04,
+  backlog #884): `test/settlementWebhookFreshnessDedupe.test.ts`
+  is the escrow-side counterpart of dataquest #819 — a stale
+  payload and an over-future-window payload are each rejected and
+  leave the `SettlementEventDedupe` empty, so the same eventId
+  freshly re-signed is still a first sighting; an in-window
+  payload records a first sighting and its re-delivery reports
+  duplicate; freshness failures leave the dedupe counters
+  untouched before and after a success; and both inclusive
+  boundaries (exactly `maxAgeMs` old, exactly
+  `maxFutureSkewMs` in the future) verify and record, while one
+  millisecond past either bound rejects unrecorded. No source
+  change: the verify-then-record receiver order already held.
 - Benchmark snapshot-comparison row (2026-11-04, backlog
   #881): `bench/bench.ts` adds `benchDiffEscrowSnapshots` over a
   fixed pair of snapshots of one escrow with a long history (FUND
