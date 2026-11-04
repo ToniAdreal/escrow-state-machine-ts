@@ -18,6 +18,18 @@ version changes.
 
 ### Added
 
+- Benchmark refund-settlement row (2026-11-04, backlog
+  #869): `bench/bench.ts` adds `benchSettleRefund` over 4 fixed
+  representative inputs (the golden 10,630, 1,000, a large
+  1,000,000, and a 0.01 cent edge), each checked on every
+  iteration for the sponsor receiving the full deposit, creator /
+  platform / referrer exactly 0, totalOutflow equal to the
+  deposit, and balanced true, with a negative deposit pinned
+  once outside the timed loop to the exact configuration error
+  and a mutated expectation pinned to fail the bench self-check.
+  The new row measures 774,926 ops/sec (1.29 µs/op) on this
+  run's machine, next to the release row's 450,942 ops/sec, and
+  the README Benchmarks table is refreshed from this run.
 - Demo refund-settlement segment (2026-11-04, backlog
   #866): `npm run demo` closes with a further escrow walked to
   REFUNDED on its own (FUND, SUBMIT_MILESTONE, VERIFY_FAIL,

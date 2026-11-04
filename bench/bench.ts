@@ -1354,6 +1354,19 @@
  *      error escrow; the per-endpoint signature check runs once,
  *      outside the timed loop. Fixed timestamps, no network, no
  *      randomness.
+ *  75. refund settlement arithmetic — `settleRefund(inputs)` over 4
+ *      fixed representative inputs (the golden 10,630, 1,000, a
+ *      large 1,000,000, and a 0.01 cent edge). This is the #862
+ *      helper's bench counterpart to the settleRelease netting row:
+ *      the release path had a measured cost row while the refund
+ *      path — the one a dispute-heavy deployment actually pays —
+ *      had none, so the two settlement arithmetics could not be
+ *      compared. Every timed iteration checks the sponsor receives
+ *      the full deposit, creator / platform / referrer are exactly
+ *      0, totalOutflow equals the deposit, and balanced is true;
+ *      a negative deposit is pinned once, outside the timed loop,
+ *      to throw the exact `deposit must be a finite non-negative
+ *      number` error. Pure arithmetic, no state, no network.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -1403,6 +1416,7 @@ import {
   renderReportJson,
   restoreQuorum,
   settleRelease,
+  settleRefund,
   SettlementEventDedupe,
   staleEscrows,
   stateDiagram,
@@ -1417,6 +1431,7 @@ import {
   type EscrowSnapshot,
   type EscrowState,
   type Quorum,
+  type RefundSettlementInputs,
   type RolePolicy,
   type QuorumSnapshot,
   type SettlementInputs,
@@ -9188,6 +9203,80 @@ function benchSettleRelease(): number {
   }, ITERATIONS);
 }
 
+// ---------------------------------------------------------------------
+// settleRefund fixture: 4 fixed representative refund inputs.
+// Hand-computed expectations (refund rule: the sponsor gets the full
+// deposit back, every other party 0, totalOutflow equals the deposit,
+// balanced — amounts pass through exactly, no cent rounding, so the
+// expectations are the deposits themselves, written by hand here,
+// never re-derived through settleRefund):
+//   1. golden case: deposit 10630 -> sponsor 10630.
+//   2. mid-size: deposit 1000 -> sponsor 1000.
+//   3. large deposit: deposit 1000000 -> sponsor 1000000.
+//   4. cent edge: deposit 0.01 -> sponsor 0.01 (exact passthrough,
+//      no rounding drift on the smallest unit).
+// ---------------------------------------------------------------------
+const SETTLE_REFUND_CASES: ReadonlyArray<{
+  inputs: RefundSettlementInputs;
+  sponsor: number;
+}> = [
+  { inputs: { deposit: 10630 }, sponsor: 10630 },
+  { inputs: { deposit: 1000 }, sponsor: 1000 },
+  { inputs: { deposit: 1000000 }, sponsor: 1000000 },
+  { inputs: { deposit: 0.01 }, sponsor: 0.01 },
+];
+
+function checkSettleRefundCase(
+  result: {
+    deposit: number;
+    sponsor: number;
+    creator: number;
+    platform: number;
+    referrer: number;
+    totalOutflow: number;
+    balanced: boolean;
+  },
+  expected: (typeof SETTLE_REFUND_CASES)[number],
+): void {
+  if (
+    result.deposit !== expected.inputs.deposit ||
+    result.sponsor !== expected.sponsor ||
+    result.creator !== 0 ||
+    result.platform !== 0 ||
+    result.referrer !== 0 ||
+    result.totalOutflow !== expected.inputs.deposit ||
+    result.balanced !== true
+  ) {
+    throw new Error("benchmark self-check failed: settleRefund");
+  }
+}
+
+// Pre-check outside timing: every fixture case refunds its deposit in
+// full before any number is reported, and a negative deposit is
+// refused with the exact configuration error (never timed).
+for (const c of SETTLE_REFUND_CASES) {
+  checkSettleRefundCase(settleRefund(c.inputs), c);
+}
+try {
+  settleRefund({ deposit: -1 });
+  throw new Error("benchmark self-check failed: settleRefund negative");
+} catch (e) {
+  if (
+    !(e instanceof Error) ||
+    e.message !== "deposit must be a finite non-negative number"
+  ) {
+    throw e;
+  }
+}
+
+function benchSettleRefund(): number {
+  return measure(() => {
+    for (const c of SETTLE_REFUND_CASES) {
+      checkSettleRefundCase(settleRefund(c.inputs), c);
+    }
+  }, ITERATIONS);
+}
+
 function benchExpiredEscrows(): number {
   return measure(() => {
     checkWatchdogIds(
@@ -10386,6 +10475,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "verifyHistoryChain auditKey (4 entries, keyed)", ops: benchVerifyHistoryChainAuditKey() },
   { path: "Escrow.fromHistory (4 entries)", ops: benchFromHistory() },
   { path: "settleRelease (4 fixed inputs)", ops: benchSettleRelease() },
+  { path: "settleRefund (4 fixed inputs)", ops: benchSettleRefund() },
   { path: "buildSettlementReport (4 entries)", ops: benchBuildSettlementReport() },
   { path: "buildSettlementReport releasePath (released report)", ops: benchBuildSettlementReportReleasePath() },
   { path: "buildSettlementReport audit window (eventCount/firstEventAt/lastEventAt)", ops: benchBuildSettlementReportAuditWindow() },
