@@ -490,6 +490,178 @@ export function summarizeSettlementReports(
   };
 }
 
+/**
+ * One row of an external payment ledger, paired against a settlement
+ * report by `escrowId`. The shape is deliberately minimal: the id that
+ * pairs the row with a report, and the amount the ledger says was paid
+ * out, in the same units and cent-rounded convention as the report's
+ * `totalOutflow`. Extra fields on a caller-supplied row are ignored,
+ * never compared.
+ */
+export interface LedgerSettlement {
+  /** Escrow id, pairing with a report's `escrowId`. */
+  escrowId: string;
+  /** Amount the ledger records for this escrow, if recorded. */
+  amount?: number;
+}
+
+/**
+ * One amount disagreement found by {@link reconcileSettlements}: the
+ * report and the ledger row agree on the escrow id but not on the
+ * amount. Either side's amount is never `undefined` here: a ledger row
+ * with no recorded amount is a reference-only match, not a
+ * disagreement (see {@link reconcileSettlements}).
+ */
+export interface SettlementAmountMismatch {
+  /** The report whose settled amount disagrees with the ledger. */
+  report: SettlementReport;
+  /** The ledger row carrying the same escrow id. */
+  ledger: LedgerSettlement;
+  /** Settled amount from the report's `totalOutflow`. */
+  reportAmount: number;
+  /** Amount recorded on the ledger row. */
+  ledgerAmount: number;
+}
+
+/**
+ * The four-way result of {@link reconcileSettlements}. Every group
+ * keeps input order; report groups hold the same report objects, and
+ * `ledgerOnly` holds the same ledger objects, so callers can act on
+ * them directly.
+ */
+export interface ReconcileSettlementsResult {
+  /** Reports whose id and (where recorded) amount agree with a ledger row. */
+  matched: SettlementReport[];
+  /** Reports with an id no ledger row carries. */
+  reportOnly: SettlementReport[];
+  /** Ledger rows whose id no report carries. */
+  ledgerOnly: LedgerSettlement[];
+  /** Reports paired by id but disagreeing on amount. */
+  amountMismatch: SettlementAmountMismatch[];
+}
+
+/**
+ * Reconciliation helper: pair a batch of settlement reports against an
+ * external payment ledger, by `escrowId`.
+ *
+ * This is the half of reconciliation the report-side summaries cannot
+ * do: {@link summarizeSettlementReports} aggregates what the reports
+ * claim, but it cannot see whether the money actually left the
+ * external account. Pairing against the ledger closes that gap in both
+ * directions — a settlement the ledger never paid, and a ledger
+ * payment no report accounts for:
+ *
+ *   const { matched, reportOnly, ledgerOnly, amountMismatch } =
+ *     reconcileSettlements(reports, ledgerRows);
+ *
+ * Pairing rules:
+ * - A report pairs with the ledger row carrying the same `escrowId`;
+ *   the report's amount is its `totalOutflow`, the figure that left
+ *   escrow on every outcome (released, refunded, and expired alike).
+ * - Amounts are compared at cent precision (`round2` on both sides),
+ *   the library's money model: a ledger figure that differs only by
+ *   float noise is not a disagreement, a one-cent difference is.
+ * - An amount disagreement is reported only when the ledger row
+ *   recorded an amount. A row with no amount pairs on the reference
+ *   alone and lands in `matched` — the missing amount is still
+ *   visible to the caller, because `matched` holds the report itself,
+ *   not a claim that amounts were verified.
+ * - A ledger row is `ledgerOnly` only when no report carries its id;
+ *   pairing a row never consumes it for other reports.
+ *
+ * Fail-fast, before any pairing: a report that is not an object, or
+ * carries an empty or non-string `escrowId` or a non-finite
+ * `totalOutflow`, throws; a ledger row that is not an object, carries
+ * an empty or non-string `escrowId`, or carries a non-finite or
+ * negative `amount` throws; and an id appearing twice in the ledger
+ * throws `duplicate ledger escrowId` — a duplicated ledger row would
+ * otherwise make "matched" ambiguous (which row did the report pair
+ * with?).
+ *
+ * Pure: reads the reports and the ledger rows, never mutates or
+ * dispatches anything. An empty report batch and an empty ledger
+ * return four empty groups.
+ */
+export function reconcileSettlements(
+  reports: readonly SettlementReport[],
+  ledger: readonly LedgerSettlement[],
+): ReconcileSettlementsResult {
+  for (const report of reports) {
+    if (report === null || typeof report !== "object" || Array.isArray(report)) {
+      throw new Error(
+        `invalid reconcileSettlements: report must be an object, got ${JSON.stringify(report)}`,
+      );
+    }
+    if (typeof report.escrowId !== "string" || report.escrowId.length === 0) {
+      throw new Error(
+        `invalid reconcileSettlements: report escrowId must be a non-empty string, got ${JSON.stringify(report.escrowId)}`,
+      );
+    }
+    if (typeof report.totalOutflow !== "number" || !Number.isFinite(report.totalOutflow)) {
+      throw new Error(
+        `invalid reconcileSettlements: report totalOutflow must be a finite number, got ${String(report.totalOutflow)}`,
+      );
+    }
+  }
+  const ledgerById = new Map<string, LedgerSettlement>();
+  for (const row of ledger) {
+    if (row === null || typeof row !== "object" || Array.isArray(row)) {
+      throw new Error(
+        `invalid reconcileSettlements: ledger entry must be an object, got ${JSON.stringify(row)}`,
+      );
+    }
+    if (typeof row.escrowId !== "string" || row.escrowId.length === 0) {
+      throw new Error(
+        `invalid reconcileSettlements: ledger escrowId must be a non-empty string, got ${JSON.stringify(row.escrowId)}`,
+      );
+    }
+    if (
+      row.amount !== undefined &&
+      (typeof row.amount !== "number" || !Number.isFinite(row.amount) || row.amount < 0)
+    ) {
+      throw new Error(
+        `invalid reconcileSettlements: ledger amount must be a non-negative finite number, got ${String(row.amount)}`,
+      );
+    }
+    if (ledgerById.has(row.escrowId)) {
+      throw new Error(
+        `invalid reconcileSettlements: duplicate ledger escrowId: ${JSON.stringify(row.escrowId)}`,
+      );
+    }
+    ledgerById.set(row.escrowId, row);
+  }
+
+  const result: ReconcileSettlementsResult = {
+    matched: [],
+    reportOnly: [],
+    ledgerOnly: [],
+    amountMismatch: [],
+  };
+  const seenIds = new Set<string>();
+  for (const report of reports) {
+    seenIds.add(report.escrowId);
+    const row = ledgerById.get(report.escrowId);
+    if (row === undefined) {
+      result.reportOnly.push(report);
+      continue;
+    }
+    if (row.amount !== undefined && round2(row.amount) !== round2(report.totalOutflow)) {
+      result.amountMismatch.push({
+        report,
+        ledger: row,
+        reportAmount: report.totalOutflow,
+        ledgerAmount: row.amount,
+      });
+      continue;
+    }
+    result.matched.push(report);
+  }
+  for (const row of ledger) {
+    if (!seenIds.has(row.escrowId)) result.ledgerOnly.push(row);
+  }
+  return result;
+}
+
 function money(n: number): string {
   return (
     "$" +

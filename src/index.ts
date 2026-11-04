@@ -23,7 +23,7 @@ export { calculateDeposit } from "./feeCalculator.js";
 export type { FeeBreakdown, FeeInputs } from "./feeCalculator.js";
 export { settleRelease, settlePartialRelease, settleRefund } from "./settlement.js";
 export type { Settlement, SettlementInputs, PartialSettlement, PartialSettlementInputs, RefundSettlement, RefundSettlementInputs } from "./settlement.js";
-export { buildSettlementReport, buildSettlementReports, depositAmountFromHistory, parseSettlementReportCsv, parseSettlementReportJson, renderReport, renderReportCsv, renderReportJson, summarizeSettlementReports } from "./settlementReport.js";
+export { buildSettlementReport, buildSettlementReports, depositAmountFromHistory, parseSettlementReportCsv, parseSettlementReportJson, reconcileSettlements, renderReport, renderReportCsv, renderReportJson, summarizeSettlementReports } from "./settlementReport.js";
 export type { SettlementReportCsv } from "./settlementReport.js";
 export { buildSettlementWebhook, buildSettlementWebhooks, deliverSettlementWebhook, deliverSettlementWebhookToMany, parseRetryAfter, verifySettlementWebhook, SettlementEventDedupe } from "./webhooks.js";
 export type {
@@ -48,8 +48,11 @@ export type { Quorum, QuorumConfig, QuorumSnapshot, ApprovalLogEntry } from "./q
 export { dispatchArbitration } from "./arbitration.js";
 export type { ArbitrationDispatchOptions, ArbitrationOutcome } from "./arbitration.js";
 export type {
+  LedgerSettlement,
   PartyLedger,
   PartyRole,
+  ReconcileSettlementsResult,
+  SettlementAmountMismatch,
   SettlementOutcome,
   SettlementReport,
   SettlementReportInputs,

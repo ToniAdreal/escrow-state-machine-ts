@@ -18,6 +18,15 @@ version changes.
 
 ### Added
 
+- External-ledger settlement reconciliation (2026-11-04, backlog
+  #863): `reconcileSettlements(reports, ledger)` pairs settlement
+  reports with external payment-ledger rows by `escrowId` and returns
+  `{ matched, reportOnly, ledgerOnly, amountMismatch }` — the report
+  amount is `totalOutflow`, compared at cent precision, a ledger row
+  with no recorded amount matches on the reference alone, and a
+  duplicated ledger id or malformed row fails fast. Pure, input order
+  preserved, empty inputs return four empty groups.
+  `test/reconcileSettlements.test.ts` adds 10 cases.
 - Refund settlement helper (2026-11-04, backlog
   #862): `settleRefund({ deposit })` returns the full deposit to
   the sponsor with creator, platform, and referrer at 0, no fee
