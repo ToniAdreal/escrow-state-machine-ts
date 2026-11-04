@@ -434,6 +434,7 @@ import {
   parseRetryAfter,
   parseSettlementReportCsv,
   parseSettlementReportJson,
+  reconcileSettlements,
   renderReport,
   renderReportCsv,
   renderReportJson,
@@ -457,9 +458,11 @@ import {
   type ExpireOverdueResult,
   type FeeBreakdown,
   type FeeInputs,
+  type LedgerSettlement,
   type Quorum,
   type QuorumConfig,
   type QuorumSnapshot,
+  type ReconcileSettlementsResult,
   type RefundSettlement,
   type Settlement,
   type SettlementEventDedupeSnapshot,
@@ -2136,6 +2139,32 @@ export const DEMO_REFUND_QUORUM_NOW_MS = Date.parse(
   "2026-03-11T09:30:00.000Z",
 );
 
+/**
+ * Settlement-reconciliation fixtures (backlog #871): the four-way
+ * pairing `reconcileSettlements` returns, one example per group, so
+ * the demo shows the report side against an external ledger side by
+ * side — the shape a day-end reconciliation run actually produces.
+ * Hand-pinned expectations: DEMO-ESC-029 is released on the golden
+ * deposit and agrees with its ledger row at 10,630; DEMO-ESC-030
+ * expires on a small 1,100 deposit and has no ledger row at all;
+ * DEMO-ESC-031 is released on the golden deposit but its ledger row
+ * records 10,000, a one-group amount disagreement; DEMO-ESC-032
+ * exists only on the ledger (500 paid, no report). All timestamps
+ * fixed; the printed lines carry ids and amounts only, so no wall
+ * clock enters the output.
+ */
+export const DEMO_RECONCILE_MATCHED_ID = "DEMO-ESC-029";
+export const DEMO_RECONCILE_REPORT_ONLY_ID = "DEMO-ESC-030";
+export const DEMO_RECONCILE_MISMATCH_ID = "DEMO-ESC-031";
+export const DEMO_RECONCILE_LEDGER_ONLY_ID = "DEMO-ESC-032";
+export const DEMO_RECONCILE_FUND_AT = "2026-03-12T09:00:00.000Z";
+export const DEMO_RECONCILE_SUBMIT_AT = "2026-03-12T10:00:00.000Z";
+export const DEMO_RECONCILE_VERIFY_PASS_AT = "2026-03-13T09:00:00.000Z";
+export const DEMO_RECONCILE_RELEASE_AT = "2026-03-13T10:00:00.000Z";
+export const DEMO_RECONCILE_EXPIRE_AT = "2026-03-13T09:00:00.000Z";
+export const DEMO_RECONCILE_LEDGER_MISMATCH_AMOUNT = 10000;
+export const DEMO_RECONCILE_LEDGER_ONLY_AMOUNT = 500;
+
 export interface DemoResult {
   escrow: Escrow;
   report: SettlementReport;
@@ -3582,6 +3611,13 @@ export interface DemoResult {
    * balanced true — a refund charges no fee.
    */
   refundSettlement: RefundSettlement;
+  /**
+   * `reconcileSettlements` over the three demo reports against the
+   * four-row external ledger: one matched, one report-only, one
+   * ledger-only, one amount mismatch — the four groups, in input
+   * order, that a reconciliation run hands to operations.
+   */
+  reconcileResult: ReconcileSettlementsResult;
   lines: string[];
 }
 
@@ -8591,6 +8627,145 @@ export async function runDemo(): Promise<DemoResult> {
     `  totalOutflow: ${refundSettlement.totalOutflow} — balanced: ${refundSettlement.balanced} (outflow equals the deposit exactly)`,
   );
 
+  // --- Settlement reconciliation: reports vs an external ledger ---
+  // The batch pipeline above summarizes what the reports claim, but
+  // it cannot see whether the money actually left the external
+  // account — that is the half `reconcileSettlements` closes. Three
+  // fresh escrows are settled on their own (a released escrow on the
+  // golden deposit, an expired escrow on a small 1,100 deposit, and
+  // a second released escrow on the golden deposit) and paired
+  // against a four-row ledger: one row agrees, one report has no
+  // row, one row disagrees on amount, and one row has no report.
+  // The segment prints all four groups with their amounts; a
+  // mismatch is a finding to investigate, not a demo failure, so it
+  // never makes the demo exit non-zero — the fail-fast check below
+  // pins the grouping itself, not agreement.
+  const reconcileMatchedEscrow = new Escrow(DEMO_RECONCILE_MATCHED_ID);
+  reconcileMatchedEscrow.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "sponsor",
+    at: DEMO_RECONCILE_FUND_AT,
+  });
+  reconcileMatchedEscrow.dispatch(
+    "SUBMIT_MILESTONE",
+    "Deliverable URLs + IPFS metadata hash",
+    undefined,
+    { actor: "creator", at: DEMO_RECONCILE_SUBMIT_AT },
+  );
+  reconcileMatchedEscrow.dispatch(
+    "VERIFY_PASS",
+    "KPIs met — verification passed",
+    undefined,
+    { actor: "oracle", at: DEMO_RECONCILE_VERIFY_PASS_AT },
+  );
+  reconcileMatchedEscrow.dispatch("RELEASE", "Milestone accepted — release", undefined, {
+    actor: "oracle",
+    at: DEMO_RECONCILE_RELEASE_AT,
+  });
+  const reconcileReportOnlyEscrow = new Escrow(DEMO_RECONCILE_REPORT_ONLY_ID);
+  reconcileReportOnlyEscrow.dispatch("FUND", "Deposit locked (wire received)", 1100, {
+    actor: "sponsor",
+    at: DEMO_RECONCILE_FUND_AT,
+  });
+  reconcileReportOnlyEscrow.dispatch("EXPIRE", "Deadline passed — expire", undefined, {
+    actor: "system",
+    at: DEMO_RECONCILE_EXPIRE_AT,
+  });
+  const reconcileMismatchEscrow = new Escrow(DEMO_RECONCILE_MISMATCH_ID);
+  reconcileMismatchEscrow.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "sponsor",
+    at: DEMO_RECONCILE_FUND_AT,
+  });
+  reconcileMismatchEscrow.dispatch(
+    "SUBMIT_MILESTONE",
+    "Deliverable URLs + IPFS metadata hash",
+    undefined,
+    { actor: "creator", at: DEMO_RECONCILE_SUBMIT_AT },
+  );
+  reconcileMismatchEscrow.dispatch(
+    "VERIFY_PASS",
+    "KPIs met — verification passed",
+    undefined,
+    { actor: "oracle", at: DEMO_RECONCILE_VERIFY_PASS_AT },
+  );
+  reconcileMismatchEscrow.dispatch("RELEASE", "Milestone accepted — release", undefined, {
+    actor: "oracle",
+    at: DEMO_RECONCILE_RELEASE_AT,
+  });
+  const reconcileSmallDeposit = calculateDeposit({
+    creatorPool: 1000,
+    baseFee: 100,
+    complexityMultiplier: 1.0,
+    loyaltyDiscount: 0,
+    oracleFee: 0,
+  });
+  const reconcileReports = [
+    buildSettlementReport({
+      escrowId: reconcileMatchedEscrow.id,
+      history: reconcileMatchedEscrow.history,
+      finalState: reconcileMatchedEscrow.state,
+      deposit: fees,
+      settlement: { proFeeBps: DEMO_PRO_FEE_BPS },
+    }),
+    buildSettlementReport({
+      escrowId: reconcileReportOnlyEscrow.id,
+      history: reconcileReportOnlyEscrow.history,
+      finalState: reconcileReportOnlyEscrow.state,
+      deposit: reconcileSmallDeposit,
+    }),
+    buildSettlementReport({
+      escrowId: reconcileMismatchEscrow.id,
+      history: reconcileMismatchEscrow.history,
+      finalState: reconcileMismatchEscrow.state,
+      deposit: fees,
+      settlement: { proFeeBps: DEMO_PRO_FEE_BPS },
+    }),
+  ];
+  const reconcileLedger: LedgerSettlement[] = [
+    { escrowId: DEMO_RECONCILE_MATCHED_ID, amount: 10630 },
+    {
+      escrowId: DEMO_RECONCILE_MISMATCH_ID,
+      amount: DEMO_RECONCILE_LEDGER_MISMATCH_AMOUNT,
+    },
+    {
+      escrowId: DEMO_RECONCILE_LEDGER_ONLY_ID,
+      amount: DEMO_RECONCILE_LEDGER_ONLY_AMOUNT,
+    },
+  ];
+  const reconcileResult = reconcileSettlements(reconcileReports, reconcileLedger);
+  const reconcileMatchedTotalOutflow = reconcileResult.matched.reduce(
+    (sum, report) => sum + report.totalOutflow,
+    0,
+  );
+  if (
+    reconcileSmallDeposit.deposit !== 1100 ||
+    reconcileResult.matched.map((r) => r.escrowId).join(",") !==
+      DEMO_RECONCILE_MATCHED_ID ||
+    reconcileResult.reportOnly.map((r) => r.escrowId).join(",") !==
+      DEMO_RECONCILE_REPORT_ONLY_ID ||
+    reconcileResult.ledgerOnly.map((r) => r.escrowId).join(",") !==
+      DEMO_RECONCILE_LEDGER_ONLY_ID ||
+    reconcileResult.amountMismatch.length !== 1 ||
+    reconcileResult.amountMismatch[0].report.escrowId !== DEMO_RECONCILE_MISMATCH_ID ||
+    reconcileResult.amountMismatch[0].reportAmount !== 10630 ||
+    reconcileResult.amountMismatch[0].ledgerAmount !==
+      DEMO_RECONCILE_LEDGER_MISMATCH_AMOUNT ||
+    reconcileResult.reportOnly[0].totalOutflow !== 1100 ||
+    reconcileMatchedTotalOutflow !== 10630
+  ) {
+    throw new Error(
+      "demo fixture broken: reconcileSettlements segment does not match the pinned shape (matched DEMO-ESC-029 at 10630, report-only DEMO-ESC-030 at 1100, mismatch DEMO-ESC-031 report 10630 vs ledger 10000, ledger-only DEMO-ESC-032 at 500)",
+    );
+  }
+  lines.push(
+    "",
+    "Settlement reconciliation (reconcileSettlements against an external ledger):",
+    `  ${DEMO_RECONCILE_MATCHED_ID}: matched — report outflow 10630, ledger 10630`,
+    `  ${DEMO_RECONCILE_REPORT_ONLY_ID}: report-only — settled 1100, no ledger row carries it`,
+    `  ${DEMO_RECONCILE_MISMATCH_ID}: amount mismatch — report 10630 vs ledger ${DEMO_RECONCILE_LEDGER_MISMATCH_AMOUNT}`,
+    `  ${DEMO_RECONCILE_LEDGER_ONLY_ID}: ledger-only — ledger paid ${DEMO_RECONCILE_LEDGER_ONLY_AMOUNT}, no report accounts for it`,
+    `  groups: matched ${reconcileResult.matched.length}, report-only ${reconcileResult.reportOnly.length}, ledger-only ${reconcileResult.ledgerOnly.length}, amount mismatch ${reconcileResult.amountMismatch.length} — matched outflow ${reconcileMatchedTotalOutflow}`,
+  );
+
   return {
     escrow,
     report,
@@ -8822,6 +8997,7 @@ export async function runDemo(): Promise<DemoResult> {
     schedulerNoCandidate,
     refundEscrow,
     refundSettlement,
+    reconcileResult,
     lines,
   };
 }

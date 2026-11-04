@@ -154,6 +154,17 @@ import {
   DEMO_REFUND_QUORUM_NOW_MS,
   DEMO_REFUND_SUBMIT_AT,
   DEMO_REFUND_VERIFY_FAIL_AT,
+  DEMO_RECONCILE_EXPIRE_AT,
+  DEMO_RECONCILE_FUND_AT,
+  DEMO_RECONCILE_LEDGER_MISMATCH_AMOUNT,
+  DEMO_RECONCILE_LEDGER_ONLY_AMOUNT,
+  DEMO_RECONCILE_LEDGER_ONLY_ID,
+  DEMO_RECONCILE_MATCHED_ID,
+  DEMO_RECONCILE_MISMATCH_ID,
+  DEMO_RECONCILE_RELEASE_AT,
+  DEMO_RECONCILE_REPORT_ONLY_ID,
+  DEMO_RECONCILE_SUBMIT_AT,
+  DEMO_RECONCILE_VERIFY_PASS_AT,
   DEMO_RETRY_AFTER_DELIVERY_HINT,
   DEMO_RETRY_AFTER_DELIVERY_HINT_MS,
   DEMO_RETRY_AFTER_DELIVERY_SCRIPTED_STATUSES,
@@ -3190,11 +3201,11 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
     ),
   );
   // Scheduler next-deadline segment, followed by the
-  // refund-settlement closing segment: the scheduler
-  // screens the mixed seven-escrow batch, prints one
-  // verdict line per member, and ends on its purity line;
-  // the demo itself ends on the refund segment's
-  // balanced line.
+  // refund-settlement segment and then the reconciliation
+  // closing segment: the scheduler screens the mixed
+  // seven-escrow batch, prints one verdict line per member,
+  // and ends on its purity line; the demo itself ends on
+  // the reconciliation segment's summary line.
   assert.match(
     out,
     /Scheduler next deadline \(nextEscrowDeadline over a mixed batch\):/,
@@ -3224,14 +3235,31 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
       `  pure: the call dispatched nothing — all seven escrows keep their state and history length`,
     ),
   );
-  // Refund-settlement tail: the closing segment walks a
-  // further escrow to REFUNDED and settles it with
-  // settleRefund — sponsor whole, others 0, balanced.
+  // Refund-settlement tail: the segment walks a further
+  // escrow to REFUNDED and settles it with settleRefund —
+  // sponsor whole, others 0, balanced.
+  assert.ok(
+    out.includes(
+      `  totalOutflow: 10630 — balanced: true (outflow equals the deposit exactly)`,
+    ),
+  );
+  // Reconciliation tail: the closing segment pairs three
+  // settlement reports against an external ledger into all
+  // four groups and ends on the group summary line.
+  assert.match(
+    out,
+    /Settlement reconciliation \(reconcileSettlements against an external ledger\):/,
+  );
+  assert.ok(
+    out.includes(
+      `  ${DEMO_RECONCILE_MISMATCH_ID}: amount mismatch — report 10630 vs ledger 10000`,
+    ),
+  );
   assert.ok(
     out
       .trimEnd()
       .endsWith(
-        `  totalOutflow: 10630 — balanced: true (outflow equals the deposit exactly)`,
+        "  groups: matched 1, report-only 1, ledger-only 1, amount mismatch 1 — matched outflow 10630",
       ),
   );
 });
@@ -7536,8 +7564,8 @@ test("demo shows refund settlement: settleRefund on a REFUNDED escrow returns th
     balanced: true,
   });
 
-  // The printed section is the demo's closing section,
-  // after the scheduler segment.
+  // The printed section follows the scheduler segment and is
+  // itself followed by the reconciliation segment.
   const header = "Refund settlement (settleRefund on a refunded escrow):";
   assert.ok(
     text.indexOf(header) >
@@ -7568,9 +7596,13 @@ test("demo shows refund settlement: settleRefund on a REFUNDED escrow returns th
 
 test("demo refund-settlement segment is deterministic: two runs print byte-identical refund lines", async () => {
   const header = "Refund settlement (settleRefund on a refunded escrow):";
-  // The refund section is the demo's last section, so it
-  // runs from the blank line before its header to the end.
-  const segment = (ls: string[]) => ls.slice(ls.indexOf(header) - 1);
+  const reconcileHeader =
+    "Settlement reconciliation (reconcileSettlements against an external ledger):";
+  // The refund section runs from the blank line before its header
+  // to the blank line before the reconciliation header that now
+  // closes the demo.
+  const segment = (ls: string[]) =>
+    ls.slice(ls.indexOf(header) - 1, ls.indexOf(reconcileHeader) - 1);
   const a = await runDemo();
   const b = await runDemo();
   // Blank + header + path + deposit + parties + balanced;
@@ -7581,4 +7613,104 @@ test("demo refund-settlement segment is deterministic: two runs print byte-ident
   assert.deepEqual(segA, segment(b.lines));
   assert.deepEqual(a.refundSettlement, b.refundSettlement);
   assert.equal(a.refundEscrow.state, b.refundEscrow.state);
+});
+
+test("demo shows settlement reconciliation: reconcileSettlements pairs three reports against an external ledger into all four groups", async () => {
+  const { reconcileResult, lines } = await runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned fixture shape: DEMO-ESC-029 released on the golden
+  // deposit and agreeing with its ledger row; DEMO-ESC-030 expired
+  // on a small 1,100 deposit with no ledger row; DEMO-ESC-031
+  // released on the golden deposit but disagreeing with its ledger
+  // row; DEMO-ESC-032 on the ledger only.
+  assert.equal(DEMO_RECONCILE_MATCHED_ID, "DEMO-ESC-029");
+  assert.equal(DEMO_RECONCILE_REPORT_ONLY_ID, "DEMO-ESC-030");
+  assert.equal(DEMO_RECONCILE_MISMATCH_ID, "DEMO-ESC-031");
+  assert.equal(DEMO_RECONCILE_LEDGER_ONLY_ID, "DEMO-ESC-032");
+  assert.equal(DEMO_RECONCILE_FUND_AT, "2026-03-12T09:00:00.000Z");
+  assert.equal(DEMO_RECONCILE_SUBMIT_AT, "2026-03-12T10:00:00.000Z");
+  assert.equal(DEMO_RECONCILE_VERIFY_PASS_AT, "2026-03-13T09:00:00.000Z");
+  assert.equal(DEMO_RECONCILE_RELEASE_AT, "2026-03-13T10:00:00.000Z");
+  assert.equal(DEMO_RECONCILE_EXPIRE_AT, "2026-03-13T09:00:00.000Z");
+  assert.equal(DEMO_RECONCILE_LEDGER_MISMATCH_AMOUNT, 10000);
+  assert.equal(DEMO_RECONCILE_LEDGER_ONLY_AMOUNT, 500);
+
+  assert.deepEqual(
+    reconcileResult.matched.map((r) => r.escrowId),
+    [DEMO_RECONCILE_MATCHED_ID],
+  );
+  assert.equal(reconcileResult.matched[0].totalOutflow, 10630);
+  assert.deepEqual(
+    reconcileResult.reportOnly.map((r) => r.escrowId),
+    [DEMO_RECONCILE_REPORT_ONLY_ID],
+  );
+  assert.equal(reconcileResult.reportOnly[0].totalOutflow, 1100);
+  assert.equal(reconcileResult.reportOnly[0].outcome, "expired");
+  assert.deepEqual(
+    reconcileResult.ledgerOnly.map((r) => r.escrowId),
+    [DEMO_RECONCILE_LEDGER_ONLY_ID],
+  );
+  assert.equal(reconcileResult.ledgerOnly[0].amount, 500);
+  assert.equal(reconcileResult.amountMismatch.length, 1);
+  assert.equal(
+    reconcileResult.amountMismatch[0].report.escrowId,
+    DEMO_RECONCILE_MISMATCH_ID,
+  );
+  assert.equal(reconcileResult.amountMismatch[0].reportAmount, 10630);
+  assert.equal(reconcileResult.amountMismatch[0].ledgerAmount, 10000);
+
+  // The printed section is the demo's closing section, after the
+  // refund-settlement segment.
+  const header =
+    "Settlement reconciliation (reconcileSettlements against an external ledger):";
+  assert.ok(
+    text.indexOf(header) >
+      text.indexOf(
+        "Refund settlement (settleRefund on a refunded escrow):",
+      ),
+    "reconciliation segment must follow the refund-settlement segment",
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_RECONCILE_MATCHED_ID}: matched — report outflow 10630, ledger 10630`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_RECONCILE_REPORT_ONLY_ID}: report-only — settled 1100, no ledger row carries it`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_RECONCILE_MISMATCH_ID}: amount mismatch — report 10630 vs ledger 10000`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_RECONCILE_LEDGER_ONLY_ID}: ledger-only — ledger paid 500, no report accounts for it`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  groups: matched 1, report-only 1, ledger-only 1, amount mismatch 1 — matched outflow 10630",
+    ),
+  );
+});
+
+test("demo settlement-reconciliation segment is deterministic: two runs print byte-identical reconciliation lines", async () => {
+  const header =
+    "Settlement reconciliation (reconcileSettlements against an external ledger):";
+  // The reconciliation section is the demo's last section, so it
+  // runs from the blank line before its header to the end.
+  const segment = (ls: string[]) => ls.slice(ls.indexOf(header) - 1);
+  const a = await runDemo();
+  const b = await runDemo();
+  // Blank + header + four group lines + summary; every printed
+  // value derives from the pinned fixtures alone, so no
+  // normalization is needed.
+  const segA = segment(a.lines);
+  assert.equal(segA.length, 7);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(a.reconcileResult, b.reconcileResult);
 });

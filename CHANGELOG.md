@@ -18,6 +18,18 @@ version changes.
 
 ### Added
 
+- Demo settlement-reconciliation segment (2026-11-04, backlog
+  #871): `npm run demo` now closes with a `reconcileSettlements`
+  segment — three settled escrows (released on the golden deposit,
+  expired on a small 1,100 deposit, released on the golden deposit)
+  paired against a four-row external ledger, printing all four
+  groups with their amounts: matched at 10,630, report-only at
+  1,100, amount mismatch (report 10,630 vs ledger 10,000), and
+  ledger-only at 500. A mismatch is printed as a finding, never a
+  demo failure; the fail-fast check pins the grouping itself.
+  `test/demo.test.ts` adds 2 cases and updates the closing-section
+  assertions (the compiled-demo tail now ends on the
+  reconciliation summary line).
 - Benchmark refund-settlement row (2026-11-04, backlog
   #869): `bench/bench.ts` adds `benchSettleRefund` over 4 fixed
   representative inputs (the golden 10,630, 1,000, a large
