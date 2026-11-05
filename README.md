@@ -1700,6 +1700,17 @@ The new `deliverSettlementWebhookToMany` fan-out x secrets-rotation verify x `Se
 The new `deliverSettlementWebhookToMany` fan-out limits x `SettlementEventDedupe` receiver-flow row measures the #758 test row as a cost path: one measured op is an over-cap batch plus two fan-outs of the same fresh eventId to the 4 fixed endpoints through a fake global fetch (immediate 200, no network) — the 4-endpoint batch under `maxEndpoints: 3` throws the pinned cap error before any request (0 fetch calls) and records nothing, proven by the in-limit first fan-out recording as a first sighting on all four dedupes, and the redelivery then reports duplicate on all four dedupes. One measured op records exactly one id per dedupe, so warmup + timed calls total 3,200 ops and 3,200 live entries per dedupe stay far under the 100,000 cap under a fixed injected clock. Outside the timed loop, the fixture eventId's cap / first-sighting / redelivery shapes are pinned once, and an invalid `maxEndpoints: 0` is pinned to its exact configuration error with zero fetch calls.
 The new `buildSettlementReports` x top-up row measures the #789 combination as a cost path: one measured op builds a 2-report batch — a topped-up released escrow (FUND 10000 + 630, 5 entries) plus a single-FUND released control (FUND 5000, 4 entries) — and summarizes the two results for the balanced check, pinning the top-up report's deposit at 10630 (the FUND sum, not the first FUND), outcome released, and balanced, the control report's deposit at 5000 and balanced, and the summary at totalDeposit / totalInflow / totalOutflow 15630 with balanced true.
 The new day-end pipeline row measures the #809 combination as a cost path: one measured op runs the whole reconciliation job — building the fixed 4-input batch (released / refunded / released / per-item error), building its 3 signed webhooks (bench-batch-event-1..3, error forwarded, no eventId consumed), then fanning each successful report out to the 4 fixed endpoints (3 settlements x 4 endpoints = 12 first-attempt deliveries through a fake fetch answering 200 immediately) — pinning each fan-out at delivered 4 / failed 0 with results in endpoint order (attempts 1, status 200), exactly 12 fetch calls, each endpoint's 3 bodies in batch order byte-identical to the built webhook payloads, and no call carrying the batch's error escrow, with every endpoint's copy pinned once outside the timed loop to verify under its own secret and no other's.
+The new `escrowsByState` / `escrowsByActor` rows measure the #892
+combination as a cost path: one measured op screens one fixed mixed
+batch of 60 escrows (12 FUNDED by alice with a bob top-up, 10 FUNDED
+by bob, 8 MILESTONE_SUBMITTED funded by carol with an alice milestone,
+8 VERIFIED, 6 RELEASED, 6 DISPUTED, 5 CREATED with no history, 5
+EXPIRED funded by alice with an actor-less EXPIRE) and pins the
+hand-counted hit lists on every iteration — 22 FUNDED ids for the
+state filter, 39 alice ids for the actor filter (an escrow with two
+alice entries still matches once, actor-less entries match nobody).
+Outside the timed loop, the fail-fast shapes are pinned: an unknown
+state and an empty or non-string actor each throw their exact error.
 One real run on 2026-11-04:
 
 | path | throughput |
@@ -1787,6 +1798,13 @@ One real run on 2026-11-04:
 | dispatch idempotencyKey (key hit/miss) | ~48,143 ops/sec (20.77 µs/op) |
 | dispatch rolePolicy (moderator arbitrate, contributor rejected) | ~5,966 ops/sec (167.61 µs/op) |
 | dispatchArbitration rolePolicy (moderator arbitrate, contributor rejected) | ~5,861 ops/sec (170.61 µs/op) |
+| escrowsByState (batch 60 escrows, 22 FUNDED) | ~410,480 ops/sec (2.44 µs/op) |
+| escrowsByActor (batch 60 escrows, 39 alice) | ~9,706 ops/sec (103.02 µs/op) |
+
+The two batch-filter rows above were measured on 2026-11-05; the rest
+of the table is the 2026-11-04 run. This run's other rows came in
+lower under shared-host load, so refreshing the whole table would
+misreport regressions in paths this change never touched.
 
 ## License
 

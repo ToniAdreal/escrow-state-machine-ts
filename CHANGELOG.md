@@ -18,6 +18,19 @@ version changes.
 
 ### Added
 
+- Batch-filter benchmark rows (2026-11-05, backlog #892):
+  `bench/bench.ts` gains `escrowsByState` and `escrowsByActor` rows
+  over a fixed mixed batch of 60 escrows (22 FUNDED, 39 ever touched
+  by alice, multi-entry histories, actor-less entries), each timed
+  iteration pinned against the hand-counted hit lists in batch order,
+  with the unknown-state / empty-actor / non-string-actor fail-fast
+  shapes pinned once outside the timed loop. Measured this run:
+  `escrowsByState` ~410,480 ops/sec (2.44 µs/op), `escrowsByActor`
+  ~9,706 ops/sec (103.02 µs/op). README Benchmarks gains the two
+  rows plus a prose paragraph; the rest of the table stays on the
+  2026-11-04 run because this run's other rows came in lower under
+  shared-host load and a full refresh would misreport regressions
+  in untouched paths.
 - Settlement reconciliation currency check (2026-11-05, backlog #889):
   `LedgerSettlement` gains an optional `currency` (ISO 4217 alpha-3
   shape, checked with the same `assertSettlementCurrency` the report

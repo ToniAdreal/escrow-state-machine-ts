@@ -1395,6 +1395,19 @@
  *      pair reporting {} and a rewritten history entry throwing
  *      the exact divergence error are pinned once, outside the
  *      timed loop. Pure comparison, no dispatch, no network.
+ *  78. batch filters — `escrowsByState(batch, state)` and
+ *      `escrowsByActor(batch, actor)` over one fixed mixed batch
+ *      of 60 escrows (composition hand-counted in the fixture
+ *      comment below: 22 FUNDED, 39 ever touched by alice, plus
+ *      multi-entry histories and actor-less entries). The #843
+ *      helpers previously had unit tests only, so listing a
+ *      portfolio by state or by operator — the batch
+ *      reconciliation screen — had no throughput baseline. Both
+ *      filters are pure, so the same batch is re-screened on every
+ *      iteration and each result is checked against the
+ *      hand-counted expected id list (in batch order) on every
+ *      iteration; the fail-fast shapes (unknown state, empty or
+ *      non-string actor) are pinned once, outside the timed loop.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -1431,6 +1444,8 @@ import {
   Escrow,
   GENESIS_PREV_HASH,
   SNAPSHOT_VERSION,
+  escrowsByActor,
+  escrowsByState,
   expiredEscrows,
   expireOverdueEscrows,
   historyFromNdjson,
@@ -5585,6 +5600,171 @@ checkWatchdogIds(
   "staleEscrows",
 );
 
+// Batch filter fixture: one fixed mixed batch of 60 escrows, screened
+// by escrowsByState / escrowsByActor (the #843 helpers, previously
+// unit-tested only, no throughput baseline). Composition, hand-counted
+// group by group (ids are BENCH-FLT-<group>-<nn>):
+//   A x12  FUNDED, FUND by alice + one FUND top-up by bob (2 entries)
+//   B x10  FUNDED, FUND by bob only (1 entry)
+//   C x8   MILESTONE_SUBMITTED, FUND by carol + SUBMIT_MILESTONE by alice
+//   D x8   VERIFIED, FUND by bob + SUBMIT_MILESTONE by alice +
+//          VERIFY_PASS by carol
+//   E x6   RELEASED, FUND by alice + SUBMIT_MILESTONE by bob +
+//          VERIFY_PASS by carol + RELEASE by alice (alice twice)
+//   F x6   DISPUTED, FUND by bob + DISPUTE by carol
+//   G x5   CREATED, no history at all
+//   H x5   EXPIRED, FUND by alice + EXPIRE with no actor
+// Hand-counted expectations (NOT produced by the implementation):
+//   escrowsByState(batch, "FUNDED") -> 22 ids: all of A (12) + all of
+//     B (10), batch order
+//   escrowsByActor(batch, "alice") -> 39 ids: A (12) + C (8) + D (8) +
+//     E (6) + H (5), batch order (B/F touch only bob/carol, G has no
+//     history; E matches once despite two alice entries)
+let filterClock = 0;
+const filterAt = (): string => isoAt(BASE_MS + filterClock++ * 1000);
+function filterFunded(
+  id: string,
+  actor: string,
+  topUpActor?: string,
+): Escrow {
+  const escrow = new Escrow(id);
+  escrow.dispatch("FUND", undefined, 1000, { actor, at: filterAt() });
+  if (topUpActor !== undefined) {
+    escrow.dispatch("FUND", undefined, 100, {
+      actor: topUpActor,
+      at: filterAt(),
+    });
+  }
+  return escrow;
+}
+function filterIds(group: string, count: number): string[] {
+  return Array.from(
+    { length: count },
+    (_, i) => `BENCH-FLT-${group}-${String(i + 1).padStart(2, "0")}`,
+  );
+}
+function buildFilterBatch(): Escrow[] {
+  return [
+    ...filterIds("A", 12).map((id) => filterFunded(id, "alice", "bob")),
+    ...filterIds("B", 10).map((id) => filterFunded(id, "bob")),
+    ...filterIds("C", 8).map((id) => {
+      const escrow = filterFunded(id, "carol");
+      escrow.dispatch("SUBMIT_MILESTONE", undefined, undefined, {
+        actor: "alice",
+        at: filterAt(),
+      });
+      return escrow;
+    }),
+    ...filterIds("D", 8).map((id) => {
+      const escrow = filterFunded(id, "bob");
+      escrow.dispatch("SUBMIT_MILESTONE", undefined, undefined, {
+        actor: "alice",
+        at: filterAt(),
+      });
+      escrow.dispatch("VERIFY_PASS", undefined, undefined, {
+        actor: "carol",
+        at: filterAt(),
+      });
+      return escrow;
+    }),
+    ...filterIds("E", 6).map((id) => {
+      const escrow = filterFunded(id, "alice");
+      escrow.dispatch("SUBMIT_MILESTONE", undefined, undefined, {
+        actor: "bob",
+        at: filterAt(),
+      });
+      escrow.dispatch("VERIFY_PASS", undefined, undefined, {
+        actor: "carol",
+        at: filterAt(),
+      });
+      escrow.dispatch("RELEASE", undefined, undefined, {
+        actor: "alice",
+        at: filterAt(),
+      });
+      return escrow;
+    }),
+    ...filterIds("F", 6).map((id) => {
+      const escrow = filterFunded(id, "bob");
+      escrow.dispatch("DISPUTE", undefined, undefined, {
+        actor: "carol",
+        at: filterAt(),
+      });
+      return escrow;
+    }),
+    ...filterIds("G", 5).map((id) => new Escrow(id)),
+    ...filterIds("H", 5).map((id) => {
+      const escrow = filterFunded(id, "alice");
+      escrow.dispatch("EXPIRE", undefined, undefined, { at: filterAt() });
+      return escrow;
+    }),
+  ];
+}
+const filterBatch: Escrow[] = buildFilterBatch();
+if (filterBatch.length !== 60) {
+  throw new Error("benchmark fixture failed: filter batch size");
+}
+const FILTER_FUNDED_IDS: string[] = [
+  ...filterIds("A", 12),
+  ...filterIds("B", 10),
+];
+const FILTER_ALICE_IDS: string[] = [
+  ...filterIds("A", 12),
+  ...filterIds("C", 8),
+  ...filterIds("D", 8),
+  ...filterIds("E", 6),
+  ...filterIds("H", 5),
+];
+function checkFilterIds(
+  found: Escrow[],
+  expected: string[],
+  label: string,
+): void {
+  if (
+    found.length !== expected.length ||
+    found.some((e, i) => e.id !== expected[i])
+  ) {
+    throw new Error(`benchmark filter check failed: ${label}`);
+  }
+}
+function checkFilterThrows(
+  fn: () => unknown,
+  pattern: RegExp,
+  label: string,
+): void {
+  try {
+    fn();
+  } catch (e) {
+    if (e instanceof Error && pattern.test(e.message)) return;
+    throw new Error(`benchmark filter check failed: ${label} wrong error`);
+  }
+  throw new Error(`benchmark filter check failed: ${label} did not throw`);
+}
+checkFilterIds(
+  escrowsByState(filterBatch, "FUNDED"),
+  FILTER_FUNDED_IDS,
+  "escrowsByState",
+);
+checkFilterIds(
+  escrowsByActor(filterBatch, "alice"),
+  FILTER_ALICE_IDS,
+  "escrowsByActor",
+);
+checkFilterThrows(
+  () => escrowsByState(filterBatch, "FUNDEDD" as never),
+  /invalid escrowsByState: unknown state "FUNDEDD"/,
+  "escrowsByState unknown state",
+);
+checkFilterThrows(
+  () => escrowsByActor(filterBatch, ""),
+  /invalid escrowsByActor: actor must be a non-empty string, got ""/,
+  "escrowsByActor empty actor",
+);
+checkFilterThrows(
+  () => escrowsByActor(filterBatch, 42 as never),
+  /invalid escrowsByActor: actor must be a non-empty string, got 42/,
+  "escrowsByActor non-string actor",
+);
+
 // Watchdog-executor expectations, hand-counted from the fixture
 // composition above and the transition table — never derived by
 // calling the executors:
@@ -9531,6 +9711,26 @@ function benchStaleEscrows(): number {
   }, ITERATIONS);
 }
 
+function benchEscrowsByState(): number {
+  return measure(() => {
+    checkFilterIds(
+      escrowsByState(filterBatch, "FUNDED"),
+      FILTER_FUNDED_IDS,
+      "escrowsByState",
+    );
+  }, ITERATIONS);
+}
+
+function benchEscrowsByActor(): number {
+  return measure(() => {
+    checkFilterIds(
+      escrowsByActor(filterBatch, "alice"),
+      FILTER_ALICE_IDS,
+      "escrowsByActor",
+    );
+  }, ITERATIONS);
+}
+
 function benchExpireOverdueEscrows(): number {
   return measure(() => {
     // Fresh fixture per iteration: the executor dispatches EXPIRE on
@@ -10786,6 +10986,8 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "dispatch idempotencyKey (key hit/miss)", ops: benchDispatchIdempotencyKey() },
   { path: "dispatch rolePolicy (moderator arbitrate, contributor rejected)", ops: benchDispatchRolePolicy() },
   { path: "dispatchArbitration rolePolicy (moderator arbitrate, contributor rejected)", ops: benchDispatchArbitrationRolePolicy() },
+  { path: "escrowsByState (batch 60 escrows, 22 FUNDED)", ops: benchEscrowsByState() },
+  { path: "escrowsByActor (batch 60 escrows, 39 alice)", ops: benchEscrowsByActor() },
 ];
 
 console.log("path                                              throughput");
