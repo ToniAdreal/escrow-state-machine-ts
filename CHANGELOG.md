@@ -18,6 +18,22 @@ version changes.
 
 ### Added
 
+- From-history settlement report consistency (2026-11-05, backlog #912):
+  `test/fromHistorySettlementReport.test.ts` gains 9 tests closing the
+  loop between event-sourcing replay (`Escrow.fromHistory`) and
+  settlement reporting (`buildSettlementReport`): a replayed RELEASED
+  report is field-for-field identical to the live one (golden deposit
+  10,630, 5% pro fee, 531.50 / 10,098.50 split), as are the REFUNDED,
+  top-up (two FUNDs, 10,000 + 630, deposit corroborated by
+  `depositAmountFromHistory` on both histories), referral-credit
+  (200 to the referrer, creator net 9,898.50), and arbitration-release
+  paths; a VERIFIED history replayed and then RELEASEd on the replayed
+  escrow reports exactly like the live escrow driven the whole way;
+  a keyed history replays identically with the same audit key while
+  a missing or wrong key fails closed before any report; a rewritten
+  FUND amount, a deleted entry, and a reordered entry each fail at
+  `fromHistory` itself, so no report can be produced from tampered
+  evidence. README test counts 1280 -> 1289 in both places.
 - Partial-release benchmark row (2026-11-05, backlog #908):
   `bench/bench.ts` gains a `settlePartialRelease` row over 4
   fixed inputs — the golden deposit 10,630 split in two
