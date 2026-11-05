@@ -18,6 +18,21 @@ version changes.
 
 ### Added
 
+- Release-path settlement reconciliation tests (2026-11-05, backlog #901):
+  `test/settleReleaseReconcile.test.ts` adds 9 tests closing the
+  release-path gap the refund-path tests (#879) could not cover:
+  `settleRelease` agrees with the RELEASED `buildSettlementReport`
+  party by party (golden split pinned: 5% fee $531.50, creator net
+  $10,098.50 on a $10,630 deposit, `totalOutflow` equal to the sum of
+  the parties' outflows and to the deposit), the golden and small
+  release reports reconcile to `matched` against equal ledger rows
+  (singly and as a two-report batch in input order), a ledger one
+  cent short or over lands in `amountMismatch`, a report with no
+  ledger row lands in `reportOnly`, a USD/EUR pair lands in
+  `currencyMismatch` alone even when the amounts also disagree
+  (single verdict, #889), referral credits ($100) flow through the
+  report split and reconcile matched, and a same-currency pair still
+  matches. No source change: pure test coverage.
 - Batch-filter benchmark rows (2026-11-05, backlog #892):
   `bench/bench.ts` gains `escrowsByState` and `escrowsByActor` rows
   over a fixed mixed batch of 60 escrows (22 FUNDED, 39 ever touched
