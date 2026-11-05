@@ -18,6 +18,22 @@ version changes.
 
 ### Added
 
+- Partial-release benchmark row (2026-11-05, backlog #908):
+  `bench/bench.ts` gains a `settlePartialRelease` row over 4
+  fixed inputs — the golden deposit 10,630 split in two
+  tranches (4,252 of 10,630, then the remaining 6,378 in full,
+  both at 500 bps), a mid-size 500-of-2,000 release with 25
+  referral credits, and a 10-at-125-bps half-cent rounding edge —
+  each checked against hand-computed proFee / net / remaining
+  expectations on every iteration, with the two tranches' fees
+  (212.60 + 318.90) summing to the single-release fee 531.50 and
+  their nets (4,039.40 + 6,059.10) to 10,098.50 on every
+  iteration, and released-over-gross plus negative inputs pinned
+  once outside the timed loop to throw their exact errors. One
+  real run on this host: ~1,303,036 ops/sec (0.77 µs/op). README
+  Benchmarks prose and table gain the row with that run's
+  numbers; the rest of the table is still the 2026-11-04 run
+  (see the note under the table).
 - Partial-release demo segment (2026-11-05, backlog #907):
   `src/demo.ts` gains a "Partial release" segment showing
   `settlePartialRelease` splitting the golden deposit 10,630 in

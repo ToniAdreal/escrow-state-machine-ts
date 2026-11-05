@@ -1051,6 +1051,17 @@ for the sponsor receiving the full deposit, creator / platform /
 referrer exactly 0, totalOutflow equal to the deposit, and
 balanced true, with a negative deposit pinned once outside the
 timed loop to throw the exact configuration error),
+partial-release settlement netting (`settlePartialRelease` over
+4 fixed representative inputs — the golden 10,630 split in two
+tranches, 4,252 of 10,630 then the remaining 6,378 in full, both
+at 500 bps, plus a mid-size 500-of-2,000 release with 25 referral
+credits and a 10-at-125-bps half-cent rounding edge — each
+checked against hand-computed proFee / net / remaining
+expectations on every iteration, with the two tranches' fees
+summing to the single-release fee 531.50 and their nets to
+10,098.50 on every iteration, and released-over-gross plus
+negative inputs pinned once outside the timed loop to throw their
+exact configuration errors),
 settlement reconciliation (`reconcileSettlements` over a fixed
 3-report / 3-row fixture — one matched, one report-only, one
 amount mismatch, plus one ledger-only row — with the four group
@@ -1745,6 +1756,7 @@ One real run on 2026-11-04:
 | Escrow.fromHistory (4 entries) | ~2,011 ops/sec (497.38 µs/op) |
 | settleRelease (4 fixed inputs) | ~1,109,399 ops/sec (0.90 µs/op) |
 | settleRefund (4 fixed inputs) | ~1,065,105 ops/sec (0.94 µs/op) |
+| settlePartialRelease (4 fixed inputs, 2 tranches) | ~1,303,036 ops/sec (0.77 µs/op) |
 | buildSettlementReport (4 entries) | ~19,663 ops/sec (50.86 µs/op) |
 | buildSettlementReport releasePath (released report) | ~29,806 ops/sec (33.55 µs/op) |
 | buildSettlementReport audit window (eventCount/firstEventAt/lastEventAt) | ~24,927 ops/sec (40.12 µs/op) |
@@ -1825,8 +1837,9 @@ One real run on 2026-11-04:
 | escrowsByActor (batch 60 escrows, 39 alice) | ~9,706 ops/sec (103.02 µs/op) |
 | escrowsApproachingDeadline (batch 14 escrows, 6 approaching) | ~315,088 ops/sec (3.17 µs/op) |
 
-The two batch-filter rows and the escrowsApproachingDeadline row above
-were measured on 2026-11-05 runs; the rest of the table is the
+The two batch-filter rows, the escrowsApproachingDeadline row,
+and the settlePartialRelease row above were measured on
+2026-11-05 runs; the rest of the table is the
 2026-11-04 run. Those runs' other rows came in mixed under
 shared-host load, so refreshing the whole table would misreport
 changes in paths these additions never touched.
