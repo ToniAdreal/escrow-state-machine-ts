@@ -169,6 +169,106 @@ test("duplicate ledger escrowId fails fast", () => {
   );
 });
 
+test("duplicate report escrowId fails fast with the verbatim message", () => {
+  // Regression: two copies of one settlement against a single ledger row
+  // used to return matched: 2, tallying the same settlement twice.
+  assert.throws(
+    () =>
+      reconcileSettlements(
+        [
+          { escrowId: "E-1", totalOutflow: 100 },
+          { escrowId: "E-1", totalOutflow: 100 },
+        ] as unknown as SettlementReport[],
+        [{ escrowId: "E-1", amount: 100 }],
+      ),
+    /invalid reconcileSettlements: duplicate report escrowId: "E-1"/,
+  );
+});
+
+test("duplicate reports fail fast even when their amounts differ", () => {
+  // The check is on the id, not the money: differing totals are still a
+  // duplicate, never an amountMismatch pair.
+  assert.throws(
+    () =>
+      reconcileSettlements(
+        [
+          { escrowId: "E-2", totalOutflow: 100 },
+          { escrowId: "E-2", totalOutflow: 200 },
+        ] as unknown as SettlementReport[],
+        [{ escrowId: "E-2", amount: 100 }],
+      ),
+    /duplicate report escrowId: "E-2"/,
+  );
+});
+
+test("duplicate reports fail fast even with no ledger row to pair against", () => {
+  // Fail-fast runs before any pairing: a duplicate is rejected even when
+  // both copies would have landed in reportOnly.
+  const first = releasedReport("esc-dup-nolede");
+  const second = releasedReport("esc-dup-nolede");
+  assert.throws(
+    () => reconcileSettlements([first, second], []),
+    /duplicate report escrowId: "esc-dup-nolede"/,
+  );
+});
+
+test("three copies of one report still fail fast on the second", () => {
+  const reports = [
+    releasedReport("esc-triple"),
+    releasedReport("esc-triple"),
+    releasedReport("esc-triple"),
+  ];
+  assert.throws(
+    () =>
+      reconcileSettlements(reports, [{ escrowId: "esc-triple", amount: 10630 }]),
+    /duplicate report escrowId: "esc-triple"/,
+  );
+});
+
+test("duplicate report ids fail fast across different outcomes", () => {
+  // The duplicate is the id, not the object: a released report and a
+  // refunded report carrying the same id are still one settlement twice.
+  const released = releasedReport("esc-two-outcomes");
+  const refunded = refundedReport("esc-two-outcomes");
+  assert.throws(
+    () =>
+      reconcileSettlements([released, refunded], [
+        { escrowId: "esc-two-outcomes", amount: 10630 },
+      ]),
+    /duplicate report escrowId: "esc-two-outcomes"/,
+  );
+});
+
+test("ledger-side duplicate check is unchanged", () => {
+  // The new report-side check must not swallow the ledger-side one:
+  // distinct reports against a duplicated ledger still report the ledger.
+  const first = releasedReport("esc-ledger-dup");
+  const second = refundedReport("esc-other");
+  assert.throws(
+    () =>
+      reconcileSettlements([first, second], [
+        { escrowId: "esc-ledger-dup", amount: 10630 },
+        { escrowId: "esc-ledger-dup", amount: 10630 },
+      ]),
+    /duplicate ledger escrowId: "esc-ledger-dup"/,
+  );
+});
+
+test("distinct report ids still pair normally", () => {
+  const first = releasedReport("esc-distinct-a");
+  const second = refundedReport("esc-distinct-b");
+  const result = reconcileSettlements([first, second], [
+    { escrowId: "esc-distinct-a", amount: 10630 },
+    { escrowId: "esc-distinct-b", amount: 1100 },
+  ]);
+  assert.deepEqual(
+    result.matched.map((r) => r.escrowId),
+    ["esc-distinct-a", "esc-distinct-b"],
+  );
+  assert.deepEqual(result.reportOnly, []);
+  assert.deepEqual(result.ledgerOnly, []);
+});
+
 test("empty inputs return five empty groups", () => {
   const result = reconcileSettlements([], []);
   assert.deepEqual(result, {

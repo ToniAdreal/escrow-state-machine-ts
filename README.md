@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1289 tests, all local
+npm test   # 1296 tests, all local
 ```
 
 ## Quickstart
@@ -904,7 +904,7 @@ pairs reports with ledger rows by `escrowId` and returns five groups —
 settlement the ledger never paid, and a ledger payment no report
 accounts for. The report's amount is its `totalOutflow`, compared at
 cent precision; a ledger row with no recorded amount matches on the
-reference alone, and a duplicated ledger id or a malformed row fails
+reference alone, and a duplicated report or ledger id or a malformed row fails
 fast instead of pairing ambiguously. When both sides carry a currency
 code and the codes differ, the pair lands in `currencyMismatch` and in
 no other group, even when the amounts also disagree; when either side
@@ -1001,7 +1001,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1289 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1296 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

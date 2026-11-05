@@ -619,7 +619,10 @@ export interface ReconcileSettlementsResult {
  * negative `amount` throws; an illegal currency code on either side
  * (anything but three uppercase letters) throws
  * `invalid settlement currency: …` via the same shape check the
- * report builder uses; and an id appearing twice in the ledger
+ * report builder uses; an id appearing twice in the reports throws
+ * `duplicate report escrowId` — a duplicated report would otherwise be
+ * counted once per copy in `matched` (the same settlement tallied
+ * twice); and an id appearing twice in the ledger
  * throws `duplicate ledger escrowId` — a duplicated ledger row would
  * otherwise make "matched" ambiguous (which row did the report pair
  * with?).
@@ -632,6 +635,7 @@ export function reconcileSettlements(
   reports: readonly SettlementReport[],
   ledger: readonly LedgerSettlement[],
 ): ReconcileSettlementsResult {
+  const reportById = new Map<string, SettlementReport>();
   for (const report of reports) {
     if (report === null || typeof report !== "object" || Array.isArray(report)) {
       throw new Error(
@@ -649,6 +653,12 @@ export function reconcileSettlements(
       );
     }
     assertSettlementCurrency(report.currency, report.escrowId);
+    if (reportById.has(report.escrowId)) {
+      throw new Error(
+        `invalid reconcileSettlements: duplicate report escrowId: ${JSON.stringify(report.escrowId)}`,
+      );
+    }
+    reportById.set(report.escrowId, report);
   }
   const ledgerById = new Map<string, LedgerSettlement>();
   for (const row of ledger) {
