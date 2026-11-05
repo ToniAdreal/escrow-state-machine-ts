@@ -1711,6 +1711,18 @@ state filter, 39 alice ids for the actor filter (an escrow with two
 alice entries still matches once, actor-less entries match nobody).
 Outside the timed loop, the fail-fast shapes are pinned: an unknown
 state and an empty or non-string actor each throw their exact error.
+The new `escrowsApproachingDeadline` row measures the #902
+combination as a cost path: one measured op screens one fixed mixed
+batch of 14 escrows (deadlines in-window, exactly at the inclusive
+upper edge, 1 ms past it, beyond the window, overdue, due exactly
+now, and absent; terminal RELEASED / EXPIRED / REFUNDED escrows with
+in-window deadlines; non-terminal DISPUTED / MILESTONE_SUBMITTED /
+VERIFIED / CREATED members) over a fixed 7-day window from
+2026-06-01T00:00:00.000Z and pins the hand-counted hit list — 6 ids
+in batch order — on every iteration. Outside the timed loop, the
+fail-fast shapes are pinned: an invalid window (negative, NaN,
+infinite, non-number) and an invalid `now` each throw their exact
+error, a terminal-only batch returns [], and a zero window returns [].
 One real run on 2026-11-04:
 
 | path | throughput |
@@ -1800,11 +1812,13 @@ One real run on 2026-11-04:
 | dispatchArbitration rolePolicy (moderator arbitrate, contributor rejected) | ~5,861 ops/sec (170.61 µs/op) |
 | escrowsByState (batch 60 escrows, 22 FUNDED) | ~410,480 ops/sec (2.44 µs/op) |
 | escrowsByActor (batch 60 escrows, 39 alice) | ~9,706 ops/sec (103.02 µs/op) |
+| escrowsApproachingDeadline (batch 14 escrows, 6 approaching) | ~315,088 ops/sec (3.17 µs/op) |
 
-The two batch-filter rows above were measured on 2026-11-05; the rest
-of the table is the 2026-11-04 run. This run's other rows came in
-lower under shared-host load, so refreshing the whole table would
-misreport regressions in paths this change never touched.
+The two batch-filter rows and the escrowsApproachingDeadline row above
+were measured on 2026-11-05 runs; the rest of the table is the
+2026-11-04 run. Those runs' other rows came in mixed under
+shared-host load, so refreshing the whole table would misreport
+changes in paths these additions never touched.
 
 ## License
 

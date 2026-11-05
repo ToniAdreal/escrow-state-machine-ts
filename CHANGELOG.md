@@ -18,6 +18,24 @@ version changes.
 
 ### Added
 
+- Deadline-warning benchmark row (2026-11-05, backlog #902):
+  `bench/bench.ts` gains an `escrowsApproachingDeadline` row over a
+  fixed mixed batch of 14 escrows (deadlines in-window, exactly at the
+  inclusive upper edge, 1 ms past it, beyond the window, overdue, due
+  exactly now, and absent; terminal RELEASED / EXPIRED / REFUNDED
+  escrows with in-window deadlines; non-terminal DISPUTED /
+  MILESTONE_SUBMITTED / VERIFIED / CREATED members), each timed
+  iteration pinned against the hand-counted 6-id hit list in batch
+  order, with the invalid-window (negative, NaN, infinite,
+  non-number) / invalid-`now` fail-fast shapes, the terminal-only
+  batch returning [], and the zero window returning [] pinned once
+  outside the timed loop. Measured this run:
+  `escrowsApproachingDeadline` ~315,088 ops/sec (3.17 µs/op).
+  README Benchmarks gains the row plus a prose paragraph; the rest of
+  the table stays on the 2026-11-04 run because this run's other rows
+  came in mixed (some higher, some lower) under shared-host load and
+  a full refresh would misreport changes that are load noise, not
+  code changes (same call as #892, in the other direction).
 - Release-path settlement reconciliation tests (2026-11-05, backlog #901):
   `test/settleReleaseReconcile.test.ts` adds 9 tests closing the
   release-path gap the refund-path tests (#879) could not cover:

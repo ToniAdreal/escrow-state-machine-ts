@@ -1408,6 +1408,21 @@
  *      hand-counted expected id list (in batch order) on every
  *      iteration; the fail-fast shapes (unknown state, empty or
  *      non-string actor) are pinned once, outside the timed loop.
+ *  79. deadline warning — `escrowsApproachingDeadline(batch, withinMs,
+ *      now)` over one fixed mixed batch of 14 escrows (deadlines
+ *      in-window, exactly at the inclusive upper edge, 1 ms past it,
+ *      beyond the window, overdue, due exactly now, and absent;
+ *      terminal RELEASED / EXPIRED / REFUNDED escrows with in-window
+ *      deadlines; non-terminal DISPUTED / MILESTONE_SUBMITTED /
+ *      VERIFIED / CREATED members). The #840 helper previously had
+ *      unit tests only, so the "warn before it is too late" screen —
+ *      the batch reconciliation screen's deadline nudge — had no
+ *      throughput baseline. The helper is pure, so the same batch is
+ *      re-screened on every iteration and each result is checked
+ *      against the hand-counted hit list (6 ids, in batch order) on
+ *      every iteration; the fail-fast shapes (invalid window, invalid
+ *      now), the terminal-only batch returning [], and the zero
+ *      window returning [] are pinned once, outside the timed loop.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -1444,6 +1459,7 @@ import {
   Escrow,
   GENESIS_PREV_HASH,
   SNAPSHOT_VERSION,
+  escrowsApproachingDeadline,
   escrowsByActor,
   escrowsByState,
   expiredEscrows,
@@ -5765,6 +5781,186 @@ checkFilterThrows(
   "escrowsByActor non-string actor",
 );
 
+// Deadline-warning fixture: one fixed mixed batch of 14 escrows,
+// screened by escrowsApproachingDeadline (the #840 helper, previously
+// unit-tested only, no throughput baseline) over a fixed 7-day window
+// from WARN_NOW = 2026-06-01T00:00:00.000Z — the same `now` the unit
+// tests pin. Composition, hand-counted (ids BENCH-WARN-<nn>):
+//   01 FUNDED, deadline 2026-06-03 (in window) -> HIT
+//   02 FUNDED, deadline 2026-06-08T00:00:00.000Z, exactly at now + 7d
+//      (inclusive upper bound) -> HIT
+//   03 FUNDED, deadline 2026-06-08T00:00:00.001Z, 1 ms past the edge
+//      -> miss
+//   04 FUNDED, deadline 2026-06-15 (beyond the window) -> miss
+//   05 FUNDED, deadline 2026-05-30 (already overdue) -> miss
+//   06 FUNDED, deadline exactly now (exclusive lower bound) -> miss
+//   07 FUNDED, no deadline -> miss
+//   08 RELEASED, deadline 2026-06-03 in window -> miss (terminal:
+//      a settled escrow needs no warning)
+//   09 DISPUTED, deadline 2026-06-05 -> HIT
+//   10 MILESTONE_SUBMITTED, deadline 2026-06-07 -> HIT
+//   11 EXPIRED, deadline 2026-06-04 in window -> miss (terminal)
+//   12 REFUNDED (quorum arbitration), deadline 2026-06-06 in window
+//      -> miss (terminal)
+//   13 VERIFIED, deadline 2026-06-02 -> HIT
+//   14 CREATED, deadline 2026-06-04 in window -> HIT (non-terminal:
+//      the helper screens state, not funding — a deadline attached
+//      at construction is warnable before any deposit)
+// Hand-counted expectation (NOT produced by the implementation):
+//   escrowsApproachingDeadline(batch, 7 * DAY_MS, WARN_NOW) -> 6 ids:
+//     01, 02, 09, 10, 13, 14, in batch order.
+const WARN_NOW = new Date("2026-06-01T00:00:00.000Z");
+const WARN_WINDOW_MS = 7 * DAY_MS;
+let warnClock = 0;
+const warnAt = (): string => isoAt(BASE_MS + warnClock++ * 1000);
+function warnFunded(id: string, deadline?: string): Escrow {
+  const escrow = new Escrow(id);
+  escrow.dispatch("FUND", undefined, 1000, { at: warnAt() });
+  if (deadline !== undefined) escrow.setDeadline(deadline);
+  return escrow;
+}
+function buildWarnBatch(): Escrow[] {
+  const released = warnFunded("BENCH-WARN-08", "2026-06-03T00:00:00.000Z");
+  released.dispatch("SUBMIT_MILESTONE", undefined, undefined, {
+    at: warnAt(),
+  });
+  released.dispatch("VERIFY_PASS", undefined, undefined, { at: warnAt() });
+  released.dispatch("RELEASE", undefined, undefined, { at: warnAt() });
+  const disputed = warnFunded("BENCH-WARN-09", "2026-06-05T00:00:00.000Z");
+  disputed.dispatch("DISPUTE", undefined, undefined, { at: warnAt() });
+  const submitted = warnFunded(
+    "BENCH-WARN-10",
+    "2026-06-07T00:00:00.000Z",
+  );
+  submitted.dispatch("SUBMIT_MILESTONE", undefined, undefined, {
+    at: warnAt(),
+  });
+  const expired = warnFunded("BENCH-WARN-11", "2026-06-04T00:00:00.000Z");
+  expired.dispatch("EXPIRE", undefined, undefined, { at: warnAt() });
+  const refunded = warnFunded("BENCH-WARN-12", "2026-06-06T00:00:00.000Z");
+  refunded.dispatch("DISPUTE", undefined, undefined, { at: warnAt() });
+  dispatchArbitration(refunded, runQuorumToThreshold(), "refund");
+  const verified = warnFunded("BENCH-WARN-13", "2026-06-02T00:00:00.000Z");
+  verified.dispatch("SUBMIT_MILESTONE", undefined, undefined, {
+    at: warnAt(),
+  });
+  verified.dispatch("VERIFY_PASS", undefined, undefined, { at: warnAt() });
+  const created = new Escrow("BENCH-WARN-14");
+  created.setDeadline("2026-06-04T00:00:00.000Z");
+  return [
+    warnFunded("BENCH-WARN-01", "2026-06-03T00:00:00.000Z"),
+    warnFunded("BENCH-WARN-02", "2026-06-08T00:00:00.000Z"),
+    warnFunded("BENCH-WARN-03", "2026-06-08T00:00:00.001Z"),
+    warnFunded("BENCH-WARN-04", "2026-06-15T00:00:00.000Z"),
+    warnFunded("BENCH-WARN-05", "2026-05-30T00:00:00.000Z"),
+    warnFunded("BENCH-WARN-06", "2026-06-01T00:00:00.000Z"),
+    warnFunded("BENCH-WARN-07"),
+    released,
+    disputed,
+    submitted,
+    expired,
+    refunded,
+    verified,
+    created,
+  ];
+}
+const warnBatch: Escrow[] = buildWarnBatch();
+if (warnBatch.length !== 14) {
+  throw new Error("benchmark fixture failed: deadline-warning batch size");
+}
+const WARN_HIT_IDS: string[] = [
+  "BENCH-WARN-01",
+  "BENCH-WARN-02",
+  "BENCH-WARN-09",
+  "BENCH-WARN-10",
+  "BENCH-WARN-13",
+  "BENCH-WARN-14",
+];
+function checkApproachingThrows(
+  fn: () => unknown,
+  pattern: RegExp,
+  label: string,
+): void {
+  try {
+    fn();
+  } catch (e) {
+    if (e instanceof Error && pattern.test(e.message)) return;
+    throw new Error(
+      `benchmark deadline-warning check failed: ${label} wrong error`,
+    );
+  }
+  throw new Error(
+    `benchmark deadline-warning check failed: ${label} did not throw`,
+  );
+}
+checkWatchdogIds(
+  escrowsApproachingDeadline(warnBatch, WARN_WINDOW_MS, WARN_NOW),
+  WARN_HIT_IDS,
+  "escrowsApproachingDeadline",
+);
+checkWatchdogIds(
+  escrowsApproachingDeadline(warnBatch, 0, WARN_NOW),
+  [],
+  "escrowsApproachingDeadline zero window",
+);
+const WARN_TERMINAL_IDS: string[] = [
+  "BENCH-WARN-08",
+  "BENCH-WARN-11",
+  "BENCH-WARN-12",
+];
+const warnTerminalOnly = warnBatch.filter((e) =>
+  WARN_TERMINAL_IDS.includes(e.id),
+);
+if (warnTerminalOnly.length !== WARN_TERMINAL_IDS.length) {
+  throw new Error(
+    "benchmark fixture failed: deadline-warning terminal-only batch",
+  );
+}
+checkWatchdogIds(
+  escrowsApproachingDeadline(
+    warnTerminalOnly,
+    WARN_WINDOW_MS,
+    WARN_NOW,
+  ),
+  [],
+  "escrowsApproachingDeadline terminal-only batch",
+);
+checkApproachingThrows(
+  () => escrowsApproachingDeadline(warnBatch, -1, WARN_NOW),
+  /invalid escrowsApproachingDeadline: withinMs must be a non-negative finite number of milliseconds/,
+  "escrowsApproachingDeadline negative window",
+);
+checkApproachingThrows(
+  () => escrowsApproachingDeadline(warnBatch, Number.NaN, WARN_NOW),
+  /invalid escrowsApproachingDeadline: withinMs must be a non-negative finite number of milliseconds/,
+  "escrowsApproachingDeadline NaN window",
+);
+checkApproachingThrows(
+  () =>
+    escrowsApproachingDeadline(
+      warnBatch,
+      Number.POSITIVE_INFINITY,
+      WARN_NOW,
+    ),
+  /invalid escrowsApproachingDeadline: withinMs must be a non-negative finite number of milliseconds/,
+  "escrowsApproachingDeadline infinite window",
+);
+checkApproachingThrows(
+  () => escrowsApproachingDeadline(warnBatch, "7" as never, WARN_NOW),
+  /invalid escrowsApproachingDeadline: withinMs must be a non-negative finite number of milliseconds/,
+  "escrowsApproachingDeadline non-number window",
+);
+checkApproachingThrows(
+  () =>
+    escrowsApproachingDeadline(
+      warnBatch,
+      WARN_WINDOW_MS,
+      new Date(Number.NaN),
+    ),
+  /invalid now: expected a valid Date/,
+  "escrowsApproachingDeadline invalid now",
+);
+
 // Watchdog-executor expectations, hand-counted from the fixture
 // composition above and the transition table — never derived by
 // calling the executors:
@@ -9731,6 +9927,16 @@ function benchEscrowsByActor(): number {
   }, ITERATIONS);
 }
 
+function benchEscrowsApproachingDeadline(): number {
+  return measure(() => {
+    checkWatchdogIds(
+      escrowsApproachingDeadline(warnBatch, WARN_WINDOW_MS, WARN_NOW),
+      WARN_HIT_IDS,
+      "escrowsApproachingDeadline",
+    );
+  }, ITERATIONS);
+}
+
 function benchExpireOverdueEscrows(): number {
   return measure(() => {
     // Fresh fixture per iteration: the executor dispatches EXPIRE on
@@ -10988,6 +11194,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "dispatchArbitration rolePolicy (moderator arbitrate, contributor rejected)", ops: benchDispatchArbitrationRolePolicy() },
   { path: "escrowsByState (batch 60 escrows, 22 FUNDED)", ops: benchEscrowsByState() },
   { path: "escrowsByActor (batch 60 escrows, 39 alice)", ops: benchEscrowsByActor() },
+  { path: "escrowsApproachingDeadline (batch 14 escrows, 6 approaching)", ops: benchEscrowsApproachingDeadline() },
 ];
 
 console.log("path                                              throughput");
