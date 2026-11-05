@@ -18,6 +18,22 @@ version changes.
 
 ### Added
 
+- Partial-release demo segment (2026-11-05, backlog #907):
+  `src/demo.ts` gains a "Partial release" segment showing
+  `settlePartialRelease` splitting the golden deposit 10,630 in
+  two tranches — 4,252 (40%) then the remaining 6,378 — each
+  tranche charged the 5% pro fee on its own released amount only
+  (212.60 / 318.90), with the tranche nets 4,039.40 / 6,059.10
+  summing back to the single-release split (531.50 / 10,098.50)
+  cross-checked against `settleRelease` in the demo itself, so
+  splitting a release never double-charges the fee.
+  `DemoResult` gains `partialReleaseGross`,
+  `partialReleaseFirst` and `partialReleaseSecond`;
+  `test/demo.test.ts` gains 2 tests (segment content +
+  cross-check against the library, and byte-identical
+  determinism; the refund-settlement determinism slice now ends
+  at the new segment's header). README demo section gains the
+  segment's description; test counts 1278 -> 1280 in both places.
 - Batch-filter demo segment (2026-11-05, backlog #903):
   `src/demo.ts` gains a "Batch filters" segment over a fixed
   four-escrow batch (DEMO-FILTER-01..04) showing `escrowsByState`

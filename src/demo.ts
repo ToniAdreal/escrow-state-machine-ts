@@ -443,6 +443,7 @@ import {
   renderReportCsv,
   renderReportJson,
   restoreQuorum,
+  settlePartialRelease,
   settleRefund,
   settleRelease,
   staleEscrows,
@@ -464,6 +465,7 @@ import {
   type FeeBreakdown,
   type FeeInputs,
   type LedgerSettlement,
+  type PartialSettlement,
   type Quorum,
   type QuorumConfig,
   type QuorumSnapshot,
@@ -3775,6 +3777,26 @@ export interface DemoResult {
    * balanced true — a refund charges no fee.
    */
   refundSettlement: RefundSettlement;
+  /**
+   * The golden deposit (10,630) released in two tranches through
+   * `settlePartialRelease`: first 4,252 (40%), then the remaining
+   * 6,378 — each tranche charged the 5% pro fee on its own
+   * released amount only, so the two fees (212.60 + 318.90) sum to
+   * the single-release fee 531.50 and the two nets (4,039.40 +
+   * 6,059.10) sum to the single-release net 10,098.50.
+   */
+  partialReleaseGross: number;
+  /**
+   * `settlePartialRelease({ gross: 10630, released: 4252,
+   * proFeeBps: 500 })`: proFee 212.6, net 4039.4, remaining 6378.
+   */
+  partialReleaseFirst: PartialSettlement;
+  /**
+   * `settlePartialRelease({ gross: 6378, released: 6378,
+   * proFeeBps: 500 })` on the first tranche's remainder: proFee
+   * 318.9, net 6059.1, remaining 0 — the release is complete.
+   */
+  partialReleaseSecond: PartialSettlement;
   /**
    * `reconcileSettlements` over the three demo reports against the
    * four-row external ledger: one matched, one report-only, one
@@ -9051,6 +9073,59 @@ export async function runDemo(): Promise<DemoResult> {
     `  totalOutflow: ${refundSettlement.totalOutflow} — balanced: ${refundSettlement.balanced} (outflow equals the deposit exactly)`,
   );
 
+  // --- Partial release: settlePartialRelease in two tranches ---
+  // The refund segment above settles a whole deposit at once; a
+  // partial release splits one locked gross across tranches, and
+  // the fee is charged on each tranche's own released amount only
+  // — never on the whole gross, never twice. The golden deposit
+  // 10,630 goes out as 4,252 (40%) then the remaining 6,378; the
+  // two tranche fees (212.60 + 318.90) and nets (4,039.40 +
+  // 6,059.10) sum back to the single settleRelease split (531.50 /
+  // 10,098.50) exactly, cross-checked below against the library
+  // instead of hand-typed into the demo.
+  const partialReleaseGross = 10630;
+  const partialReleaseFirst = settlePartialRelease({
+    gross: partialReleaseGross,
+    released: 4252,
+    proFeeBps: DEMO_PRO_FEE_BPS,
+  });
+  const partialReleaseSecond = settlePartialRelease({
+    gross: partialReleaseFirst.remaining,
+    released: partialReleaseFirst.remaining,
+    proFeeBps: DEMO_PRO_FEE_BPS,
+  });
+  const partialReleaseWhole = settleRelease({
+    gross: partialReleaseGross,
+    proFeeBps: DEMO_PRO_FEE_BPS,
+  });
+  if (
+    partialReleaseFirst.released !== 4252 ||
+    partialReleaseFirst.proFee !== 212.6 ||
+    partialReleaseFirst.referralCredits !== 0 ||
+    partialReleaseFirst.net !== 4039.4 ||
+    partialReleaseFirst.remaining !== 6378 ||
+    partialReleaseSecond.released !== 6378 ||
+    partialReleaseSecond.proFee !== 318.9 ||
+    partialReleaseSecond.referralCredits !== 0 ||
+    partialReleaseSecond.net !== 6059.1 ||
+    partialReleaseSecond.remaining !== 0 ||
+    partialReleaseFirst.proFee + partialReleaseSecond.proFee !==
+      partialReleaseWhole.proFee ||
+    partialReleaseFirst.net + partialReleaseSecond.net !==
+      partialReleaseWhole.net
+  ) {
+    throw new Error(
+      "demo fixture broken: settlePartialRelease segment does not match the pinned shape (gross 10630 in two tranches 4252 + 6378 at 500 bps; fees 212.6 + 318.9 and nets 4039.4 + 6059.1 must sum to the single settleRelease split 531.5 / 10098.5)",
+    );
+  }
+  lines.push(
+    "",
+    "Partial release (settlePartialRelease on the golden deposit, in two tranches):",
+    `  first tranche: released ${partialReleaseFirst.released} of gross ${partialReleaseGross} (40%) — proFee ${partialReleaseFirst.proFee}, net ${partialReleaseFirst.net}, remaining ${partialReleaseFirst.remaining}`,
+    `  second tranche: released ${partialReleaseSecond.released} of remaining ${partialReleaseFirst.remaining} — proFee ${partialReleaseSecond.proFee}, net ${partialReleaseSecond.net}, remaining ${partialReleaseSecond.remaining}`,
+    `  total: proFee ${partialReleaseFirst.proFee + partialReleaseSecond.proFee}, net ${partialReleaseFirst.net + partialReleaseSecond.net} — identical to one settleRelease(gross ${partialReleaseGross}): splitting a release never double-charges the fee`,
+  );
+
   // --- Settlement reconciliation: reports vs an external ledger ---
   // The batch pipeline above summarizes what the reports claim, but
   // it cannot see whether the money actually left the external
@@ -9493,6 +9568,9 @@ export async function runDemo(): Promise<DemoResult> {
     filterFundedSelectedIds,
     refundEscrow,
     refundSettlement,
+    partialReleaseGross,
+    partialReleaseFirst,
+    partialReleaseSecond,
     reconcileResult,
     snapshotDiffEscrow,
     snapshotDiff,

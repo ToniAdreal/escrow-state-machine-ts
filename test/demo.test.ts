@@ -7927,13 +7927,13 @@ test("demo shows refund settlement: settleRefund on a REFUNDED escrow returns th
 
 test("demo refund-settlement segment is deterministic: two runs print byte-identical refund lines", async () => {
   const header = "Refund settlement (settleRefund on a refunded escrow):";
-  const reconcileHeader =
-    "Settlement reconciliation (reconcileSettlements against an external ledger):";
+  const partialReleaseHeader =
+    "Partial release (settlePartialRelease on the golden deposit, in two tranches):";
   // The refund section runs from the blank line before its header
-  // to the blank line before the reconciliation header that now
-  // closes the demo.
+  // to the blank line before the partial-release header that now
+  // follows it.
   const segment = (ls: string[]) =>
-    ls.slice(ls.indexOf(header) - 1, ls.indexOf(reconcileHeader) - 1);
+    ls.slice(ls.indexOf(header) - 1, ls.indexOf(partialReleaseHeader) - 1);
   const a = await runDemo();
   const b = await runDemo();
   // Blank + header + path + deposit + parties + balanced;
@@ -7944,6 +7944,101 @@ test("demo refund-settlement segment is deterministic: two runs print byte-ident
   assert.deepEqual(segA, segment(b.lines));
   assert.deepEqual(a.refundSettlement, b.refundSettlement);
   assert.equal(a.refundEscrow.state, b.refundEscrow.state);
+});
+
+test("demo shows partial release: settlePartialRelease splits the golden deposit into two tranches whose fees and nets sum to the single-release split", async () => {
+  const { partialReleaseGross, partialReleaseFirst, partialReleaseSecond, lines } =
+    await runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned fixture shape: gross 10630 released as 4252 (40%)
+  // then the remaining 6378, each tranche charged the 5% pro fee
+  // on its own released amount only.
+  assert.equal(partialReleaseGross, 10630);
+  assert.deepEqual(partialReleaseFirst, {
+    released: 4252,
+    proFee: 212.6,
+    referralCredits: 0,
+    net: 4039.4,
+    remaining: 6378,
+  });
+  assert.deepEqual(partialReleaseSecond, {
+    released: 6378,
+    proFee: 318.9,
+    referralCredits: 0,
+    net: 6059.1,
+    remaining: 0,
+  });
+
+  // The two tranches together cost exactly what one full release
+  // costs — splitting never double-charges the fee — cross-checked
+  // against the library, never hand-typed into the demo.
+  const whole = settleRelease({
+    gross: partialReleaseGross,
+    proFeeBps: DEMO_PRO_FEE_BPS,
+  });
+  assert.equal(
+    partialReleaseFirst.proFee + partialReleaseSecond.proFee,
+    whole.proFee,
+  );
+  assert.equal(
+    partialReleaseFirst.net + partialReleaseSecond.net,
+    whole.net,
+  );
+
+  // The printed section follows the refund-settlement segment and
+  // is itself followed by the reconciliation segment.
+  const header =
+    "Partial release (settlePartialRelease on the golden deposit, in two tranches):";
+  assert.ok(
+    text.indexOf(header) >
+      text.indexOf(
+        "Refund settlement (settleRefund on a refunded escrow):",
+      ),
+    "partial-release segment must follow the refund-settlement segment",
+  );
+  assert.ok(
+    text.indexOf(
+      "Settlement reconciliation (reconcileSettlements against an external ledger):",
+    ) > text.indexOf(header),
+    "reconciliation segment must follow the partial-release segment",
+  );
+  assert.ok(
+    text.includes(
+      "  first tranche: released 4252 of gross 10630 (40%) — proFee 212.6, net 4039.4, remaining 6378",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  second tranche: released 6378 of remaining 6378 — proFee 318.9, net 6059.1, remaining 0",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  total: proFee 531.5, net 10098.5 — identical to one settleRelease(gross 10630): splitting a release never double-charges the fee",
+    ),
+  );
+});
+
+test("demo partial-release segment is deterministic: two runs print byte-identical partial-release lines", async () => {
+  const header =
+    "Partial release (settlePartialRelease on the golden deposit, in two tranches):";
+  const reconcileHeader =
+    "Settlement reconciliation (reconcileSettlements against an external ledger):";
+  // The partial-release section runs from the blank line before its
+  // header to the blank line before the reconciliation header.
+  const segment = (ls: string[]) =>
+    ls.slice(ls.indexOf(header) - 1, ls.indexOf(reconcileHeader) - 1);
+  const a = await runDemo();
+  const b = await runDemo();
+  // Blank + header + first tranche + second tranche + total;
+  // every printed value derives from the pinned fixtures alone,
+  // so no normalization is needed.
+  const segA = segment(a.lines);
+  assert.equal(segA.length, 5);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(a.partialReleaseFirst, b.partialReleaseFirst);
+  assert.deepEqual(a.partialReleaseSecond, b.partialReleaseSecond);
 });
 
 test("demo shows settlement reconciliation: reconcileSettlements pairs three reports against an external ledger into all four groups", async () => {
