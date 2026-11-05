@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1256 tests, all local
+npm test   # 1267 tests, all local
 ```
 
 ## Quickstart
@@ -887,15 +887,19 @@ as well); error entries are counted but never enter the money totals,
 and an empty batch yields an all-zero summary.
 
 Against an external payment ledger, `reconcileSettlements(reports, ledger)`
-pairs reports with ledger rows by `escrowId` and returns four groups —
-`matched`, `reportOnly`, `ledgerOnly`, `amountMismatch` — so both
-directions of a gap are visible: a settlement the ledger never paid,
-and a ledger payment no report accounts for. The report's amount is its
-`totalOutflow`, compared at cent precision; a ledger row with no
-recorded amount matches on the reference alone, and a duplicated ledger
-id or a malformed row fails fast instead of pairing ambiguously. The
-function is pure: it reads both inputs, dispatches nothing, and an
-empty batch against an empty ledger returns four empty groups.
+pairs reports with ledger rows by `escrowId` and returns five groups —
+`matched`, `reportOnly`, `ledgerOnly`, `amountMismatch`, and
+`currencyMismatch` — so both directions of a gap are visible: a
+settlement the ledger never paid, and a ledger payment no report
+accounts for. The report's amount is its `totalOutflow`, compared at
+cent precision; a ledger row with no recorded amount matches on the
+reference alone, and a duplicated ledger id or a malformed row fails
+fast instead of pairing ambiguously. When both sides carry a currency
+code and the codes differ, the pair lands in `currencyMismatch` and in
+no other group, even when the amounts also disagree; when either side
+omits the code, the previous rules apply unchanged. The function is
+pure: it reads both inputs, dispatches nothing, and an empty batch
+against an empty ledger returns five empty groups.
 
 Currency: `buildSettlementReport({ ..., currency: "USD" })` accepts an
 optional ISO 4217 alpha-3 code — exactly three uppercase letters, checked
@@ -906,7 +910,12 @@ batch. The code rides the report, the webhook payload, and both batch
 wrappers verbatim; omit it and every shape stays exactly as before. It
 is a label only: amounts are never converted, so a batch mixing
 currencies still sums raw figures and the caller must not read that sum
-as single-currency money.
+as single-currency money. Reconciliation is the one place a currency
+difference is a first-class finding: `reconcileSettlements` puts a
+report/ledger pair whose codes differ into `currencyMismatch` (a
+ledger row may carry its own optional `currency`, shape-checked the
+same way), so a USD report paired with a stablecoin-denominated ledger
+row is flagged instead of silently matching on equal numbers.
 
 Keyed histories: an escrow built with `EscrowOptions.auditKey` produces
 an HMAC-chained history, so its report must be built with the same key
@@ -981,7 +990,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1256 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1267 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

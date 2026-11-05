@@ -503,6 +503,14 @@ export interface LedgerSettlement {
   escrowId: string;
   /** Amount the ledger records for this escrow, if recorded. */
   amount?: number;
+  /**
+   * Optional ISO 4217 alpha-3 currency code for the ledger row's
+   * figures (e.g. "USD"). Shape-checked like the report's currency
+   * (three uppercase letters, registry membership not verified, no
+   * conversion). Omit it and the row pairs under the previous rules:
+   * currency is only compared when both sides carry a code.
+   */
+  currency?: string;
 }
 
 /**
@@ -524,7 +532,25 @@ export interface SettlementAmountMismatch {
 }
 
 /**
- * The four-way result of {@link reconcileSettlements}. Every group
+ * One currency disagreement found by {@link reconcileSettlements}: the
+ * report and the ledger row agree on the escrow id but carry different
+ * ISO 4217 codes. Either side's code is never `undefined` here: a pair
+ * is only currency-compared when both sides carry a code (see
+ * {@link reconcileSettlements}).
+ */
+export interface SettlementCurrencyMismatch {
+  /** The report whose currency disagrees with the ledger row. */
+  report: SettlementReport;
+  /** The ledger row carrying the same escrow id. */
+  ledger: LedgerSettlement;
+  /** Currency code from the report. */
+  reportCurrency: string;
+  /** Currency code from the ledger row. */
+  ledgerCurrency: string;
+}
+
+/**
+ * The five-way result of {@link reconcileSettlements}. Every group
  * keeps input order; report groups hold the same report objects, and
  * `ledgerOnly` holds the same ledger objects, so callers can act on
  * them directly.
@@ -538,6 +564,14 @@ export interface ReconcileSettlementsResult {
   ledgerOnly: LedgerSettlement[];
   /** Reports paired by id but disagreeing on amount. */
   amountMismatch: SettlementAmountMismatch[];
+  /**
+   * Reports paired by id but carrying a different currency code than
+   * the ledger row. Single verdict: a pair in this group is in no
+   * other group, even when its amounts also disagree — the currency
+   * mismatch is the more fundamental break, and reporting both would
+   * double-count one bad pairing.
+   */
+  currencyMismatch: SettlementCurrencyMismatch[];
 }
 
 /**
@@ -551,7 +585,7 @@ export interface ReconcileSettlementsResult {
  * directions — a settlement the ledger never paid, and a ledger
  * payment no report accounts for:
  *
- *   const { matched, reportOnly, ledgerOnly, amountMismatch } =
+ *   const { matched, reportOnly, ledgerOnly, amountMismatch, currencyMismatch } =
  *     reconcileSettlements(reports, ledgerRows);
  *
  * Pairing rules:
@@ -566,6 +600,15 @@ export interface ReconcileSettlementsResult {
  *   alone and lands in `matched` — the missing amount is still
  *   visible to the caller, because `matched` holds the report itself,
  *   not a claim that amounts were verified.
+ * - Currency is compared only when both sides carry a code: a report
+ *   and a ledger row that both carry a currency, and disagree on it,
+ *   land in `currencyMismatch` — and in no other group, even when
+ *   their amounts also disagree (single verdict per pairing; a
+ *   currency-mismatched pair must never be read as matched money).
+ *   When either side omits the code, the previous four-group rules
+ *   apply unchanged. No conversion is ever performed and no
+ *   exchange rate is applied: a code is a label, and a label
+ *   disagreement is itself the finding.
  * - A ledger row is `ledgerOnly` only when no report carries its id;
  *   pairing a row never consumes it for other reports.
  *
@@ -573,14 +616,17 @@ export interface ReconcileSettlementsResult {
  * carries an empty or non-string `escrowId` or a non-finite
  * `totalOutflow`, throws; a ledger row that is not an object, carries
  * an empty or non-string `escrowId`, or carries a non-finite or
- * negative `amount` throws; and an id appearing twice in the ledger
+ * negative `amount` throws; an illegal currency code on either side
+ * (anything but three uppercase letters) throws
+ * `invalid settlement currency: …` via the same shape check the
+ * report builder uses; and an id appearing twice in the ledger
  * throws `duplicate ledger escrowId` — a duplicated ledger row would
  * otherwise make "matched" ambiguous (which row did the report pair
  * with?).
  *
  * Pure: reads the reports and the ledger rows, never mutates or
  * dispatches anything. An empty report batch and an empty ledger
- * return four empty groups.
+ * return five empty groups.
  */
 export function reconcileSettlements(
   reports: readonly SettlementReport[],
@@ -602,6 +648,7 @@ export function reconcileSettlements(
         `invalid reconcileSettlements: report totalOutflow must be a finite number, got ${String(report.totalOutflow)}`,
       );
     }
+    assertSettlementCurrency(report.currency, report.escrowId);
   }
   const ledgerById = new Map<string, LedgerSettlement>();
   for (const row of ledger) {
@@ -623,6 +670,7 @@ export function reconcileSettlements(
         `invalid reconcileSettlements: ledger amount must be a non-negative finite number, got ${String(row.amount)}`,
       );
     }
+    assertSettlementCurrency(row.currency, row.escrowId);
     if (ledgerById.has(row.escrowId)) {
       throw new Error(
         `invalid reconcileSettlements: duplicate ledger escrowId: ${JSON.stringify(row.escrowId)}`,
@@ -636,6 +684,7 @@ export function reconcileSettlements(
     reportOnly: [],
     ledgerOnly: [],
     amountMismatch: [],
+    currencyMismatch: [],
   };
   const seenIds = new Set<string>();
   for (const report of reports) {
@@ -643,6 +692,21 @@ export function reconcileSettlements(
     const row = ledgerById.get(report.escrowId);
     if (row === undefined) {
       result.reportOnly.push(report);
+      continue;
+    }
+    // Currency first, single verdict: a code disagreement is reported
+    // here and nowhere else, even when the amounts also disagree.
+    if (
+      report.currency !== undefined &&
+      row.currency !== undefined &&
+      report.currency !== row.currency
+    ) {
+      result.currencyMismatch.push({
+        report,
+        ledger: row,
+        reportCurrency: report.currency,
+        ledgerCurrency: row.currency,
+      });
       continue;
     }
     if (row.amount !== undefined && round2(row.amount) !== round2(report.totalOutflow)) {

@@ -169,13 +169,14 @@ test("duplicate ledger escrowId fails fast", () => {
   );
 });
 
-test("empty inputs return four empty groups", () => {
+test("empty inputs return five empty groups", () => {
   const result = reconcileSettlements([], []);
   assert.deepEqual(result, {
     matched: [],
     reportOnly: [],
     ledgerOnly: [],
     amountMismatch: [],
+    currencyMismatch: [],
   });
 });
 

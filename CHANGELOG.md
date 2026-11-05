@@ -18,6 +18,21 @@ version changes.
 
 ### Added
 
+- Settlement reconciliation currency check (2026-11-05, backlog #889):
+  `LedgerSettlement` gains an optional `currency` (ISO 4217 alpha-3
+  shape, checked with the same `assertSettlementCurrency` the report
+  builder uses, registry membership not verified, no conversion), and
+  `reconcileSettlements` gains a fifth group, `currencyMismatch`
+  (`SettlementCurrencyMismatch`, exported from the package entry):
+  a report/ledger pair whose codes both exist and differ lands there
+  and nowhere else, even when the amounts also disagree (single
+  verdict per pairing), while a pair with either side codeless keeps
+  the previous four-group behavior. An illegal currency on either
+  side fails fast before any pairing. Eleven new tests in
+  `test/reconcileSettlementsCurrency.test.ts` pin the group, the
+  single-verdict priority, the codeless fallbacks, the fail-fast
+  shapes, and input-order/purity; the empty-input test now expects
+  five empty groups.
 - Deadline-warning demo segment (2026-11-04, backlog #887):
   `src/demo.ts` adds a "Deadline warning" section over a mixed
   seven-escrow batch on the same fixed `now` as the scheduler

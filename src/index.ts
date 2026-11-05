@@ -53,6 +53,7 @@ export type {
   PartyRole,
   ReconcileSettlementsResult,
   SettlementAmountMismatch,
+  SettlementCurrencyMismatch,
   SettlementOutcome,
   SettlementReport,
   SettlementReportInputs,
