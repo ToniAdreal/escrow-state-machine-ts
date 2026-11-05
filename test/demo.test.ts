@@ -90,6 +90,16 @@ import {
   DEMO_FEE_FRACTIONAL_INPUTS,
   DEMO_FEE_GOLDEN_ADJUSTED_BASE_FEE,
   DEMO_FEE_GOLDEN_DEPOSIT,
+  DEMO_FILTER_ANONYMOUS_FUND_AT,
+  DEMO_FILTER_ANONYMOUS_ID,
+  DEMO_FILTER_BOTH_FUND_AT,
+  DEMO_FILTER_BOTH_ID,
+  DEMO_FILTER_BOTH_SUBMIT_AT,
+  DEMO_FILTER_SPONSOR_FUND_AT,
+  DEMO_FILTER_SPONSOR_ID,
+  DEMO_FILTER_TWICE_FUND_AT,
+  DEMO_FILTER_TWICE_ID,
+  DEMO_FILTER_TWICE_SUBMIT_AT,
   DEMO_FRESH_ESCROW_ID,
   DEMO_FRESH_FUND_AT,
   DEMO_MONEY_GUARD_ERROR,
@@ -7685,12 +7695,14 @@ test("demo shows deadline warning: 7-day window selects in-window and window-edg
 test("demo deadline-warning segment is deterministic: two runs print byte-identical warning lines", async () => {
   const header =
     "Deadline warning (escrowsApproachingDeadline over a mixed batch):";
-  const refundHeader =
-    "Refund settlement (settleRefund on a refunded escrow):";
+  const filterHeader =
+    "Batch filters (escrowsByState / escrowsByActor over a mixed batch):";
   // The warning section runs from its header to the
-  // refund-settlement header that follows it.
+  // batch-filter header that now follows it (backlog #903
+  // inserts the filter segment between the warning and
+  // refund-settlement segments).
   const segment = (ls: string[]) =>
-    ls.slice(ls.indexOf(header), ls.indexOf(refundHeader) - 1);
+    ls.slice(ls.indexOf(header), ls.indexOf(filterHeader) - 1);
   const a = await runDemo();
   const b = await runDemo();
   // Header + fixed-now + 7 member verdicts + selected +
@@ -7704,6 +7716,147 @@ test("demo deadline-warning segment is deterministic: two runs print byte-identi
   assert.deepEqual(a.warningSelectedIds, b.warningSelectedIds);
   assert.equal(a.warningWindowMs, b.warningWindowMs);
   assert.equal(a.warningZeroWindowEmpty, b.warningZeroWindowEmpty);
+});
+
+test("demo shows batch filters: escrowsByActor slices by audit history and escrowsByState by current state, orthogonally, with no actor attribution for anonymous work", async () => {
+  const {
+    filterEscrows,
+    filterSponsorSelectedIds,
+    filterCreatorSelectedIds,
+    filterFundedSelectedIds,
+    lines,
+  } = await runDemo();
+
+  // Hand-pinned fixture shape: four escrows on fixed-literal
+  // timestamps — sponsor-only FUNDED, both-actors
+  // MILESTONE_SUBMITTED, anonymous FUNDED, twice-sponsor
+  // MILESTONE_SUBMITTED.
+  assert.equal(DEMO_FILTER_SPONSOR_ID, "DEMO-FILTER-01");
+  assert.equal(DEMO_FILTER_SPONSOR_FUND_AT, "2026-03-08T09:00:00.000Z");
+  assert.equal(DEMO_FILTER_BOTH_ID, "DEMO-FILTER-02");
+  assert.equal(DEMO_FILTER_BOTH_SUBMIT_AT, "2026-03-08T10:00:00.000Z");
+  assert.equal(DEMO_FILTER_ANONYMOUS_ID, "DEMO-FILTER-03");
+  assert.equal(DEMO_FILTER_TWICE_ID, "DEMO-FILTER-04");
+  assert.equal(DEMO_FILTER_TWICE_SUBMIT_AT, "2026-03-08T10:00:00.000Z");
+
+  assert.deepEqual(
+    filterEscrows.map((e) => e.id),
+    [
+      DEMO_FILTER_SPONSOR_ID,
+      DEMO_FILTER_BOTH_ID,
+      DEMO_FILTER_ANONYMOUS_ID,
+      DEMO_FILTER_TWICE_ID,
+    ],
+  );
+  assert.deepEqual(
+    filterEscrows.map((e) => e.state),
+    ["FUNDED", "MILESTONE_SUBMITTED", "FUNDED", "MILESTONE_SUBMITTED"],
+  );
+  assert.deepEqual(
+    filterEscrows.map((e) => e.history.length),
+    [1, 2, 1, 2],
+  );
+  assert.deepEqual(
+    filterEscrows.map((e) =>
+      [...new Set(e.history.map((h) => h.actor ?? "anonymous"))].join(", "),
+    ),
+    ["sponsor", "creator, sponsor", "anonymous", "sponsor"],
+  );
+  assert.deepEqual(filterSponsorSelectedIds, [
+    DEMO_FILTER_SPONSOR_ID,
+    DEMO_FILTER_BOTH_ID,
+    DEMO_FILTER_TWICE_ID,
+  ]);
+  assert.deepEqual(filterCreatorSelectedIds, [DEMO_FILTER_BOTH_ID]);
+  assert.deepEqual(filterFundedSelectedIds, [
+    DEMO_FILTER_SPONSOR_ID,
+    DEMO_FILTER_ANONYMOUS_ID,
+  ]);
+
+  const text = lines.join("\n");
+  const header =
+    "Batch filters (escrowsByState / escrowsByActor over a mixed batch):";
+  assert.ok(
+    text.indexOf(header) >
+      text.indexOf(
+        "Deadline warning (escrowsApproachingDeadline over a mixed batch):",
+      ),
+    "batch-filter segment must follow the deadline-warning segment",
+  );
+  assert.ok(
+    text.indexOf("Refund settlement (settleRefund on a refunded escrow):") >
+      text.indexOf(header),
+    "refund-settlement segment must follow the batch-filter segment",
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_FILTER_SPONSOR_ID}: FUNDED, actors sponsor — sponsor-touched, in the FUNDED slice`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_FILTER_BOTH_ID}: MILESTONE_SUBMITTED, actors creator, sponsor — touched by both actors, in neither actor's slice twice, outside the FUNDED slice`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_FILTER_ANONYMOUS_ID}: FUNDED, actors anonymous — in the FUNDED slice, but in no actor's slice: anonymous work is never attributed to anyone`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_FILTER_TWICE_ID}: MILESTONE_SUBMITTED, actors sponsor — two sponsor entries, yet it matches the sponsor filter exactly once`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  escrowsByActor(batch, "sponsor"): ${DEMO_FILTER_SPONSOR_ID}, ${DEMO_FILTER_BOTH_ID}, ${DEMO_FILTER_TWICE_ID} (3 escrows)`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  escrowsByActor(batch, "creator"): ${DEMO_FILTER_BOTH_ID} (1 escrow)`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  contrast: escrowsByState(batch, "FUNDED"): ${DEMO_FILTER_SPONSOR_ID}, ${DEMO_FILTER_ANONYMOUS_ID} (2 escrows) — the two slices are orthogonal: DEMO-FILTER-03 is FUNDED but anonymous so no actor filter claims it, DEMO-FILTER-02 and DEMO-FILTER-04 are MILESTONE_SUBMITTED yet sponsor-touched, and DEMO-FILTER-04 matches once despite two sponsor entries`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  pure: the calls dispatched nothing — all four escrows keep their state and history length`,
+    ),
+  );
+});
+
+test("demo batch-filter segment is deterministic: two runs print byte-identical filter lines", async () => {
+  const header =
+    "Batch filters (escrowsByState / escrowsByActor over a mixed batch):";
+  const refundHeader =
+    "Refund settlement (settleRefund on a refunded escrow):";
+  // The filter section runs from its header to the
+  // refund-settlement header that follows it.
+  const segment = (ls: string[]) =>
+    ls.slice(ls.indexOf(header), ls.indexOf(refundHeader) - 1);
+  const a = await runDemo();
+  const b = await runDemo();
+  // Header + 4 member verdicts + sponsor + creator +
+  // contrast + purity; every printed value is derived
+  // from the pinned fixtures alone, so no normalization
+  // is needed.
+  const segA = segment(a.lines);
+  assert.equal(segA.length, 9);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(a.filterEscrows.map((e) => e.id), [
+    DEMO_FILTER_SPONSOR_ID,
+    DEMO_FILTER_BOTH_ID,
+    DEMO_FILTER_ANONYMOUS_ID,
+    DEMO_FILTER_TWICE_ID,
+  ]);
+  assert.deepEqual(a.filterSponsorSelectedIds, b.filterSponsorSelectedIds);
+  assert.deepEqual(a.filterCreatorSelectedIds, b.filterCreatorSelectedIds);
+  assert.deepEqual(a.filterFundedSelectedIds, b.filterFundedSelectedIds);
 });
 
 test("demo shows refund settlement: settleRefund on a REFUNDED escrow returns the full deposit to the sponsor and balances", async () => {

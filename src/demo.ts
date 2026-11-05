@@ -428,6 +428,8 @@ import {
   expiredEscrows,
   expireOverdueEscrows,
   escrowsApproachingDeadline,
+  escrowsByActor,
+  escrowsByState,
   historyFromNdjson,
   historyToNdjson,
   isOverdue,
@@ -933,6 +935,43 @@ export const DEMO_WARN_NO_DEADLINE_FUND_AT = "2026-03-08T09:00:00.000Z";
 export const DEMO_WARN_DUE_NOW_ID = "DEMO-WARN-07";
 export const DEMO_WARN_DUE_NOW_FUND_AT = "2026-03-08T09:00:00.000Z";
 export const DEMO_WARN_DUE_NOW_DEADLINE = DEMO_STALE_NOW;
+
+/**
+ * Batch-filter fixtures (backlog #903): four escrows screened by
+ * `escrowsByState` / `escrowsByActor` — the state lens and the
+ * actor lens slice the same batch differently, mirroring the
+ * dataquest lifecycle demo's actor-filter branch (DEMO-050..053).
+ * All dispatches use fixed-literal timestamps (no wall clock, no
+ * network). Hand-computed expectations:
+ * - DEMO-FILTER-01: FUND as "sponsor", stays FUNDED —
+ *   sponsor-touched, and in the FUNDED slice.
+ * - DEMO-FILTER-02: FUND as "creator", then SUBMIT_MILESTONE as
+ *   "sponsor", landing in MILESTONE_SUBMITTED — touched by both
+ *   actors, but in neither actor's slice twice, and outside the
+ *   FUNDED slice.
+ * - DEMO-FILTER-03: FUND with no actor (anonymous), stays FUNDED
+ *   — in the FUNDED slice, but in no actor's slice: anonymous
+ *   work is never attributed to anyone.
+ * - DEMO-FILTER-04: FUND as "sponsor", then SUBMIT_MILESTONE as
+ *   "sponsor", landing in MILESTONE_SUBMITTED — two sponsor
+ *   entries, yet it matches the sponsor filter exactly once.
+ * So `escrowsByActor(batch, "sponsor")` is DEMO-FILTER-01,
+ * DEMO-FILTER-02, DEMO-FILTER-04; `escrowsByActor(batch,
+ * "creator")` is DEMO-FILTER-02 alone; and the contrast row
+ * `escrowsByState(batch, "FUNDED")` is DEMO-FILTER-01,
+ * DEMO-FILTER-03 — the two slices are orthogonal, and both
+ * filters are pure: neither dispatches nor mutates.
+ */
+export const DEMO_FILTER_SPONSOR_ID = "DEMO-FILTER-01";
+export const DEMO_FILTER_SPONSOR_FUND_AT = "2026-03-08T09:00:00.000Z";
+export const DEMO_FILTER_BOTH_ID = "DEMO-FILTER-02";
+export const DEMO_FILTER_BOTH_FUND_AT = "2026-03-08T09:00:00.000Z";
+export const DEMO_FILTER_BOTH_SUBMIT_AT = "2026-03-08T10:00:00.000Z";
+export const DEMO_FILTER_ANONYMOUS_ID = "DEMO-FILTER-03";
+export const DEMO_FILTER_ANONYMOUS_FUND_AT = "2026-03-08T09:00:00.000Z";
+export const DEMO_FILTER_TWICE_ID = "DEMO-FILTER-04";
+export const DEMO_FILTER_TWICE_FUND_AT = "2026-03-08T09:00:00.000Z";
+export const DEMO_FILTER_TWICE_SUBMIT_AT = "2026-03-08T10:00:00.000Z";
 
 /**
  * Stale-patrol fixtures (backlog #506): five further escrows screened
@@ -3698,6 +3737,32 @@ export interface DemoResult {
    * in-window deadline is not approaching.
    */
   warningZeroWindowEmpty: boolean;
+  /**
+   * The mixed batch-filter batch, in screening order: the
+   * sponsor-only FUNDED escrow, the both-actors escrow, the
+   * anonymous FUNDED escrow, and the twice-sponsor escrow (see
+   * the filter fixture comment above for the pinned verdict on
+   * each).
+   */
+  filterEscrows: Escrow[];
+  /**
+   * The ids `escrowsByActor` selects from the filter batch for
+   * "sponsor": DEMO-FILTER-01, DEMO-FILTER-02, DEMO-FILTER-04,
+   * in input order — DEMO-FILTER-04 matches exactly once
+   * despite two sponsor entries.
+   */
+  filterSponsorSelectedIds: string[];
+  /**
+   * The ids `escrowsByActor` selects from the filter batch for
+   * "creator": DEMO-FILTER-02 alone.
+   */
+  filterCreatorSelectedIds: string[];
+  /**
+   * The ids `escrowsByState` selects from the filter batch for
+   * "FUNDED": DEMO-FILTER-01 and DEMO-FILTER-03, in input
+   * order — the contrast slice to the actor selections.
+   */
+  filterFundedSelectedIds: string[];
   /**
    * The refund-settlement escrow (DEMO-ESC-028): walked to REFUNDED
    * on its own via quorum arbitration, so the `settleRefund`
@@ -8817,6 +8882,109 @@ export async function runDemo(): Promise<DemoResult> {
     `  pure: the call dispatched nothing — all seven escrows keep their state and history length`,
   );
 
+  // --- Batch filters: escrowsByState / escrowsByActor over a mixed batch ---
+  // The watchdog screens answer "which escrows need attention";
+  // the batch filters answer the plainer listing questions —
+  // "which escrows are FUNDED right now" and "which escrows did
+  // this actor ever touch" — and the demo shows both lenses on
+  // the same four escrows at once, mirroring the dataquest
+  // lifecycle demo's actor-filter branch. The state lens reads
+  // the current state; the actor lens scans the audit history,
+  // so the two slices are orthogonal by construction (see the
+  // fixture comment above for the hand-computed verdict on each
+  // member). Both calls are pure: they dispatch nothing and
+  // mutate no escrow, and the section asserts that (states and
+  // history lengths identical before and after the calls).
+  // The printed actor list per escrow is derived from its own
+  // history (deduplicated, "anonymous" for entries without an
+  // actor), never hand-written.
+  const filterSponsor = new Escrow(DEMO_FILTER_SPONSOR_ID);
+  filterSponsor.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "sponsor",
+    at: DEMO_FILTER_SPONSOR_FUND_AT,
+  });
+  const filterBoth = new Escrow(DEMO_FILTER_BOTH_ID);
+  filterBoth.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "creator",
+    at: DEMO_FILTER_BOTH_FUND_AT,
+  });
+  filterBoth.dispatch(
+    "SUBMIT_MILESTONE",
+    "Deliverable URLs + IPFS metadata hash",
+    undefined,
+    { actor: "sponsor", at: DEMO_FILTER_BOTH_SUBMIT_AT },
+  );
+  const filterAnonymous = new Escrow(DEMO_FILTER_ANONYMOUS_ID);
+  filterAnonymous.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    at: DEMO_FILTER_ANONYMOUS_FUND_AT,
+  });
+  const filterTwice = new Escrow(DEMO_FILTER_TWICE_ID);
+  filterTwice.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "sponsor",
+    at: DEMO_FILTER_TWICE_FUND_AT,
+  });
+  filterTwice.dispatch(
+    "SUBMIT_MILESTONE",
+    "Deliverable URLs + IPFS metadata hash",
+    undefined,
+    { actor: "sponsor", at: DEMO_FILTER_TWICE_SUBMIT_AT },
+  );
+  const filterEscrows = [
+    filterSponsor,
+    filterBoth,
+    filterAnonymous,
+    filterTwice,
+  ];
+  const filterStatesBefore = filterEscrows.map((e) => e.state);
+  const filterHistoryLengthsBefore = filterEscrows.map(
+    (e) => e.history.length,
+  );
+  const filterSponsorSelected = escrowsByActor(filterEscrows, "sponsor");
+  const filterCreatorSelected = escrowsByActor(filterEscrows, "creator");
+  const filterFundedSelected = escrowsByState(filterEscrows, "FUNDED");
+  if (
+    filterSponsorSelected.map((e) => e.id).join(",") !==
+      [
+        DEMO_FILTER_SPONSOR_ID,
+        DEMO_FILTER_BOTH_ID,
+        DEMO_FILTER_TWICE_ID,
+      ].join(",") ||
+    filterCreatorSelected.map((e) => e.id).join(",") !==
+      DEMO_FILTER_BOTH_ID ||
+    filterFundedSelected.map((e) => e.id).join(",") !==
+      [DEMO_FILTER_SPONSOR_ID, DEMO_FILTER_ANONYMOUS_ID].join(",") ||
+    filterEscrows.some(
+      (e, i) =>
+        e.state !== filterStatesBefore[i] ||
+        e.history.length !== filterHistoryLengthsBefore[i],
+    )
+  ) {
+    throw new Error(
+      "demo fixture broken: escrowsByState/escrowsByActor filter batch does not match the pinned shape (sponsor selects DEMO-FILTER-01, DEMO-FILTER-02, DEMO-FILTER-04; creator selects DEMO-FILTER-02 alone; FUNDED selects DEMO-FILTER-01 and DEMO-FILTER-03; the calls must dispatch nothing and change no state or history length)",
+    );
+  }
+  const filterSponsorSelectedIds = filterSponsorSelected.map((e) => e.id);
+  const filterCreatorSelectedIds = filterCreatorSelected.map((e) => e.id);
+  const filterFundedSelectedIds = filterFundedSelected.map((e) => e.id);
+  const filterActors = (escrow: Escrow): string =>
+    [
+      ...new Set(
+        escrow.history.map((entry) => entry.actor ?? "anonymous"),
+      ),
+    ].join(", ");
+  lines.push(
+    "",
+    "Batch filters (escrowsByState / escrowsByActor over a mixed batch):",
+    `  ${filterSponsor.id}: ${filterSponsor.state}, actors ${filterActors(filterSponsor)} — sponsor-touched, in the FUNDED slice`,
+    `  ${filterBoth.id}: ${filterBoth.state}, actors ${filterActors(filterBoth)} — touched by both actors, in neither actor's slice twice, outside the FUNDED slice`,
+    `  ${filterAnonymous.id}: ${filterAnonymous.state}, actors ${filterActors(filterAnonymous)} — in the FUNDED slice, but in no actor's slice: anonymous work is never attributed to anyone`,
+    `  ${filterTwice.id}: ${filterTwice.state}, actors ${filterActors(filterTwice)} — two sponsor entries, yet it matches the sponsor filter exactly once`,
+    `  escrowsByActor(batch, "sponsor"): ${filterSponsorSelectedIds.join(", ")} (${filterSponsorSelectedIds.length} escrows)`,
+    `  escrowsByActor(batch, "creator"): ${filterCreatorSelectedIds.join(", ")} (${filterCreatorSelectedIds.length} escrow)`,
+    `  contrast: escrowsByState(batch, "FUNDED"): ${filterFundedSelectedIds.join(", ")} (${filterFundedSelectedIds.length} escrows) — the two slices are orthogonal: DEMO-FILTER-03 is FUNDED but anonymous so no actor filter claims it, DEMO-FILTER-02 and DEMO-FILTER-04 are MILESTONE_SUBMITTED yet sponsor-touched, and DEMO-FILTER-04 matches once despite two sponsor entries`,
+    `  pure: the calls dispatched nothing — all four escrows keep their state and history length`,
+  );
+
   // --- Refund settlement: settleRefund on a REFUNDED escrow ---
   // The dispute branch above settles its refund through the report
   // layer only; the pure `settleRefund` helper itself never got a
@@ -9319,6 +9487,10 @@ export async function runDemo(): Promise<DemoResult> {
     warningSelectedIds,
     warningWindowMs,
     warningZeroWindowEmpty,
+    filterEscrows,
+    filterSponsorSelectedIds,
+    filterCreatorSelectedIds,
+    filterFundedSelectedIds,
     refundEscrow,
     refundSettlement,
     reconcileResult,

@@ -18,6 +18,23 @@ version changes.
 
 ### Added
 
+- Batch-filter demo segment (2026-11-05, backlog #903):
+  `src/demo.ts` gains a "Batch filters" segment over a fixed
+  four-escrow batch (DEMO-FILTER-01..04) showing `escrowsByState`
+  and `escrowsByActor` slicing the same batch two ways — the
+  FUNDED slice is DEMO-FILTER-01 and DEMO-FILTER-03, the
+  sponsor-touched slice is DEMO-FILTER-01, DEMO-FILTER-02 and
+  DEMO-FILTER-04 (matching once despite two sponsor entries),
+  the creator-touched slice is DEMO-FILTER-02 alone, and the
+  anonymous DEMO-FILTER-03 appears in no actor's slice — with
+  the state/actor orthogonality and the filters' purity asserted
+  in the demo itself. `DemoResult` gains `filterEscrows`,
+  `filterSponsorSelectedIds`, `filterCreatorSelectedIds` and
+  `filterFundedSelectedIds`; `test/demo.test.ts` gains 2 tests
+  (segment content + byte-identical determinism, and the
+  deadline-warning determinism slice now ends at the new
+  segment's header). README demo section gains the segment's
+  description; test counts 1276 -> 1278 in both places.
 - Deadline-warning benchmark row (2026-11-05, backlog #902):
   `bench/bench.ts` gains an `escrowsApproachingDeadline` row over a
   fixed mixed batch of 14 escrows (deadlines in-window, exactly at the

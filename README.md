@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1276 tests, all local
+npm test   # 1278 tests, all local
 ```
 
 ## Quickstart
@@ -143,7 +143,14 @@ remaining locked balance; it is pure arithmetic and does not
 change escrow state — state advancement still goes through
 `dispatch`. For a refund, `settleRefund` returns the full deposit
 to the sponsor with every other party at 0 and no fee charged,
-matching the REFUNDED branch of `buildSettlementReport` exactly. The demo then shows a settlement-reconciliation segment: `reconcileSettlements` pairs three settled reports against a four-row external ledger — one matched at 10,630, one report-only at 1,100, one amount mismatch (report 10,630 vs ledger 10,000), and one ledger-only row at 500. The demo finally closes with a snapshot-comparison segment: `diffEscrowSnapshots` diffs one escrow's before/after snapshots across a single SUBMIT_MILESTONE step — stateChanged FUNDED -> MILESTONE_SUBMITTED with history appended seq 2..2 — alongside an identical pair reporting {} and a cross-escrow diff rejected with the pinned error.
+matching the REFUNDED branch of `buildSettlementReport` exactly. The demo then shows a settlement-reconciliation segment: `reconcileSettlements` pairs three settled reports against a four-row external ledger — one matched at 10,630, one report-only at 1,100, one amount mismatch (report 10,630 vs ledger 10,000), and one ledger-only row at 500. The demo also shows a batch-filter
+segment: `escrowsByState` / `escrowsByActor` slice one four-escrow
+batch two ways — the FUNDED slice is DEMO-FILTER-01 and
+DEMO-FILTER-03, the sponsor-touched slice is DEMO-FILTER-01,
+DEMO-FILTER-02 and DEMO-FILTER-04 (DEMO-FILTER-04 matching once
+despite two sponsor entries) while the anonymous DEMO-FILTER-03
+appears in no actor's slice — the state lens and the actor lens
+are orthogonal, and both calls are pure. The demo finally closes with a snapshot-comparison segment: `diffEscrowSnapshots` diffs one escrow's before/after snapshots across a single SUBMIT_MILESTONE step — stateChanged FUNDED -> MILESTONE_SUBMITTED with history appended seq 2..2 — alongside an identical pair reporting {} and a cross-escrow diff rejected with the pinned error.
 
 ```bash
 npm run demo
@@ -990,7 +997,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1276 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1278 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
