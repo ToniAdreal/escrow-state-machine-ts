@@ -18,6 +18,23 @@ version changes.
 
 ### Added
 
+- `Escrow.fromHistory` accepts `idempotencyKeys` for re-attachment (2026-11-06, backlog #924):
+  `EscrowOptions` gains `idempotencyKeys?: string[]`, validated strictly
+  at construction (`invalid option: idempotencyKeys …` on a non-array or
+  non-empty-string entry, duplicates deduped) and seeded into the
+  consumed-key set, so `Escrow.fromHistory(id, history, { idempotencyKeys })`
+  rebuilds with the keys already consumed and a replayed dispatch stays a
+  no-op — closing the asymmetry with the dataquest lifecycle, which already
+  had the same option. A bare history still carries no keys, so omitting
+  the option keeps the old empty-key-set behavior. `Escrow.fromJSON`
+  unions an explicit `opts.idempotencyKeys` with the snapshot's keys
+  instead of overriding them, so neither source can silently un-consume
+  a key. `test/fromHistoryIdempotencyKeys.test.ts` gains 10 tests
+  (re-attached replay no-op, fresh key executes, failed dispatch consumes
+  no key, invalid shapes throw, dedupe, `toJSON()` round-trip, legacy
+  no-key behavior, caller-array mutation isolation, `fromJSON` union,
+  empty history plus seeded keys); README test counts 1320 -> 1330 in
+  both places.
 - Per-currency settlement summary breakdown (2026-11-06, backlog #921):
   `summarizeSettlementReports` now also returns `byCurrency`, a
   per-currency breakdown of the money figures keyed by each report's

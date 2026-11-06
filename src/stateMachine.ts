@@ -323,7 +323,37 @@ const ESCROW_OPTION_FIELDS = new Set([
   "auditKey",
   "rolePolicy",
   "deadline",
+  "idempotencyKeys",
 ]);
+
+/**
+ * Validate a list of idempotency keys into a deduped set.
+ *
+ * `undefined` means "no keys" (the default). Otherwise the value must be
+ * an array of non-empty strings — the same bar dispatch() applies to a
+ * single key. Duplicates are deduped (first occurrence wins, preserving
+ * insertion order for snapshot round-trips), mirroring the dataquest
+ * lifecycle's `assertIdempotencyKeys`. Anything else throws
+ * `<tag>: idempotencyKeys …`.
+ */
+function assertIdempotencyKeys(value: unknown, tag: string): Set<string> {
+  const keys = new Set<string>();
+  if (value === undefined) return keys;
+  if (!Array.isArray(value)) {
+    throw new Error(
+      `${tag}: idempotencyKeys must be an array of non-empty strings, got ${typeof value}`
+    );
+  }
+  for (const key of value) {
+    if (typeof key !== "string" || key.length === 0) {
+      throw new Error(
+        `${tag}: idempotencyKeys entries must be non-empty strings, got ${JSON.stringify(key)}`
+      );
+    }
+    keys.add(key);
+  }
+  return keys;
+}
 
 /**
  * Validate a snapshot's `idempotencyKeys` field into a deduped set.
@@ -337,22 +367,7 @@ const ESCROW_OPTION_FIELDS = new Set([
  * rejected, never silently trusted or dropped.
  */
 function parseSnapshotIdempotencyKeys(value: unknown): Set<string> {
-  const keys = new Set<string>();
-  if (value === undefined) return keys;
-  if (!Array.isArray(value)) {
-    throw new Error(
-      `invalid snapshot: idempotencyKeys must be an array of non-empty strings, got ${typeof value}`
-    );
-  }
-  for (const key of value) {
-    if (typeof key !== "string" || key.length === 0) {
-      throw new Error(
-        `invalid snapshot: idempotencyKeys entries must be non-empty strings, got ${JSON.stringify(key)}`
-      );
-    }
-    keys.add(key);
-  }
-  return keys;
+  return assertIdempotencyKeys(value, "invalid snapshot");
 }
 const HISTORY_ENTRY_FIELDS = new Set([
   "seq",
@@ -1489,6 +1504,34 @@ export interface EscrowOptions {
    * deadline is restored as-is.
    */
   deadline?: Date | string;
+
+  /**
+   * Optional list of already-consumed dispatch idempotency keys to seed
+   * the escrow with at construction — the caller-side half of the
+   * restore story. A bare audit history carries no key set (see
+   * {@link Escrow.fromHistory}), so a rebuild from a log alone would
+   * re-execute a key consumed before the log was taken; passing the
+   * keys here re-attaches them, and a replayed dispatch stays a no-op.
+   * This closes the asymmetry with the dataquest lifecycle, whose
+   * `fromHistory(id, history, { idempotencyKeys })` already accepts
+   * the same option.
+   *
+   * Validated strictly at construction via `assertIdempotencyKeys`
+   * with tag `invalid option`: the value must be an array of
+   * non-empty strings (duplicates are deduped); anything else throws
+   * `invalid option: idempotencyKeys …` before the escrow exists.
+   * Default: undefined (empty key set, unchanged legacy behavior).
+   *
+   * Unlike `rolePolicy`/`deadline`, the keys are NOT snapshot state
+   * as an option — but the seeded keys join the consumed set, which
+   * `toJSON()` does write when non-empty (see {@link EscrowSnapshot}),
+   * so a seeded escrow's snapshot carries them onward. On
+   * `Escrow.fromJSON`, an explicit `opts.idempotencyKeys` is UNIONED
+   * with the snapshot's keys, never an override: dropping snapshot
+   * keys would let a consumed key re-execute, while the caller's
+   * extra keys are additional consumed keys.
+   */
+  idempotencyKeys?: string[];
 }
 
 /** Stateful escrow with an append-only audit history. */
@@ -1551,6 +1594,15 @@ export class Escrow {
     // so later caller mutation of the options object cannot change
     // the policy this escrow enforces. Tag mirrors dataquest.
     this._rolePolicy = assertRolePolicy(opts?.rolePolicy, "invalid option");
+    // assertIdempotencyKeys returns a fresh, deduped Set, so later
+    // caller mutation of the options array cannot change the keys
+    // this escrow treats as consumed. This is what lets fromHistory()
+    // re-attach a consumed key set: the log itself holds none, the
+    // option is the only source. Tag mirrors dataquest.
+    this._seenIdempotencyKeys = assertIdempotencyKeys(
+      opts?.idempotencyKeys,
+      "invalid option"
+    );
     // A construction-time deadline reuses setDeadline's validation
     // verbatim (canonical ISO storage, unparseable input throws), so
     // a bad deadline fails the constructor and produces no instance.
@@ -2098,7 +2150,10 @@ export class Escrow {
    * The snapshot's consumed idempotency keys (`idempotencyKeys`, when
    * present) are restored onto the rebuilt escrow, so replaying an
    * already-consumed key after a restart stays a no-op; a legacy
-   * snapshot without the field restores with an empty key set.
+   * snapshot without the field restores with an empty key set. An
+   * explicit `opts.idempotencyKeys` is UNIONED with the snapshot's
+   * keys, never an override (see {@link EscrowOptions.idempotencyKeys}):
+   * dropping snapshot keys would let a consumed key re-execute.
    *
    * The snapshot's RBAC policy (`rolePolicy`, when present) is likewise
    * restored and keeps being enforced after a restart; a legacy
@@ -2197,8 +2252,15 @@ export class Escrow {
     }
     // Unlike the constructor options above, the consumed idempotency-key
     // set IS snapshot state: restore it so a post-restart replay of an
-    // already-consumed key stays a no-op (see EscrowSnapshot).
-    escrow._seenIdempotencyKeys = new Set(parsed.idempotencyKeys ?? []);
+    // already-consumed key stays a no-op (see EscrowSnapshot). An
+    // explicit opts.idempotencyKeys is UNIONED with the snapshot's
+    // keys, never an override: the constructor already seeded the
+    // caller's keys (see above), and dropping the snapshot's keys
+    // would let a consumed key re-execute.
+    escrow._seenIdempotencyKeys = new Set([
+      ...(parsed.idempotencyKeys ?? []),
+      ...escrow._seenIdempotencyKeys,
+    ]);
     // The RBAC policy is snapshot state too (see EscrowSnapshot): when
     // the caller did not pass an explicit policy, restore the
     // snapshot's. When they did, the constructor already installed it
@@ -2248,6 +2310,11 @@ export class Escrow {
    *   rebuilt escrow silently loses those guardrails unless the
    *   caller re-enables them here — use `fromJSON` when they must
    *   survive a restart.
+   *   `opts.idempotencyKeys` re-attaches the consumed dispatch
+   *   idempotency keys the same way; omit it and the rebuilt escrow
+   *   starts with an empty key set, so a retried key would
+   *   re-execute (the keys are not part of the audit log, so they
+   *   cannot be restored on their own).
    *   `opts.auditKey` additionally feeds the history's hash-chain
    *   re-verification: a log chained in keyed mode only rebuilds
    *   when the same key is supplied here — without it, or with the
@@ -2269,12 +2336,14 @@ export class Escrow {
    *   no deadline, so a rebuild without `opts.deadline` starts with
    *   no deadline — pass `opts.deadline` to attach one at rebuild
    *   (installed by the constructor, with the same validation as
-   *   `setDeadline`). The consumed idempotency-key set and
-   *   subscriptions live only in the snapshot envelope / in memory,
-   *   never in the log, so a `fromHistory` rebuild always starts
-   *   with an EMPTY idempotency-key set (a dispatch key consumed
-   *   before the log was taken would re-execute) and zero listeners.
-   *   Use `fromJSON` when those must survive a restart.
+   *   `setDeadline`). The consumed idempotency-key set is the same
+   *   shape with one fix: the log carries no keys, so a rebuild
+   *   without `opts.idempotencyKeys` still starts with an EMPTY key
+   *   set (a dispatch key consumed before the log was taken would
+   *   re-execute) — pass the keys here to re-attach them (installed
+   *   by the constructor, with the same validation as dispatch's
+   *   single key). Subscriptions still start at zero and live only
+   *   in memory — use `fromJSON` when those must survive a restart.
    */
   static fromHistory(
     id: string,

@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1320 tests, all local
+npm test   # 1330 tests, all local
 ```
 
 ## Quickstart
@@ -459,16 +459,18 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   rehydration exactly as in `fromJSON`, and a rebuilt escrow keeps
   dispatching with no seq gap. Options re-attach as in
   `fromJSON(snapshot, opts)` (`requireVerifyEvidence`/`maxDeposit`/
-  `auditKey`/`rolePolicy`) — with one honest difference: a snapshot
+  `auditKey`/`rolePolicy`/`idempotencyKeys`) — with one honest difference: a snapshot
   *carries* its `rolePolicy`, `maxDeposit`, and
   `requireVerifyEvidence`, so there the option overrides stored
   state, while a bare history carries none of them, so here the
   option is the only source. What a bare history cannot restore at all: the
-  deadline, the consumed idempotency-key set, and subscriptions live
-  only in the envelope / in memory, so a `fromHistory` rebuild starts
-  with no deadline, an *empty* key set (a key consumed before the log
-  was taken would re-execute), and zero listeners — use `fromJSON`
-  when those must survive a restart.
+  deadline and subscriptions live only in the envelope / in memory, so a
+  `fromHistory` rebuild starts with no deadline and zero listeners — use
+  `fromJSON` when those must survive a restart. The consumed
+  idempotency-key set is re-attached the same way as the other options:
+  pass `idempotencyKeys` (the log itself carries none, so the caller
+  supplies them); omit it and the rebuild still starts with an *empty*
+  key set, so a key consumed before the log was taken would re-execute.
 - NDJSON audit-log streaming: `historyToNdjson(history | escrow)` /
   `historyFromNdjson(text)` (`src/ndjson.ts`) export and import *only
   the audit log* — one canonical JSON entry per line, line order =
@@ -1023,7 +1025,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1320 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1330 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
