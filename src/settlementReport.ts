@@ -14,6 +14,13 @@
  * - On RELEASE / ARBITRATE_RELEASE the escrow pays out per `settleRelease`
  *   with gross = deposit: creator receives `net`, the platform takes the
  *   pro fee, and any referral credits go to the referrer.
+ * - On a partial release the escrow stays FUNDED and `buildSettlementReport`
+ *   reports the released slice per `settlePartialRelease` (fee charged on
+ *   the slice only): creator receives the slice `net`, the platform takes
+ *   the slice pro fee, referral credits go to the referrer, and the sponsor
+ *   keeps the `remaining` balance locked — the sponsor's ledger row shows
+ *   that remaining amount as still held, so the report still balances over
+ *   the full deposit.
  * - On ARBITRATE_REFUND / EXPIRE the full deposit returns to the sponsor.
  * - The oracle fee bundled into the deposit is NOT attributed to a separate
  *   party: this is an off-chain reproduction, not the on-chain contract, and
@@ -28,9 +35,18 @@ import {
   verifyHistoryChain,
 } from "./stateMachine.js";
 import type { FeeBreakdown } from "./feeCalculator.js";
-import { settleRelease, type Settlement } from "./settlement.js";
+import {
+  settlePartialRelease,
+  settleRelease,
+  type PartialSettlement,
+  type Settlement,
+} from "./settlement.js";
 
-export type SettlementOutcome = "released" | "refunded" | "expired";
+export type SettlementOutcome =
+  | "released"
+  | "refunded"
+  | "expired"
+  | "partially-released";
 
 export type PartyRole = "sponsor" | "creator" | "platform" | "referrer";
 
@@ -101,6 +117,22 @@ export interface SettlementReportInputs {
    */
   settlement?: { proFeeBps: number; referralCredits?: number };
   /**
+   * Partial-release parameters; used only when the escrow is still
+   * `FUNDED` and the caller wants a report for one released slice of the
+   * locked deposit. The arithmetic is delegated to
+   * `settlePartialRelease` with gross = `deposit.deposit`, so the slice
+   * figures can never drift from the pure function's own math: the fee
+   * is charged on the released amount only, `released` must not exceed
+   * the deposit, and a negative net or overflow fails fast there. The
+   * escrow itself stays FUNDED — a partial release does not advance
+   * state, and the report is evidence of the slice, not a state change.
+   * Supplying this with a terminal `finalState` (RELEASED / REFUNDED /
+   * EXPIRED) throws: a settled escrow's money is already fully
+   * accounted for by its terminal outcome. Omit it and a FUNDED escrow
+   * keeps its previous behavior (no settlement has happened yet).
+   */
+  partialRelease?: { released: number; proFeeBps: number; referralCredits?: number };
+  /**
    * Key for a keyed (HMAC) audit hash chain, as produced by an escrow
    * constructed with `EscrowOptions.auditKey`. A keyed history must be
    * reported with the same key, otherwise the chain check fails closed
@@ -128,6 +160,20 @@ export interface SettlementReport {
   deposit: FeeBreakdown;
   /** Present only for the `released` outcome. */
   settlement?: Settlement;
+  /**
+   * Present only for the `partially-released` outcome: the
+   * `settlePartialRelease` result for the reported slice (`released`,
+   * `proFee`, `referralCredits`, `net`, `remaining`).
+   */
+  partialSettlement?: PartialSettlement;
+  /**
+   * Amount still locked in escrow after the reported partial release
+   * (`deposit.deposit` minus the released slice). Present only for the
+   * `partially-released` outcome; the sponsor's ledger row carries the
+   * same figure as its inflow (money still held on the sponsor's
+   * behalf), so the report still balances over the full deposit.
+   */
+  remaining?: number;
   parties: PartyLedger[];
   totalInflow: number;
   totalOutflow: number;
@@ -215,6 +261,14 @@ function ledger(
  * wrong key, the chain check fails closed and no report is produced —
  * a keyed escrow previously could not be reported at all, because the
  * report path had no way to pass the key through.
+ *
+ * The one non-terminal report is the partial release: a FUNDED escrow
+ * plus `partialRelease` inputs yields outcome `"partially-released"`,
+ * with the released slice settled per `settlePartialRelease` and the
+ * remainder still locked (see the `remaining` field). A FUNDED escrow
+ * without `partialRelease` still throws as before, and `partialRelease`
+ * with a terminal state throws — a settled escrow's money is already
+ * fully accounted for.
  */
 export function buildSettlementReport(
   inputs: SettlementReportInputs,
@@ -258,6 +312,31 @@ export function buildSettlementReport(
     throw new Error(
       `cannot build settlement report for ${escrowId}: deposit ${depositAmount} does not match the FUND total ${fundedTotal} recorded in the audit history`,
     );
+  }
+
+  // A partial release only makes sense for an escrow that is still
+  // FUNDED: the money of a terminal escrow is already fully accounted
+  // for by its terminal outcome, so a slice on top of it would double
+  // count. Checked here — after the chain check, so a tampered history
+  // still reports the broken chain first — and before any branch runs.
+  // The slice numbers themselves are validated by settlePartialRelease
+  // inside the FUNDED branch (released ≤ deposit, fee bounds, no
+  // negative net, no overflow).
+  if (inputs.partialRelease !== undefined) {
+    if (
+      typeof inputs.partialRelease !== "object" ||
+      inputs.partialRelease === null ||
+      Array.isArray(inputs.partialRelease)
+    ) {
+      throw new Error(
+        `cannot build settlement report for ${escrowId}: partialRelease must be an object { released, proFeeBps, referralCredits? }, got ${JSON.stringify(inputs.partialRelease)}`,
+      );
+    }
+    if (finalState !== "FUNDED") {
+      throw new Error(
+        `cannot build settlement report for ${escrowId}: partialRelease is only valid for a FUNDED escrow (state is ${finalState})`,
+      );
+    }
   }
 
   const base = {
@@ -341,6 +420,60 @@ export function buildSettlementReport(
       totalInflow: depositAmount,
       totalOutflow: depositAmount,
       balanced: true,
+    };
+  }
+
+  if (finalState === "FUNDED" && inputs.partialRelease !== undefined) {
+    if (history.length === 0)
+      throw new Error(
+        `cannot build settlement report for ${escrowId}: funded escrow has an empty audit history`,
+      );
+    // A release event in the trail means the escrow already settled —
+    // the caller-supplied finalState and the audit history disagree, and
+    // a slice on top of a released escrow would double-count money.
+    if (
+      history.some(
+        (entry) => entry.event === "RELEASE" || entry.event === "ARBITRATE_RELEASE",
+      )
+    )
+      throw new Error(
+        `cannot build settlement report for ${escrowId}: state is FUNDED but the audit history contains a release event`,
+      );
+    // Gross is always the locked deposit, never the caller's word for
+    // it; settlePartialRelease re-validates the slice (released ≤ gross,
+    // fee bounds, no negative net, no overflow).
+    const partialSettlement = settlePartialRelease({
+      gross: depositAmount,
+      released: inputs.partialRelease.released,
+      proFeeBps: inputs.partialRelease.proFeeBps,
+      referralCredits: inputs.partialRelease.referralCredits,
+    });
+    // Ledger over the full deposit, so the report still balances:
+    // the sponsor's outflow is the whole locked deposit (what left the
+    // sponsor), the sponsor's inflow is the amount still held on their
+    // behalf, and the released slice flows out to creator / platform /
+    // referrer exactly as a full release would split it. With released
+    // === deposit the remaining is 0 and this is byte-for-byte the
+    // released outcome's ledger (minus releasePath/settlement).
+    const parties = [
+      ledger("sponsor", partialSettlement.remaining, depositAmount),
+      ledger("creator", partialSettlement.net, 0),
+      ledger("platform", partialSettlement.proFee, 0),
+      ledger("referrer", partialSettlement.referralCredits, 0),
+    ];
+    const totalInflow = round2(parties.reduce((s, p) => s + p.inflow, 0));
+    const totalOutflow = round2(parties.reduce((s, p) => s + p.outflow, 0));
+    return {
+      ...base,
+      outcome: "partially-released",
+      partialSettlement,
+      remaining: partialSettlement.remaining,
+      parties,
+      totalInflow,
+      totalOutflow,
+      // remaining + released === depositAmount by settlePartialRelease's
+      // own arithmetic, so both totals equal the deposit.
+      balanced: totalInflow === depositAmount && totalOutflow === depositAmount,
     };
   }
 
@@ -485,6 +618,7 @@ export function summarizeSettlementReports(
     released: 0,
     refunded: 0,
     expired: 0,
+    "partially-released": 0,
   };
   const partySums = new Map<PartyRole, { inflow: number; outflow: number }>(
     (["sponsor", "creator", "platform", "referrer"] as PartyRole[]).map(
@@ -663,7 +797,12 @@ export interface ReconcileSettlementsResult {
  * Pairing rules:
  * - A report pairs with the ledger row carrying the same `escrowId`;
  *   the report's amount is its `totalOutflow`, the figure that left
- *   escrow on every outcome (released, refunded, and expired alike).
+ *   escrow on the terminal outcomes (released, refunded, and expired
+ *   alike). For a `partially-released` report `totalOutflow` is the full
+ *   locked deposit (the sponsor's outflow, with the still-locked remainder
+ *   carried as the sponsor's inflow) — the amount that actually left
+ *   escrow is `partialSettlement.released`, so pair a partial report
+ *   against a ledger row carrying the released slice, not the deposit.
  * - Amounts are compared at cent precision (`round2` on both sides),
  *   the library's money model: a ledger figure that differs only by
  *   float noise is not a disagreement, a one-cent difference is.
@@ -932,8 +1071,10 @@ export function renderReportCsv(
  * `balanced` is whether those two totals agree at cent precision.
  * For a report produced by `buildSettlementReport`, `totalOutflow` equals
  * `deposit.deposit` (the sponsor's outflow is the locked deposit in all
- * three outcomes); for a hand-built CSV it is simply the `TOTAL` outflow
- * figure, not an independently verified deposit.
+ * four outcomes — for `partially-released` the still-locked remainder is
+ * the sponsor's inflow, so the totals still equal the deposit); for a
+ * hand-built CSV it is simply the `TOTAL` outflow figure, not an
+ * independently verified deposit.
  */
 export interface SettlementReportCsv {
   escrowId: string;
@@ -1130,8 +1271,8 @@ export function parseSettlementReportCsv(text: string): SettlementReportCsv {
   if (escrowId === undefined || escrowId === "") {
     fail("escrowId must be a non-empty string");
   }
-  if (outcome !== "released" && outcome !== "refunded" && outcome !== "expired") {
-    fail('outcome must be "released", "refunded", or "expired"');
+  if (outcome !== "released" && outcome !== "refunded" && outcome !== "expired" && outcome !== "partially-released") {
+    fail('outcome must be "released", "refunded", "expired", or "partially-released"');
   }
   const parties: PartyLedger[] = [];
   const seen = new Set<string>();
@@ -1237,8 +1378,8 @@ function assertReportCsvFields(report: unknown, prefix: string): void {
   const r = report as Record<string, unknown>;
   if (typeof r.escrowId !== "string" || r.escrowId.length === 0)
     fail("escrowId must be a non-empty string");
-  if (r.outcome !== "released" && r.outcome !== "refunded" && r.outcome !== "expired")
-    fail('outcome must be "released", "refunded", or "expired"');
+  if (r.outcome !== "released" && r.outcome !== "refunded" && r.outcome !== "expired" && r.outcome !== "partially-released")
+    fail('outcome must be "released", "refunded", "expired", or "partially-released"');
   if (!Array.isArray(r.parties) || r.parties.length === 0)
     fail("parties must be a non-empty array");
   for (const party of r.parties as unknown[]) {
@@ -1321,6 +1462,17 @@ function assertReportShape(
         fail(`settlement.${key} must be a finite number`);
     }
   }
+  if (r.partialSettlement !== undefined) {
+    if (typeof r.partialSettlement !== "object" || r.partialSettlement === null || Array.isArray(r.partialSettlement))
+      fail("partialSettlement must be a PartialSettlement object when present");
+    for (const [key, value] of Object.entries(r.partialSettlement as Record<string, unknown>)) {
+      // Every PartialSettlement field is a money figure: same null rule.
+      if (typeof value !== "number" || !Number.isFinite(value))
+        fail(`partialSettlement.${key} must be a finite number`);
+    }
+  }
+  if (r.remaining !== undefined && (typeof r.remaining !== "number" || !Number.isFinite(r.remaining)))
+    fail("remaining must be a finite number when present");
   for (const key of ["firstEventAt", "lastEventAt"] as const) {
     if (r[key] !== undefined && typeof r[key] !== "string")
       fail(`${key} must be a string when present`);
@@ -1334,8 +1486,9 @@ function assertReportShape(
  * import. The output is `JSON.stringify` of the report itself, so it
  * carries exactly the {@link SettlementReport} fields (escrowId, outcome,
  * releasePath when present, deposit breakdown, settlement when present,
- * the four party ledgers, totals, balanced flag, and audit window) with
- * no field added, renamed, or dropped.
+ * partialSettlement and remaining when present, the four party ledgers,
+ * totals, balanced flag, and audit window) with no field added, renamed,
+ * or dropped.
  *
  * The one deliberate difference from CSV: amounts stay JSON numbers, not
  * two-decimal strings. A consumer parsing this output gets `10098.5`, not
@@ -1423,6 +1576,12 @@ export function renderReport(report: SettlementReport): string {
   if (report.outcome === "released") {
     lines.push(
       "Note: oracle fee is bundled into the deposit (off-chain reproduction, no on-chain payout attributed).",
+    );
+  }
+  if (report.outcome === "partially-released" && report.partialSettlement !== undefined) {
+    const p = report.partialSettlement;
+    lines.push(
+      `Partial release: ${money(p.released)} of ${money(report.deposit.deposit)} released (fee ${money(p.proFee)}, net ${money(p.net)}), ${money(p.remaining)} remains locked.`,
     );
   }
   return lines.join("\n");

@@ -74,7 +74,7 @@ test("mixed batch: every field matches hand-computed expectations", () => {
   assert.equal(s.total, 4);
   assert.equal(s.reports, 3);
   assert.equal(s.errors, 1);
-  assert.deepEqual(s.outcomes, { released: 1, refunded: 1, expired: 1 });
+  assert.deepEqual(s.outcomes, { released: 1, refunded: 1, expired: 1, "partially-released": 0 });
   // totalDeposit = 3 * 10630 (error entry excluded)
   assert.equal(s.totalDeposit, 31890);
   // Each successful report is internally balanced at 10630 in = 10630 out.
@@ -109,7 +109,7 @@ test("empty input returns an all-zero summary", () => {
   assert.equal(s.total, 0);
   assert.equal(s.reports, 0);
   assert.equal(s.errors, 0);
-  assert.deepEqual(s.outcomes, { released: 0, refunded: 0, expired: 0 });
+  assert.deepEqual(s.outcomes, { released: 0, refunded: 0, expired: 0, "partially-released": 0 });
   assert.equal(s.totalDeposit, 0);
   assert.equal(s.totalInflow, 0);
   assert.equal(s.totalOutflow, 0);

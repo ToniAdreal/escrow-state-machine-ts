@@ -189,7 +189,7 @@ test("damaged report fields are rejected with the parse prefix", () => {
     [
       "illegal outcome",
       JSON.stringify({ ...base, outcome: "pending" }),
-      /cannot parse settlement report JSON: outcome must be "released", "refunded", or "expired"/,
+      /cannot parse settlement report JSON: outcome must be "released", "refunded", "expired", or "partially-released"/,
     ],
     [
       "empty parties",

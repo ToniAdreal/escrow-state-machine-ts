@@ -18,6 +18,29 @@ version changes.
 
 ### Added
 
+- Settlement report supports partial releases (2026-11-06, backlog #934):
+  `buildSettlementReport` accepts `partialRelease: { released, proFeeBps,
+  referralCredits? }` for a still-`FUNDED` escrow and returns outcome
+  `"partially-released"`, with the slice settled per `settlePartialRelease`
+  (gross = the locked deposit, fee on the released amount only) and the
+  remainder still locked: creator gets the slice net, platform the slice
+  pro fee, referrer the credits, and the sponsor's row carries the
+  `remaining` balance as still held, so the report still balances over
+  the full deposit (also exposed as top-level `remaining` plus the full
+  `partialSettlement`). With `released` equal to the deposit the ledger
+  is identical to the full-release report's. `partialRelease` with a
+  terminal state throws, a FUNDED escrow without it keeps the old
+  "no settlement has happened yet" error, and a tampered history still
+  reports the broken chain first. The batch wrapper inherits the
+  outcome, `summarizeSettlementReports` counts it under
+  `outcomes["partially-released"]`, the webhook payload carries the new
+  outcome verbatim, and the JSON/CSV round-trips carry it. README
+  gains a partial-release paragraph; 12 new tests in
+  `test/partialReleaseReport.test.ts` (golden slice 4252/10630 at
+  500 bps cross-checked against `settlePartialRelease`, full-release
+  ledger equality at released = gross, over-deposit and terminal-state
+  rejections, unchanged FUNDED error, tampered-history chain break,
+  batch + summary counting, JSON/CSV round-trips, rendered text).
 - `escrowsByEvent` benchmark row (2026-11-06, backlog #932):
   `bench/bench.ts` gains a `benchEscrowsByEvent` row over the same
   fixed mixed batch of 60 escrows as the state / actor rows (12

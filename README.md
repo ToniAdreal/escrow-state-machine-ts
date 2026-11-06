@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1339 tests, all local
+npm test   # 1351 tests, all local
 ```
 
 ## Quickstart
@@ -965,6 +965,24 @@ inputs shape, so a batch mixing keyed and unkeyed escrows reports each
 under its own key. An invalid key (empty, or not a string/Buffer) throws
 `invalid audit key: …` before any money math runs.
 
+Partial release: a still-`FUNDED` escrow can be reported on one released
+slice (`buildSettlementReport({ ..., partialRelease: { released, proFeeBps, referralCredits? } })`),
+yielding outcome `"partially-released"`. The slice is settled per
+`settlePartialRelease` with gross = the locked deposit (fee charged on
+the released amount only, `released` must not exceed the deposit), and
+the ledger is kept over the full deposit so the report still balances:
+creator gets the slice net, platform the slice pro fee, referrer the
+credits, and the sponsor's row carries the `remaining` balance as still
+held — `remaining` is also a top-level field, with the full
+`partialSettlement` beside it. With `released` equal to the deposit the
+ledger is identical to the full-release report's. The escrow itself
+stays FUNDED — a partial release is evidence of a slice, not a state
+change — and `partialRelease` with a terminal state throws, as does a
+FUNDED escrow reported without it. The batch wrapper inherits the
+outcome, the summary counts it under `outcomes["partially-released"]`,
+and the JSON/CSV round-trips carry it (the CSV carries the same four
+party rows; the `remaining` figure is the sponsor's inflow there).
+
 For bookkeeping imports, `renderReportCsv(report)` renders the same
 report as CSV — the machine-readable counterpart to `renderReport`'s
 human-readable text, so an importer never has to parse prose lines:
@@ -1029,7 +1047,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1339 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1351 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

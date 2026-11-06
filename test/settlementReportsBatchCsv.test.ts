@@ -90,7 +90,7 @@ test("batch summary equals the sum of the parsed TOTAL rows, per outcome and per
   assert.equal(summary.total, 2);
   assert.equal(summary.reports, 2);
   assert.equal(summary.errors, 0);
-  assert.deepEqual(summary.outcomes, { released: 1, refunded: 1, expired: 0 });
+  assert.deepEqual(summary.outcomes, { released: 1, refunded: 1, expired: 0, "partially-released": 0 });
   assert.equal(summary.balanced, true);
 
   // Per-party sums from the parsed rows must match the summary's party ledger.

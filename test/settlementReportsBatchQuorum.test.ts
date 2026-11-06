@@ -132,7 +132,7 @@ test("summary counts only the reached escrow: below-threshold money never enters
   assert.equal(summary.total, 2);
   assert.equal(summary.reports, 1);
   assert.equal(summary.errors, 1);
-  assert.deepEqual(summary.outcomes, { released: 1, refunded: 0, expired: 0 });
+  assert.deepEqual(summary.outcomes, { released: 1, refunded: 0, expired: 0, "partially-released": 0 });
   // Exactly one deposit, not two: the unreached escrow contributes zero.
   assert.equal(summary.totalDeposit, 10630);
   assert.equal(summary.totalInflow, 10630);
@@ -181,7 +181,7 @@ test("quorum-reached release + quorum-reached refund: batch reports match single
   assert.equal(summary.total, 2);
   assert.equal(summary.reports, 2);
   assert.equal(summary.errors, 0);
-  assert.deepEqual(summary.outcomes, { released: 1, refunded: 1, expired: 0 });
+  assert.deepEqual(summary.outcomes, { released: 1, refunded: 1, expired: 0, "partially-released": 0 });
   assert.equal(summary.totalDeposit, 21260);
   assert.equal(summary.totalInflow, 21260);
   assert.equal(summary.totalOutflow, 21260);

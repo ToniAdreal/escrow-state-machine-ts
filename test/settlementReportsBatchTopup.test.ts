@@ -131,7 +131,7 @@ test("batch with a topped-up escrow: report deposit is the FUND sum and the summ
   assert.equal(summary.total, 2);
   assert.equal(summary.reports, 2);
   assert.equal(summary.errors, 0);
-  assert.deepEqual(summary.outcomes, { released: 2, refunded: 0, expired: 0 });
+  assert.deepEqual(summary.outcomes, { released: 2, refunded: 0, expired: 0, "partially-released": 0 });
   assert.equal(summary.totalDeposit, 15630);
   assert.equal(summary.totalInflow, 15630);
   assert.equal(summary.totalOutflow, 15630);

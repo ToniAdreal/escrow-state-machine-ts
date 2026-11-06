@@ -1309,6 +1309,7 @@ test("demo batch summary aggregates only the successful reports (hand-computed t
     released: 1,
     refunded: 1,
     expired: 0,
+    "partially-released": 0,
   });
   assert.equal(batchSummary.totalDeposit, 21260);
   assert.equal(batchSummary.totalInflow, 21260);
@@ -6607,6 +6608,7 @@ test("demo shows batch settlement reports over keyed audit chains: the correct-k
     released: 2,
     refunded: 0,
     expired: 0,
+    "partially-released": 0,
   });
   assert.equal(keyedBatchSummary.totalDeposit, 21260);
   assert.equal(keyedBatchSummary.totalInflow, 21260);

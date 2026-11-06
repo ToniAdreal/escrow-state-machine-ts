@@ -26,6 +26,7 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import type {
   PartyRole,
+  SettlementOutcome,
   SettlementReport,
   SettlementReportResult,
 } from "./settlementReport.js";
@@ -42,7 +43,16 @@ export interface SettlementWebhookPayload {
    */
   eventId: string;
   escrowId: string;
-  outcome: "released" | "refunded" | "expired";
+  /**
+   * Settlement outcome, copied verbatim from the report — including
+   * `"partially-released"` for a FUNDED escrow reported on one released
+   * slice (the payload then carries the slice's party ledgers and the
+   * still-locked remainder on the sponsor's row, exactly as the report
+   * does; receivers that settle on the amount that actually left escrow
+   * should read the report's `partialSettlement.released`, not the
+   * payload's totals).
+   */
+  outcome: SettlementOutcome;
   /**
    * How a `released` settlement was reached, copied verbatim from
    * `SettlementReport.releasePath` (e.g. `"VERIFY_PASS → RELEASE"` for the

@@ -165,6 +165,7 @@ test("mixed batch: summary counts and sums only the successful reports", () => {
     released: 2,
     refunded: 0,
     expired: 0,
+    "partially-released": 0,
   });
   // Two golden reports only; the failed item contributes no money.
   assert.equal(summary.totalDeposit, 21260);
