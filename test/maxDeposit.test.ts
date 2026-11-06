@@ -5,8 +5,9 @@
  * limits). EscrowOptions.maxDeposit adds that cap: a FUND dispatch whose
  * amount would push the locked total (sum of all FUND amounts) above the
  * cap throws and appends nothing — failed dispatches leave no audit
- * residue. The cap is per-instance constructor configuration, never part
- * of the JSON snapshot.
+ * residue. The cap is constructor configuration and IS part of the JSON
+ * snapshot (see test/snapshotDepositCap.test.ts, backlog #918): a
+ * restored escrow keeps enforcing it unless fromJSON's opts override it.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -111,18 +112,28 @@ describe("EscrowOptions.maxDeposit", () => {
     assert.equal(escrow2.history.length, 1);
   });
 
-  it("maxDeposit is not part of the JSON snapshot", () => {
+  it("maxDeposit IS part of the JSON snapshot (#918)", () => {
     const opts: EscrowOptions = { maxDeposit: 1000, requireVerifyEvidence: true };
     const escrow = new Escrow("e-cap-7", opts);
     escrow.dispatch("FUND", "initial", 500);
     const snapshot = escrow.toJSON();
-    assert.ok(!("maxDeposit" in snapshot));
-    assert.ok(!JSON.stringify(snapshot).includes("maxDeposit"));
-    // A restored escrow must re-enable the cap via the constructor option:
-    // the snapshot round-trip loses it.
+    assert.equal(snapshot.maxDeposit, 1000);
+    assert.equal(snapshot.requireVerifyEvidence, true);
+    // A restored escrow keeps enforcing the cap without re-enabling it.
     const restored = Escrow.fromJSON(snapshot);
-    restored.dispatch("FUND", "unlimited after restore", 999_999);
-    assert.equal(restored.history.length, 2);
+    assert.throws(
+      () => restored.dispatch("FUND", "over the restored cap", 999_999),
+      /deposit cap exceeded/
+    );
+    assert.equal(restored.history.length, 1);
+    // ...and the gate too: top up to exactly the cap, then the
+    // evidence-free VERIFY_PASS is refused.
+    restored.dispatch("FUND", "top-up", 500); // 500 + 500 == cap: allowed
+    restored.dispatch("SUBMIT_MILESTONE", "done");
+    assert.throws(
+      () => restored.dispatch("VERIFY_PASS"),
+      /verify evidence required/
+    );
   });
 
   it("cap is enforced per escrow instance, not globally", () => {

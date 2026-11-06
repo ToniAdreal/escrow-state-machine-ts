@@ -18,6 +18,25 @@ version changes.
 
 ### Added
 
+- Snapshot persistence of `maxDeposit` / `requireVerifyEvidence` (2026-11-06, backlog #918):
+  `toJSON()` writes `maxDeposit` when a cap is set and
+  `requireVerifyEvidence: true` when the gate is on, so a restored
+  escrow keeps enforcing both guardrails instead of silently losing
+  them; a legacy snapshot without the fields restores uncapped with
+  the gate off, and an explicit `fromJSON` opt overrides either
+  value entirely (an explicit `undefined` counts as omitted, and
+  invalid opts such as `null` still reach the constructor's own
+  rejection instead of being masked by the merge). The parser
+  strictly validates both fields (a tampered cap or gate is
+  rejected, never silently dropped), `diffEscrowSnapshots` gains
+  `depositCapChanged` / `evidenceGateChanged` dimensions, and the
+  audit key stays the deliberate exception — never written into a
+  snapshot. `test/snapshotDepositCap.test.ts` gains 14 tests
+  (round-trips, legacy shape, tamper rejection, restored
+  enforcement, opts override, diff dimensions, key exclusion);
+  the three pre-existing tests that pinned the old lossy contract
+  are updated to the new one. README test counts 1296 -> 1310 in
+  both places.
 - From-history settlement report consistency (2026-11-05, backlog #912):
   `test/fromHistorySettlementReport.test.ts` gains 9 tests closing the
   loop between event-sourcing replay (`Escrow.fromHistory`) and

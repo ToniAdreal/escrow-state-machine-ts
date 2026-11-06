@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1296 tests, all local
+npm test   # 1310 tests, all local
 ```
 
 ## Quickstart
@@ -265,10 +265,14 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   `FUND` entry's amount — above the cap throws a `deposit cap exceeded`
   error *after* transition and amount validation and appends nothing, so a
   failed FUND leaves no audit residue. `FUND` dispatches without an amount
-  carry no money and are never capped. The cap is
-  per-instance constructor configuration: it is NOT part of
-  `toJSON()`/`fromJSON()` snapshots, so a restored escrow must re-enable it
-  via `Escrow.fromJSON(snapshot, opts)`.
+  carry no money and are never capped. The cap IS part of
+  `toJSON()`/`fromJSON()` snapshots (`maxDeposit`, written only when
+  a cap is set, so a cap-free snapshot keeps its legacy shape), so a
+  restored escrow keeps enforcing it — a legacy snapshot without the
+  field restores uncapped — and an explicit
+  `Escrow.fromJSON(snapshot, { maxDeposit })` overrides the
+  snapshot's cap entirely. The audit key is the deliberate exception:
+  it is never written into a snapshot.
 - Event-level RBAC (opt-in): `new Escrow(id, { rolePolicy })` maps events
   to the actor names allowed to dispatch them, e.g.
   `{ RELEASE: ["treasury"], ARBITRATE_RELEASE: ["dao-arbitrator"] }`.
@@ -281,8 +285,8 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   the policy does not list are unrestricted, and an escrow with no policy
   behaves exactly as before. Invalid policies (unknown event, non-array
   value, empty array, empty/non-string actor name) throw
-  `invalid option: rolePolicy …` at construction. Unlike the deposit
-  cap, the policy IS part of `toJSON()`/`fromJSON()` snapshots
+  `invalid option: rolePolicy …` at construction. Like the deposit
+  cap and the evidence gate, the policy IS part of `toJSON()`/`fromJSON()` snapshots
   (`rolePolicy`, only when non-empty; a tampered policy in a stored
   snapshot is rejected), and an explicit
   `Escrow.fromJSON(snapshot, { rolePolicy })` overrides the snapshot's
@@ -415,7 +419,7 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   non-negative on FUND entries only); malformed snapshots throw a
   descriptive `invalid snapshot: …` error instead of yielding a corrupt
   escrow. Unknown fields are rejected fail-closed at both levels —
-  top level allows only `v`/`id`/`state`/`history`/`deadline`/`idempotencyKeys`/`rolePolicy` and an
+  top level allows only `v`/`id`/`state`/`history`/`deadline`/`idempotencyKeys`/`rolePolicy`/`maxDeposit`/`requireVerifyEvidence` and an
   entry only `seq`/`event`/`from`/`to`/`at`/`actor`/`note`/`amount`/`evidence`/
   `prevHash`/`hash` — so a typo like `deadlline` or `amout` throws
   `invalid snapshot: unknown field "…"` instead of silently losing a
@@ -429,10 +433,17 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   `v` stays 1 because the field is optional and additive: snapshots
   without it load exactly as before, but a snapshot *carrying* it is
   rejected as an unknown field by older parsers that predate it (an old
-  binary must not silently drop replay protection). Snapshot diffing:
+  binary must not silently drop replay protection). The deposit cap
+  (`maxDeposit`, only when set) and the verify-evidence gate
+  (`requireVerifyEvidence`, only when true) are likewise part of the
+  snapshot — a restored escrow keeps enforcing both, a legacy snapshot
+  without them restores uncapped with the gate off, and an explicit
+  `fromJSON` opt overrides either value entirely; a tampered cap or
+  gate in a stored snapshot is rejected. The audit key is never in a
+  snapshot. Snapshot diffing:
   `diffEscrowSnapshots(before, after)` reports only what changed
   (`stateChanged` / `deadlineChanged` / `historyAppended` /
-  `rolePolicyChanged`); a later history that is not an append-only
+  `rolePolicyChanged` / `depositCapChanged` / `evidenceGateChanged`); a later history that is not an append-only
   extension of the earlier one throws instead of reporting progress.
   A snapshot is an *export*, not a datastore — there is still no
   built-in storage or locking.
@@ -449,9 +460,10 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   dispatching with no seq gap. Options re-attach as in
   `fromJSON(snapshot, opts)` (`requireVerifyEvidence`/`maxDeposit`/
   `auditKey`/`rolePolicy`) — with one honest difference: a snapshot
-  *carries* its `rolePolicy`, so there the option overrides stored
-  state, while a bare history carries no policy, so here the option is
-  the only source. What a bare history cannot restore at all: the
+  *carries* its `rolePolicy`, `maxDeposit`, and
+  `requireVerifyEvidence`, so there the option overrides stored
+  state, while a bare history carries none of them, so here the
+  option is the only source. What a bare history cannot restore at all: the
   deadline, the consumed idempotency-key set, and subscriptions live
   only in the envelope / in memory, so a `fromHistory` rebuild starts
   with no deadline, an *empty* key set (a key consumed before the log
@@ -503,9 +515,11 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   verbatim on the audit entry, surviving `toJSON()`/`fromJSON()` round-trips.
   It turns "someone said pass" into "someone said pass, citing X" — the
   reference is auditable but still *not* verified by the library. The flag
-  is per-instance dispatch configuration and is not part of the snapshot;
-  a restored escrow must re-enable it via `Escrow.fromJSON(snapshot, opts)`.
-  The CLI demo (`npm run demo`) walks the gate end to end on branch
+  IS part of the snapshot (`requireVerifyEvidence`, written only when
+  true): a restored escrow keeps enforcing the gate, a legacy snapshot
+  without the field restores with the gate off, and an explicit
+  `Escrow.fromJSON(snapshot, { requireVerifyEvidence: false })`
+  overrides it. The CLI demo (`npm run demo`) walks the gate end to end on branch
   escrows: an evidence-free `VERIFY_PASS` is refused with state and
   history untouched, the same dispatch carrying an evidence reference is
   accepted and recorded verbatim, and a default escrow (flag off) keeps
@@ -1001,7 +1015,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1296 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1310 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

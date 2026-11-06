@@ -6,9 +6,10 @@
  * `requireVerifyEvidence` or `maxDeposit` lost those risk controls on every
  * restart, with no way to re-attach them on the restore path. `fromJSON`
  * now accepts an optional `EscrowOptions` second parameter that is passed
- * straight through to the constructor (same validation). The snapshot
- * itself still never stores the flags — opts are dispatch configuration,
- * not audit data.
+ * straight through to the constructor (same validation). Since backlog
+ * #918 the snapshot itself also stores both flags, so the opts are an
+ * OVERRIDE of stored state now, not the only way to re-attach them —
+ * see test/snapshotDepositCap.test.ts.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -84,17 +85,28 @@ describe("Escrow.fromJSON(snapshot, opts)", () => {
     assert.equal(restored.history.length, 2);
   });
 
-  it("without opts the restored escrow keeps legacy behavior (no guardrails)", () => {
+  it("without opts the restored escrow keeps the snapshot's guardrails; a guardrail-free snapshot keeps legacy behavior", () => {
     const snap = JSON.parse(JSON.stringify(seeded().toJSON()));
     const restored = Escrow.fromJSON(snap);
-    // requireVerifyEvidence off: evidence-free VERIFY_PASS is legal.
-    assert.equal(restored.dispatch("VERIFY_PASS"), "VERIFIED");
-    // maxDeposit off: a fresh-funded escrow accepts arbitrarily large FUND.
+    // The snapshot carries the gate and the cap now (#918): the
+    // restored escrow enforces both without any opts.
+    assert.throws(
+      () => restored.dispatch("VERIFY_PASS"),
+      /verify evidence required/
+    );
+    // A guardrail-free snapshot restores legacy behavior: no cap, no gate.
     const big = new Escrow("big-1");
     const bigRestored = Escrow.fromJSON(
       JSON.parse(JSON.stringify(big.toJSON()))
     );
     assert.equal(bigRestored.dispatch("FUND", "whale", 1e9), "FUNDED");
+    const plain = new Escrow("plain-1");
+    plain.dispatch("FUND", "initial deposit", 10630);
+    plain.dispatch("SUBMIT_MILESTONE", "milestone 1 delivered");
+    const plainRestored = Escrow.fromJSON(
+      JSON.parse(JSON.stringify(plain.toJSON()))
+    );
+    assert.equal(plainRestored.dispatch("VERIFY_PASS"), "VERIFIED");
   });
 
   it("both flags can be re-enabled together on the same restored escrow", () => {
@@ -155,24 +167,30 @@ describe("Escrow.fromJSON(snapshot, opts)", () => {
     );
   });
 
-  it("opts never leak into the snapshot: toJSON of a restored escrow stays audit-only", () => {
+  it("the guardrails ride along in the snapshot; only the audit key never leaks (#918)", () => {
     const snap = JSON.parse(JSON.stringify(seeded().toJSON()));
     const restored = Escrow.fromJSON(snap, {
       requireVerifyEvidence: true,
       maxDeposit: 20000,
     });
     const resnap = JSON.parse(JSON.stringify(restored.toJSON()));
-    assert.ok(!("requireVerifyEvidence" in resnap));
-    assert.ok(!("maxDeposit" in resnap));
+    assert.equal(resnap.requireVerifyEvidence, true);
+    assert.equal(resnap.maxDeposit, 20000);
     assert.deepEqual(Object.keys(resnap).sort(), [
       "history",
       "id",
+      "maxDeposit",
+      "requireVerifyEvidence",
       "state",
       "v",
     ]);
-    // And the re-snapshot rehydrates cleanly without opts too.
+    // And the re-snapshot rehydrates WITH the guardrails, without opts.
     const plain = Escrow.fromJSON(resnap);
     assert.equal(plain.state, "MILESTONE_SUBMITTED");
+    assert.throws(
+      () => plain.dispatch("VERIFY_PASS"),
+      /verify evidence required/
+    );
   });
 
   it("opts restored state keeps dispatching: full lifecycle survives to RELEASED", () => {
