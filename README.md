@@ -1761,6 +1761,17 @@ state filter, 39 alice ids for the actor filter (an escrow with two
 alice entries still matches once, actor-less entries match nobody).
 Outside the timed loop, the fail-fast shapes are pinned: an unknown
 state and an empty or non-string actor each throw their exact error.
+The new `escrowsByEvent` row measures the #932 addition as a cost
+path: one measured op screens the same fixed batch of 60 escrows for
+the DISPUTE event — the watchdog's "was it ever disputed" listing —
+and pins the hand-counted hit list of 6 ids (all of the DISPUTED
+group, in batch order) on every iteration. Outside the timed loop,
+the other two event slices are pinned: FUND at 55 ids (every escrow
+with a history entry, the topped-up group matching once despite its
+two FUND entries) and EXPIRE at 5 ids (the actor-less EXPIRE entry
+still counts, because the event lens reads entries, not actors),
+and the fail-fast shapes are pinned: an unknown event and a state
+name passed as an event (DISPUTED) each throw their exact error.
 The new `escrowsApproachingDeadline` row measures the #902
 combination as a cost path: one measured op screens one fixed mixed
 batch of 14 escrows (deadlines in-window, exactly at the inclusive
@@ -1873,16 +1884,18 @@ One real run on 2026-11-04:
 | dispatchArbitration rolePolicy (moderator arbitrate, contributor rejected) | ~5,861 ops/sec (170.61 µs/op) |
 | escrowsByState (batch 60 escrows, 22 FUNDED) | ~410,480 ops/sec (2.44 µs/op) |
 | escrowsByActor (batch 60 escrows, 39 alice) | ~9,706 ops/sec (103.02 µs/op) |
+| escrowsByEvent (batch 60 escrows, 6 DISPUTE) | ~7,971 ops/sec (125.45 µs/op) |
 | escrowsApproachingDeadline (batch 14 escrows, 6 approaching) | ~315,088 ops/sec (3.17 µs/op) |
 | nextEscrowDeadline (batch 10 escrows, earliest 2026-06-03) | ~316,600 ops/sec (3.16 µs/op) |
 
 The two batch-filter rows, the escrowsApproachingDeadline row,
 and the settlePartialRelease row above were measured on
-2026-11-05 runs; the nextEscrowDeadline row above was measured on
-a 2026-11-06 run; the rest of the table is the
-2026-11-04 run. Those runs' other rows came in mixed under
-shared-host load, so refreshing the whole table would misreport
-changes in paths these additions never touched.
+2026-11-05 runs; the nextEscrowDeadline row and the
+escrowsByEvent row above were measured on 2026-11-06 runs; the
+rest of the table is the 2026-11-04 run. Those runs' other rows
+came in mixed under shared-host load, so refreshing the whole
+table would misreport changes in paths these additions never
+touched.
 
 ## License
 

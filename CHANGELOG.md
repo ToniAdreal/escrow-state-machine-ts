@@ -18,6 +18,23 @@ version changes.
 
 ### Added
 
+- `escrowsByEvent` benchmark row (2026-11-06, backlog #932):
+  `bench/bench.ts` gains a `benchEscrowsByEvent` row over the same
+  fixed mixed batch of 60 escrows as the state / actor rows (12
+  FUNDED by alice with a bob top-up, 10 FUNDED by bob, 8
+  MILESTONE_SUBMITTED, 8 VERIFIED, 6 RELEASED, 6 DISPUTED, 5
+  CREATED with no history, 5 EXPIRED with an actor-less EXPIRE),
+  each timed iteration screening for DISPUTE and pinning the
+  hand-counted hit list of 6 ids; the FUND (55 ids, top-up group
+  matching once) and EXPIRE (5 ids) slices and the unknown-event
+  and state-name-as-event fail-fast shapes are pinned once outside
+  the timed loop. Measured this run: `escrowsByEvent` ~7,971
+  ops/sec (125.45 µs/op). README Benchmarks gains the row plus a
+  prose paragraph; the rest of the table stays on the 2026-11-04 /
+  2026-11-05 runs because this run's other rows came in mixed
+  under shared-host load and a full refresh would misreport
+  changes that are load noise, not code changes (same call as
+  #902 / #930).
 - Next-deadline benchmark row (2026-11-06, backlog #930):
   `bench/bench.ts` gains a `nextEscrowDeadline` row over a fixed mixed
   batch of 10 escrows (future deadlines, a tie for the earliest, an

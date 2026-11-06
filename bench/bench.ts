@@ -1395,19 +1395,21 @@
  *      pair reporting {} and a rewritten history entry throwing
  *      the exact divergence error are pinned once, outside the
  *      timed loop. Pure comparison, no dispatch, no network.
- *  78. batch filters — `escrowsByState(batch, state)` and
- *      `escrowsByActor(batch, actor)` over one fixed mixed batch
- *      of 60 escrows (composition hand-counted in the fixture
- *      comment below: 22 FUNDED, 39 ever touched by alice, plus
- *      multi-entry histories and actor-less entries). The #843
- *      helpers previously had unit tests only, so listing a
- *      portfolio by state or by operator — the batch
- *      reconciliation screen — had no throughput baseline. Both
- *      filters are pure, so the same batch is re-screened on every
- *      iteration and each result is checked against the
- *      hand-counted expected id list (in batch order) on every
- *      iteration; the fail-fast shapes (unknown state, empty or
- *      non-string actor) are pinned once, outside the timed loop.
+ *  78. batch filters — `escrowsByState(batch, state)`,
+ *      `escrowsByActor(batch, actor)`, and `escrowsByEvent(batch,
+ *      event)` over one fixed mixed batch of 60 escrows
+ *      (composition hand-counted in the fixture comment below: 22
+ *      FUNDED, 39 ever touched by alice, 6 ever disputed, 55 ever
+ *      funded, 5 ever expired, plus multi-entry histories and
+ *      actor-less entries). The #843 / #927 helpers previously had
+ *      unit tests only, so listing a portfolio by state, by
+ *      operator, or by event — the batch reconciliation screen —
+ *      had no throughput baseline. All three filters are pure, so
+ *      the same batch is re-screened on every iteration and each
+ *      result is checked against the hand-counted expected id list
+ *      (in batch order) on every iteration; the fail-fast shapes
+ *      (unknown state, empty or non-string actor, unknown event)
+ *      are pinned once, outside the timed loop.
  *  79. deadline warning — `escrowsApproachingDeadline(batch, withinMs,
  *      now)` over one fixed mixed batch of 14 escrows (deadlines
  *      in-window, exactly at the inclusive upper edge, 1 ms past it,
@@ -1475,6 +1477,7 @@ import {
   SNAPSHOT_VERSION,
   escrowsApproachingDeadline,
   escrowsByActor,
+  escrowsByEvent,
   escrowsByState,
   expiredEscrows,
   expireOverdueEscrows,
@@ -5634,9 +5637,10 @@ checkWatchdogIds(
 );
 
 // Batch filter fixture: one fixed mixed batch of 60 escrows, screened
-// by escrowsByState / escrowsByActor (the #843 helpers, previously
-// unit-tested only, no throughput baseline). Composition, hand-counted
-// group by group (ids are BENCH-FLT-<group>-<nn>):
+// by escrowsByState / escrowsByActor / escrowsByEvent (the #843 / #927
+// helpers, previously unit-tested only, no throughput baseline).
+// Composition, hand-counted group by group (ids are
+// BENCH-FLT-<group>-<nn>):
 //   A x12  FUNDED, FUND by alice + one FUND top-up by bob (2 entries)
 //   B x10  FUNDED, FUND by bob only (1 entry)
 //   C x8   MILESTONE_SUBMITTED, FUND by carol + SUBMIT_MILESTONE by alice
@@ -5653,6 +5657,15 @@ checkWatchdogIds(
 //   escrowsByActor(batch, "alice") -> 39 ids: A (12) + C (8) + D (8) +
 //     E (6) + H (5), batch order (B/F touch only bob/carol, G has no
 //     history; E matches once despite two alice entries)
+//   escrowsByEvent(batch, "DISPUTE") -> 6 ids: all of F (6), batch
+//     order (only F ever carries a DISPUTE entry; the terminal E
+//     escrows were released, never disputed)
+//   escrowsByEvent(batch, "FUND") -> 55 ids: A (12) + B (10) + C (8)
+//     + D (8) + E (6) + F (6) + H (5), batch order (G has no history;
+//     A matches once despite its two FUND entries, the top-up)
+//   escrowsByEvent(batch, "EXPIRE") -> 5 ids: all of H (5), batch
+//     order (the actor-less EXPIRE entry still counts: the event
+//     lens reads entries, not actors)
 let filterClock = 0;
 const filterAt = (): string => isoAt(BASE_MS + filterClock++ * 1000);
 function filterFunded(
@@ -5747,6 +5760,17 @@ const FILTER_ALICE_IDS: string[] = [
   ...filterIds("E", 6),
   ...filterIds("H", 5),
 ];
+const FILTER_DISPUTE_IDS: string[] = [...filterIds("F", 6)];
+const FILTER_FUND_IDS: string[] = [
+  ...filterIds("A", 12),
+  ...filterIds("B", 10),
+  ...filterIds("C", 8),
+  ...filterIds("D", 8),
+  ...filterIds("E", 6),
+  ...filterIds("F", 6),
+  ...filterIds("H", 5),
+];
+const FILTER_EXPIRE_IDS: string[] = [...filterIds("H", 5)];
 function checkFilterIds(
   found: Escrow[],
   expected: string[],
@@ -5782,6 +5806,21 @@ checkFilterIds(
   FILTER_ALICE_IDS,
   "escrowsByActor",
 );
+checkFilterIds(
+  escrowsByEvent(filterBatch, "DISPUTE"),
+  FILTER_DISPUTE_IDS,
+  "escrowsByEvent DISPUTE",
+);
+checkFilterIds(
+  escrowsByEvent(filterBatch, "FUND"),
+  FILTER_FUND_IDS,
+  "escrowsByEvent FUND",
+);
+checkFilterIds(
+  escrowsByEvent(filterBatch, "EXPIRE"),
+  FILTER_EXPIRE_IDS,
+  "escrowsByEvent EXPIRE",
+);
 checkFilterThrows(
   () => escrowsByState(filterBatch, "FUNDEDD" as never),
   /invalid escrowsByState: unknown state "FUNDEDD"/,
@@ -5796,6 +5835,16 @@ checkFilterThrows(
   () => escrowsByActor(filterBatch, 42 as never),
   /invalid escrowsByActor: actor must be a non-empty string, got 42/,
   "escrowsByActor non-string actor",
+);
+checkFilterThrows(
+  () => escrowsByEvent(filterBatch, "DISPUT" as never),
+  /invalid escrowsByEvent: unknown event "DISPUT"/,
+  "escrowsByEvent unknown event",
+);
+checkFilterThrows(
+  () => escrowsByEvent(filterBatch, "DISPUTED" as never),
+  /invalid escrowsByEvent: unknown event "DISPUTED"/,
+  "escrowsByEvent state name is not an event",
 );
 
 // Deadline-warning fixture: one fixed mixed batch of 14 escrows,
@@ -10208,6 +10257,16 @@ function benchEscrowsByActor(): number {
   }, ITERATIONS);
 }
 
+function benchEscrowsByEvent(): number {
+  return measure(() => {
+    checkFilterIds(
+      escrowsByEvent(filterBatch, "DISPUTE"),
+      FILTER_DISPUTE_IDS,
+      "escrowsByEvent",
+    );
+  }, ITERATIONS);
+}
+
 function benchEscrowsApproachingDeadline(): number {
   return measure(() => {
     checkWatchdogIds(
@@ -11488,6 +11547,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "dispatchArbitration rolePolicy (moderator arbitrate, contributor rejected)", ops: benchDispatchArbitrationRolePolicy() },
   { path: "escrowsByState (batch 60 escrows, 22 FUNDED)", ops: benchEscrowsByState() },
   { path: "escrowsByActor (batch 60 escrows, 39 alice)", ops: benchEscrowsByActor() },
+  { path: "escrowsByEvent (batch 60 escrows, 6 DISPUTE)", ops: benchEscrowsByEvent() },
   { path: "escrowsApproachingDeadline (batch 14 escrows, 6 approaching)", ops: benchEscrowsApproachingDeadline() },
   { path: "nextEscrowDeadline (batch 10 escrows, earliest 2026-06-03)", ops: benchNextEscrowDeadline() },
 ];
