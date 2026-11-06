@@ -18,6 +18,22 @@ version changes.
 
 ### Added
 
+- Next-deadline benchmark row (2026-11-06, backlog #930):
+  `bench/bench.ts` gains a `nextEscrowDeadline` row over a fixed mixed
+  batch of 10 escrows (future deadlines, a tie for the earliest, an
+  overdue deadline, one due exactly now, and an absent deadline;
+  terminal RELEASED / EXPIRED escrows carrying earlier deadlines; a
+  non-terminal DISPUTED member), each timed iteration pinned against
+  the hand-counted winner (BENCH-NEXT-02 at
+  2026-06-03T00:00:00.000Z), with the invalid-`now` fail-fast shape
+  and the empty batch and an all-excluded batch returning undefined
+  pinned once outside the timed loop. Measured this run:
+  `nextEscrowDeadline` ~316,600 ops/sec (3.16 µs/op). README
+  Benchmarks gains the row plus a prose paragraph; the rest of the
+  table stays on the 2026-11-04 / 2026-11-05 runs because this run's
+  other rows came in mixed under shared-host load and a full refresh
+  would misreport changes that are load noise, not code changes
+  (same call as #902).
 - `Escrow.fromHistory` accepts `idempotencyKeys` for re-attachment (2026-11-06, backlog #924):
   `EscrowOptions` gains `idempotencyKeys?: string[]`, validated strictly
   at construction (`invalid option: idempotencyKeys …` on a non-array or

@@ -1423,6 +1423,20 @@
  *      every iteration; the fail-fast shapes (invalid window, invalid
  *      now), the terminal-only batch returning [], and the zero
  *      window returning [] are pinned once, outside the timed loop.
+ *  80. next deadline — `nextEscrowDeadline(batch, now)` over one
+ *      fixed mixed batch of 10 escrows (future deadlines, a tie for
+ *      the earliest, an overdue deadline, one due exactly now, and
+ *      an absent deadline; terminal RELEASED / EXPIRED escrows
+ *      carrying earlier deadlines; a non-terminal DISPUTED member).
+ *      The #834 helper previously had unit tests only, so the
+ *      "which escrow comes due next" screen — the scheduler's
+ *      single-timer arm — had no throughput baseline. The helper is
+ *      pure, so the same batch is re-screened on every iteration
+ *      and each result is checked against the hand-pinned winner
+ *      (BENCH-NEXT-02 at 2026-06-03T00:00:00.000Z) on every
+ *      iteration; the fail-fast shape (invalid `now`), the empty
+ *      batch, and the all-excluded batch returning undefined are
+ *      pinned once, outside the timed loop.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -1467,6 +1481,7 @@ import {
   historyFromNdjson,
   historyToNdjson,
   isOverdue,
+  nextEscrowDeadline,
   parseEscrowHistory,
   parseRetryAfter,
   parseSettlementReportCsv,
@@ -5963,6 +5978,123 @@ checkApproachingThrows(
   "escrowsApproachingDeadline invalid now",
 );
 
+// Next-deadline fixture: one fixed mixed batch of 10 escrows,
+// screened by nextEscrowDeadline (the #834 helper, previously
+// unit-tested only, no throughput baseline) from NEXT_NOW =
+// 2026-06-01T00:00:00.000Z — the same `now` the unit tests pin.
+// Composition, hand-counted (ids BENCH-NEXT-<nn>):
+//   01 FUNDED, deadline 2026-06-15 (future, not earliest) -> miss
+//   02 FUNDED, deadline 2026-06-03 (earliest future) -> WINNER
+//   03 FUNDED, deadline 2026-06-03 (tie with 02, later in input
+//      order -> loses: ties keep input order)
+//   04 FUNDED, deadline 2026-06-08 (future) -> miss
+//   05 FUNDED, deadline 2026-05-30 (already overdue) -> miss
+//   06 FUNDED, deadline exactly now (due, not upcoming) -> miss
+//   07 FUNDED, no deadline -> miss
+//   08 RELEASED, deadline 2026-06-02 (earlier than the winner, but
+//      terminal: a settled escrow schedules nothing) -> miss
+//   09 DISPUTED, deadline 2026-06-04 (future, non-terminal) -> miss
+//   10 EXPIRED, deadline 2026-06-02 (earlier than the winner, but
+//      terminal) -> miss
+// Hand-counted expectation (NOT produced by the implementation):
+//   nextEscrowDeadline(batch, NEXT_NOW) -> { escrow: 02, deadline:
+//   "2026-06-03T00:00:00.000Z" }.
+const NEXT_NOW = new Date("2026-06-01T00:00:00.000Z");
+const NEXT_EARLIEST = "2026-06-03T00:00:00.000Z";
+const NEXT_WINNER_ID = "BENCH-NEXT-02";
+let nextClock = 0;
+const nextAt = (): string => isoAt(BASE_MS + nextClock++ * 1000);
+function nextFunded(id: string, deadline?: string): Escrow {
+  const escrow = new Escrow(id);
+  escrow.dispatch("FUND", undefined, 1000, { at: nextAt() });
+  if (deadline !== undefined) escrow.setDeadline(deadline);
+  return escrow;
+}
+function buildNextBatch(): Escrow[] {
+  const released = nextFunded("BENCH-NEXT-08", "2026-06-02T00:00:00.000Z");
+  released.dispatch("SUBMIT_MILESTONE", undefined, undefined, {
+    at: nextAt(),
+  });
+  released.dispatch("VERIFY_PASS", undefined, undefined, { at: nextAt() });
+  released.dispatch("RELEASE", undefined, undefined, { at: nextAt() });
+  const disputed = nextFunded("BENCH-NEXT-09", "2026-06-04T00:00:00.000Z");
+  disputed.dispatch("DISPUTE", undefined, undefined, { at: nextAt() });
+  const expired = nextFunded("BENCH-NEXT-10", "2026-06-02T00:00:00.000Z");
+  expired.dispatch("EXPIRE", undefined, undefined, { at: nextAt() });
+  return [
+    nextFunded("BENCH-NEXT-01", "2026-06-15T00:00:00.000Z"),
+    nextFunded("BENCH-NEXT-02", NEXT_EARLIEST),
+    nextFunded("BENCH-NEXT-03", NEXT_EARLIEST),
+    nextFunded("BENCH-NEXT-04", "2026-06-08T00:00:00.000Z"),
+    nextFunded("BENCH-NEXT-05", "2026-05-30T00:00:00.000Z"),
+    nextFunded("BENCH-NEXT-06", "2026-06-01T00:00:00.000Z"),
+    nextFunded("BENCH-NEXT-07"),
+    released,
+    disputed,
+    expired,
+  ];
+}
+const nextBatch: Escrow[] = buildNextBatch();
+if (nextBatch.length !== 10) {
+  throw new Error("benchmark fixture failed: next-deadline batch size");
+}
+function checkNextEscrowDeadline(
+  result: ReturnType<typeof nextEscrowDeadline>,
+  label: string,
+): void {
+  if (
+    result === undefined ||
+    result.escrow.id !== NEXT_WINNER_ID ||
+    result.deadline !== NEXT_EARLIEST
+  ) {
+    throw new Error(`benchmark next-deadline check failed: ${label}`);
+  }
+}
+checkNextEscrowDeadline(
+  nextEscrowDeadline(nextBatch, NEXT_NOW),
+  "nextEscrowDeadline",
+);
+if (nextEscrowDeadline([], NEXT_NOW) !== undefined) {
+  throw new Error(
+    "benchmark next-deadline check failed: empty batch did not return undefined",
+  );
+}
+const nextAllExcluded = nextBatch.filter((e) =>
+  ["BENCH-NEXT-05", "BENCH-NEXT-07", "BENCH-NEXT-08"].includes(e.id),
+);
+if (nextAllExcluded.length !== 3) {
+  throw new Error(
+    "benchmark fixture failed: next-deadline all-excluded batch",
+  );
+}
+if (nextEscrowDeadline(nextAllExcluded, NEXT_NOW) !== undefined) {
+  throw new Error(
+    "benchmark next-deadline check failed: all-excluded batch did not return undefined",
+  );
+}
+try {
+  nextEscrowDeadline(nextBatch, new Date(Number.NaN));
+  throw new Error(
+    "benchmark next-deadline check failed: invalid now did not throw",
+  );
+} catch (e) {
+  if (
+    e instanceof Error &&
+    e.message ===
+      "benchmark next-deadline check failed: invalid now did not throw"
+  ) {
+    throw e;
+  }
+  if (
+    !(e instanceof Error) ||
+    !/invalid now: expected a valid Date/.test(e.message)
+  ) {
+    throw new Error(
+      "benchmark next-deadline check failed: invalid now wrong error",
+    );
+  }
+}
+
 // Watchdog-executor expectations, hand-counted from the fixture
 // composition above and the transition table — never derived by
 // calling the executors:
@@ -10086,6 +10218,15 @@ function benchEscrowsApproachingDeadline(): number {
   }, ITERATIONS);
 }
 
+function benchNextEscrowDeadline(): number {
+  return measure(() => {
+    checkNextEscrowDeadline(
+      nextEscrowDeadline(nextBatch, NEXT_NOW),
+      "nextEscrowDeadline",
+    );
+  }, ITERATIONS);
+}
+
 function benchExpireOverdueEscrows(): number {
   return measure(() => {
     // Fresh fixture per iteration: the executor dispatches EXPIRE on
@@ -11348,6 +11489,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "escrowsByState (batch 60 escrows, 22 FUNDED)", ops: benchEscrowsByState() },
   { path: "escrowsByActor (batch 60 escrows, 39 alice)", ops: benchEscrowsByActor() },
   { path: "escrowsApproachingDeadline (batch 14 escrows, 6 approaching)", ops: benchEscrowsApproachingDeadline() },
+  { path: "nextEscrowDeadline (batch 10 escrows, earliest 2026-06-03)", ops: benchNextEscrowDeadline() },
 ];
 
 console.log("path                                              throughput");
