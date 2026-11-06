@@ -1488,6 +1488,22 @@ version changes.
 
 ### Fixed
 
+- Dispatch notes and snapshot/history notes are capped at `MAX_NOTE_LENGTH`
+  (32,768 characters, 2026-11-06, backlog #937): `dispatch()` and the snapshot parser
+  (`fromJSON`/`fromHistory`/`parseEscrowHistory`/`historyFromNdjson`, all
+  through `parseEscrowSnapshot`) now reject a note longer than the cap
+  with `note must be at most 32768 characters, got N` — the same value
+  and wording the dataquest lifecycle already enforces. Before this,
+  only the note's type was checked, so an unbounded note could be
+  written into the append-only audit history and inflate every
+  snapshot/NDJSON export that serializes it verbatim. A rejected
+  dispatch appends nothing and does not consume its idempotency key;
+  `dispatchArbitration` inherits the cap through `dispatch`, so a
+  caller note that overflows once the ` [quorum n/m]` suffix is
+  appended is rejected too. `MAX_NOTE_LENGTH` is exported from the
+  package entry; README documents the cap and its test count moves
+  1351 → 1363 (12 new tests in `test/maxNoteLength.test.ts`).
+
 - `renderReportCsv` now shape-checks its input before rendering
   (2026-10-26, backlog #608): the CSV renderer reuses the shared
   carried-fields core of `assertReportShape` (new internal helper

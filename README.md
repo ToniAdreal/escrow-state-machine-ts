@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1351 tests, all local
+npm test   # 1363 tests, all local
 ```
 
 ## Quickstart
@@ -199,7 +199,11 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
 - `transition(state, event)` is a pure function; invalid transitions throw.
 - `Escrow` wraps it with an append-only history (the case study's "immutable
   operational audit log"): every dispatch records seq, event, from → to,
-  timestamp, and an optional note. Each entry is also **hash-chained**:
+  timestamp, and an optional note. Notes are capped at `MAX_NOTE_LENGTH`
+  (32,768 characters, exported from the package entry): `dispatch()` and
+  the snapshot/history parsers both reject longer notes, so an unbounded
+  note can never inflate the append-only log or a persisted snapshot.
+  Each entry is also **hash-chained**:
   `prevHash` links to the previous entry's `hash` (genesis links to the
   `"GENESIS"` constant) and `hash` is SHA-256 over the canonical entry
   serialization, so a rewritten entry in a persisted JSON snapshot is
@@ -1047,7 +1051,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1351 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1363 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

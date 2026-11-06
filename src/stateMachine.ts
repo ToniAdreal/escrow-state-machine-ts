@@ -146,6 +146,13 @@ export interface EscrowHistoryEntry {
    * their hashes verify exactly as before.
    */
   actor?: string;
+  /**
+   * Caller-supplied human-readable note recorded on the audit entry.
+   * At most {@link MAX_NOTE_LENGTH} characters: `dispatch()` and the
+   * snapshot/history parsers both reject longer notes, so a note this
+   * long can never be written by the live path or smuggled in through
+   * a rehydrated snapshot.
+   */
   note?: string;
   /**
    * Deposit amount in base currency units. Only present on FUND entries
@@ -191,6 +198,22 @@ export interface EscrowHistoryEntry {
  * rejected by the parser (see {@link EscrowSnapshot.v}).
  */
 export const SNAPSHOT_VERSION = 1;
+
+/**
+ * Maximum length (in UTF-16 code units, i.e. `String.length`) of a
+ * dispatch note. Notes are written verbatim into the append-only audit
+ * history, and the history is serialized verbatim by `toJSON()` /
+ * `historyToNdjson()` when snapshots and NDJSON logs are written to
+ * disk. A multi-megabyte note would permanently inflate the persisted
+ * log on every export (and its hash chain entry); a 32,768-character
+ * ceiling keeps a single note well under ~128 KiB worst case while
+ * remaining generous for any honest human annotation. Callers that
+ * need larger payloads should store them out-of-band and reference
+ * them with a payoutRef/note. Mirrors the dataquest lifecycle's
+ * {@link MAX_NOTE_LENGTH} (same value, same enforcement points:
+ * `dispatch()` and the snapshot/history parser).
+ */
+export const MAX_NOTE_LENGTH = 32_768;
 
 export interface EscrowSnapshot {
   /**
@@ -472,7 +495,9 @@ function isCanonicalIso(s: unknown): s is string {
  *  - timestamps must be canonical ISO-8601 and non-decreasing
  *  - `amount`, when present, must be a finite non-negative number and may
  *    only appear on FUND entries
- *  - `note`, when present, must be a string
+ *  - `note`, when present, must be a string no longer than
+ *    {@link MAX_NOTE_LENGTH} characters (oversized notes in an
+ *    untrusted log are malformed — the same bar dispatch() applies)
  *  - `evidence`, when present, must be a non-empty string and may only
  *    appear on VERIFY_PASS entries
  *  - `prevHash`/`hash`, when present, must both be non-empty strings and
@@ -632,6 +657,13 @@ function parseEscrowSnapshot(
     if (raw.note !== undefined) {
       if (typeof raw.note !== "string") {
         throw new Error(`${tag}: note must be a string`);
+      }
+      // Same bar as dispatch(): oversized notes in an untrusted log are
+      // malformed, so a corrupted snapshot cannot blow up rehydration.
+      if (raw.note.length > MAX_NOTE_LENGTH) {
+        throw new Error(
+          `${tag}: note must be at most ${MAX_NOTE_LENGTH} characters, got ${raw.note.length}`
+        );
       }
       entry.note = raw.note;
     }
@@ -1683,7 +1715,11 @@ export class Escrow {
    * @param note   Optional human-readable note recorded in the audit history.
    *               A non-string note is rejected with a descriptive error
    *               before anything is appended (mirrors the fromJSON
-   *               `note must be a string` rule).
+   *               `note must be a string` rule), as is a note longer
+   *               than {@link MAX_NOTE_LENGTH} characters (the history
+   *               is append-only and serialized verbatim, so an
+   *               unbounded note would permanently inflate every
+   *               snapshot/export).
    * @param amount Optional deposit amount, accepted ONLY on FUND. Must be a
    *               finite non-negative number (NaN, ±Infinity, negatives, and
    *               non-numbers are rejected with a descriptive error). The
@@ -1781,6 +1817,11 @@ export class Escrow {
     if (note !== undefined && typeof note !== "string") {
       throw new Error(
         `invalid dispatch: note must be a string, got ${typeof note}`
+      );
+    }
+    if (note !== undefined && note.length > MAX_NOTE_LENGTH) {
+      throw new Error(
+        `invalid dispatch: note must be at most ${MAX_NOTE_LENGTH} characters, got ${note.length}`
       );
     }
     let idempotencyKey: string | undefined;
