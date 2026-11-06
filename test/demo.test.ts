@@ -7696,7 +7696,7 @@ test("demo deadline-warning segment is deterministic: two runs print byte-identi
   const header =
     "Deadline warning (escrowsApproachingDeadline over a mixed batch):";
   const filterHeader =
-    "Batch filters (escrowsByState / escrowsByActor over a mixed batch):";
+    "Batch filters (escrowsByState / escrowsByActor / escrowsByEvent over a mixed batch):";
   // The warning section runs from its header to the
   // batch-filter header that now follows it (backlog #903
   // inserts the filter segment between the warning and
@@ -7718,12 +7718,13 @@ test("demo deadline-warning segment is deterministic: two runs print byte-identi
   assert.equal(a.warningZeroWindowEmpty, b.warningZeroWindowEmpty);
 });
 
-test("demo shows batch filters: escrowsByActor slices by audit history and escrowsByState by current state, orthogonally, with no actor attribution for anonymous work", async () => {
+test("demo shows batch filters: escrowsByActor slices by audit history, escrowsByEvent by event history, and escrowsByState by current state, orthogonally, with no actor attribution for anonymous work", async () => {
   const {
     filterEscrows,
     filterSponsorSelectedIds,
     filterCreatorSelectedIds,
     filterFundedSelectedIds,
+    filterSubmittedSelectedIds,
     lines,
   } = await runDemo();
 
@@ -7772,10 +7773,14 @@ test("demo shows batch filters: escrowsByActor slices by audit history and escro
     DEMO_FILTER_SPONSOR_ID,
     DEMO_FILTER_ANONYMOUS_ID,
   ]);
+  assert.deepEqual(filterSubmittedSelectedIds, [
+    DEMO_FILTER_BOTH_ID,
+    DEMO_FILTER_TWICE_ID,
+  ]);
 
   const text = lines.join("\n");
   const header =
-    "Batch filters (escrowsByState / escrowsByActor over a mixed batch):";
+    "Batch filters (escrowsByState / escrowsByActor / escrowsByEvent over a mixed batch):";
   assert.ok(
     text.indexOf(header) >
       text.indexOf(
@@ -7820,7 +7825,12 @@ test("demo shows batch filters: escrowsByActor slices by audit history and escro
   );
   assert.ok(
     text.includes(
-      `  contrast: escrowsByState(batch, "FUNDED"): ${DEMO_FILTER_SPONSOR_ID}, ${DEMO_FILTER_ANONYMOUS_ID} (2 escrows) — the two slices are orthogonal: DEMO-FILTER-03 is FUNDED but anonymous so no actor filter claims it, DEMO-FILTER-02 and DEMO-FILTER-04 are MILESTONE_SUBMITTED yet sponsor-touched, and DEMO-FILTER-04 matches once despite two sponsor entries`,
+      `  escrowsByEvent(batch, "SUBMIT_MILESTONE"): ${DEMO_FILTER_BOTH_ID}, ${DEMO_FILTER_TWICE_ID} (2 escrows) — the event lens reads history, not state: both submitters are MILESTONE_SUBMITTED now, but a RELEASED escrow that once submitted would still match`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  contrast: escrowsByState(batch, "FUNDED"): ${DEMO_FILTER_SPONSOR_ID}, ${DEMO_FILTER_ANONYMOUS_ID} (2 escrows) — the three slices are orthogonal: DEMO-FILTER-03 is FUNDED but anonymous so no actor filter claims it, DEMO-FILTER-02 and DEMO-FILTER-04 are MILESTONE_SUBMITTED yet sponsor-touched, and DEMO-FILTER-04 matches once despite two sponsor entries`,
     ),
   );
   assert.ok(
@@ -7832,7 +7842,7 @@ test("demo shows batch filters: escrowsByActor slices by audit history and escro
 
 test("demo batch-filter segment is deterministic: two runs print byte-identical filter lines", async () => {
   const header =
-    "Batch filters (escrowsByState / escrowsByActor over a mixed batch):";
+    "Batch filters (escrowsByState / escrowsByActor / escrowsByEvent over a mixed batch):";
   const refundHeader =
     "Refund settlement (settleRefund on a refunded escrow):";
   // The filter section runs from its header to the
@@ -7841,12 +7851,12 @@ test("demo batch-filter segment is deterministic: two runs print byte-identical 
     ls.slice(ls.indexOf(header), ls.indexOf(refundHeader) - 1);
   const a = await runDemo();
   const b = await runDemo();
-  // Header + 4 member verdicts + sponsor + creator +
+  // Header + 4 member verdicts + sponsor + creator + event +
   // contrast + purity; every printed value is derived
   // from the pinned fixtures alone, so no normalization
   // is needed.
   const segA = segment(a.lines);
-  assert.equal(segA.length, 9);
+  assert.equal(segA.length, 10);
   assert.deepEqual(segA, segment(b.lines));
   assert.deepEqual(a.filterEscrows.map((e) => e.id), [
     DEMO_FILTER_SPONSOR_ID,
@@ -7857,6 +7867,10 @@ test("demo batch-filter segment is deterministic: two runs print byte-identical 
   assert.deepEqual(a.filterSponsorSelectedIds, b.filterSponsorSelectedIds);
   assert.deepEqual(a.filterCreatorSelectedIds, b.filterCreatorSelectedIds);
   assert.deepEqual(a.filterFundedSelectedIds, b.filterFundedSelectedIds);
+  assert.deepEqual(
+    a.filterSubmittedSelectedIds,
+    b.filterSubmittedSelectedIds,
+  );
 });
 
 test("demo shows refund settlement: settleRefund on a REFUNDED escrow returns the full deposit to the sponsor and balances", async () => {

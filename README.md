@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1330 tests, all local
+npm test   # 1339 tests, all local
 ```
 
 ## Quickstart
@@ -148,13 +148,14 @@ summing back to the single-release split (531.50 / 10,098.50),
 so splitting a release never double-charges the fee. For a refund, `settleRefund` returns the full deposit
 to the sponsor with every other party at 0 and no fee charged,
 matching the REFUNDED branch of `buildSettlementReport` exactly. The demo then shows a settlement-reconciliation segment: `reconcileSettlements` pairs three settled reports against a four-row external ledger — one matched at 10,630, one report-only at 1,100, one amount mismatch (report 10,630 vs ledger 10,000), and one ledger-only row at 500. The demo also shows a batch-filter
-segment: `escrowsByState` / `escrowsByActor` slice one four-escrow
-batch two ways — the FUNDED slice is DEMO-FILTER-01 and
+segment: `escrowsByState` / `escrowsByActor` / `escrowsByEvent` slice one four-escrow
+batch three ways — the FUNDED slice is DEMO-FILTER-01 and
 DEMO-FILTER-03, the sponsor-touched slice is DEMO-FILTER-01,
 DEMO-FILTER-02 and DEMO-FILTER-04 (DEMO-FILTER-04 matching once
-despite two sponsor entries) while the anonymous DEMO-FILTER-03
-appears in no actor's slice — the state lens and the actor lens
-are orthogonal, and both calls are pure. The demo finally closes with a snapshot-comparison segment: `diffEscrowSnapshots` diffs one escrow's before/after snapshots across a single SUBMIT_MILESTONE step — stateChanged FUNDED -> MILESTONE_SUBMITTED with history appended seq 2..2 — alongside an identical pair reporting {} and a cross-escrow diff rejected with the pinned error.
+despite two sponsor entries), and the SUBMIT_MILESTONE slice is
+DEMO-FILTER-02 and DEMO-FILTER-04, while the anonymous DEMO-FILTER-03
+appears in no actor's slice — the state lens, the actor lens, and the
+event lens are orthogonal, and all three calls are pure. The demo finally closes with a snapshot-comparison segment: `diffEscrowSnapshots` diffs one escrow's before/after snapshots across a single SUBMIT_MILESTONE step — stateChanged FUNDED -> MILESTONE_SUBMITTED with history appended seq 2..2 — alongside an identical pair reporting {} and a cross-escrow diff rejected with the pinned error.
 
 ```bash
 npm run demo
@@ -366,14 +367,17 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   An invalid `withinMs` (negative, non-finite, non-number) or an
   invalid `now` throws fail-fast instead of silently returning an
   empty list.
-  The plain listing companions are `escrowsByState(escrows, state)`
-  and `escrowsByActor(escrows, actor)`: the first returns every
-  escrow currently in the given state (terminal states included), the
-  second every escrow whose audit history carries at least one entry
-  by that actor (note-only, actor-less entries never match). Both
-  are pure, return the same escrow objects in input order, and fail
-  fast on an unknown state or an empty/non-string actor instead of
-  silently returning an empty list.
+  The plain listing companions are `escrowsByState(escrows, state)`,
+  `escrowsByActor(escrows, actor)`, and `escrowsByEvent(escrows, event)`:
+  the first returns every escrow currently in the given state (terminal
+  states included), the second every escrow whose audit history carries
+  at least one entry by that actor (note-only, actor-less entries never
+  match), and the third every escrow whose audit history carries at
+  least one entry for that event (a terminal escrow still answers
+  whether it was ever disputed). All three are pure, return the same
+  escrow objects in input order, and fail fast on an unknown state,
+  an empty/non-string actor, or an unknown event instead of silently
+  returning an empty list.
   The deadline rides along in `toJSON()`/`fromJSON()` snapshots (a
   tampered or non-canonical deadline is rejected by snapshot validation).
   A distinct screening is `staleEscrows(escrows, maxAgeByState, now?)`:
@@ -1025,7 +1029,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1330 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1339 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

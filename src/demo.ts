@@ -429,6 +429,7 @@ import {
   expireOverdueEscrows,
   escrowsApproachingDeadline,
   escrowsByActor,
+  escrowsByEvent,
   escrowsByState,
   historyFromNdjson,
   historyToNdjson,
@@ -939,10 +940,11 @@ export const DEMO_WARN_DUE_NOW_FUND_AT = "2026-03-08T09:00:00.000Z";
 export const DEMO_WARN_DUE_NOW_DEADLINE = DEMO_STALE_NOW;
 
 /**
- * Batch-filter fixtures (backlog #903): four escrows screened by
- * `escrowsByState` / `escrowsByActor` — the state lens and the
- * actor lens slice the same batch differently, mirroring the
- * dataquest lifecycle demo's actor-filter branch (DEMO-050..053).
+ * Batch-filter fixtures (backlog #903, #927): four escrows screened by
+ * `escrowsByState` / `escrowsByActor` / `escrowsByEvent` — the state
+ * lens, the actor lens, and the event lens slice the same batch
+ * differently, mirroring the dataquest lifecycle demo's actor-filter
+ * branch (DEMO-050..053).
  * All dispatches use fixed-literal timestamps (no wall clock, no
  * network). Hand-computed expectations:
  * - DEMO-FILTER-01: FUND as "sponsor", stays FUNDED —
@@ -959,10 +961,12 @@ export const DEMO_WARN_DUE_NOW_DEADLINE = DEMO_STALE_NOW;
  *   entries, yet it matches the sponsor filter exactly once.
  * So `escrowsByActor(batch, "sponsor")` is DEMO-FILTER-01,
  * DEMO-FILTER-02, DEMO-FILTER-04; `escrowsByActor(batch,
- * "creator")` is DEMO-FILTER-02 alone; and the contrast row
+ * "creator")` is DEMO-FILTER-02 alone; the contrast row
  * `escrowsByState(batch, "FUNDED")` is DEMO-FILTER-01,
- * DEMO-FILTER-03 — the two slices are orthogonal, and both
- * filters are pure: neither dispatches nor mutates.
+ * DEMO-FILTER-03; and the event row
+ * `escrowsByEvent(batch, "SUBMIT_MILESTONE")` is DEMO-FILTER-02,
+ * DEMO-FILTER-04 — the three slices are orthogonal, and all three
+ * filters are pure: none dispatches nor mutates.
  */
 export const DEMO_FILTER_SPONSOR_ID = "DEMO-FILTER-01";
 export const DEMO_FILTER_SPONSOR_FUND_AT = "2026-03-08T09:00:00.000Z";
@@ -3765,6 +3769,13 @@ export interface DemoResult {
    * order — the contrast slice to the actor selections.
    */
   filterFundedSelectedIds: string[];
+  /**
+   * The ids `escrowsByEvent` selects from the filter batch for
+   * "SUBMIT_MILESTONE": DEMO-FILTER-02 and DEMO-FILTER-04, in
+   * input order — the event slice: both escrows that ever
+   * submitted a milestone, whatever their current state.
+   */
+  filterSubmittedSelectedIds: string[];
   /**
    * The refund-settlement escrow (DEMO-ESC-028): walked to REFUNDED
    * on its own via quorum arbitration, so the `settleRefund`
@@ -8904,17 +8915,18 @@ export async function runDemo(): Promise<DemoResult> {
     `  pure: the call dispatched nothing — all seven escrows keep their state and history length`,
   );
 
-  // --- Batch filters: escrowsByState / escrowsByActor over a mixed batch ---
+  // --- Batch filters: escrowsByState / escrowsByActor / escrowsByEvent over a mixed batch ---
   // The watchdog screens answer "which escrows need attention";
   // the batch filters answer the plainer listing questions —
-  // "which escrows are FUNDED right now" and "which escrows did
-  // this actor ever touch" — and the demo shows both lenses on
-  // the same four escrows at once, mirroring the dataquest
-  // lifecycle demo's actor-filter branch. The state lens reads
-  // the current state; the actor lens scans the audit history,
-  // so the two slices are orthogonal by construction (see the
+  // "which escrows are FUNDED right now", "which escrows did
+  // this actor ever touch", and "which escrows ever saw this
+  // event" — and the demo shows all three lenses on the same
+  // four escrows at once, mirroring the dataquest lifecycle
+  // demo's actor-filter branch. The state lens reads the current
+  // state; the actor and event lenses scan the audit history,
+  // so the three slices are orthogonal by construction (see the
   // fixture comment above for the hand-computed verdict on each
-  // member). Both calls are pure: they dispatch nothing and
+  // member). All three calls are pure: they dispatch nothing and
   // mutate no escrow, and the section asserts that (states and
   // history lengths identical before and after the calls).
   // The printed actor list per escrow is derived from its own
@@ -8964,6 +8976,10 @@ export async function runDemo(): Promise<DemoResult> {
   const filterSponsorSelected = escrowsByActor(filterEscrows, "sponsor");
   const filterCreatorSelected = escrowsByActor(filterEscrows, "creator");
   const filterFundedSelected = escrowsByState(filterEscrows, "FUNDED");
+  const filterSubmittedSelected = escrowsByEvent(
+    filterEscrows,
+    "SUBMIT_MILESTONE",
+  );
   if (
     filterSponsorSelected.map((e) => e.id).join(",") !==
       [
@@ -8975,6 +8991,8 @@ export async function runDemo(): Promise<DemoResult> {
       DEMO_FILTER_BOTH_ID ||
     filterFundedSelected.map((e) => e.id).join(",") !==
       [DEMO_FILTER_SPONSOR_ID, DEMO_FILTER_ANONYMOUS_ID].join(",") ||
+    filterSubmittedSelected.map((e) => e.id).join(",") !==
+      [DEMO_FILTER_BOTH_ID, DEMO_FILTER_TWICE_ID].join(",") ||
     filterEscrows.some(
       (e, i) =>
         e.state !== filterStatesBefore[i] ||
@@ -8982,12 +9000,15 @@ export async function runDemo(): Promise<DemoResult> {
     )
   ) {
     throw new Error(
-      "demo fixture broken: escrowsByState/escrowsByActor filter batch does not match the pinned shape (sponsor selects DEMO-FILTER-01, DEMO-FILTER-02, DEMO-FILTER-04; creator selects DEMO-FILTER-02 alone; FUNDED selects DEMO-FILTER-01 and DEMO-FILTER-03; the calls must dispatch nothing and change no state or history length)",
+      "demo fixture broken: escrowsByState/escrowsByActor/escrowsByEvent filter batch does not match the pinned shape (sponsor selects DEMO-FILTER-01, DEMO-FILTER-02, DEMO-FILTER-04; creator selects DEMO-FILTER-02 alone; FUNDED selects DEMO-FILTER-01 and DEMO-FILTER-03; SUBMIT_MILESTONE selects DEMO-FILTER-02 and DEMO-FILTER-04; the calls must dispatch nothing and change no state or history length)",
     );
   }
   const filterSponsorSelectedIds = filterSponsorSelected.map((e) => e.id);
   const filterCreatorSelectedIds = filterCreatorSelected.map((e) => e.id);
   const filterFundedSelectedIds = filterFundedSelected.map((e) => e.id);
+  const filterSubmittedSelectedIds = filterSubmittedSelected.map(
+    (e) => e.id,
+  );
   const filterActors = (escrow: Escrow): string =>
     [
       ...new Set(
@@ -8996,14 +9017,15 @@ export async function runDemo(): Promise<DemoResult> {
     ].join(", ");
   lines.push(
     "",
-    "Batch filters (escrowsByState / escrowsByActor over a mixed batch):",
+    "Batch filters (escrowsByState / escrowsByActor / escrowsByEvent over a mixed batch):",
     `  ${filterSponsor.id}: ${filterSponsor.state}, actors ${filterActors(filterSponsor)} — sponsor-touched, in the FUNDED slice`,
     `  ${filterBoth.id}: ${filterBoth.state}, actors ${filterActors(filterBoth)} — touched by both actors, in neither actor's slice twice, outside the FUNDED slice`,
     `  ${filterAnonymous.id}: ${filterAnonymous.state}, actors ${filterActors(filterAnonymous)} — in the FUNDED slice, but in no actor's slice: anonymous work is never attributed to anyone`,
     `  ${filterTwice.id}: ${filterTwice.state}, actors ${filterActors(filterTwice)} — two sponsor entries, yet it matches the sponsor filter exactly once`,
     `  escrowsByActor(batch, "sponsor"): ${filterSponsorSelectedIds.join(", ")} (${filterSponsorSelectedIds.length} escrows)`,
     `  escrowsByActor(batch, "creator"): ${filterCreatorSelectedIds.join(", ")} (${filterCreatorSelectedIds.length} escrow)`,
-    `  contrast: escrowsByState(batch, "FUNDED"): ${filterFundedSelectedIds.join(", ")} (${filterFundedSelectedIds.length} escrows) — the two slices are orthogonal: DEMO-FILTER-03 is FUNDED but anonymous so no actor filter claims it, DEMO-FILTER-02 and DEMO-FILTER-04 are MILESTONE_SUBMITTED yet sponsor-touched, and DEMO-FILTER-04 matches once despite two sponsor entries`,
+    `  escrowsByEvent(batch, "SUBMIT_MILESTONE"): ${filterSubmittedSelectedIds.join(", ")} (${filterSubmittedSelectedIds.length} escrows) — the event lens reads history, not state: both submitters are MILESTONE_SUBMITTED now, but a RELEASED escrow that once submitted would still match`,
+    `  contrast: escrowsByState(batch, "FUNDED"): ${filterFundedSelectedIds.join(", ")} (${filterFundedSelectedIds.length} escrows) — the three slices are orthogonal: DEMO-FILTER-03 is FUNDED but anonymous so no actor filter claims it, DEMO-FILTER-02 and DEMO-FILTER-04 are MILESTONE_SUBMITTED yet sponsor-touched, and DEMO-FILTER-04 matches once despite two sponsor entries`,
     `  pure: the calls dispatched nothing — all four escrows keep their state and history length`,
   );
 
@@ -9566,6 +9588,7 @@ export async function runDemo(): Promise<DemoResult> {
     filterSponsorSelectedIds,
     filterCreatorSelectedIds,
     filterFundedSelectedIds,
+    filterSubmittedSelectedIds,
     refundEscrow,
     refundSettlement,
     partialReleaseGross,

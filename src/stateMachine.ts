@@ -2632,6 +2632,49 @@ export function escrowsByActor(
 }
 
 /**
+ * Batch filter: from a batch of escrows, return the ones whose audit
+ * history contains at least one entry for the given event, in input
+ * order.
+ *
+ * This is the event counterpart to {@link escrowsByState} and
+ * {@link escrowsByActor}: a watchdog that wants to find every escrow
+ * that was ever disputed — or ever failed verification — had to
+ * hand-write the same history scan, and a hand-written scan has no
+ * shared answer for an unknown event string, so a typo silently
+ * returned an empty list. This helper gives that listing one shared,
+ * pure entry point:
+ *
+ *   const disputed = escrowsByEvent(allEscrows, "DISPUTE");
+ *
+ * Pure: reads the escrows' histories, never mutates, dispatches, or
+ * copies the escrows — the returned array holds the same escrow
+ * objects, in input order, so callers can act on them directly. An
+ * escrow matches as soon as any one history entry carries the event,
+ * and matches only once no matter how many of its entries do, so a
+ * top-up (a second FUND on one escrow) never double-counts it.
+ * Terminal escrows match exactly like any other escrow — a RELEASED
+ * escrow still answers \"was it ever disputed\", because the question
+ * is about its history, not its current state. An unknown event
+ * (anything outside the EscrowEvent set, including a state name
+ * such as "DISPUTED") fails fast instead of silently returning an
+ * empty list, so a typo ("DISPUT") cannot masquerade as \"no escrow
+ * ever saw this event\".
+ */
+export function escrowsByEvent(
+  escrows: readonly Escrow[],
+  event: EscrowEvent,
+): Escrow[] {
+  if (!ESCROW_EVENTS.has(event)) {
+    throw new Error(
+      `invalid escrowsByEvent: unknown event "${String(event)}"`,
+    );
+  }
+  return escrows.filter((escrow) =>
+    escrow.history.some((entry) => entry.event === event),
+  );
+}
+
+/**
  * Watchdog helper: from a batch of escrows, return the ones whose
  * deadline is coming up — non-terminal AND with a deadline inside the
  * half-open window `(now, now + withinMs]`.
