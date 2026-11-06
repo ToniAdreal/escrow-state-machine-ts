@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1310 tests, all local
+npm test   # 1320 tests, all local
 ```
 
 ## Quickstart
@@ -909,7 +909,14 @@ reconciliation summary — per-outcome counts, error count, total locked
 deposit, total inflow/outflow, and per-party net totals — summing the
 already cent-rounded figures from each report (aggregates are `round2`
 as well); error entries are counted but never enter the money totals,
-and an empty batch yields an all-zero summary.
+and an empty batch yields an all-zero summary. The summary also carries
+a per-currency breakdown, `byCurrency`, keyed by each report's ISO 4217
+code (reports built without a currency land in the `UNSPECIFIED`
+bucket): each bucket sums only its own currency's reports, so a
+mixed-currency batch can be read bucket by bucket as single-currency
+money. The top-level totals are kept for backward compatibility and
+still sum raw figures across currencies — read `byCurrency`, not the
+top-level totals, when the batch may mix currencies.
 
 Against an external payment ledger, `reconcileSettlements(reports, ledger)`
 pairs reports with ledger rows by `escrowId` and returns five groups —
@@ -934,8 +941,9 @@ batch wrapper that failure is recorded per escrow, never aborting the
 batch. The code rides the report, the webhook payload, and both batch
 wrappers verbatim; omit it and every shape stays exactly as before. It
 is a label only: amounts are never converted, so a batch mixing
-currencies still sums raw figures and the caller must not read that sum
-as single-currency money. Reconciliation is the one place a currency
+currencies still sums raw figures at the top level of the summary — read
+the summary's per-currency `byCurrency` buckets, not the top-level
+totals, when the batch may mix currencies. Reconciliation is the one place a currency
 difference is a first-class finding: `reconcileSettlements` puts a
 report/ledger pair whose codes differ into `currencyMismatch` (a
 ledger row may carry its own optional `currency`, shape-checked the
@@ -1015,7 +1023,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1310 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1320 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

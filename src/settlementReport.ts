@@ -394,6 +394,33 @@ export function buildSettlementReports(
   });
 }
 
+/**
+ * Per-currency slice of a {@link SettlementReportsSummary}: how many
+ * reports carried this currency code, and the money figures summed over
+ * just those reports (already cent-rounded inside each report, and
+ * `round2`-rounded again at the aggregate, the same rule the top-level
+ * totals use). A slice is single-currency money by construction, unlike
+ * the top-level totals, which sum raw figures across currencies.
+ */
+export interface SettlementCurrencySummary {
+  /** Reports in this currency bucket. */
+  reports: number;
+  /** Sum of `deposit.deposit` over this bucket's reports only. */
+  totalDeposit: number;
+  /** Sum of per-report totalInflow over this bucket's reports only. */
+  totalInflow: number;
+  /** Sum of per-report totalOutflow over this bucket's reports only. */
+  totalOutflow: number;
+}
+
+/**
+ * Bucket key for reports built without a currency code. The code is a
+ * label only, and a missing label is not a currency: currency-less
+ * reports are grouped under this key instead of being folded into any
+ * real currency's bucket.
+ */
+export const UNSPECIFIED_SETTLEMENT_CURRENCY = "UNSPECIFIED";
+
 export interface SettlementReportsSummary {
   /** Total batch entries inspected (reports + errors). */
   total: number;
@@ -411,6 +438,18 @@ export interface SettlementReportsSummary {
   totalOutflow: number;
   /** Per-party inflow/outflow/net summed over successful reports, in canonical role order. */
   parties: PartyLedger[];
+  /**
+   * Per-currency breakdown of the money figures, keyed by the report's
+   * ISO 4217 code; reports built without a currency land in the
+   * `UNSPECIFIED_SETTLEMENT_CURRENCY` bucket. Each bucket sums only
+   * its own currency's reports, so a mixed-currency batch never leaks
+   * one currency's figures into another's. The top-level totals above
+   * are kept as-is for backward compatibility and still sum raw
+   * figures across currencies — read `byCurrency`, not the top-level
+   * totals, when the batch may mix currencies. An empty (or
+   * all-error) batch yields an empty object.
+   */
+  byCurrency: Record<string, SettlementCurrencySummary>;
   /** True when every successful report is balanced (vacuously true for an empty/all-error batch). */
   balanced: boolean;
 }
@@ -428,6 +467,14 @@ export interface SettlementReportsSummary {
  * same `round2` rule, so the summary cannot drift from the reports it
  * summarizes by re-deriving amounts from raw inputs. An empty input
  * returns an all-zero summary (with `balanced: true`, vacuously).
+ *
+ * The money figures are also broken down per currency in
+ * `byCurrency`, keyed by each report's ISO 4217 code (currency-less
+ * reports under {@link UNSPECIFIED_SETTLEMENT_CURRENCY}). The
+ * top-level totals are kept for backward compatibility and still sum
+ * raw figures across currencies — they must not be read as
+ * single-currency money when the batch mixes currencies; read the
+ * per-currency bucket instead.
  *
  * Pure: the results array and the reports inside it are only read.
  */
@@ -450,6 +497,10 @@ export function summarizeSettlementReports(
   let totalInflow = 0;
   let totalOutflow = 0;
   let balanced = true;
+  const currencySums = new Map<
+    string,
+    { reports: number; totalDeposit: number; totalInflow: number; totalOutflow: number }
+  >();
 
   for (const result of results) {
     if (!result.report) {
@@ -463,6 +514,16 @@ export function summarizeSettlementReports(
     totalInflow += report.totalInflow;
     totalOutflow += report.totalOutflow;
     if (!report.balanced) balanced = false;
+    const bucketKey = report.currency ?? UNSPECIFIED_SETTLEMENT_CURRENCY;
+    let bucket = currencySums.get(bucketKey);
+    if (!bucket) {
+      bucket = { reports: 0, totalDeposit: 0, totalInflow: 0, totalOutflow: 0 };
+      currencySums.set(bucketKey, bucket);
+    }
+    bucket.reports += 1;
+    bucket.totalDeposit += report.deposit.deposit;
+    bucket.totalInflow += report.totalInflow;
+    bucket.totalOutflow += report.totalOutflow;
     for (const party of report.parties) {
       const sum = partySums.get(party.party);
       if (sum) {
@@ -470,6 +531,16 @@ export function summarizeSettlementReports(
         sum.outflow += party.outflow;
       }
     }
+  }
+
+  const byCurrency: Record<string, SettlementCurrencySummary> = {};
+  for (const [currency, bucket] of currencySums) {
+    byCurrency[currency] = {
+      reports: bucket.reports,
+      totalDeposit: round2(bucket.totalDeposit),
+      totalInflow: round2(bucket.totalInflow),
+      totalOutflow: round2(bucket.totalOutflow),
+    };
   }
 
   return {
@@ -486,6 +557,7 @@ export function summarizeSettlementReports(
         return ledger(role, sum.inflow, sum.outflow);
       },
     ),
+    byCurrency,
     balanced,
   };
 }

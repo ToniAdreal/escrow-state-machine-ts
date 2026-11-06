@@ -18,6 +18,20 @@ version changes.
 
 ### Added
 
+- Per-currency settlement summary breakdown (2026-11-06, backlog #921):
+  `summarizeSettlementReports` now also returns `byCurrency`, a
+  per-currency breakdown of the money figures keyed by each report's
+  ISO 4217 code (reports built without a currency land in the
+  `UNSPECIFIED` bucket, exported as `UNSPECIFIED_SETTLEMENT_CURRENCY`).
+  Each bucket sums only its own currency's reports, so a mixed-currency
+  batch can be read bucket by bucket as single-currency money; the
+  top-level totals are kept unchanged for backward compatibility and
+  still sum raw figures across currencies. `test/settlementReportsSummaryCurrency.test.ts`
+  gains 10 tests (single-currency equality with the top-level totals,
+  USD/EUR and three-currency splits, UNSPECIFIED bucket isolation,
+  error-entry exclusion, empty and all-error batches, per-bucket
+  reproduction of the underlying reports, per-bucket cent precision,
+  input immutability); README test counts 1310 -> 1320 in both places.
 - Snapshot persistence of `maxDeposit` / `requireVerifyEvidence` (2026-11-06, backlog #918):
   `toJSON()` writes `maxDeposit` when a cap is set and
   `requireVerifyEvidence: true` when the gate is on, so a restored
