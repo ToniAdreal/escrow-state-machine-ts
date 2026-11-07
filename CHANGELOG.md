@@ -18,6 +18,17 @@ version changes.
 
 ### Added
 
+- `diffEscrowSnapshots` gains an `idempotencyKeysChanged` dimension
+  (2026-11-07, backlog #959): the consumed-key set is now compared
+  order-insensitively between two snapshots — a key consumed, or a
+  key dropped on restore, shows up in the diff instead of silently
+  vanishing. A snapshot without the field (legacy, or no key
+  consumed yet) compares as the empty set, so "no field" and an
+  empty array are the same state, and duplicate entries in a stored
+  list do not count as a change. Only the schema version `v` stays
+  unreported. 11 new tests in
+  `test/diffEscrowSnapshotsIdempotencyKeys.test.ts`; README snapshot
+  section and test count updated.
 - `summarizeSettlementReports` gains `totalRemaining` (2026-11-07,
   backlog #953): the sum of each successful report's `remaining`
   (reports without one — a full release, refund, or expiry —

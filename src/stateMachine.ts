@@ -899,6 +899,14 @@ export interface EscrowSnapshotDiff {
    * off), so only a true off->on or on->off flip is a change.
    */
   evidenceGateChanged?: { from: boolean; to: boolean };
+  /**
+   * Consumed idempotency-key set moved (a key consumed, or a key
+   * dropped on restore). Reported as a plain boolean: the set is
+   * compared order-insensitively, and a snapshot without the field
+   * (legacy, or no key consumed yet) compares as the empty set, so
+   * "no field" and an empty array are the same state.
+   */
+  idempotencyKeysChanged?: boolean;
 }
 
 /**
@@ -941,6 +949,18 @@ function rolePolicyKey(policy: RolePolicy | undefined): string {
 }
 
 /**
+ * Idempotency-key comparison key: the consumed keys as a sorted,
+ * deduped set. A snapshot without the field (legacy, or no key
+ * consumed yet) is the empty set, so "no field" and an empty array
+ * are the same state. Order is first-consumption order in a
+ * snapshot, not meaning, so reordering is not a change.
+ */
+function idempotencyKeysKey(keys: readonly string[] | undefined): string {
+  if (keys === undefined) return "[]";
+  return JSON.stringify([...new Set(keys)].sort());
+}
+
+/**
  * Compare two snapshots of the same escrow and report what changed
  * between them — the audit/change-review question ("what moved since
  * the last snapshot I stored?") without hand-written field compares
@@ -954,10 +974,14 @@ function rolePolicyKey(policy: RolePolicy | undefined): string {
  * `maxDeposit` (setting, clearing, or changing it is a change), the
  * verify-evidence gate `requireVerifyEvidence` (only an off->on or
  * on->off flip counts — an absent field and an explicit `false` are
- * the same gate-off state), and history appends. `v` and
- * `idempotencyKeys` are deliberately not reported: the version is
- * schema metadata, and the consumed-key set is replay protection,
- * not escrow state.
+ * the same gate-off state), the consumed idempotency-key set (as a
+ * set — order-insensitive, a missing field is the empty set), and
+ * history appends. Only `v` is deliberately not reported: the
+ * version is schema metadata, not escrow state. The key set used to
+ * be excluded the same way, but a key consumed (or dropped on
+ * restore) between two stored snapshots is a real audit signal — a
+ * dispatch replayed because its key vanished is exactly what the
+ * set exists to prevent — so it is reported now.
  *
  * History is append-only, so `b`'s history must be an extension of
  * `a`'s: same entries in the same order, then zero or more new ones.
@@ -1028,6 +1052,9 @@ export function diffEscrowSnapshots(
       from: a.requireVerifyEvidence === true,
       to: b.requireVerifyEvidence === true,
     };
+  }
+  if (idempotencyKeysKey(a.idempotencyKeys) !== idempotencyKeysKey(b.idempotencyKeys)) {
+    diff.idempotencyKeysChanged = true;
   }
   if (b.history.length > a.history.length) {
     const appended = b.history
