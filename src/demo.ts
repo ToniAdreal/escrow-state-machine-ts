@@ -2283,6 +2283,17 @@ export const DEMO_SNAPSHOT_DIFF_OTHER_ID = "DEMO-ESC-034";
 export const DEMO_SNAPSHOT_DIFF_FUND_AT = "2026-03-14T09:00:00.000Z";
 export const DEMO_SNAPSHOT_DIFF_SUBMIT_AT = "2026-03-14T10:00:00.000Z";
 
+/**
+ * Partial-release settlement-report fixtures (backlog #945): a
+ * still-FUNDED escrow on the golden deposit, reported on the same
+ * first 4,252 tranche the partial-release segment settles, so the
+ * report's slice figures cross-check against it exactly. All
+ * timestamps fixed; the printed lines carry ids, the outcome, and
+ * amounts only, so no wall clock enters the output.
+ */
+export const DEMO_PARTIAL_RELEASE_REPORT_ID = "DEMO-ESC-035";
+export const DEMO_PARTIAL_RELEASE_REPORT_FUND_AT = "2026-03-16T09:00:00.000Z";
+
 export interface DemoResult {
   escrow: Escrow;
   report: SettlementReport;
@@ -3808,6 +3819,23 @@ export interface DemoResult {
    * 318.9, net 6059.1, remaining 0 — the release is complete.
    */
   partialReleaseSecond: PartialSettlement;
+  /**
+   * The partial-release settlement-report escrow (DEMO-ESC-035):
+   * funded on the golden deposit and left FUNDED — a partial
+   * release is evidence of a slice, not a state change.
+   */
+  partialReleaseReportEscrow: Escrow;
+  /**
+   * `buildSettlementReport` on that escrow with `partialRelease:
+   * { released: 4252, proFeeBps: 500 }`: outcome
+   * "partially-released", remaining 6378, the slice settled per
+   * `settlePartialRelease` (proFee 212.6, net 4039.4, identical to
+   * `partialReleaseFirst`), the ledger kept over the full deposit
+   * (sponsor inflow 6378 / outflow 10630, creator inflow 4039.4,
+   * platform inflow 212.6, referrer 0 / 0), totals 10630 / 10630,
+   * balanced true.
+   */
+  partialReleaseReport: SettlementReport;
   /**
    * `reconcileSettlements` over the three demo reports against the
    * four-row external ledger: one matched, one report-only, one
@@ -9148,6 +9176,75 @@ export async function runDemo(): Promise<DemoResult> {
     `  total: proFee ${partialReleaseFirst.proFee + partialReleaseSecond.proFee}, net ${partialReleaseFirst.net + partialReleaseSecond.net} — identical to one settleRelease(gross ${partialReleaseGross}): splitting a release never double-charges the fee`,
   );
 
+  // --- Partial-release settlement report: buildSettlementReport with partialRelease ---
+  // The tranche math above is pure arithmetic; the report is what
+  // operations files at day end. A still-FUNDED escrow on the
+  // golden deposit is reported on the same first 4,252 tranche, so
+  // the report's slice figures cross-check against the pure
+  // function exactly: outcome "partially-released", remaining
+  // 6,378 still locked, sponsor outflow the whole deposit, sponsor
+  // inflow the remainder, creator/platform the slice net/fee. The
+  // escrow stays FUNDED — the report is evidence of the slice, not
+  // a state change.
+  const partialReleaseReportEscrow = new Escrow(DEMO_PARTIAL_RELEASE_REPORT_ID);
+  partialReleaseReportEscrow.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "sponsor",
+    at: DEMO_PARTIAL_RELEASE_REPORT_FUND_AT,
+  });
+  const partialReleaseReport = buildSettlementReport({
+    escrowId: partialReleaseReportEscrow.id,
+    history: partialReleaseReportEscrow.history,
+    finalState: partialReleaseReportEscrow.state,
+    deposit: fees,
+    partialRelease: { released: 4252, proFeeBps: DEMO_PRO_FEE_BPS },
+  });
+  const partialReleaseReportSponsor = partialReleaseReport.parties[0];
+  const partialReleaseReportCreator = partialReleaseReport.parties[1];
+  const partialReleaseReportPlatform = partialReleaseReport.parties[2];
+  const partialReleaseReportReferrer = partialReleaseReport.parties[3];
+  if (
+    partialReleaseReportEscrow.state !== "FUNDED" ||
+    partialReleaseReport.outcome !== "partially-released" ||
+    partialReleaseReport.remaining !== 6378 ||
+    partialReleaseReport.partialSettlement?.released !==
+      partialReleaseFirst.released ||
+    partialReleaseReport.partialSettlement?.proFee !==
+      partialReleaseFirst.proFee ||
+    partialReleaseReport.partialSettlement?.referralCredits !==
+      partialReleaseFirst.referralCredits ||
+    partialReleaseReport.partialSettlement?.net !== partialReleaseFirst.net ||
+    partialReleaseReport.partialSettlement?.remaining !==
+      partialReleaseFirst.remaining ||
+    partialReleaseReportSponsor.party !== "sponsor" ||
+    partialReleaseReportSponsor.inflow !== 6378 ||
+    partialReleaseReportSponsor.outflow !== 10630 ||
+    partialReleaseReportCreator.party !== "creator" ||
+    partialReleaseReportCreator.inflow !== 4039.4 ||
+    partialReleaseReportCreator.outflow !== 0 ||
+    partialReleaseReportPlatform.party !== "platform" ||
+    partialReleaseReportPlatform.inflow !== 212.6 ||
+    partialReleaseReportPlatform.outflow !== 0 ||
+    partialReleaseReportReferrer.party !== "referrer" ||
+    partialReleaseReportReferrer.inflow !== 0 ||
+    partialReleaseReportReferrer.outflow !== 0 ||
+    partialReleaseReport.totalInflow !== 10630 ||
+    partialReleaseReport.totalOutflow !== 10630 ||
+    partialReleaseReport.balanced !== true
+  ) {
+    throw new Error(
+      "demo fixture broken: partial-release settlement-report segment does not match the pinned shape (DEMO-ESC-035 FUNDED on the golden deposit, reported on the 4252 tranche at 500 bps: outcome partially-released, remaining 6378, slice proFee 212.6 / net 4039.4, sponsor inflow 6378 / outflow 10630, creator inflow 4039.4, platform inflow 212.6, totals 10630 / 10630, balanced true)",
+    );
+  }
+  lines.push(
+    "",
+    "Partial-release settlement report (buildSettlementReport with partialRelease on a funded escrow):",
+    `  ${DEMO_PARTIAL_RELEASE_REPORT_ID}: outcome partially-released — the first 4252 tranche of the golden deposit 10630, escrow stays FUNDED`,
+    `  slice: released ${partialReleaseReport.partialSettlement?.released} — proFee ${partialReleaseReport.partialSettlement?.proFee}, net ${partialReleaseReport.partialSettlement?.net}, remaining ${partialReleaseReport.remaining}`,
+    `  sponsor: inflow ${partialReleaseReportSponsor.inflow} (still locked) / outflow ${partialReleaseReportSponsor.outflow} (the whole deposit left the sponsor)`,
+    `  creator: inflow ${partialReleaseReportCreator.inflow} / outflow ${partialReleaseReportCreator.outflow} — platform: inflow ${partialReleaseReportPlatform.inflow} / outflow ${partialReleaseReportPlatform.outflow} — referrer: inflow ${partialReleaseReportReferrer.inflow} / outflow ${partialReleaseReportReferrer.outflow}`,
+    `  totalInflow: ${partialReleaseReport.totalInflow} — totalOutflow: ${partialReleaseReport.totalOutflow} — balanced: ${partialReleaseReport.balanced} (the report balances over the full deposit)`,
+  );
+
   // --- Settlement reconciliation: reports vs an external ledger ---
   // The batch pipeline above summarizes what the reports claim, but
   // it cannot see whether the money actually left the external
@@ -9594,6 +9691,8 @@ export async function runDemo(): Promise<DemoResult> {
     partialReleaseGross,
     partialReleaseFirst,
     partialReleaseSecond,
+    partialReleaseReportEscrow,
+    partialReleaseReport,
     reconcileResult,
     snapshotDiffEscrow,
     snapshotDiff,

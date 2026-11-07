@@ -18,6 +18,20 @@ version changes.
 
 ### Added
 
+- CLI demo shows the partial-release settlement report (2026-11-07,
+  backlog #945): after the two-tranche `settlePartialRelease`
+  segment, a still-`FUNDED` escrow (DEMO-ESC-035) on the golden
+  deposit is reported through `buildSettlementReport` with
+  `partialRelease: { released: 4252, proFeeBps: 500 }` — outcome
+  `"partially-released"`, `remaining` 6,378, the slice settled per
+  `settlePartialRelease` (proFee 212.60, net 4,039.40), the ledger
+  kept over the full deposit (sponsor inflow 6,378 / outflow
+  10,630, creator inflow 4,039.40, platform inflow 212.60),
+  totals 10,630 / 10,630, balanced. The demo pins every figure
+  fail-fast (the report's slice must equal the pure function's
+  first tranche exactly) and the escrow stays FUNDED. 2 new tests
+  in `test/demo.test.ts`; README demo walkthrough and test count
+  updated.
 - Opt-in audit-attribution gate `EscrowOptions.requireActor` (2026-11-07,
   backlog #941): when `true`, every `dispatch()` without an `actor`
   throws `actor required: dispatch must carry a non-empty actor when

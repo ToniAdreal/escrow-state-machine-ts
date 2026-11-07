@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1374 tests, all local
+npm test   # 1376 tests, all local
 ```
 
 ## Quickstart
@@ -145,7 +145,13 @@ change escrow state — state advancement still goes through
 in two tranches — 4,252 (40%) then the remaining 6,378 — with
 tranche fees 212.60 and 318.90 and nets 4,039.40 and 6,059.10
 summing back to the single-release split (531.50 / 10,098.50),
-so splitting a release never double-charges the fee. For a refund, `settleRefund` returns the full deposit
+so splitting a release never double-charges the fee. The demo then
+reports that same first tranche through `buildSettlementReport` with
+`partialRelease`: outcome `partially-released` on a still-`FUNDED`
+DEMO-ESC-035, remaining 6,378 still locked, sponsor outflow the
+whole 10,630 against inflow 6,378, creator net 4,039.40 and platform
+fee 212.60, totals 10,630 / 10,630 and balanced — the day-end view
+of a partial release. For a refund, `settleRefund` returns the full deposit
 to the sponsor with every other party at 0 and no fee charged,
 matching the REFUNDED branch of `buildSettlementReport` exactly. The demo then shows a settlement-reconciliation segment: `reconcileSettlements` pairs three settled reports against a four-row external ledger — one matched at 10,630, one report-only at 1,100, one amount mismatch (report 10,630 vs ledger 10,000), and one ledger-only row at 500. The demo also shows a batch-filter
 segment: `escrowsByState` / `escrowsByActor` / `escrowsByEvent` slice one four-escrow
@@ -1070,7 +1076,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1374 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1376 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

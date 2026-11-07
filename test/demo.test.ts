@@ -125,6 +125,8 @@ import {
   DEMO_PARSED_HISTORY_TAMPER_ERROR,
   DEMO_PARSED_HISTORY_TAMPERED_NOTE,
   DEMO_PARSED_HISTORY_TAMPERED_SEQ,
+  DEMO_PARTIAL_RELEASE_REPORT_FUND_AT,
+  DEMO_PARTIAL_RELEASE_REPORT_ID,
   DEMO_PATROL_EXACT_ESCROW_ID,
   DEMO_PATROL_EXACT_FUND_AT,
   DEMO_PATROL_NO_HISTORY_ESCROW_ID,
@@ -8039,12 +8041,13 @@ test("demo shows partial release: settlePartialRelease splits the golden deposit
 test("demo partial-release segment is deterministic: two runs print byte-identical partial-release lines", async () => {
   const header =
     "Partial release (settlePartialRelease on the golden deposit, in two tranches):";
-  const reconcileHeader =
-    "Settlement reconciliation (reconcileSettlements against an external ledger):";
+  const reportHeader =
+    "Partial-release settlement report (buildSettlementReport with partialRelease on a funded escrow):";
   // The partial-release section runs from the blank line before its
-  // header to the blank line before the reconciliation header.
+  // header to the blank line before the partial-release report
+  // header that now follows it.
   const segment = (ls: string[]) =>
-    ls.slice(ls.indexOf(header) - 1, ls.indexOf(reconcileHeader) - 1);
+    ls.slice(ls.indexOf(header) - 1, ls.indexOf(reportHeader) - 1);
   const a = await runDemo();
   const b = await runDemo();
   // Blank + header + first tranche + second tranche + total;
@@ -8055,6 +8058,131 @@ test("demo partial-release segment is deterministic: two runs print byte-identic
   assert.deepEqual(segA, segment(b.lines));
   assert.deepEqual(a.partialReleaseFirst, b.partialReleaseFirst);
   assert.deepEqual(a.partialReleaseSecond, b.partialReleaseSecond);
+});
+
+test("demo shows partial-release settlement report: buildSettlementReport on a funded escrow reports the first tranche with the remainder still locked", async () => {
+  const {
+    partialReleaseFirst,
+    partialReleaseReportEscrow,
+    partialReleaseReport,
+    lines,
+  } = await runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned fixture shape: DEMO-ESC-035 funded on the golden
+  // deposit and left FUNDED, reported on the same first 4,252
+  // tranche the partial-release segment settles.
+  assert.equal(DEMO_PARTIAL_RELEASE_REPORT_ID, "DEMO-ESC-035");
+  assert.equal(
+    DEMO_PARTIAL_RELEASE_REPORT_FUND_AT,
+    "2026-03-16T09:00:00.000Z",
+  );
+
+  assert.equal(partialReleaseReportEscrow.id, DEMO_PARTIAL_RELEASE_REPORT_ID);
+  assert.equal(partialReleaseReportEscrow.state, "FUNDED");
+  assert.deepEqual(
+    partialReleaseReportEscrow.history.map((h) => h.event),
+    ["FUND"],
+  );
+
+  assert.equal(partialReleaseReport.outcome, "partially-released");
+  assert.equal(partialReleaseReport.remaining, 6378);
+  // The report's slice is the pure function's first tranche,
+  // byte for byte — the report can never drift from it.
+  assert.deepEqual(partialReleaseReport.partialSettlement, {
+    released: 4252,
+    proFee: 212.6,
+    referralCredits: 0,
+    net: 4039.4,
+    remaining: 6378,
+  });
+  assert.deepEqual(partialReleaseReport.partialSettlement, partialReleaseFirst);
+  // Ledger over the full deposit, so the report still balances:
+  // the sponsor's outflow is the whole locked deposit, the
+  // sponsor's inflow is the amount still held, and the released
+  // slice flows out to creator / platform exactly as a full
+  // release would split it.
+  assert.deepEqual(
+    partialReleaseReport.parties.map((p) => [
+      p.party,
+      p.inflow,
+      p.outflow,
+      p.net,
+    ]),
+    [
+      ["sponsor", 6378, 10630, -4252],
+      ["creator", 4039.4, 0, 4039.4],
+      ["platform", 212.6, 0, 212.6],
+      ["referrer", 0, 0, 0],
+    ],
+  );
+  assert.equal(partialReleaseReport.totalInflow, 10630);
+  assert.equal(partialReleaseReport.totalOutflow, 10630);
+  assert.equal(partialReleaseReport.balanced, true);
+
+  // The printed section follows the partial-release segment and
+  // is itself followed by the reconciliation segment.
+  const header =
+    "Partial-release settlement report (buildSettlementReport with partialRelease on a funded escrow):";
+  assert.ok(
+    text.indexOf(header) >
+      text.indexOf(
+        "Partial release (settlePartialRelease on the golden deposit, in two tranches):",
+      ),
+    "partial-release report segment must follow the partial-release segment",
+  );
+  assert.ok(
+    text.indexOf(
+      "Settlement reconciliation (reconcileSettlements against an external ledger):",
+    ) > text.indexOf(header),
+    "reconciliation segment must follow the partial-release report segment",
+  );
+  assert.ok(
+    text.includes(
+      "  DEMO-ESC-035: outcome partially-released — the first 4252 tranche of the golden deposit 10630, escrow stays FUNDED",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  slice: released 4252 — proFee 212.6, net 4039.4, remaining 6378",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  sponsor: inflow 6378 (still locked) / outflow 10630 (the whole deposit left the sponsor)",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  creator: inflow 4039.4 / outflow 0 — platform: inflow 212.6 / outflow 0 — referrer: inflow 0 / outflow 0",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  totalInflow: 10630 — totalOutflow: 10630 — balanced: true (the report balances over the full deposit)",
+    ),
+  );
+});
+
+test("demo partial-release settlement-report segment is deterministic: two runs print byte-identical report lines", async () => {
+  const header =
+    "Partial-release settlement report (buildSettlementReport with partialRelease on a funded escrow):";
+  const reconcileHeader =
+    "Settlement reconciliation (reconcileSettlements against an external ledger):";
+  // The report section runs from the blank line before its header
+  // to the blank line before the reconciliation header.
+  const segment = (ls: string[]) =>
+    ls.slice(ls.indexOf(header) - 1, ls.indexOf(reconcileHeader) - 1);
+  const a = await runDemo();
+  const b = await runDemo();
+  // Blank + header + outcome + slice + sponsor + parties +
+  // totals; every printed value derives from the pinned fixtures
+  // alone, so no normalization is needed.
+  const segA = segment(a.lines);
+  assert.equal(segA.length, 7);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(a.partialReleaseReport, b.partialReleaseReport);
+  assert.equal(a.partialReleaseReportEscrow.state, b.partialReleaseReportEscrow.state);
 });
 
 test("demo shows settlement reconciliation: reconcileSettlements pairs three reports against an external ledger into all four groups", async () => {
