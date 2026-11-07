@@ -2609,9 +2609,13 @@ export interface ExpireOverdueResult {
  *
  * The executor re-uses the SAME `now` as the audit timestamp of every
  * `EXPIRE` it dispatches (`dispatch("EXPIRE", undefined, undefined,
- * { at: now })`), so a fixed screening instant yields identical audit
+ * { actor: "system", at: now })`), so a fixed screening instant yields identical audit
  * entries across escrows and across replays — the wall clock never
- * leaks into the history. Pinning inherits dispatch's no-backward-clock
+ * leaks into the history. The dispatch is attributed to the `system`
+ * actor, exactly like dataquest's `expireOverdueTasks`: the executor
+ * acts on the escrow's behalf, so an escrow constructed with the
+ * opt-in `requireActor` gate still expires instead of landing as
+ * `{ expired: false, error: "actor required: …" }`. Pinning inherits dispatch's no-backward-clock
  * rule: `now` must not be earlier than an escrow's last history entry,
  * or that escrow lands as `{ expired: false, error: "invalid dispatch
  * options: at … is earlier than the previous entry's at …" }` and the
@@ -2628,9 +2632,15 @@ export function expireOverdueEscrows(
       // Pin the screening `now` as the EXPIRE audit entry's `at`: every
       // entry in the batch carries the same timestamp as the screening
       // decision, so fixed-`now` tests and replays produce identical
-      // histories. dispatch's own no-backward-clock check still applies
+      // histories. The dispatch is attributed to the `system` actor —
+      // the executor acts on the escrow's behalf, so a `requireActor`
+      // escrow still expires instead of failing the attribution gate.
+      // dispatch's own no-backward-clock check still applies
       // (a backdated `now` lands as a per-escrow error, batch continues).
-      escrow.dispatch("EXPIRE", undefined, undefined, { at: now });
+      escrow.dispatch("EXPIRE", undefined, undefined, {
+        actor: "system",
+        at: now,
+      });
       // The history getter returns frozen detached copies, so the last
       // entry is already the immutable audit record of this dispatch.
       const history = escrow.history;

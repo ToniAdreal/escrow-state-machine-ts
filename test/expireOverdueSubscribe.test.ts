@@ -16,9 +16,9 @@
  * is a frozen, detached copy of the appended audit entry — so each
  * positive case also checks the notification entry against the
  * escrow's own history tail and against the executor's report entry.
- * Note the executor dispatches with no actor, so a gated escrow's
- * refusal here is the no-actor policy error
- * (`policy requires an actor in [...]`), not the named-actor form.
+ * Note the executor dispatches as `system`, so a gated escrow's
+ * refusal here is the named-actor policy error
+ * (`"system" is not in [...]`), not the missing-actor form.
  */
 
 import { describe, it } from "node:test";
@@ -200,7 +200,7 @@ describe("expireOverdueEscrows x subscribe", () => {
     assert.equal(seenAfter.length, 1);
   });
 
-  it("policy refusal: the executor dispatches with no actor, so a gated escrow reports the no-actor policy error, zero notifications, untouched; the rest still expire and notify", () => {
+  it("policy refusal: the executor dispatches as system, so a gated escrow reports the named-actor policy error, zero notifications, untouched; the rest still expire and notify", () => {
     const gated = fundedWithDeadline("gated", PAST, { EXPIRE: ["ops-lead"] });
     const open = fundedWithDeadline("open", PAST);
     const seenGated = collect(gated).seen;
@@ -211,7 +211,7 @@ describe("expireOverdueEscrows x subscribe", () => {
     assert.equal(blocked.expired, false);
     assert.equal(
       blocked.error,
-      'actor not authorized for EXPIRE: policy requires an actor in [ops-lead]'
+      'actor not authorized for EXPIRE: "system" is not in [ops-lead]'
     );
     assert.equal("entry" in blocked, false);
     assert.equal(seenGated.length, 0);

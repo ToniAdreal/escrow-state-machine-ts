@@ -2,18 +2,18 @@
  * expireOverdueEscrows x rolePolicy combination (backlog #706).
  *
  * The batch executor and event-level RBAC each have their own suites,
- * but their combination was never pinned. The escrow executor differs
- * from the dataquest lifecycle's executor in one decisive respect, and
- * this file pins that difference rather than copying dataquest's
- * conclusion: dataquest's executor dispatches EXPIRE with a `system`
- * actor, so a policy that lists EXPIRE without `system` fails with
- * `"system" is not in [...]`. The escrow executor dispatches EXPIRE
- * with only `{ at: now }` and no actor at all
- * (`src/stateMachine.ts`, `expireOverdueEscrows`), so a policy that
- * lists EXPIRE fails with the missing-actor wording
- * `policy requires an actor in [...]` — there is no actor to be
- * "not in" the list. A policy that does not list EXPIRE, or no policy
- * at all, leaves the watchdog path unrestricted.
+ * but their combination was never pinned. Since backlog #965 the
+ * escrow executor dispatches EXPIRE attributed to the `system` actor
+ * — the same attribution dataquest's executor uses — so a policy
+ * that lists EXPIRE without `system` fails with the named-actor
+ * wording `"system" is not in [...]`, and a policy that DOES list
+ * `system` lets the watchdog through. A policy that does not list
+ * EXPIRE, or no policy at all, leaves the watchdog path
+ * unrestricted. (Before #965 the executor dispatched with no actor
+ * at all, so the same policies failed with the missing-actor wording
+ * `policy requires an actor in [...]`; that difference is gone —
+ * the executor now always carries an actor, and the actor is
+ * `system`.)
  *
  * RBAC is checked after transition legality (see `dispatch`), so a
  * VERIFIED overdue escrow with an EXPIRE policy still fails with the
@@ -70,7 +70,7 @@ function byId(results: ExpireOverdueResult[], id: string): ExpireOverdueResult {
 }
 
 describe("expireOverdueEscrows x rolePolicy", () => {
-  it("mixed batch: no-policy and other-event policies expire, EXPIRE-listed policy fails with the missing-actor wording", () => {
+  it("mixed batch: no-policy and other-event policies expire, EXPIRE-listed policy fails with the named-actor wording", () => {
     const open = fundedOverdue("open");
     const otherEvent = fundedOverdue("other-event", {
       RELEASE: ["treasury"],
@@ -94,16 +94,18 @@ describe("expireOverdueEscrows x rolePolicy", () => {
       assert.equal(ok.entry?.from, "FUNDED");
       assert.equal(ok.entry?.to, "EXPIRED");
       assert.equal(ok.entry?.at, NOW.toISOString());
+      // the executor always attributes its EXPIRE to `system`
+      assert.equal(ok.entry?.actor, "system");
     }
 
     const blocked = byId(results, "gated");
     assert.equal(blocked.expired, false);
-    // The executor passes no actor, so the failure is the missing-actor
-    // wording — not `"system" is not in [ops-lead]` (dataquest's
-    // executor, which dispatches with a `system` actor).
+    // The executor dispatches as `system`, so the failure is the
+    // named-actor wording — not the missing-actor wording a
+    // no-actor dispatch would produce.
     assert.equal(
       blocked.error,
-      "actor not authorized for EXPIRE: policy requires an actor in [ops-lead]"
+      'actor not authorized for EXPIRE: "system" is not in [ops-lead]'
     );
     assert.equal("entry" in blocked, false);
     // The failed escrow is untouched: still FUNDED, no new history.
@@ -152,7 +154,7 @@ describe("expireOverdueEscrows x rolePolicy", () => {
     assert.equal(last.at, NOW.toISOString());
   });
 
-  it("a multi-role EXPIRE policy still blocks the actor-less executor, and either listed role can expire manually", () => {
+  it("a multi-role EXPIRE policy still blocks the executor when neither role is system, and either listed role can expire manually", () => {
     const gated = fundedOverdue("gated-multi", {
       EXPIRE: ["ops-lead", "watchdog"],
     });
@@ -162,7 +164,7 @@ describe("expireOverdueEscrows x rolePolicy", () => {
     assert.equal(results[0].expired, false);
     assert.equal(
       results[0].error,
-      "actor not authorized for EXPIRE: policy requires an actor in [ops-lead, watchdog]"
+      'actor not authorized for EXPIRE: "system" is not in [ops-lead, watchdog]'
     );
     assert.equal(gated.state, "FUNDED");
 
@@ -175,6 +177,22 @@ describe("expireOverdueEscrows x rolePolicy", () => {
       }),
       "EXPIRED"
     );
+  });
+
+  it("a policy that lists system lets the executor expire", () => {
+    // The gate is satisfiable by policy: allowlisting `system` for
+    // EXPIRE hands the watchdog the key instead of blocking it.
+    const gated = fundedOverdue("gated-system", {
+      EXPIRE: ["system", "ops-lead"],
+    });
+
+    const [result] = expireOverdueEscrows([gated], NOW);
+    assert.equal(result.expired, true);
+    assert.equal(result.error, undefined);
+    assert.equal(gated.state, "EXPIRED");
+    assert.equal(result.entry?.event, "EXPIRE");
+    assert.equal(result.entry?.actor, "system");
+    assert.equal(gated.history[gated.history.length - 1].actor, "system");
   });
 
   it("a policy-listed escrow that is not overdue is never attempted, so the policy never surfaces", () => {

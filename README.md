@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1418 tests, all local
+npm test   # 1426 tests, all local
 ```
 
 ## Quickstart
@@ -365,9 +365,14 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   `{ expired: false, error: "invalid transition: EXPIRE from VERIFIED" }`
   for it and keeps going. Failed escrows are left untouched.
   The executor pins the screening `now` as the `at` of every `EXPIRE`
-  entry it appends (`dispatch("EXPIRE", …, { at: now })`), so a fixed
-  screening instant produces identical audit entries across the batch
-  and across replays — the wall clock never leaks in. (Consequence:
+  entry it appends (`dispatch("EXPIRE", …, { actor: "system", at: now })`),
+  so a fixed screening instant produces identical audit entries across the batch
+  and across replays — the wall clock never leaks in. The `system`
+  attribution also means the executor passes an escrow's opt-in
+  `requireActor` gate, and a `rolePolicy` that lists `EXPIRE` must
+  include `system` for the watchdog to get through (otherwise the
+  refusal reports `"system" is not in [...]`, per escrow, batch
+  continues). (Consequence:
   `now` must not predate an escrow's last history entry; a backdated
   `now` lands as a per-escrow `{expired: false, error}` and the batch
   continues.)
@@ -1106,7 +1111,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1418 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1426 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

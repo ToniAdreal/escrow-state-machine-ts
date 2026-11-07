@@ -1559,6 +1559,23 @@ version changes.
 
 ### Fixed
 
+- `expireOverdueEscrows` now attributes its EXPIRE dispatch to the
+  `system` actor (2026-11-07, backlog #965): it previously dispatched
+  with no actor at all, so a `requireActor: true` escrow landed
+  `{ expired: false, error: "actor required: …" }` instead of
+  expiring — the watchdog silently failed its whole purpose on gated
+  escrows. The executor now passes the attribution gate, mirroring
+  dataquest's `expireOverdueTasks`, and a `rolePolicy` that lists
+  EXPIRE must include `system` for the watchdog to get through (a
+  refusal now reports `"system" is not in [...]`, per escrow, batch
+  continues; allowlisting `system` hands the watchdog the key).
+  7 new tests in `test/watchdogRequireActor.test.ts` (including the
+  `fromHistory` re-attachment and mixed-batch isolation legs), 1 new
+  test in `test/expireOverdueRolePolicy.test.ts`, and the two
+  combination tests that pinned the old actor-less wording updated to
+  the named-actor wording; README watchdog section documents the
+  attribution.
+
 - Dispatch notes and snapshot/history notes are capped at `MAX_NOTE_LENGTH`
   (32,768 characters, 2026-11-06, backlog #937): `dispatch()` and the snapshot parser
   (`fromJSON`/`fromHistory`/`parseEscrowHistory`/`historyFromNdjson`, all
