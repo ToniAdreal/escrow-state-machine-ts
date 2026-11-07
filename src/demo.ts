@@ -4578,6 +4578,11 @@ export async function runDemo(): Promise<DemoResult> {
   // 21,260; sponsor net -10,630 (the released outflow; on the refunded
   // escrow its inflow cancels its own outflow), creator net 10,098.50,
   // platform net 531.50, referrer net 0; balanced true.
+  // totalRemaining is 0 by the same arithmetic: both successful reports
+  // are fully settled (a full release and a full refund), and only a
+  // partially-released report carries a `remaining` — the error entry
+  // contributes nothing here either. A non-zero remainder is shown by
+  // the partial-release segment later in the demo (remaining 6,378).
   const pendingEscrow = new Escrow(DEMO_PENDING_ESCROW_ID);
   pendingEscrow.dispatch("FUND", "Deposit locked (wire received)", 10630, {
     actor: "sponsor",
@@ -4620,7 +4625,7 @@ export async function runDemo(): Promise<DemoResult> {
   }
   lines.push(
     `  summary: ${batchSummary.total} escrows — ${batchSummary.reports} reports, ${batchSummary.errors} error (released ${batchSummary.outcomes.released}, refunded ${batchSummary.outcomes.refunded}, expired ${batchSummary.outcomes.expired})`,
-    `  summary totals: deposit ${batchSummary.totalDeposit}, inflow ${batchSummary.totalInflow}, outflow ${batchSummary.totalOutflow} — ${batchSummary.balanced ? "balanced ✓" : "UNBALANCED ✗"}`,
+    `  summary totals: deposit ${batchSummary.totalDeposit}, inflow ${batchSummary.totalInflow}, outflow ${batchSummary.totalOutflow}, remaining ${batchSummary.totalRemaining} — ${batchSummary.balanced ? "balanced ✓" : "UNBALANCED ✗"}`,
     `  summary parties: ${batchSummary.parties.map((p) => `${p.party} net ${p.net}`).join(", ")}`,
   );
 
@@ -8041,6 +8046,7 @@ export async function runDemo(): Promise<DemoResult> {
     keyedBatchSummary.totalDeposit !== 21260 ||
     keyedBatchSummary.totalInflow !== 21260 ||
     keyedBatchSummary.totalOutflow !== 21260 ||
+    keyedBatchSummary.totalRemaining !== 0 ||
     keyedBatchSummary.balanced !== true
   ) {
     throw new Error(
@@ -8054,7 +8060,7 @@ export async function runDemo(): Promise<DemoResult> {
     `  ${keyedBatchUnkeyedEscrow.id} (unkeyed, no key): report — outcome released, deposit 10630, balanced true`,
     `  ${keyedBatchWrongKeyEscrow.id} (keyed, wrong key): error — ${keyedBatchWrongKeyError}`,
     `  summary: ${keyedBatchSummary.total} escrows — ${keyedBatchSummary.reports} reports, ${keyedBatchSummary.errors} error (released ${keyedBatchSummary.outcomes.released}, refunded ${keyedBatchSummary.outcomes.refunded}, expired ${keyedBatchSummary.outcomes.expired})`,
-    `  summary totals: deposit ${keyedBatchSummary.totalDeposit}, inflow ${keyedBatchSummary.totalInflow}, outflow ${keyedBatchSummary.totalOutflow} — ${keyedBatchSummary.balanced ? "balanced ✓" : "UNBALANCED ✗"} (the error entry contributes nothing to any total)`,
+    `  summary totals: deposit ${keyedBatchSummary.totalDeposit}, inflow ${keyedBatchSummary.totalInflow}, outflow ${keyedBatchSummary.totalOutflow}, remaining ${keyedBatchSummary.totalRemaining} — ${keyedBatchSummary.balanced ? "balanced ✓" : "UNBALANCED ✗"} (the error entry contributes nothing to any total)`,
     `  summary parties: ${keyedBatchSummary.parties.map((p) => `${p.party} net ${p.net}`).join(", ")}`,
   );
 

@@ -18,6 +18,17 @@ version changes.
 
 ### Added
 
+- CLI demo batch summary prints the still-locked remainder (2026-11-07,
+  backlog #968): both `summary totals` lines (the day-end batch and the
+  keyed-audit batch) now read `…, remaining <totalRemaining>` alongside
+  deposit/inflow/outflow, so each batch shows how much money is still
+  locked without a second call. Both demo batches read `remaining 0` —
+  all of their successful reports are fully settled (full release +
+  full refund in the first batch, two full releases in the keyed batch),
+  and only a partially-released report carries a remainder (the demo's
+  partial-release segment shows 6,378). The batch-summary tests pin
+  `totalRemaining` 0 for both batches; README demo section updated,
+  test count unchanged (assertions added to existing tests).
 - `DeliverWebhookOptions.fetchImpl` injection (2026-11-07, backlog
   #962): delivery can run on an injected `(url: string, init) =>
   Promise<Response>` instead of the global `fetch` — a stub in

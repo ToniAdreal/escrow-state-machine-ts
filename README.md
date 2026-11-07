@@ -87,7 +87,8 @@ still-`FUNDED` escrow lands as `{escrowId, error}` in the middle of
 the batch without blocking the refunded report after it — and
 `summarizeSettlementReports` prints the batch's reconciliation
 summary (2 reports, 1 error, totals of 21,260 on the two golden
-deposits). The batch results then go straight into
+deposits, and a still-locked `remaining` of 0 — both successful
+reports are fully settled, so neither carries a remainder). The batch results then go straight into
 `buildSettlementWebhooks`, which signs one webhook per successful
 report under the shared demo secret at one fixed batch timestamp —
 one factory-generated `eventId` per report (`evt_demo_batch_001`,

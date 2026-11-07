@@ -1316,6 +1316,11 @@ test("demo batch summary aggregates only the successful reports (hand-computed t
   assert.equal(batchSummary.totalDeposit, 21260);
   assert.equal(batchSummary.totalInflow, 21260);
   assert.equal(batchSummary.totalOutflow, 21260);
+  // Both successful reports are fully settled (full release + full
+  // refund), so neither carries a `remaining` and the still-locked
+  // remainder is 0 — not deposit minus outflow, which would also read
+  // 0 here but is the wrong read on a partially-released batch.
+  assert.equal(batchSummary.totalRemaining, 0);
   assert.equal(batchSummary.balanced, true);
   // Sponsor: -10,630 on the release, 0 net on the refund (in = out).
   // Creator 10,098.50 and platform 531.50 come from the release only.
@@ -1360,7 +1365,7 @@ test("demo lines print the batch reports + summary section", async () => {
   );
   assert.ok(
     text.includes(
-      "  summary totals: deposit 21260, inflow 21260, outflow 21260 — balanced ✓",
+      "  summary totals: deposit 21260, inflow 21260, outflow 21260, remaining 0 — balanced ✓",
     ),
   );
   assert.ok(
@@ -2570,7 +2575,7 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
   );
   assert.match(
     out,
-    /summary totals: deposit 21260, inflow 21260, outflow 21260 — balanced ✓/,
+    /summary totals: deposit 21260, inflow 21260, outflow 21260, remaining 0 — balanced ✓/,
   );
   // Batch webhook tail: per-item signed webhooks over the batch
   // reports — distinct factory eventIds, the error forwarded in the
@@ -6615,6 +6620,8 @@ test("demo shows batch settlement reports over keyed audit chains: the correct-k
   assert.equal(keyedBatchSummary.totalDeposit, 21260);
   assert.equal(keyedBatchSummary.totalInflow, 21260);
   assert.equal(keyedBatchSummary.totalOutflow, 21260);
+  // Both reports are fully released, so the still-locked remainder is 0.
+  assert.equal(keyedBatchSummary.totalRemaining, 0);
   assert.equal(keyedBatchSummary.balanced, true);
   assert.deepEqual(
     keyedBatchSummary.parties.map((p) => [p.party, p.net]),
@@ -6644,7 +6651,7 @@ test("demo shows batch settlement reports over keyed audit chains: the correct-k
     `  ${DEMO_KEYED_BATCH_UNKEYED_ESCROW_ID} (unkeyed, no key): report — outcome released, deposit 10630, balanced true`,
     `  ${DEMO_KEYED_BATCH_WRONG_KEY_ESCROW_ID} (keyed, wrong key): error — cannot build settlement report for ${DEMO_KEYED_BATCH_WRONG_KEY_ESCROW_ID}: audit history hash chain is broken or mixes chained and hashless entries (an entry was tampered with, deleted, or reordered)`,
     `  summary: 3 escrows — 2 reports, 1 error (released 2, refunded 0, expired 0)`,
-    `  summary totals: deposit 21260, inflow 21260, outflow 21260 — balanced ✓ (the error entry contributes nothing to any total)`,
+    `  summary totals: deposit 21260, inflow 21260, outflow 21260, remaining 0 — balanced ✓ (the error entry contributes nothing to any total)`,
     `  summary parties: sponsor net -21260, creator net 20197, platform net 1063, referrer net 0`,
   ]) {
     assert.ok(text.includes(line), `missing keyed-batch line: ${line}`);
