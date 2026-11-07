@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1407 tests, all local
+npm test   # 1418 tests, all local
 ```
 
 ## Quickstart
@@ -881,7 +881,14 @@ per-attempt timeout surfaces as `timed out after <timeoutMs>ms`. An optional
 `signal` (`AbortSignal`) aborts both the in-flight request and any pending
 backoff sleep — the promise rejects with `webhook delivery aborted` and the
 request is never retried after an abort (an abort is a caller request to
-stop, not a retryable failure). Secret
+stop, not a retryable failure). Pass `fetchImpl` to replace the global
+`fetch` for every attempt (same `(url: string, init)` shape): inject a stub
+in tests to exercise delivery with no network at all, or a custom transport
+(proxy, mTLS, record/replay) in production. The per-attempt timeout and the
+external `signal` are still wired into `init.signal`, so the implementation
+must honor it like the global `fetch` does — one that ignores its signal
+cannot be force-stopped by a timeout or an abort. A non-function
+`fetchImpl` is a configuration error thrown before any request. Secret
 distribution remains the caller's responsibility: whoever holds it can forge
 signatures.
 
@@ -910,9 +917,9 @@ delivery). Each endpoint is delivered through
 `deliverSettlementWebhook` itself, so the retry/backoff/`Retry-After`
 semantics above apply unchanged, with retry budgets counted per
 endpoint; an endpoint can also override `retries`/`backoffMs`/
-`timeoutMs`/`maxRetryDelayMs`/`jitterMs`/`signal` for itself. One endpoint's
-failure — retries exhausted, network error, even an invalid URL or an
-empty secret — marks only that endpoint's result
+`timeoutMs`/`maxRetryDelayMs`/`jitterMs`/`signal`/`fetchImpl` for itself.
+One endpoint's failure — retries exhausted, network error, even an invalid
+URL or an empty secret — marks only that endpoint's result
 `{ ok: false, attempts, status?, error }` and never blocks the others.
 Call-level configuration errors still throw before any request: an
 empty/non-array `endpoints` list, invalid global delivery options, or
@@ -1099,7 +1106,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1407 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1418 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

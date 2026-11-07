@@ -18,6 +18,18 @@ version changes.
 
 ### Added
 
+- `DeliverWebhookOptions.fetchImpl` injection (2026-11-07, backlog
+  #962): delivery can run on an injected `(url: string, init) =>
+  Promise<Response>` instead of the global `fetch` — a stub in
+  tests (no network at all) or a custom transport (proxy, mTLS,
+  record/replay) in production. The per-attempt timeout and external
+  signal are still wired into `init.signal`, so the implementation
+  must honor it like the global `fetch`. A non-function value is a
+  configuration error thrown before any request. Fan-out shares the
+  call-level `fetchImpl` and lets one endpoint override it with its
+  own. 11 new tests in
+  `test/deliverSettlementWebhookFetchImpl.test.ts`; README delivery
+  section updated.
 - `diffEscrowSnapshots` gains an `idempotencyKeysChanged` dimension
   (2026-11-07, backlog #959): the consumed-key set is now compared
   order-insensitively between two snapshots — a key consumed, or a

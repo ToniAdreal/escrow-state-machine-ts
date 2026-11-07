@@ -993,6 +993,18 @@ export class SettlementEventDedupe {
 /* Delivery                                                            */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Minimal `fetch` shape {@link deliverSettlementWebhook} depends on. The
+ * global `fetch` satisfies it; inject a stub in tests so delivery can be
+ * exercised with no network at all, or a custom transport (proxy, mTLS,
+ * record/replay) in production. The dataquest sibling
+ * (`PayoutWebhookFetchImpl`) uses the same signature.
+ */
+export type SettlementWebhookFetchImpl = (
+  url: string,
+  init: RequestInit,
+) => Promise<Response>;
+
 /** Options for {@link deliverSettlementWebhook}. All fields optional. */
 export interface DeliverWebhookOptions {
   /**
@@ -1053,6 +1065,18 @@ export interface DeliverWebhookOptions {
    * not validate certificates or pin TLS.
    */
   allowInsecureHttp?: boolean;
+  /**
+   * Fetch implementation. Defaults to the global `fetch`. Inject a stub
+   * in tests to exercise delivery with no network at all, or a custom
+   * transport (proxy, mTLS, record/replay) in production. The timeout
+   * and external `signal` are still enforced by the caller: the
+   * implementation receives the per-attempt `AbortSignal` in `init`
+   * and is expected to honor it, exactly like the global `fetch` —
+   * an implementation that ignores its signal cannot be force-stopped
+   * by a timeout or an abort either. A non-function value is a
+   * configuration error thrown before any request is made.
+   */
+  fetchImpl?: SettlementWebhookFetchImpl;
 }
 
 /** Result of a successful {@link deliverSettlementWebhook} call. */
@@ -1200,6 +1224,16 @@ function assertDeliverAllowInsecureHttpType(value: unknown): void {
   }
 }
 
+function assertDeliverFetchImplType(value: unknown): void {
+  if (value !== undefined && typeof value !== "function") {
+    throw new Error(
+      `cannot deliver settlement webhook: fetchImpl must be a function, got ${String(
+        value,
+      )}`,
+    );
+  }
+}
+
 /**
  * Validate the numeric delivery options (after defaults are applied).
  * Shared by {@link deliverSettlementWebhook} and the fan-out wrapper,
@@ -1312,6 +1346,12 @@ function assertDeliverOptionValues(
  * over plaintext, so delivery over the clear is a real replay threat.
  * The refusal only blocks plaintext transport; it does not validate
  * certificates or pin TLS.
+ *
+ * Transport injection: `fetchImpl` replaces the global `fetch` for every
+ * attempt (same `(url: string, init)` shape). Inject a stub in tests or
+ * a custom transport in production; the per-attempt timeout and the
+ * external `signal` are still wired into `init.signal`, so the
+ * implementation must honor it like the global `fetch` does.
  */
 export async function deliverSettlementWebhook(
   url: string,
@@ -1324,9 +1364,12 @@ export async function deliverSettlementWebhook(
   const maxRetryDelayMs = options.maxRetryDelayMs ?? 60_000;
   const jitterMs = options.jitterMs ?? 0;
   const signal = options.signal;
+  const fetchImpl: SettlementWebhookFetchImpl =
+    options.fetchImpl ?? ((u, init) => fetch(u, init));
 
   assertDeliverSignalType(signal);
   assertDeliverAllowInsecureHttpType(options.allowInsecureHttp);
+  assertDeliverFetchImplType(options.fetchImpl);
   if (signal?.aborted) {
     // Pre-aborted: the caller asked to stop before we started. Zero HTTP
     // attempts, a clear error, no retry.
@@ -1382,6 +1425,7 @@ export async function deliverSettlementWebhook(
         webhook.payload.eventId,
         body,
         timeoutMs,
+        fetchImpl,
         signal,
       );
     } catch (err) {
@@ -1471,6 +1515,13 @@ export interface SettlementWebhookEndpoint {
   signal?: AbortSignal;
   /** Per-endpoint override of the call-level `allowInsecureHttp`. */
   allowInsecureHttp?: boolean;
+  /**
+   * Per-endpoint fetch override; defaults to the call-level `fetchImpl`
+   * (which itself defaults to the global `fetch`). Lets one endpoint
+   * ride a different transport (its own proxy or mTLS client) while the
+   * rest share the call-level one.
+   */
+  fetchImpl?: SettlementWebhookFetchImpl;
 }
 
 /** Options for {@link deliverSettlementWebhookToMany}. */
@@ -1639,6 +1690,7 @@ export async function deliverSettlementWebhookToMany(
   // fan-out, so a bad override fails only its own endpoint.)
   assertDeliverSignalType(opts.signal);
   assertDeliverAllowInsecureHttpType(opts.allowInsecureHttp);
+  assertDeliverFetchImplType(opts.fetchImpl);
   assertDeliverOptionValues(opts, {
     retries: opts.retries ?? 3,
     backoffMs: opts.backoffMs ?? 1000,
@@ -1740,6 +1792,7 @@ export async function deliverSettlementWebhookToMany(
             jitterMs: endpoint.jitterMs ?? opts.jitterMs,
             signal,
             allowInsecureHttp: endpoint.allowInsecureHttp ?? opts.allowInsecureHttp,
+            fetchImpl: endpoint.fetchImpl ?? opts.fetchImpl,
           });
           return { url, ok: true, attempts: result.attempts, status: result.status };
         } finally {
@@ -1788,7 +1841,11 @@ export async function deliverSettlementWebhookToMany(
  * One POST attempt with a per-attempt timeout. Network errors propagate.
  * An external `signal`, when provided, aborts the same request controller
  * as the timeout: an abort triggered by the caller surfaces as
- * `webhook delivery aborted`, distinct from the timeout error.
+ * `webhook delivery aborted`, distinct from the timeout error. The
+ * `fetchImpl` receives the attempt's `AbortSignal` in `init.signal` and
+ * is expected to honor it, exactly like the global `fetch` — an
+ * implementation that ignores its signal cannot be force-stopped by a
+ * timeout or an abort either.
  */
 async function postOnce(
   target: URL,
@@ -1796,6 +1853,7 @@ async function postOnce(
   eventId: string,
   body: string,
   timeoutMs: number,
+  fetchImpl: SettlementWebhookFetchImpl,
   externalSignal?: AbortSignal,
 ): Promise<Response> {
   const controller = new AbortController();
@@ -1820,7 +1878,7 @@ async function postOnce(
     }
   }
   try {
-    return await fetch(target, {
+    return await fetchImpl(target.toString(), {
       method: "POST",
       headers: {
         "content-type": "application/json",

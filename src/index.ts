@@ -38,6 +38,7 @@ export type {
   SettlementWebhook,
   SettlementWebhookEndpoint,
   SettlementWebhookEndpointResult,
+  SettlementWebhookFetchImpl,
   DeliverSettlementWebhookToManyResult,
   SettlementWebhookPayload,
   VerifyWebhookOptions,
