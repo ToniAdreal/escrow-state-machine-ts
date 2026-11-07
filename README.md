@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1376 tests, all local
+npm test   # 1386 tests, all local
 ```
 
 ## Quickstart
@@ -959,7 +959,12 @@ pairs reports with ledger rows by `escrowId` and returns five groups —
 `currencyMismatch` — so both directions of a gap are visible: a
 settlement the ledger never paid, and a ledger payment no report
 accounts for. The report's amount is its `totalOutflow`, compared at
-cent precision; a ledger row with no recorded amount matches on the
+cent precision — except for a `partially-released` report, which is
+compared against `partialSettlement.released`, the slice that actually
+left escrow; a mismatch there reports `reportAmount` as the released
+slice with a `reason` naming the partial-release basis, so a ledger
+carrying the honest slice (4,252 of a 10,630 deposit) matches instead
+of being misread as a 6,378 shortfall. A ledger row with no recorded amount matches on the
 reference alone, and a duplicated report or ledger id or a malformed row fails
 fast instead of pairing ambiguously. When both sides carry a currency
 code and the codes differ, the pair lands in `currencyMismatch` and in
@@ -1011,6 +1016,10 @@ FUNDED escrow reported without it. The batch wrapper inherits the
 outcome, the summary counts it under `outcomes["partially-released"]`,
 and the JSON/CSV round-trips carry it (the CSV carries the same four
 party rows; the `remaining` figure is the sponsor's inflow there).
+Reconciliation is the one exception to the full-deposit ledger: a
+`partially-released` report pairs against a ledger row carrying the
+released slice, not the deposit (see the reconciliation paragraph
+above), so an honest ledger is not misread as a shortfall.
 
 For bookkeeping imports, `renderReportCsv(report)` renders the same
 report as CSV — the machine-readable counterpart to `renderReport`'s
@@ -1076,7 +1085,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1376 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1386 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

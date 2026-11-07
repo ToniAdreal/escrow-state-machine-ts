@@ -731,10 +731,23 @@ export interface SettlementAmountMismatch {
   report: SettlementReport;
   /** The ledger row carrying the same escrow id. */
   ledger: LedgerSettlement;
-  /** Settled amount from the report's `totalOutflow`. */
+  /**
+   * Settled amount from the report: `totalOutflow` for the terminal
+   * outcomes, `partialSettlement.released` for a `partially-released`
+   * report — the amount that actually left escrow, which is what the
+   * ledger records.
+   */
   reportAmount: number;
   /** Amount recorded on the ledger row. */
   ledgerAmount: number;
+  /**
+   * Why the report side carries this figure, present only when it is
+   * not the plain `totalOutflow`: for a `partially-released` report,
+   * `"partial release: compared against partialSettlement.released,
+   * not totalOutflow"`. Absent for terminal outcomes, where the figure
+   * is `totalOutflow` and needs no explanation.
+   */
+  reason?: string;
 }
 
 /**
@@ -801,8 +814,13 @@ export interface ReconcileSettlementsResult {
  *   alike). For a `partially-released` report `totalOutflow` is the full
  *   locked deposit (the sponsor's outflow, with the still-locked remainder
  *   carried as the sponsor's inflow) — the amount that actually left
- *   escrow is `partialSettlement.released`, so pair a partial report
- *   against a ledger row carrying the released slice, not the deposit.
+ *   escrow is `partialSettlement.released`, so a partial report is
+ *   compared against the released slice, not the deposit: a ledger row
+ *   carrying 4,252 for a 10,630-deposit partial release matches, and a
+ *   mismatch reports `reportAmount` as the released slice with a
+ *   `reason` naming the partial-release basis. A `partially-released`
+ *   report built without `partialSettlement` (hand-built — never
+ *   produced by `buildSettlementReport`) falls back to `totalOutflow`.
  * - Amounts are compared at cent precision (`round2` on both sides),
  *   the library's money model: a ledger figure that differs only by
  *   float noise is not a disagreement, a one-cent difference is.
@@ -930,12 +948,27 @@ export function reconcileSettlements(
       });
       continue;
     }
-    if (row.amount !== undefined && round2(row.amount) !== round2(report.totalOutflow)) {
+    // The amount that left escrow: `totalOutflow` for the terminal
+    // outcomes, the released slice for a partial report — a ledger that
+    // records the slice actually paid must not be flagged for
+    // disagreeing with the full locked deposit.
+    const releasedSlice =
+      report.outcome === "partially-released"
+        ? report.partialSettlement?.released
+        : undefined;
+    const reportAmount = releasedSlice ?? report.totalOutflow;
+    if (row.amount !== undefined && round2(row.amount) !== round2(reportAmount)) {
       result.amountMismatch.push({
         report,
         ledger: row,
-        reportAmount: report.totalOutflow,
+        reportAmount,
         ledgerAmount: row.amount,
+        ...(releasedSlice !== undefined
+          ? {
+              reason:
+                "partial release: compared against partialSettlement.released, not totalOutflow",
+            }
+          : {}),
       });
       continue;
     }

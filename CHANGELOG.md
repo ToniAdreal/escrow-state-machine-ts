@@ -3200,6 +3200,24 @@ version changes.
   NDJSON) still accept legacy sub-cent snapshots without re-normalizing
   them.
 
+### Fixed
+
+- `reconcileSettlements` is partial-release aware (2026-11-07, backlog
+  #950): a `partially-released` report is now compared against
+  `partialSettlement.released` — the amount that actually left escrow —
+  instead of `totalOutflow` (the full locked deposit). A ledger row
+  carrying the honest released slice (4,252 of the golden 10,630
+  deposit) matches; a mismatch reports `reportAmount` as the released
+  slice with a `reason` naming the partial-release basis
+  (`partial release: compared against partialSettlement.released, not
+  totalOutflow`). Currency-first precedence, the no-amount
+  reference-only match, cent-precision comparison, and terminal-outcome
+  behavior are unchanged, and a hand-built `partially-released` report
+  without `partialSettlement` still falls back to `totalOutflow`. 10
+  new tests in `test/reconcileSettlementsPartialRelease.test.ts`;
+  README reconciliation and partial-release sections and test counts
+  updated (1376 -> 1386).
+
 ## [0.1.0]
 
 The only version declared in `package.json`. Entries cover the commit
