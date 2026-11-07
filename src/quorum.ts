@@ -3,11 +3,15 @@
  * (e.g. the ALLWEB3 case study's 5/9 DAO multi-sig).
  *
  * This is deliberately off-chain: it models *who has approved*, not
- * signature verification or on-chain governance. Use it as a caller-side
- * pre-check before dispatching the arbitration events on the state machine:
+ * signature verification or on-chain governance. To act on the count,
+ * gate the arbitration dispatch through `dispatchArbitration`
+ * (src/arbitration.ts) — it refuses to dispatch until `hasQuorum()` is
+ * true and leaves the escrow untouched otherwise, so a caller can never
+ * skip the gate by forgetting the check:
  *
  * ```ts
  * import { createQuorum } from "./quorum.js";
+ * import { dispatchArbitration } from "./arbitration.js";
  * import { Escrow } from "./index.js";
  *
  * const quorum = createQuorum({
@@ -15,14 +19,23 @@
  *   signers: ["dao-1", "dao-2", "dao-3", "dao-4", "dao-5",
  *             "dao-6", "dao-7", "dao-8", "dao-9"],
  * });
+ * const escrow = new Escrow("esc-1");
+ * escrow.dispatch("FUND", undefined, 10630);
+ * escrow.dispatch("DISPUTE");
  *
  * // collect off-chain approvals …
  * quorum.approve("dao-3");
  *
- * if (quorum.hasQuorum()) {
- *   escrow.dispatch("ARBITRATE_RELEASE", "5/9 DAO quorum reached");
- * }
+ * // Below the threshold this throws
+ * // `arbitration requires quorum: 1/5 approvals` and the escrow stays
+ * // DISPUTED; once reached it dispatches ARBITRATE_RELEASE (or
+ * // ARBITRATE_REFUND for outcome "refund") and returns the new state.
+ * dispatchArbitration(escrow, quorum, "release");
  * ```
+ *
+ * `hasQuorum()` / `approvalCount()` stay available for read-only
+ * pre-checks (UI gating, logging) where no dispatch is intended — but
+ * they are not a substitute for the gate when dispatching.
  */
 
 export interface QuorumConfig {
