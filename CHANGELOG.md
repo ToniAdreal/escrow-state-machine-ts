@@ -18,6 +18,25 @@ version changes.
 
 ### Added
 
+- Opt-in audit-attribution gate `EscrowOptions.requireActor` (2026-11-07,
+  backlog #941): when `true`, every `dispatch()` without an `actor`
+  throws `actor required: dispatch must carry a non-empty actor when
+  requireActor is enabled` and appends nothing. The gate runs after the
+  transition-legality, RBAC, and deposit-cap checks and before anything
+  is appended or any idempotency key is consumed, so a rejected dispatch
+  leaves no trace and a retry with an actor and the same key still
+  executes; a listed event without an actor reports the RBAC error
+  first. It complements `rolePolicy`, which only constrains the events
+  it lists, while `requireActor` constrains all of them. Non-boolean
+  values throw `invalid option: requireActor …` at construction. Like
+  the audit key, the switch is configuration, not audit data: it is
+  never written into `toJSON()` snapshots and must be re-enabled via
+  `Escrow.fromJSON(snapshot, { requireActor: true })` or
+  `Escrow.fromHistory(id, history, { requireActor: true })`. Requiring
+  an actor cannot verify who the actor really is; it only guarantees
+  the audit trail names one. 11 new tests in
+  `test/requireActor.test.ts`; README and SECURITY.md document the
+  gate and its check order.
 - Settlement report supports partial releases (2026-11-06, backlog #934):
   `buildSettlementReport` accepts `partialRelease: { released, proFeeBps,
   referralCredits? }` for a still-`FUNDED` escrow and returns outcome

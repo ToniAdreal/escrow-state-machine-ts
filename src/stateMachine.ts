@@ -345,6 +345,7 @@ const ESCROW_OPTION_FIELDS = new Set([
   "maxDeposit",
   "auditKey",
   "rolePolicy",
+  "requireActor",
   "deadline",
   "idempotencyKeys",
 ]);
@@ -467,6 +468,25 @@ function assertRolePolicy(
     policy.set(event as EscrowEvent, seen);
   }
   return policy;
+}
+
+/**
+ * Validate the `requireActor` constructor option.
+ *
+ * `undefined` means "advisory" (the default: anonymous dispatches are
+ * legal). Otherwise the value must be a boolean — anything else throws
+ * `<tag>: requireActor must be a boolean, …`. Mirrors the dataquest
+ * lifecycle's `assertRequireActor` wording; callers pass the tag for
+ * their boundary (`invalid option` at construction).
+ */
+function assertRequireActor(value: unknown, tag: string): boolean {
+  if (value === undefined) return false;
+  if (typeof value !== "boolean") {
+    throw new Error(
+      `${tag}: requireActor must be a boolean, got ${String(value)}`
+    );
+  }
+  return value;
 }
 
 const ESCROW_STATES = new Set<EscrowState>(
@@ -1515,6 +1535,35 @@ export interface EscrowOptions {
   rolePolicy?: RolePolicy;
 
   /**
+   * Optional up-front enforcement of audit attribution: when `true`,
+   * every `dispatch()` without an `actor` throws
+   * `actor required: …` and appends nothing. This is the opt-in
+   * up-front counterpart to the advisory default, under which an
+   * anonymous dispatch is legal and the entry simply omits the actor
+   * — for audit regimes where every state change must be attributable
+   * to a named actor. It complements, rather than replaces,
+   * `rolePolicy`: a policy only constrains the events it lists, while
+   * `requireActor` constrains all of them (a listed event still needs
+   * a matching actor, not just any actor). The gate runs after the
+   * transition-legality, RBAC, and deposit-cap checks and before
+   * anything is appended or any idempotency key is consumed, so a
+   * rejected dispatch leaves no trace and a retry with an actor and
+   * the same key still executes. Like `auditKey`, the switch is
+   * escrow configuration, not audit data: it is never written into
+   * the `toJSON()` snapshot envelope, so a restored escrow must
+   * re-enable it via `Escrow.fromJSON(snapshot, { requireActor: true })`
+   * or `Escrow.fromHistory(id, history, { requireActor: true })`.
+   * Invalid values throw `invalid option: …` at construction.
+   *
+   * Default: false (unchanged legacy behavior).
+   *
+   * Honest limit: requiring an actor cannot verify who the actor
+   * really is — it only guarantees the audit trail names one.
+   * See SECURITY.md.
+   */
+  requireActor?: boolean;
+
+  /**
    * Optional advisory deadline attached at construction — the
    * constructor-time equivalent of {@link Escrow.setDeadline}: a Date
    * or a parseable string, stored as canonical ISO-8601, with the
@@ -1576,6 +1625,13 @@ export class Escrow {
   private readonly _maxDeposit: number | undefined;
   private readonly _auditKey: AuditKey | undefined;
   private _rolePolicy: Map<EscrowEvent, string[]>;
+  /**
+   * Up-front enforcement for audit attribution. Escrow configuration:
+   * never written into the JSON snapshot (see toJSON), so a restored
+   * escrow re-enables it via fromJSON/fromHistory opts
+   * ({ requireActor: true }).
+   */
+  private readonly _requireActor: boolean;
 
   constructor(id: string, opts?: EscrowOptions) {
     // fromJSON validates the same rule; a live Escrow must never hold an id
@@ -1626,6 +1682,10 @@ export class Escrow {
     // so later caller mutation of the options object cannot change
     // the policy this escrow enforces. Tag mirrors dataquest.
     this._rolePolicy = assertRolePolicy(opts?.rolePolicy, "invalid option");
+    // assertRequireActor mirrors dataquest's requireActor gate: the
+    // switch is configuration, not audit data, so it is validated here
+    // and never written into the snapshot (see toJSON).
+    this._requireActor = assertRequireActor(opts?.requireActor, "invalid option");
     // assertIdempotencyKeys returns a fresh, deduped Set, so later
     // caller mutation of the options array cannot change the keys
     // this escrow treats as consumed. This is what lets fromHistory()
@@ -1777,7 +1837,13 @@ export class Escrow {
    *               does NOT consume its idempotency key, so a retry
    *               with an authorized actor and the SAME key succeeds
    *               instead of being treated as a duplicate. The key is
-   *               consumed only alongside a successful append.
+   *               consumed only alongside a successful append;
+   *               (4) the opt-in `requireActor` gate runs after RBAC
+   *               and the amount / deposit-cap checks, just before the
+   *               append — a dispatch without an actor is rejected with
+   *               `actor required: …`, leaves no trace, and consumes no
+   *               key; a listed event without an actor never reaches it
+   *               (RBAC reports first).
    */
   dispatch(
     event: EscrowEvent,
@@ -1983,6 +2049,22 @@ export class Escrow {
           `deposit cap exceeded: locked ${funded} + new funding ${amount} would exceed maxDeposit ${this._maxDeposit}`
         );
       }
+    }
+    // Up-front actor-required gate (opt-in, see EscrowOptions): when
+    // requireActor is on, a dispatch without an actor is rejected.
+    // Checked after the transition / RBAC / amount-cap checks and
+    // before anything is appended or any idempotency key is consumed,
+    // so a rejected dispatch leaves no trace and a retry with an
+    // actor and the same key still executes. A listed event without
+    // an actor never reaches this gate — the RBAC check above already
+    // reported `actor not authorized` — so this gate only speaks for
+    // events the policy does not list (and for escrows with no policy
+    // at all). Requiring an actor cannot verify who the actor really
+    // is; it only guarantees the audit trail names one.
+    if (this._requireActor && actor === undefined) {
+      throw new Error(
+        "actor required: dispatch must carry a non-empty actor when requireActor is enabled"
+      );
     }
     this._state = to;
     // Hash-chain the audit trail: the new entry commits to the previous
@@ -2346,11 +2428,11 @@ export class Escrow {
    * @param opts - Optional per-instance dispatch configuration,
    *   passed straight through to the constructor, with the same
    *   re-attach semantics as {@link Escrow.fromJSON}'s options:
-   *   `requireVerifyEvidence`/`maxDeposit` are never stored anywhere
-   *   in the log (unlike a snapshot, which carries them), so a
-   *   rebuilt escrow silently loses those guardrails unless the
-   *   caller re-enables them here — use `fromJSON` when they must
-   *   survive a restart.
+   *   `requireVerifyEvidence`/`maxDeposit`/`requireActor` are never
+   *   stored anywhere in the log (unlike a snapshot, which carries the
+   *   first two), so a rebuilt escrow silently loses those guardrails
+   *   unless the caller re-enables them here — use `fromJSON` when they
+   *   must survive a restart.
    *   `opts.idempotencyKeys` re-attaches the consumed dispatch
    *   idempotency keys the same way; omit it and the rebuilt escrow
    *   starts with an empty key set, so a retried key would

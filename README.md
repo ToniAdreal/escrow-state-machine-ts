@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1363 tests, all local
+npm test   # 1374 tests, all local
 ```
 
 ## Quickstart
@@ -298,6 +298,23 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   policy entirely. Honest limit: this is a *caller-supplied allowlist*,
   not identity authentication — the caller asserts the actor string and
   nothing verifies who the caller is (see SECURITY.md).
+- Audit attribution (opt-in): `new Escrow(id, { requireActor: true })`
+  makes every `dispatch` without an `actor` throw
+  `actor required: dispatch must carry a non-empty actor when requireActor is enabled`.
+  The gate runs after the transition-legality, RBAC, and deposit-cap checks
+  and before anything is appended, so a rejected dispatch leaves no history
+  residue and does not consume an idempotency key — a retry with an actor
+  and the same key still executes. It complements `rolePolicy`: a policy
+  only constrains the events it lists, while `requireActor` constrains all
+  of them (a listed event without an actor still reports the RBAC error
+  first, since that check runs earlier). Non-boolean values throw
+  `invalid option: requireActor …` at construction. Like the audit key,
+  the switch is configuration, not audit data: it is never written into
+  `toJSON()` snapshots, so a restored escrow must re-enable it via
+  `Escrow.fromJSON(snapshot, { requireActor: true })` or
+  `Escrow.fromHistory(id, history, { requireActor: true })`. Honest limit:
+  requiring an actor cannot verify who the actor really is — it only
+  guarantees the audit trail names one (see SECURITY.md).
 - Optimistic concurrency (opt-in): `dispatch` opts accept `expectedSeq`
   — the history length (the last entry's `seq`; `0` for an empty
   history) the caller based its decision on. When set, the guard runs
@@ -622,7 +639,9 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   not the chain.
 - **Simplified roles.** This repo now has opt-in event-level RBAC
   (`rolePolicy`: a caller-supplied actor allowlist, persisted in
-  snapshots), but real deployments still need identity authentication
+  snapshots) and an opt-in `requireActor` gate (every dispatch must
+  name an actor; configuration only, never persisted), but real
+  deployments still need identity authentication
   on top of it (the library cannot verify who an actor really is), a real deadline
   scheduler (this repo has an advisory deadline field with
   `isOverdue()`/`expiredEscrows()` watchdog helpers plus an
@@ -1051,7 +1070,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1363 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1374 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

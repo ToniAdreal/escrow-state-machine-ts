@@ -102,6 +102,17 @@ chain described below.
   (`invalid option: rolePolicy …`). This enforces the *declared*
   allowlist only; it does not authenticate the actor (see the
   caller-trust section above).
+- **Audit-attribution gate (when `requireActor: true`).**
+  `Escrow` constructed with `requireActor` rejects any dispatch
+  without an `actor` with `actor required: …`, after the
+  transition/RBAC/amount-cap checks and before any append — no
+  history is appended and no idempotency key is consumed. A listed
+  event without an actor reports the RBAC error first (that check
+  runs earlier), so this gate only speaks for events the policy
+  does not list. The switch is configuration, not audit data: it is
+  never written into snapshots and must be re-enabled on restore.
+  Like the policy, it does not authenticate the actor — it only
+  guarantees the audit trail names one.
 - **Optimistic-concurrency guard (when `expectedSeq` is passed).**
   `dispatch` rejects a caller whose `expectedSeq` no longer equals the
   current history length with `dispatch conflict: …`, before any
