@@ -72,6 +72,7 @@ test("single-currency batch: the currency bucket equals the top-level totals", (
     totalDeposit: 21260,
     totalInflow: 21260,
     totalOutflow: 21260,
+    totalRemaining: 0,
   });
   assert.equal(s.byCurrency.USD.totalDeposit, s.totalDeposit);
   assert.equal(s.byCurrency.USD.totalInflow, s.totalInflow);
@@ -92,6 +93,7 @@ test("mixed USD/EUR batch: buckets split with no cross-currency leakage", () => 
     totalDeposit: 10630,
     totalInflow: 10630,
     totalOutflow: 10630,
+    totalRemaining: 0,
   });
   // EUR refunded: the full 10630 returns to the sponsor.
   assert.deepEqual(s.byCurrency.EUR, {
@@ -99,6 +101,7 @@ test("mixed USD/EUR batch: buckets split with no cross-currency leakage", () => 
     totalDeposit: 10630,
     totalInflow: 10630,
     totalOutflow: 10630,
+    totalRemaining: 0,
   });
   // Top-level totals are kept for backward compatibility and still sum raw
   // figures across currencies — the caller must not read 21260 as
@@ -122,6 +125,7 @@ test("three currencies stay in three separate buckets", () => {
       totalDeposit: 10630,
       totalInflow: 10630,
       totalOutflow: 10630,
+      totalRemaining: 0,
     });
   }
 });
@@ -141,6 +145,7 @@ test("currency-less reports land in the UNSPECIFIED bucket, never in a real curr
     totalDeposit: 21260,
     totalInflow: 21260,
     totalOutflow: 21260,
+    totalRemaining: 0,
   });
   // The USD bucket holds only the one USD report; the two currency-less
   // reports did not leak into it.
@@ -149,6 +154,7 @@ test("currency-less reports land in the UNSPECIFIED bucket, never in a real curr
     totalDeposit: 10630,
     totalInflow: 10630,
     totalOutflow: 10630,
+    totalRemaining: 0,
   });
 });
 
@@ -168,6 +174,7 @@ test("error entries are excluded from every currency bucket", () => {
     totalDeposit: 10630,
     totalInflow: 10630,
     totalOutflow: 10630,
+    totalRemaining: 0,
   });
 });
 

@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1386 tests, all local
+npm test   # 1396 tests, all local
 ```
 
 ## Quickstart
@@ -941,17 +941,24 @@ order — a non-terminal escrow or a corrupted history fails only its own
 entry, never the whole batch, and building reports mutates nothing.
 `summarizeSettlementReports(results)` aggregates such a batch into one
 reconciliation summary — per-outcome counts, error count, total locked
-deposit, total inflow/outflow, and per-party net totals — summing the
-already cent-rounded figures from each report (aggregates are `round2`
-as well); error entries are counted but never enter the money totals,
-and an empty batch yields an all-zero summary. The summary also carries
-a per-currency breakdown, `byCurrency`, keyed by each report's ISO 4217
-code (reports built without a currency land in the `UNSPECIFIED`
-bucket): each bucket sums only its own currency's reports, so a
-mixed-currency batch can be read bucket by bucket as single-currency
-money. The top-level totals are kept for backward compatibility and
-still sum raw figures across currencies — read `byCurrency`, not the
-top-level totals, when the batch may mix currencies.
+deposit, total inflow/outflow, the still-locked remainder
+(`totalRemaining`, the sum of each successful report's `remaining` —
+the money still held in partially-released escrows), and per-party net
+totals — summing the already cent-rounded figures from each report
+(aggregates are `round2` as well); error entries are counted but never
+enter the money totals, and an empty batch yields an all-zero summary.
+Read the still-locked remainder from `totalRemaining`, not from
+`totalDeposit - totalOutflow`: a partial report's ledger runs over the
+full deposit, so that difference is 0 even while money is still
+locked. The summary also carries a per-currency breakdown,
+`byCurrency`, keyed by each report's ISO 4217 code (reports built
+without a currency land in the `UNSPECIFIED` bucket): each bucket sums
+only its own currency's reports, so a mixed-currency batch can be read
+bucket by bucket as single-currency money, and each bucket carries its
+own `totalRemaining` on the same rule. The top-level totals are kept
+for backward compatibility and still sum raw figures across currencies
+— read `byCurrency`, not the top-level totals, when the batch may mix
+currencies.
 
 Against an external payment ledger, `reconcileSettlements(reports, ledger)`
 pairs reports with ledger rows by `escrowId` and returns five groups —
@@ -983,7 +990,9 @@ wrappers verbatim; omit it and every shape stays exactly as before. It
 is a label only: amounts are never converted, so a batch mixing
 currencies still sums raw figures at the top level of the summary — read
 the summary's per-currency `byCurrency` buckets, not the top-level
-totals, when the batch may mix currencies. Reconciliation is the one place a currency
+totals, when the batch may mix currencies. Each bucket also carries its
+own `totalRemaining`, so the still-locked remainder is readable per
+currency too. Reconciliation is the one place a currency
 difference is a first-class finding: `reconcileSettlements` puts a
 report/ledger pair whose codes differ into `currencyMismatch` (a
 ledger row may carry its own optional `currency`, shape-checked the
@@ -1013,9 +1022,11 @@ ledger is identical to the full-release report's. The escrow itself
 stays FUNDED — a partial release is evidence of a slice, not a state
 change — and `partialRelease` with a terminal state throws, as does a
 FUNDED escrow reported without it. The batch wrapper inherits the
-outcome, the summary counts it under `outcomes["partially-released"]`,
-and the JSON/CSV round-trips carry it (the CSV carries the same four
-party rows; the `remaining` figure is the sponsor's inflow there).
+outcome, the summary counts it under `outcomes["partially-released"]`
+and sums the still-locked remainder into `totalRemaining` (top level
+and per-currency bucket), and the JSON/CSV round-trips carry it (the
+CSV carries the same four party rows; the `remaining` figure is the
+sponsor's inflow there).
 Reconciliation is the one exception to the full-deposit ledger: a
 `partially-released` report pairs against a ledger row carrying the
 released slice, not the deposit (see the reconciliation paragraph
@@ -1085,7 +1096,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1386 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1396 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

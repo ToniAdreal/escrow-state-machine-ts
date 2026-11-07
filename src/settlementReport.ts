@@ -544,6 +544,14 @@ export interface SettlementCurrencySummary {
   totalInflow: number;
   /** Sum of per-report totalOutflow over this bucket's reports only. */
   totalOutflow: number;
+  /**
+   * Sum of per-report `remaining` over this bucket's reports only
+   * (reports without a `remaining` field — a full release, refund, or
+   * expiry — contribute 0). This is the money still locked in this
+   * currency's partially-released escrows; read it, not
+   * `totalDeposit - totalOutflow`, for the still-locked remainder.
+   */
+  totalRemaining: number;
 }
 
 /**
@@ -569,6 +577,17 @@ export interface SettlementReportsSummary {
   totalInflow: number;
   /** Sum of per-report totalOutflow over successful reports only. */
   totalOutflow: number;
+  /**
+   * Sum of per-report `remaining` over successful reports only
+   * (reports without a `remaining` field — a full release, refund, or
+   * expiry — contribute 0). This is the money still locked in the
+   * batch's partially-released escrows. Read this, not
+   * `totalDeposit - totalOutflow`, for the still-locked remainder: a
+   * partial report's ledger runs over the full deposit, so its
+   * inflow and outflow both equal the deposit and the hand-computed
+   * difference is 0 even while money is still locked.
+   */
+  totalRemaining: number;
   /** Per-party inflow/outflow/net summed over successful reports, in canonical role order. */
   parties: PartyLedger[];
   /**
@@ -590,8 +609,9 @@ export interface SettlementReportsSummary {
 /**
  * Aggregate a batch of {@link SettlementReportResult} (the return value of
  * {@link buildSettlementReports}) into one reconciliation summary: outcome
- * counts, error count, total locked deposit, total inflow/outflow, and
- * per-party net totals.
+ * counts, error count, total locked deposit, total inflow/outflow, the
+ * still-locked remainder (`totalRemaining`, the sum of each successful
+ * report's `remaining`), and per-party net totals.
  *
  * Error entries are counted in `errors` and contribute nothing to any
  * money figure — a failed escrow must never silently enter the totals as
@@ -630,10 +650,11 @@ export function summarizeSettlementReports(
   let totalDeposit = 0;
   let totalInflow = 0;
   let totalOutflow = 0;
+  let totalRemaining = 0;
   let balanced = true;
   const currencySums = new Map<
     string,
-    { reports: number; totalDeposit: number; totalInflow: number; totalOutflow: number }
+    { reports: number; totalDeposit: number; totalInflow: number; totalOutflow: number; totalRemaining: number }
   >();
 
   for (const result of results) {
@@ -647,17 +668,21 @@ export function summarizeSettlementReports(
     totalDeposit += report.deposit.deposit;
     totalInflow += report.totalInflow;
     totalOutflow += report.totalOutflow;
+    // Only partially-released reports carry `remaining`; every other
+    // outcome contributes 0, so a fully settled batch reads 0 here.
+    totalRemaining += report.remaining ?? 0;
     if (!report.balanced) balanced = false;
     const bucketKey = report.currency ?? UNSPECIFIED_SETTLEMENT_CURRENCY;
     let bucket = currencySums.get(bucketKey);
     if (!bucket) {
-      bucket = { reports: 0, totalDeposit: 0, totalInflow: 0, totalOutflow: 0 };
+      bucket = { reports: 0, totalDeposit: 0, totalInflow: 0, totalOutflow: 0, totalRemaining: 0 };
       currencySums.set(bucketKey, bucket);
     }
     bucket.reports += 1;
     bucket.totalDeposit += report.deposit.deposit;
     bucket.totalInflow += report.totalInflow;
     bucket.totalOutflow += report.totalOutflow;
+    bucket.totalRemaining += report.remaining ?? 0;
     for (const party of report.parties) {
       const sum = partySums.get(party.party);
       if (sum) {
@@ -674,6 +699,7 @@ export function summarizeSettlementReports(
       totalDeposit: round2(bucket.totalDeposit),
       totalInflow: round2(bucket.totalInflow),
       totalOutflow: round2(bucket.totalOutflow),
+      totalRemaining: round2(bucket.totalRemaining),
     };
   }
 
@@ -685,6 +711,7 @@ export function summarizeSettlementReports(
     totalDeposit: round2(totalDeposit),
     totalInflow: round2(totalInflow),
     totalOutflow: round2(totalOutflow),
+    totalRemaining: round2(totalRemaining),
     parties: (["sponsor", "creator", "platform", "referrer"] as PartyRole[]).map(
       (role) => {
         const sum = partySums.get(role)!;

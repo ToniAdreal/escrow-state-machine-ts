@@ -18,6 +18,21 @@ version changes.
 
 ### Added
 
+- `summarizeSettlementReports` gains `totalRemaining` (2026-11-07,
+  backlog #953): the sum of each successful report's `remaining`
+  (reports without one — a full release, refund, or expiry —
+  contribute 0), at the top level and per currency bucket in
+  `byCurrency`. A batch of partially-released escrows now shows how
+  much money is still locked (golden slice: 10,630 deposit, 4,252
+  released, `totalRemaining` 6,378) instead of forcing the caller to
+  add remainders by hand. Read the still-locked remainder from
+  `totalRemaining`, not from `totalDeposit - totalOutflow`: a partial
+  report's ledger runs over the full deposit, so that difference is 0
+  even while money is still locked. Error entries stay excluded, and
+  an empty batch reads 0. 10 new tests in
+  `test/settlementReportsSummaryRemaining.test.ts`; README
+  reconciliation, currency, and partial-release sections and test
+  count updated.
 - CLI demo shows the partial-release settlement report (2026-11-07,
   backlog #945): after the two-tranche `settlePartialRelease`
   segment, a still-`FUNDED` escrow (DEMO-ESC-035) on the golden
