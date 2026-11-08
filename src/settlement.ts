@@ -70,6 +70,116 @@ export function settlePartialRelease(
   return { released, proFee, referralCredits, net, remaining };
 }
 
+export interface PartialReleasesInputs {
+  gross: number;
+  /**
+   * Release amounts in order; each tranche settles against the balance
+   * still locked after the previous ones.
+   */
+  releases: number[];
+  /** Platform fee in basis points, e.g. 500 = 5%; charged on each released amount, never on the whole gross. */
+  proFeeBps: number;
+  /**
+   * Referral credits for the batch, applied to the first tranche only.
+   * Credits are a per-payout concept in `settlePartialRelease` (they
+   * reduce that payout's net); the batch takes one batch-level figure
+   * and lands it on the first tranche so the total is never
+   * double-counted and per-tranche fee/net still match the single
+   * helper exactly. Credits with no releases throw instead of being
+   * silently dropped.
+   */
+  referralCredits?: number;
+}
+
+export interface PartialReleases {
+  gross: number;
+  /** Per-tranche ledger, in the order the releases were given. */
+  releases: PartialSettlement[];
+  totalReleased: number;
+  totalProFee: number;
+  totalReferralCredits: number;
+  totalNet: number;
+  remaining: number;
+}
+
+/**
+ * Cumulative partial-release settlement: settle a whole list of releases
+ * against one locked gross in a single call, with a cumulative guard.
+ *
+ * `settlePartialRelease` only guards one release at a time, so a caller
+ * releasing 600 and then 600 again against a gross of 1000 passed both
+ * checks and over-paid by 200 in total. This function closes that gap:
+ * the running total is checked against the gross before each tranche
+ * settles, and a batch that would over-pay fails as a whole with the
+ * cumulative figures in the error instead of settling the early
+ * tranches and dying halfway.
+ *
+ * Design choice (backlog #972): the batch takes the full `releases`
+ * array rather than an `alreadyReleased` running total. An
+ * `alreadyReleased` parameter would still leave every call site
+ * responsible for passing the right running total — the same bug one
+ * argument away. Taking the list lets this function own the running
+ * total and return the per-tranche ledger plus totals, so callers
+ * never track it themselves. Each tranche delegates to
+ * {@link settlePartialRelease} against the still-locked balance, so
+ * fee, net, and rounding semantics cannot drift from the single
+ * path. Pure arithmetic only: it does not change escrow state — state
+ * advancement still goes through `dispatch`.
+ */
+export function settlePartialReleases(
+  inputs: PartialReleasesInputs,
+): PartialReleases {
+  const { gross, releases, proFeeBps, referralCredits = 0 } = inputs;
+  if (!Number.isFinite(gross) || gross < 0)
+    throw new Error("gross must be a finite non-negative number");
+  if (!Array.isArray(releases))
+    throw new Error("releases must be an array of numbers");
+  if (!Number.isInteger(proFeeBps) || proFeeBps < 0 || proFeeBps > 10000)
+    throw new Error("proFeeBps must be an integer in [0, 10000]");
+  if (!Number.isFinite(referralCredits) || referralCredits < 0)
+    throw new Error("referralCredits must be a finite non-negative number");
+  if (releases.length === 0 && referralCredits !== 0)
+    throw new Error(
+      "referralCredits require at least one release: credits are applied to the first tranche and there is none",
+    );
+  let cumulative = 0;
+  let totalProFee = 0;
+  let totalNet = 0;
+  const settled: PartialSettlement[] = [];
+  for (let i = 0; i < releases.length; i++) {
+    const released = releases[i];
+    if (!Number.isFinite(released) || released < 0)
+      throw new Error(`releases[${i}] must be a finite non-negative number`);
+    // Cumulative guard, checked before any per-tranche math so the batch
+    // fails as a whole. Amounts accumulate through round2 (the repo's
+    // cent model) so 0.1 + 0.2 settles exactly at 0.3.
+    const nextCumulative = round2(cumulative + released);
+    if (nextCumulative > gross)
+      throw new Error(
+        `cumulative released ${nextCumulative} exceeds gross ${gross} (release ${i + 1} of ${releases.length}: ${released} would bring the total to ${nextCumulative})`,
+      );
+    const tranche = settlePartialRelease({
+      gross: round2(gross - cumulative),
+      released,
+      proFeeBps,
+      referralCredits: i === 0 ? referralCredits : 0,
+    });
+    settled.push(tranche);
+    cumulative = nextCumulative;
+    totalProFee = round2(totalProFee + tranche.proFee);
+    totalNet = round2(totalNet + tranche.net);
+  }
+  return {
+    gross,
+    releases: settled,
+    totalReleased: cumulative,
+    totalProFee,
+    totalReferralCredits: releases.length === 0 ? 0 : referralCredits,
+    totalNet,
+    remaining: round2(gross - cumulative),
+  };
+}
+
 export interface RefundSettlementInputs {
   /** Locked deposit to return in full, e.g. the deposit from `calculateDeposit`. */
   deposit: number;

@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1426 tests, all local
+npm test   # 1438 tests, all local
 ```
 
 ## Quickstart
@@ -1043,6 +1043,18 @@ and sums the still-locked remainder into `totalRemaining` (top level
 and per-currency bucket), and the JSON/CSV round-trips carry it (the
 CSV carries the same four party rows; the `remaining` figure is the
 sponsor's inflow there).
+
+For a multi-tranche payout, `settlePartialReleases` takes the whole list
+of releases at once and returns the per-tranche ledger plus totals
+(`totalReleased` / `totalProFee` / `totalReferralCredits` / `totalNet` /
+`remaining`). The cumulative released amount is checked against the
+gross before each tranche settles, so two individually-legal releases
+can no longer over-pay in total (600 then 600 against a gross of 1000
+fails with the cumulative figures in the error); each tranche still
+settles through `settlePartialRelease`, so fee and net semantics cannot
+drift from the single path. Referral credits for the batch land on the
+first tranche only, so the total is never double-counted, and credits
+with no releases throw instead of being silently dropped.
 Reconciliation is the one exception to the full-deposit ledger: a
 `partially-released` report pairs against a ledger row carrying the
 released slice, not the deposit (see the reconciliation paragraph
@@ -1112,7 +1124,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1426 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1438 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

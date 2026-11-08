@@ -18,6 +18,16 @@ version changes.
 
 ### Added
 
+- `settlePartialReleases` cumulative partial-release guard (2026-11-08,
+  backlog #972): settling a list of releases against one locked gross
+  in a single call returns the per-tranche ledger plus totals, and the
+  cumulative released amount is checked against the gross before each
+  tranche settles — two individually-legal releases (600 then 600
+  against a gross of 1000) can no longer over-pay in total. Each
+  tranche still settles through `settlePartialRelease`, so fee and net
+  semantics cannot drift; batch referral credits land on the first
+  tranche only and credits with no releases throw instead of being
+  silently dropped. 12 new tests; test count 1426 → 1438.
 - CLI demo batch summary prints the still-locked remainder (2026-11-07,
   backlog #968): both `summary totals` lines (the day-end batch and the
   keyed-audit batch) now read `…, remaining <totalRemaining>` alongside
