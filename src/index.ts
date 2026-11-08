@@ -44,7 +44,7 @@ export type {
   VerifyWebhookOptions,
   WebhookDeliveryResult,
 } from "./webhooks.js";
-export { createQuorum, restoreQuorum } from "./quorum.js";
+export { createQuorum, restoreQuorum, approvalStatement } from "./quorum.js";
 export type { Quorum, QuorumConfig, QuorumSnapshot, ApprovalLogEntry } from "./quorum.js";
 export { dispatchArbitration } from "./arbitration.js";
 export type { ArbitrationDispatchOptions, ArbitrationOutcome } from "./arbitration.js";

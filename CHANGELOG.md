@@ -18,6 +18,20 @@ version changes.
 
 ### Added
 
+- Quorum signature-verified approvals `approveSigned()` (2026-11-08,
+  backlog #987): `QuorumConfig.signerPublicKeys` registers Ed25519
+  public keys per signer (non-Ed25519/private keys, non-KeyObject
+  values, and keys for unknown signers are rejected at construction);
+  `approveSigned(signerId, signature)` verifies the signature over
+  the canonical statement `escrow-quorum:approve:<signerId>` (see the
+  exported `approvalStatement()` helper), marks the log entry
+  `verified: true`, and throws without recording anything on failure.
+  A valid signature upgrades a counted unverified approval in place
+  (same timestamp and evidence); an expired one appends a fresh
+  verified entry. Verified and unverified approvals count identically;
+  snapshots carry the recorded flags (and never the keys), and
+  restoring one does not re-verify signatures. Plain `approve()` is
+  unchanged and still records unverified caller-trust claims.
 - CSV export carries the settlement `currency` (2026-11-08,
   backlog #984): `renderReportCsv` gains a `currency` column on every
   row (header `escrowId,outcome,currency,role,inflow,outflow,net`),

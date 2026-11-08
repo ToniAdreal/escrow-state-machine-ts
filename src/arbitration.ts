@@ -7,10 +7,14 @@
  * arbitration dispatch requires the quorum to be reached, otherwise the
  * escrow is left completely untouched.
  *
- * Honesty note: the quorum still records caller-trust approvals (no
- * signature verification, no key management, no DAO governance — see
- * README FAQ). This module wires the *count* to the *dispatch*; it does not
- * make the approvals cryptographic.
+ * Honesty note: by default the quorum records caller-trust approvals
+ * (plain `approve()` performs no signature verification — see README
+ * FAQ); `approveSigned()` verifies Ed25519 signatures only when the
+ * caller registers public keys in `QuorumConfig.signerPublicKeys`.
+ * Either way there is no key management and no DAO governance. This
+ * module wires the *count* to the *dispatch*; it counts verified and
+ * unverified approvals identically, and it does not make plain
+ * approvals cryptographic.
  */
 
 import {

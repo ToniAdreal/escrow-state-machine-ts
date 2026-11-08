@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1450 tests, all local
+npm test   # 1474 tests, all local
 ```
 
 ## Quickstart
@@ -587,6 +587,21 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   assertion, exactly like `VERIFY_PASS` evidence: the quorum records
   it verbatim, never verifies that it is real, and counting is
   identical with or without it.
+  Opt-in signature verification is available: register Ed25519 public
+  keys in `QuorumConfig.signerPublicKeys` and collect votes with
+  `approveSigned(signerId, signature)` — each vote is verified against
+  the canonical statement `escrow-quorum:approve:<signerId>` (exact
+  bytes; see the exported `approvalStatement()` helper) and the log
+  entry is marked `verified: true`. A failed verification throws and
+  records nothing; a signer with no registered key cannot use
+  `approveSigned()` at all, and non-Ed25519 or private keys are
+  rejected at construction. Verified and unverified approvals count
+  identically toward the threshold — the flag only records *how* the
+  vote was proven. Two honest limits: the statement binds the signer
+  id only, not an escrow or outcome, so use one quorum per arbitration
+  (the `dispatchArbitration` pattern); and a snapshot carries the
+  recorded `verified` flags as data without re-verifying them, so a
+  restored flag is only as trustworthy as the snapshot itself.
   An optional `maxApprovalAgeMs` gives approvals a shelf life: past the
   window (boundary inclusive) they stop counting toward the threshold —
   `hasQuorum()` can fall back to false — but they stay in `approvalLog()`,
@@ -612,10 +627,14 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   aging from the original
   timestamps, never refreshed by the restore). The snapshot is an
   export format, not a built-in store, and restored approvals are
-  still unsigned. There is still no signature verification, no key
-  management, and no DAO governance in this repo — recording approvals is a
-  caller trust decision, exactly like `VERIFY_PASS`. Production would need
-  the approvals wired to real signatures.
+  still caller-persisted data: a restored `verified` flag was not
+  re-verified on restore (the public keys live in the config, never
+  in the snapshot). There is still no key management and no DAO
+  governance in this repo — recording approvals is a caller trust
+  decision for plain `approve()` votes, exactly like `VERIFY_PASS`,
+  while `approveSigned()` votes carry a verified Ed25519 signature
+  over the canonical statement. Production would need the approvals
+  wired to real key management.
 
 - **How precise is the money math?**
   All amounts are rounded to cents (`round2`). New `dispatch("FUND", …)`
@@ -673,9 +692,10 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
 - **Fee formula is the case study's**, not a general pricing engine: arbitrary
   fee schedules are out of scope.
 - **Trust boundaries.** What the library enforces (money input validation,
-  fail-closed constant-time webhook verification, strict snapshot validation)
-  versus what stays the caller's responsibility (quorum approvals have no
-  signature verification, webhook secret distribution, cents-rounding money
+  fail-closed constant-time webhook verification, strict snapshot validation,
+  opt-in Ed25519 quorum signature verification) versus what stays the
+  caller's responsibility (plain `approve()` quorum votes have no signature
+  verification, webhook secret distribution, cents-rounding money
   math) is documented in [SECURITY.md](SECURITY.md) — every statement there
   is verifiable against the source.
 
@@ -1136,7 +1156,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1450 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1474 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
