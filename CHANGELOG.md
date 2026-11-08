@@ -18,6 +18,19 @@ version changes.
 
 ### Added
 
+- Benchmark adds a `settlePartialReleases` row (2026-11-08,
+  backlog #981): the batch settler now has a measured baseline —
+  4 fixed batches (the golden 10630 in one batch [4252, 6378] at
+  500 bps, a mid-size 2000 batch with 25 referral credits, a large
+  1000000 batch at 250 bps with 1250.25 credits, and a 10-at-125-bps
+  rounding edge), ~453,228 ops/sec on the 2026-11-08 run, with
+  per-tranche fee/net/remaining and batch totals checked against
+  hand-computed expectations on every iteration, the golden batch's
+  tranches re-checked against the single `settlePartialRelease`
+  helper and its totals against the single-release split, and the
+  [600, 600]-against-1000 over-pay pinned to the exact cumulative
+  error. No new unit tests (bench-only change); test count unchanged
+  at 1440.
 - CLI demo shows the `settlePartialReleases` cumulative guard (2026-11-08,
   backlog #978): the same golden deposit settles in one batch [4252, 6378]
   with per-tranche fees 212.6 + 318.9 and nets 4039.4 + 6059.1 summing back

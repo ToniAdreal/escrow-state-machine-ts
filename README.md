@@ -1189,6 +1189,18 @@ summing to the single-release fee 531.50 and their nets to
 10,098.50 on every iteration, and released-over-gross plus
 negative inputs pinned once outside the timed loop to throw their
 exact configuration errors),
+cumulative partial-release settlement (`settlePartialReleases`
+over 4 fixed representative batches — the golden 10,630 settled
+in one batch [4,252, 6,378] at 500 bps, a mid-size 2,000 batch
+with 25 referral credits, a large gross of 1,000,000 at 250 bps
+with 1,250.25 credits, and a 10-at-125-bps half-cent rounding
+edge — each checked against hand-computed per-tranche proFee /
+net / remaining and batch totals on every iteration, with the
+golden batch's tranches re-checked against the single
+`settlePartialRelease` helper and its totals against the
+single-release split, and the [600, 600]-against-1,000 over-pay
+pinned once outside the timed loop to throw the exact cumulative
+error),
 settlement reconciliation (`reconcileSettlements` over a fixed
 3-report / 3-row fixture — one matched, one report-only, one
 amount mismatch, plus one ledger-only row — with the four group
@@ -1905,6 +1917,7 @@ One real run on 2026-11-04:
 | settleRelease (4 fixed inputs) | ~1,109,399 ops/sec (0.90 µs/op) |
 | settleRefund (4 fixed inputs) | ~1,065,105 ops/sec (0.94 µs/op) |
 | settlePartialRelease (4 fixed inputs, 2 tranches) | ~1,303,036 ops/sec (0.77 µs/op) |
+| settlePartialReleases (4 fixed batches) | ~453,228 ops/sec (2.21 µs/op) |
 | buildSettlementReport (4 entries) | ~19,663 ops/sec (50.86 µs/op) |
 | buildSettlementReport releasePath (released report) | ~29,806 ops/sec (33.55 µs/op) |
 | buildSettlementReport audit window (eventCount/firstEventAt/lastEventAt) | ~24,927 ops/sec (40.12 µs/op) |
@@ -1991,6 +2004,7 @@ The two batch-filter rows, the escrowsApproachingDeadline row,
 and the settlePartialRelease row above were measured on
 2026-11-05 runs; the nextEscrowDeadline row and the
 escrowsByEvent row above were measured on 2026-11-06 runs; the
+settlePartialReleases row above was measured on a 2026-11-08 run; the
 rest of the table is the 2026-11-04 run. Those runs' other rows
 came in mixed under shared-host load, so refreshing the whole
 table would misreport changes in paths these additions never
