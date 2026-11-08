@@ -445,6 +445,7 @@ import {
   renderReportJson,
   restoreQuorum,
   settlePartialRelease,
+  settlePartialReleases,
   settleRefund,
   settleRelease,
   staleEscrows,
@@ -466,6 +467,7 @@ import {
   type FeeBreakdown,
   type FeeInputs,
   type LedgerSettlement,
+  type PartialReleases,
   type PartialSettlement,
   type Quorum,
   type QuorumConfig,
@@ -2294,6 +2296,18 @@ export const DEMO_SNAPSHOT_DIFF_SUBMIT_AT = "2026-03-14T10:00:00.000Z";
 export const DEMO_PARTIAL_RELEASE_REPORT_ID = "DEMO-ESC-035";
 export const DEMO_PARTIAL_RELEASE_REPORT_FUND_AT = "2026-03-16T09:00:00.000Z";
 
+/**
+ * Cumulative partial-release guard fixtures (backlog #978): a
+ * still-FUNDED escrow on a 1,000 gross, against which the demo
+ * attempts two individually-legal 600 releases in one batch —
+ * the batch must refuse as a whole with the cumulative figures
+ * in the error, and the escrow stays untouched. All timestamps
+ * fixed; the printed lines carry ids and amounts only, so no
+ * wall clock enters the output.
+ */
+export const DEMO_PARTIAL_RELEASES_GUARD_ID = "DEMO-ESC-036";
+export const DEMO_PARTIAL_RELEASES_GUARD_FUND_AT = "2026-03-17T09:00:00.000Z";
+
 export interface DemoResult {
   escrow: Escrow;
   report: SettlementReport;
@@ -3819,6 +3833,30 @@ export interface DemoResult {
    * 318.9, net 6059.1, remaining 0 — the release is complete.
    */
   partialReleaseSecond: PartialSettlement;
+  /**
+   * `settlePartialReleases({ gross: 10630, releases: [4252, 6378],
+   * proFeeBps: 500 })` on the same golden deposit: the
+   * per-tranche ledger (4252 then 6378) with totals
+   * totalReleased 10630, totalProFee 531.5, totalNet 10098.5,
+   * remaining 0 — each tranche identical to the matching
+   * `settlePartialRelease` call above, so the batch path cannot
+   * drift from the single path.
+   */
+  partialReleasesBatch: PartialReleases;
+  /**
+   * The cumulative-guard escrow (DEMO-ESC-036): funded on a 1,000
+   * gross and left FUNDED — the refused 600 + 600 batch below
+   * never touched it.
+   */
+  partialReleasesGuardEscrow: Escrow;
+  /**
+   * The pinned rejection for `settlePartialReleases({ gross: 1000,
+   * releases: [600, 600], proFeeBps: 500 })`: exactly
+   * `cumulative released 1200 exceeds gross 1000 (release 2 of 2:
+   * 600 would bring the total to 1200)` — printed as a negative
+   * example, never a demo failure.
+   */
+  partialReleasesGuardError: string;
   /**
    * The partial-release settlement-report escrow (DEMO-ESC-035):
    * funded on the golden deposit and left FUNDED — a partial
@@ -9182,6 +9220,94 @@ export async function runDemo(): Promise<DemoResult> {
     `  total: proFee ${partialReleaseFirst.proFee + partialReleaseSecond.proFee}, net ${partialReleaseFirst.net + partialReleaseSecond.net} — identical to one settleRelease(gross ${partialReleaseGross}): splitting a release never double-charges the fee`,
   );
 
+  // --- Cumulative partial release: settlePartialReleases in one batch ---
+  // The two tranches above were settled one call at a time; the
+  // batch form takes the whole list at once and guards the running
+  // total, so two individually-legal releases can no longer
+  // over-pay in total. The same golden deposit goes out as
+  // [4252, 6378] in one call — each tranche identical to the
+  // single-helper call above (same fee, same net, same
+  // remaining), totals summing back to the single-release split.
+  // The guard half then attempts [600, 600] against a gross of
+  // 1000 on a still-FUNDED escrow: each 600 alone is legal, the
+  // pair is not, so the batch refuses as a whole and the escrow
+  // stays FUNDED with only its FUND entry — a refused batch
+  // settles nothing.
+  const partialReleasesBatch = settlePartialReleases({
+    gross: partialReleaseGross,
+    releases: [
+      partialReleaseFirst.released,
+      partialReleaseSecond.released,
+    ],
+    proFeeBps: DEMO_PRO_FEE_BPS,
+  });
+  const partialReleasesGuardEscrow = new Escrow(
+    DEMO_PARTIAL_RELEASES_GUARD_ID,
+  );
+  partialReleasesGuardEscrow.dispatch(
+    "FUND",
+    "Deposit locked (wire received)",
+    1000,
+    {
+      actor: "sponsor",
+      at: DEMO_PARTIAL_RELEASES_GUARD_FUND_AT,
+    },
+  );
+  let partialReleasesGuardError = "";
+  try {
+    settlePartialReleases({
+      gross: 1000,
+      releases: [600, 600],
+      proFeeBps: DEMO_PRO_FEE_BPS,
+    });
+  } catch (error) {
+    partialReleasesGuardError =
+      error instanceof Error ? error.message : String(error);
+  }
+  if (
+    partialReleasesBatch.gross !== partialReleaseGross ||
+    partialReleasesBatch.releases.length !== 2 ||
+    partialReleasesBatch.releases[0].released !==
+      partialReleaseFirst.released ||
+    partialReleasesBatch.releases[0].proFee !== partialReleaseFirst.proFee ||
+    partialReleasesBatch.releases[0].referralCredits !==
+      partialReleaseFirst.referralCredits ||
+    partialReleasesBatch.releases[0].net !== partialReleaseFirst.net ||
+    partialReleasesBatch.releases[0].remaining !==
+      partialReleaseFirst.remaining ||
+    partialReleasesBatch.releases[1].released !==
+      partialReleaseSecond.released ||
+    partialReleasesBatch.releases[1].proFee !==
+      partialReleaseSecond.proFee ||
+    partialReleasesBatch.releases[1].referralCredits !==
+      partialReleaseSecond.referralCredits ||
+    partialReleasesBatch.releases[1].net !== partialReleaseSecond.net ||
+    partialReleasesBatch.releases[1].remaining !==
+      partialReleaseSecond.remaining ||
+    partialReleasesBatch.totalReleased !== partialReleaseGross ||
+    partialReleasesBatch.totalProFee !== partialReleaseWhole.proFee ||
+    partialReleasesBatch.totalReferralCredits !== 0 ||
+    partialReleasesBatch.totalNet !== partialReleaseWhole.net ||
+    partialReleasesBatch.remaining !== 0 ||
+    partialReleasesGuardError !==
+      "cumulative released 1200 exceeds gross 1000 (release 2 of 2: 600 would bring the total to 1200)" ||
+    partialReleasesGuardEscrow.state !== "FUNDED" ||
+    partialReleasesGuardEscrow.history.length !== 1 ||
+    partialReleasesGuardEscrow.history[0].event !== "FUND"
+  ) {
+    throw new Error(
+      "demo fixture broken: settlePartialReleases segment does not match the pinned shape (batch [4252, 6378] of gross 10630 at 500 bps with per-tranche fees 212.6 + 318.9 and nets 4039.4 + 6059.1, remaining 0; guard [600, 600] against gross 1000 refused with the cumulative error and DEMO-ESC-036 left FUNDED with only its FUND entry)",
+    );
+  }
+  lines.push(
+    "",
+    "Cumulative partial release (settlePartialReleases on the golden deposit, in one batch):",
+    `  batch: releases [${partialReleasesBatch.releases.map((r) => r.released).join(", ")}] of gross ${partialReleasesBatch.gross} — proFee ${partialReleasesBatch.releases[0].proFee} + ${partialReleasesBatch.releases[1].proFee} = ${partialReleasesBatch.totalProFee}, net ${partialReleasesBatch.releases[0].net} + ${partialReleasesBatch.releases[1].net} = ${partialReleasesBatch.totalNet}, remaining ${partialReleasesBatch.remaining}`,
+    `  identical to the two settlePartialRelease tranches above — the batch path cannot drift from the single path`,
+    `  guard: releases [600, 600] against gross 1000 refused as a whole — ${partialReleasesGuardError}`,
+    `  ${partialReleasesGuardEscrow.id} stays FUNDED with only its FUND entry — a refused batch settles nothing`,
+  );
+
   // --- Partial-release settlement report: buildSettlementReport with partialRelease ---
   // The tranche math above is pure arithmetic; the report is what
   // operations files at day end. A still-FUNDED escrow on the
@@ -9697,6 +9823,9 @@ export async function runDemo(): Promise<DemoResult> {
     partialReleaseGross,
     partialReleaseFirst,
     partialReleaseSecond,
+    partialReleasesBatch,
+    partialReleasesGuardEscrow,
+    partialReleasesGuardError,
     partialReleaseReportEscrow,
     partialReleaseReport,
     reconcileResult,

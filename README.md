@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1438 tests, all local
+npm test   # 1440 tests, all local
 ```
 
 ## Quickstart
@@ -147,6 +147,10 @@ in two tranches — 4,252 (40%) then the remaining 6,378 — with
 tranche fees 212.60 and 318.90 and nets 4,039.40 and 6,059.10
 summing back to the single-release split (531.50 / 10,098.50),
 so splitting a release never double-charges the fee. The demo then
+settles that same deposit in one `settlePartialReleases` batch —
+[4,252, 6,378] with totals identical to the single path — and shows
+the cumulative guard refusing [600, 600] against a gross of 1,000
+as a whole, leaving DEMO-ESC-036 FUNDED and untouched. The demo then
 reports that same first tranche through `buildSettlementReport` with
 `partialRelease`: outcome `partially-released` on a still-`FUNDED`
 DEMO-ESC-035, remaining 6,378 still locked, sponsor outflow the
@@ -1124,7 +1128,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1438 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1440 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

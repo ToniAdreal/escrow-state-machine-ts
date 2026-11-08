@@ -18,6 +18,15 @@ version changes.
 
 ### Added
 
+- CLI demo shows the `settlePartialReleases` cumulative guard (2026-11-08,
+  backlog #978): the same golden deposit settles in one batch [4252, 6378]
+  with per-tranche fees 212.6 + 318.9 and nets 4039.4 + 6059.1 summing back
+  to the single-release split, and the guard half refuses [600, 600]
+  against a gross of 1000 as a whole with the cumulative figures in the
+  error, leaving DEMO-ESC-036 FUNDED with only its FUND entry. 2 new tests
+  in `test/demo.test.ts` (batch shape + guard, batch determinism); the
+  partial-release determinism slice now ends at the batch header. Test
+  count 1438 → 1440.
 - `settlePartialReleases` cumulative partial-release guard (2026-11-08,
   backlog #972): settling a list of releases against one locked gross
   in a single call returns the per-tranche ledger plus totals, and the

@@ -127,6 +127,8 @@ import {
   DEMO_PARSED_HISTORY_TAMPERED_SEQ,
   DEMO_PARTIAL_RELEASE_REPORT_FUND_AT,
   DEMO_PARTIAL_RELEASE_REPORT_ID,
+  DEMO_PARTIAL_RELEASES_GUARD_FUND_AT,
+  DEMO_PARTIAL_RELEASES_GUARD_ID,
   DEMO_PATROL_EXACT_ESCROW_ID,
   DEMO_PATROL_EXACT_FUND_AT,
   DEMO_PATROL_NO_HISTORY_ESCROW_ID,
@@ -318,6 +320,7 @@ import {
   renderReportCsv,
   renderReportJson,
   restoreQuorum,
+  settlePartialReleases,
   settleRelease,
   stateDiagram,
   transitionTable,
@@ -8048,13 +8051,13 @@ test("demo shows partial release: settlePartialRelease splits the golden deposit
 test("demo partial-release segment is deterministic: two runs print byte-identical partial-release lines", async () => {
   const header =
     "Partial release (settlePartialRelease on the golden deposit, in two tranches):";
-  const reportHeader =
-    "Partial-release settlement report (buildSettlementReport with partialRelease on a funded escrow):";
+  const batchHeader =
+    "Cumulative partial release (settlePartialReleases on the golden deposit, in one batch):";
   // The partial-release section runs from the blank line before its
-  // header to the blank line before the partial-release report
-  // header that now follows it.
+  // header to the blank line before the cumulative batch header
+  // that now follows it.
   const segment = (ls: string[]) =>
-    ls.slice(ls.indexOf(header) - 1, ls.indexOf(reportHeader) - 1);
+    ls.slice(ls.indexOf(header) - 1, ls.indexOf(batchHeader) - 1);
   const a = await runDemo();
   const b = await runDemo();
   // Blank + header + first tranche + second tranche + total;
@@ -8065,6 +8068,154 @@ test("demo partial-release segment is deterministic: two runs print byte-identic
   assert.deepEqual(segA, segment(b.lines));
   assert.deepEqual(a.partialReleaseFirst, b.partialReleaseFirst);
   assert.deepEqual(a.partialReleaseSecond, b.partialReleaseSecond);
+});
+
+test("demo shows cumulative partial release: settlePartialReleases settles the golden deposit in one batch and refuses an over-paying batch", async () => {
+  const {
+    partialReleaseFirst,
+    partialReleaseSecond,
+    partialReleasesBatch,
+    partialReleasesGuardEscrow,
+    partialReleasesGuardError,
+    lines,
+  } = await runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned fixture shape: the same golden deposit settled as
+  // one batch [4252, 6378], each tranche identical to the matching
+  // single-helper call — the batch path cannot drift from it.
+  assert.deepEqual(partialReleasesBatch, {
+    gross: 10630,
+    releases: [
+      {
+        released: 4252,
+        proFee: 212.6,
+        referralCredits: 0,
+        net: 4039.4,
+        remaining: 6378,
+      },
+      {
+        released: 6378,
+        proFee: 318.9,
+        referralCredits: 0,
+        net: 6059.1,
+        remaining: 0,
+      },
+    ],
+    totalReleased: 10630,
+    totalProFee: 531.5,
+    totalReferralCredits: 0,
+    totalNet: 10098.5,
+    remaining: 0,
+  });
+  assert.deepEqual(partialReleasesBatch.releases[0], partialReleaseFirst);
+  assert.deepEqual(partialReleasesBatch.releases[1], partialReleaseSecond);
+
+  // The totals sum back to the single-release split, cross-checked
+  // against the library, never hand-typed into the demo.
+  const whole = settleRelease({
+    gross: partialReleasesBatch.gross,
+    proFeeBps: DEMO_PRO_FEE_BPS,
+  });
+  assert.equal(partialReleasesBatch.totalProFee, whole.proFee);
+  assert.equal(partialReleasesBatch.totalNet, whole.net);
+
+  // Guard half: 600 + 600 against a gross of 1000 is refused as a
+  // whole with the cumulative figures in the error — and the
+  // escrow the batch was attempted against stays untouched.
+  assert.equal(DEMO_PARTIAL_RELEASES_GUARD_ID, "DEMO-ESC-036");
+  assert.equal(
+    DEMO_PARTIAL_RELEASES_GUARD_FUND_AT,
+    "2026-03-17T09:00:00.000Z",
+  );
+  assert.equal(
+    partialReleasesGuardError,
+    "cumulative released 1200 exceeds gross 1000 (release 2 of 2: 600 would bring the total to 1200)",
+  );
+  assert.equal(partialReleasesGuardEscrow.id, DEMO_PARTIAL_RELEASES_GUARD_ID);
+  assert.equal(partialReleasesGuardEscrow.state, "FUNDED");
+  assert.deepEqual(
+    partialReleasesGuardEscrow.history.map((h) => h.event),
+    ["FUND"],
+  );
+  // The same over-paying batch refused by the library directly —
+  // the demo's printed error is the library's own message, not a
+  // hand-typed string.
+  assert.throws(
+    () =>
+      settlePartialReleases({
+        gross: 1000,
+        releases: [600, 600],
+        proFeeBps: DEMO_PRO_FEE_BPS,
+      }),
+    (error: unknown) =>
+      error instanceof Error &&
+      error.message === partialReleasesGuardError,
+  );
+
+  // The printed section follows the single-helper partial-release
+  // segment and is itself followed by the partial-release report.
+  const header =
+    "Cumulative partial release (settlePartialReleases on the golden deposit, in one batch):";
+  assert.ok(
+    text.indexOf(header) >
+      text.indexOf(
+        "Partial release (settlePartialRelease on the golden deposit, in two tranches):",
+      ),
+    "cumulative batch segment must follow the partial-release segment",
+  );
+  assert.ok(
+    text.indexOf(
+      "Partial-release settlement report (buildSettlementReport with partialRelease on a funded escrow):",
+    ) > text.indexOf(header),
+    "partial-release report must follow the cumulative batch segment",
+  );
+  assert.ok(
+    text.includes(
+      "  batch: releases [4252, 6378] of gross 10630 — proFee 212.6 + 318.9 = 531.5, net 4039.4 + 6059.1 = 10098.5, remaining 0",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  identical to the two settlePartialRelease tranches above — the batch path cannot drift from the single path",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  guard: releases [600, 600] against gross 1000 refused as a whole — cumulative released 1200 exceeds gross 1000 (release 2 of 2: 600 would bring the total to 1200)",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  DEMO-ESC-036 stays FUNDED with only its FUND entry — a refused batch settles nothing",
+    ),
+  );
+});
+
+test("demo cumulative partial-release segment is deterministic: two runs print byte-identical batch lines", async () => {
+  const header =
+    "Cumulative partial release (settlePartialReleases on the golden deposit, in one batch):";
+  const reportHeader =
+    "Partial-release settlement report (buildSettlementReport with partialRelease on a funded escrow):";
+  // The batch section runs from the blank line before its header
+  // to the blank line before the partial-release report header
+  // that now follows it.
+  const segment = (ls: string[]) =>
+    ls.slice(ls.indexOf(header) - 1, ls.indexOf(reportHeader) - 1);
+  const a = await runDemo();
+  const b = await runDemo();
+  // Blank + header + batch + identical + guard + untouched;
+  // every printed value derives from the pinned fixtures alone,
+  // so no normalization is needed.
+  const segA = segment(a.lines);
+  assert.equal(segA.length, 6);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(a.partialReleasesBatch, b.partialReleasesBatch);
+  assert.equal(a.partialReleasesGuardError, b.partialReleasesGuardError);
+  assert.equal(
+    a.partialReleasesGuardEscrow.state,
+    b.partialReleasesGuardEscrow.state,
+  );
 });
 
 test("demo shows partial-release settlement report: buildSettlementReport on a funded escrow reports the first tranche with the remainder still locked", async () => {
