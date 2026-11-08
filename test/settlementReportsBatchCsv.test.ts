@@ -59,7 +59,7 @@ test("batch -> per-report CSV -> parse: each parsed subset matches its batch rep
     const report = result.report!;
     const csv = renderReportCsv(report);
     const parsed = parseSettlementReportCsv(csv);
-    // The CSV carries only the subset: escrowId/outcome/party rows/TOTAL.
+    // The CSV carries only the subset: escrowId/outcome/currency/party rows/TOTAL.
     // It must never be claimed to be the full report (#600 honesty rule).
     assert.equal(parsed.escrowId, report.escrowId);
     assert.equal(parsed.outcome, report.outcome);

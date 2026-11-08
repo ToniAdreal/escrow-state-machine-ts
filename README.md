@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1440 tests, all local
+npm test   # 1450 tests, all local
 ```
 
 ## Quickstart
@@ -718,7 +718,11 @@ report's `currency` copied verbatim (e.g. `"USD"`), sits after `deposit`
 in the canonical key order, and is covered by the signature — changing
 it or stripping it fails verification. Reports built without a currency
 keep the legacy payload shape exactly. The code is a label only: no
-conversion is performed anywhere, and the CSV export does not carry it.
+conversion is performed anywhere. The CSV export carries it too:
+`renderReportCsv` writes the code into a `currency` column on every row
+(empty when the report was built without one), so a multi-currency
+bookkeeping import can tell USD rows from EUR rows, and
+`parseSettlementReportCsv` reads it back.
 
 `eventId` is the receiver's idempotency key: every build generates a fresh
 UUID v4 (inject your own via `BuildWebhookOptions.eventId` for deterministic
@@ -1067,16 +1071,19 @@ above), so an honest ledger is not misread as a shortfall.
 For bookkeeping imports, `renderReportCsv(report)` renders the same
 report as CSV — the machine-readable counterpart to `renderReport`'s
 human-readable text, so an importer never has to parse prose lines:
-header `escrowId,outcome,role,inflow,outflow,net`, one row per party in
+header `escrowId,outcome,currency,role,inflow,outflow,net`, one row per party in
 fixed sponsor/creator/platform/referrer order (zero-amount parties
 included, never silently absent), amounts at exactly two decimals with
 no thousands separators, and a final `TOTAL` row whose columns are the
-sums over the party rows. String fields follow RFC 4180 escaping
+sums over the party rows. The `currency` column carries the report's ISO
+4217 code on every row (empty when the report was built without one),
+so a multi-currency import can tell USD rows from EUR rows without
+re-querying the report. String fields follow RFC 4180 escaping
 (comma/quote/newline fields are quoted, inner quotes doubled), and the
-TOTAL row repeats the report's `escrowId`/`outcome` so imports can group
+TOTAL row repeats the report's `escrowId`/`outcome`/`currency` so imports can group
 rows back to their escrow. As with the JSON renderer, the CSV renderer
 shape-checks its input first: a non-object report, an empty `escrowId`,
-an illegal `outcome`, an empty `parties` array, an unknown party role,
+an illegal `outcome`, an illegal `currency`, an empty `parties` array, an unknown party role,
 or a non-finite party amount throws
 `cannot render settlement report as CSV: …` instead of emitting an
 `Infinity`/`NaN` row — only the CSV-carried fields are required, so a
@@ -1086,13 +1093,14 @@ parsed `SettlementReportCsv` still re-renders.
 that hop: it parses the header, the four party rows, and the `TOTAL` row
 with an RFC 4180 record parser (quoted fields may carry commas, quotes,
 and line breaks), and it cross-checks the document before returning
-anything — same `escrowId`/`outcome` on every row, exactly one row per
+anything — same `escrowId`/`outcome`/`currency` on every row, exactly one row per
 party role, every amount a finite two-decimal figure, every party `net`
 equal to its `inflow − outflow`, and the `TOTAL` row equal to the sums
 over the party rows. Anything else throws
 `cannot parse settlement report CSV: …`. The return value is a
 `SettlementReportCsv`: the CSV-carried subset (`escrowId`, `outcome`,
-party ledgers, totals, `balanced`), not a full `SettlementReport` — the
+`currency` when the report was built with one, party ledgers, totals,
+`balanced`), not a full `SettlementReport` — the
 CSV carries no deposit breakdown, settlement parameters, `releasePath`,
 `eventCount`, or audit window, and the import does not invent them, so
 a parsed value re-renders byte-identically through `renderReportCsv`
@@ -1128,7 +1136,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1440 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1450 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

@@ -85,26 +85,26 @@ test("topped-up report renders CSV rows on the FUND total", () => {
   assert.equal(
     renderReportCsv(report),
     [
-      "escrowId,outcome,role,inflow,outflow,net",
-      "esc-topup-csv,released,sponsor,0.00,10630.00,-10630.00",
-      "esc-topup-csv,released,creator,10098.50,0.00,10098.50",
-      "esc-topup-csv,released,platform,531.50,0.00,531.50",
-      "esc-topup-csv,released,referrer,0.00,0.00,0.00",
-      "esc-topup-csv,released,TOTAL,10630.00,10630.00,0.00",
+      "escrowId,outcome,currency,role,inflow,outflow,net",
+      "esc-topup-csv,released,,sponsor,0.00,10630.00,-10630.00",
+      "esc-topup-csv,released,,creator,10098.50,0.00,10098.50",
+      "esc-topup-csv,released,,platform,531.50,0.00,531.50",
+      "esc-topup-csv,released,,referrer,0.00,0.00,0.00",
+      "esc-topup-csv,released,,TOTAL,10630.00,10630.00,0.00",
     ].join("\n"),
   );
   // TOTAL row agrees with the party rows, not with either FUND alone.
   const lines = renderReportCsv(report).split("\n");
   const partyInflow = lines
     .slice(1, 5)
-    .reduce((s, line) => s + Number(line.split(",")[3]), 0);
+    .reduce((s, line) => s + Number(line.split(",")[4]), 0);
   const partyOutflow = lines
     .slice(1, 5)
-    .reduce((s, line) => s + Number(line.split(",")[4]), 0);
+    .reduce((s, line) => s + Number(line.split(",")[5]), 0);
   const total = lines[5].split(",");
-  assert.equal(Number(total[3]), partyInflow);
-  assert.equal(Number(total[4]), partyOutflow);
-  assert.equal(Number(total[3]), 10630);
+  assert.equal(Number(total[4]), partyInflow);
+  assert.equal(Number(total[5]), partyOutflow);
+  assert.equal(Number(total[4]), 10630);
 });
 
 test("topped-up CSV parses back to the same subset and re-renders byte-identically", () => {
@@ -175,5 +175,5 @@ test("amount-less FUND: corroboration refuses, report falls back to caller depos
   });
   assert.equal(report.totalInflow, 10630);
   const lines = renderReportCsv(report).split("\n");
-  assert.equal(lines[5], "esc-topup-unpriced,released,TOTAL,10630.00,10630.00,0.00");
+  assert.equal(lines[5], "esc-topup-unpriced,released,,TOTAL,10630.00,10630.00,0.00");
 });

@@ -971,8 +971,8 @@
  *      the export serializes, the import must re-validate.
  *      Every timed iteration re-checks the parsed subset
  *      field for field against the golden report's
- *      CSV-carried fields (escrowId, outcome, party ledgers,
- *      totals, balanced flag) and re-renders it
+ *      CSV-carried fields (escrowId, outcome, currency when the report carries one,
+ *      party ledgers, totals, balanced flag) and re-renders it
  *      byte-identically through `renderReportCsv` — the CSV
  *      carries only that subset, so the check is subset
  *      equality plus byte-identical re-render, not equality
@@ -8871,17 +8871,17 @@ function benchRenderReportRefundedExpired(): number {
 // Hand-written expected lines — the header verbatim, one row per
 // party in the report's party order, and the TOTAL row — written
 // out from the documented CSV shape (header
-// `escrowId,outcome,role,inflow,outflow,net`, cent-rounded
+// `escrowId,outcome,currency,role,inflow,outflow,net`, cent-rounded
 // two-decimal amounts, no thousands separators) and the golden
 // figures above, cross-checked against
 // test/settlementReportCsv.test.ts — never produced by calling
 // renderReportCsv itself:
-//   header:   "escrowId,outcome,role,inflow,outflow,net"
-//   sponsor:  "BENCH-001,released,sponsor,0.00,10630.00,-10630.00"
-//   creator:  "BENCH-001,released,creator,10098.50,0.00,10098.50"
-//   platform: "BENCH-001,released,platform,531.50,0.00,531.50"
-//   referrer: "BENCH-001,released,referrer,0.00,0.00,0.00"
-//   TOTAL:    "BENCH-001,released,TOTAL,10630.00,10630.00,0.00"
+//   header:   "escrowId,outcome,currency,role,inflow,outflow,net"
+//   sponsor:  "BENCH-001,released,,sponsor,0.00,10630.00,-10630.00"
+//   creator:  "BENCH-001,released,,creator,10098.50,0.00,10098.50"
+//   platform: "BENCH-001,released,,platform,531.50,0.00,531.50"
+//   referrer: "BENCH-001,released,,referrer,0.00,0.00,0.00"
+//   TOTAL:    "BENCH-001,released,,TOTAL,10630.00,10630.00,0.00"
 // The TOTAL row is additionally re-derived on every iteration from
 // the party rows themselves (parsed back out of the CSV text and
 // summed at cent precision), so the check pins the CSV's
@@ -8889,12 +8889,12 @@ function benchRenderReportRefundedExpired(): number {
 // them — rather than only the pinned TOTAL line.
 // ---------------------------------------------------------------------
 const RENDER_CSV_EXPECTED_LINES: readonly string[] = [
-  "escrowId,outcome,role,inflow,outflow,net",
-  "BENCH-001,released,sponsor,0.00,10630.00,-10630.00",
-  "BENCH-001,released,creator,10098.50,0.00,10098.50",
-  "BENCH-001,released,platform,531.50,0.00,531.50",
-  "BENCH-001,released,referrer,0.00,0.00,0.00",
-  "BENCH-001,released,TOTAL,10630.00,10630.00,0.00",
+  "escrowId,outcome,currency,role,inflow,outflow,net",
+  "BENCH-001,released,,sponsor,0.00,10630.00,-10630.00",
+  "BENCH-001,released,,creator,10098.50,0.00,10098.50",
+  "BENCH-001,released,,platform,531.50,0.00,531.50",
+  "BENCH-001,released,,referrer,0.00,0.00,0.00",
+  "BENCH-001,released,,TOTAL,10630.00,10630.00,0.00",
 ];
 
 function checkRenderReportCsv(text: string): void {
@@ -8916,16 +8916,16 @@ function checkRenderReportCsv(text: string): void {
   let net = 0;
   for (let i = 1; i <= 4; i++) {
     const cols = lines[i].split(",");
-    inflow = Math.round((inflow + Number(cols[3])) * 100) / 100;
-    outflow = Math.round((outflow + Number(cols[4])) * 100) / 100;
-    net = Math.round((net + Number(cols[5])) * 100) / 100;
+    inflow = Math.round((inflow + Number(cols[4])) * 100) / 100;
+    outflow = Math.round((outflow + Number(cols[5])) * 100) / 100;
+    net = Math.round((net + Number(cols[6])) * 100) / 100;
   }
   const totalCols = lines[5].split(",");
   if (
-    totalCols[2] !== "TOTAL" ||
-    totalCols[3] !== inflow.toFixed(2) ||
-    totalCols[4] !== outflow.toFixed(2) ||
-    totalCols[5] !== net.toFixed(2) ||
+    totalCols[3] !== "TOTAL" ||
+    totalCols[4] !== inflow.toFixed(2) ||
+    totalCols[5] !== outflow.toFixed(2) ||
+    totalCols[6] !== net.toFixed(2) ||
     inflow !== report.totalInflow ||
     outflow !== report.totalOutflow
   ) {
@@ -9181,7 +9181,7 @@ function benchParseSettlementReportJson(): number {
 // returns a fresh object graph), so the same CSV text is re-parsed
 // on every iteration. The check below compares the parsed subset
 // field for field against the golden report's CSV-carried fields
-// (escrowId, outcome, party ledgers, totals, balanced flag) and
+// (escrowId, outcome, currency when the report carries one, party ledgers, totals, balanced flag) and
 // re-renders it byte-identically through renderReportCsv: the CSV
 // carries only that subset — not the deposit breakdown,
 // settlement parameters, releasePath, eventCount, or audit window —
@@ -9239,8 +9239,8 @@ checkParseSettlementReportCsv(parseSettlementReportCsv(REPORT_CSV));
 // shared cache.
 {
   const damagedCsv = REPORT_CSV.replace(
-    "BENCH-001,released,TOTAL,10630.00,10630.00,0.00",
-    "BENCH-001,released,TOTAL,10631.00,10630.00,0.00",
+    "BENCH-001,released,,TOTAL,10630.00,10630.00,0.00",
+    "BENCH-001,released,,TOTAL,10631.00,10630.00,0.00",
   );
   let damagedError = "";
   try {

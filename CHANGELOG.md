@@ -18,6 +18,20 @@ version changes.
 
 ### Added
 
+- CSV export carries the settlement `currency` (2026-11-08,
+  backlog #984): `renderReportCsv` gains a `currency` column on every
+  row (header `escrowId,outcome,currency,role,inflow,outflow,net`),
+  empty when the report was built without a currency so a
+  currency-less export keeps the same 7-column shape; the paired
+  `parseSettlementReportCsv` reads it back (same code on every row,
+  non-empty codes shape-checked as ISO 4217, absent from the parsed
+  value when the column is empty) and re-renders byte-identically.
+  A bad currency is still rejected at report build time, and the
+  renderer's shared shape check now rejects one on hand-built reports
+  too. 10 new tests in `test/settlementReportCsvCurrency.test.ts`
+  (USD/EUR columns, empty-column shape, both round-trips, lowercase
+  and four-letter codes rejected, cross-row mismatch rejected,
+  render-time and build-time rejection); test count 1440 → 1450.
 - Benchmark adds a `settlePartialReleases` row (2026-11-08,
   backlog #981): the batch settler now has a measured baseline —
   4 fixed batches (the golden 10630 in one batch [4252, 6378] at

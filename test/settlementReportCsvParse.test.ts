@@ -118,12 +118,12 @@ test("RFC 4180-quoted escrowId with comma and quote round-trips", () => {
 
 test("party rows in any order parse and keep CSV order", () => {
   const csv = [
-    "escrowId,outcome,role,inflow,outflow,net",
-    "esc-10630,released,referrer,0.00,0.00,0.00",
-    "esc-10630,released,platform,531.50,0.00,531.50",
-    "esc-10630,released,creator,10098.50,0.00,10098.50",
-    "esc-10630,released,sponsor,0.00,10630.00,-10630.00",
-    "esc-10630,released,TOTAL,10630.00,10630.00,0.00",
+    "escrowId,outcome,currency,role,inflow,outflow,net",
+    "esc-10630,released,,referrer,0.00,0.00,0.00",
+    "esc-10630,released,,platform,531.50,0.00,531.50",
+    "esc-10630,released,,creator,10098.50,0.00,10098.50",
+    "esc-10630,released,,sponsor,0.00,10630.00,-10630.00",
+    "esc-10630,released,,TOTAL,10630.00,10630.00,0.00",
   ].join("\n");
   const parsed = parseSettlementReportCsv(csv);
   assert.deepEqual(
@@ -142,12 +142,12 @@ test("CRLF line endings, a trailing newline, and a BOM are tolerated", () => {
 
 test("an unbalanced hand-built CSV parses with balanced false, not a throw", () => {
   const csv = [
-    "escrowId,outcome,role,inflow,outflow,net",
-    "esc-x,released,sponsor,0.00,100.00,-100.00",
-    "esc-x,released,creator,90.00,0.00,90.00",
-    "esc-x,released,platform,5.00,0.00,5.00",
-    "esc-x,released,referrer,0.00,0.00,0.00",
-    "esc-x,released,TOTAL,95.00,100.00,-5.00",
+    "escrowId,outcome,currency,role,inflow,outflow,net",
+    "esc-x,released,,sponsor,0.00,100.00,-100.00",
+    "esc-x,released,,creator,90.00,0.00,90.00",
+    "esc-x,released,,platform,5.00,0.00,5.00",
+    "esc-x,released,,referrer,0.00,0.00,0.00",
+    "esc-x,released,,TOTAL,95.00,100.00,-5.00",
   ].join("\n");
   const parsed = parseSettlementReportCsv(csv);
   assert.equal(parsed.balanced, false);
@@ -159,92 +159,92 @@ const damaged: Array<[string, string, RegExp]> = [
   ["empty input", "", /expected 6 records/],
   [
     "wrong header",
-    "id,outcome,role,inflow,outflow,net\nesc-10630,released,sponsor,0.00,10630.00,-10630.00\nesc-10630,released,creator,10098.50,0.00,10098.50\nesc-10630,released,platform,531.50,0.00,531.50\nesc-10630,released,referrer,0.00,0.00,0.00\nesc-10630,released,TOTAL,10630.00,10630.00,0.00",
+    "id,outcome,role,inflow,outflow,net\nesc-10630,released,,sponsor,0.00,10630.00,-10630.00\nesc-10630,released,,creator,10098.50,0.00,10098.50\nesc-10630,released,,platform,531.50,0.00,531.50\nesc-10630,released,,referrer,0.00,0.00,0.00\nesc-10630,released,,TOTAL,10630.00,10630.00,0.00",
     /header must be exactly/,
   ],
   [
     "missing TOTAL row",
-    "escrowId,outcome,role,inflow,outflow,net\nesc-10630,released,sponsor,0.00,10630.00,-10630.00\nesc-10630,released,creator,10098.50,0.00,10098.50\nesc-10630,released,platform,531.50,0.00,531.50\nesc-10630,released,referrer,0.00,0.00,0.00",
+    "escrowId,outcome,currency,role,inflow,outflow,net\nesc-10630,released,,sponsor,0.00,10630.00,-10630.00\nesc-10630,released,,creator,10098.50,0.00,10098.50\nesc-10630,released,,platform,531.50,0.00,531.50\nesc-10630,released,,referrer,0.00,0.00,0.00",
     /expected 6 records/,
   ],
   [
     "TOTAL inflow disagrees with party rows",
-    "escrowId,outcome,role,inflow,outflow,net\nesc-10630,released,sponsor,0.00,10630.00,-10630.00\nesc-10630,released,creator,10098.50,0.00,10098.50\nesc-10630,released,platform,531.50,0.00,531.50\nesc-10630,released,referrer,0.00,0.00,0.00\nesc-10630,released,TOTAL,10631.00,10630.00,0.00",
+    "escrowId,outcome,currency,role,inflow,outflow,net\nesc-10630,released,,sponsor,0.00,10630.00,-10630.00\nesc-10630,released,,creator,10098.50,0.00,10098.50\nesc-10630,released,,platform,531.50,0.00,531.50\nesc-10630,released,,referrer,0.00,0.00,0.00\nesc-10630,released,,TOTAL,10631.00,10630.00,0.00",
     /TOTAL row inflow .* does not equal the sum/,
   ],
   [
     "TOTAL net disagrees with party rows",
-    "escrowId,outcome,role,inflow,outflow,net\nesc-10630,released,sponsor,0.00,10630.00,-10630.00\nesc-10630,released,creator,10098.50,0.00,10098.50\nesc-10630,released,platform,531.50,0.00,531.50\nesc-10630,released,referrer,0.00,0.00,0.00\nesc-10630,released,TOTAL,10630.00,10630.00,1.00",
+    "escrowId,outcome,currency,role,inflow,outflow,net\nesc-10630,released,,sponsor,0.00,10630.00,-10630.00\nesc-10630,released,,creator,10098.50,0.00,10098.50\nesc-10630,released,,platform,531.50,0.00,531.50\nesc-10630,released,,referrer,0.00,0.00,0.00\nesc-10630,released,,TOTAL,10630.00,10630.00,1.00",
     /TOTAL row net .* does not equal the sum/,
   ],
   [
     "party net disagrees with its inflow minus outflow",
-    "escrowId,outcome,role,inflow,outflow,net\nesc-10630,released,sponsor,0.00,10630.00,-10630.00\nesc-10630,released,creator,10098.50,0.00,10099.50\nesc-10630,released,platform,531.50,0.00,531.50\nesc-10630,released,referrer,0.00,0.00,0.00\nesc-10630,released,TOTAL,10630.00,10630.00,0.00",
+    "escrowId,outcome,currency,role,inflow,outflow,net\nesc-10630,released,,sponsor,0.00,10630.00,-10630.00\nesc-10630,released,,creator,10098.50,0.00,10099.50\nesc-10630,released,,platform,531.50,0.00,531.50\nesc-10630,released,,referrer,0.00,0.00,0.00\nesc-10630,released,,TOTAL,10630.00,10630.00,0.00",
     /net .* does not equal inflow .* minus outflow/,
   ],
   [
     "unknown party role",
-    "escrowId,outcome,role,inflow,outflow,net\nesc-10630,released,sponsor,0.00,10630.00,-10630.00\nesc-10630,released,creator,10098.50,0.00,10098.50\nesc-10630,released,platform,531.50,0.00,531.50\nesc-10630,released,auditor,0.00,0.00,0.00\nesc-10630,released,TOTAL,10630.00,10630.00,0.00",
+    "escrowId,outcome,currency,role,inflow,outflow,net\nesc-10630,released,,sponsor,0.00,10630.00,-10630.00\nesc-10630,released,,creator,10098.50,0.00,10098.50\nesc-10630,released,,platform,531.50,0.00,531.50\nesc-10630,released,,auditor,0.00,0.00,0.00\nesc-10630,released,,TOTAL,10630.00,10630.00,0.00",
     /role must be a PartyRole/,
   ],
   [
     "duplicate party role",
-    "escrowId,outcome,role,inflow,outflow,net\nesc-10630,released,sponsor,0.00,10630.00,-10630.00\nesc-10630,released,creator,10098.50,0.00,10098.50\nesc-10630,released,platform,531.50,0.00,531.50\nesc-10630,released,creator,0.00,0.00,0.00\nesc-10630,released,TOTAL,10630.00,10630.00,0.00",
+    "escrowId,outcome,currency,role,inflow,outflow,net\nesc-10630,released,,sponsor,0.00,10630.00,-10630.00\nesc-10630,released,,creator,10098.50,0.00,10098.50\nesc-10630,released,,platform,531.50,0.00,531.50\nesc-10630,released,,creator,0.00,0.00,0.00\nesc-10630,released,,TOTAL,10630.00,10630.00,0.00",
     /appears more than once/,
   ],
   [
     "missing referrer row, replaced by a second TOTAL-shaped row",
-    "escrowId,outcome,role,inflow,outflow,net\nesc-10630,released,sponsor,0.00,10630.00,-10630.00\nesc-10630,released,creator,10098.50,0.00,10098.50\nesc-10630,released,platform,531.50,0.00,531.50\nesc-10630,released,TOTAL,10630.00,10630.00,0.00\nesc-10630,released,TOTAL,10630.00,10630.00,0.00",
+    "escrowId,outcome,currency,role,inflow,outflow,net\nesc-10630,released,,sponsor,0.00,10630.00,-10630.00\nesc-10630,released,,creator,10098.50,0.00,10098.50\nesc-10630,released,,platform,531.50,0.00,531.50\nesc-10630,released,,TOTAL,10630.00,10630.00,0.00\nesc-10630,released,,TOTAL,10630.00,10630.00,0.00",
     /role must be a PartyRole/,
   ],
   [
     "escrowId mismatch across rows",
-    "escrowId,outcome,role,inflow,outflow,net\nesc-10630,released,sponsor,0.00,10630.00,-10630.00\nesc-other,released,creator,10098.50,0.00,10098.50\nesc-10630,released,platform,531.50,0.00,531.50\nesc-10630,released,referrer,0.00,0.00,0.00\nesc-10630,released,TOTAL,10630.00,10630.00,0.00",
+    "escrowId,outcome,currency,role,inflow,outflow,net\nesc-10630,released,,sponsor,0.00,10630.00,-10630.00\nesc-other,released,,creator,10098.50,0.00,10098.50\nesc-10630,released,,platform,531.50,0.00,531.50\nesc-10630,released,,referrer,0.00,0.00,0.00\nesc-10630,released,,TOTAL,10630.00,10630.00,0.00",
     /escrowId .* does not match/,
   ],
   [
     "outcome mismatch across rows",
-    "escrowId,outcome,role,inflow,outflow,net\nesc-10630,released,sponsor,0.00,10630.00,-10630.00\nesc-10630,refunded,creator,10098.50,0.00,10098.50\nesc-10630,released,platform,531.50,0.00,531.50\nesc-10630,released,referrer,0.00,0.00,0.00\nesc-10630,released,TOTAL,10630.00,10630.00,0.00",
+    "escrowId,outcome,currency,role,inflow,outflow,net\nesc-10630,released,,sponsor,0.00,10630.00,-10630.00\nesc-10630,refunded,,creator,10098.50,0.00,10098.50\nesc-10630,released,,platform,531.50,0.00,531.50\nesc-10630,released,,referrer,0.00,0.00,0.00\nesc-10630,released,,TOTAL,10630.00,10630.00,0.00",
     /outcome .* does not match/,
   ],
   [
     "non-numeric amount",
-    "escrowId,outcome,role,inflow,outflow,net\nesc-10630,released,sponsor,0.00,10630.00,-10630.00\nesc-10630,released,creator,abc,0.00,10098.50\nesc-10630,released,platform,531.50,0.00,531.50\nesc-10630,released,referrer,0.00,0.00,0.00\nesc-10630,released,TOTAL,10630.00,10630.00,0.00",
+    "escrowId,outcome,currency,role,inflow,outflow,net\nesc-10630,released,,sponsor,0.00,10630.00,-10630.00\nesc-10630,released,,creator,abc,0.00,10098.50\nesc-10630,released,,platform,531.50,0.00,531.50\nesc-10630,released,,referrer,0.00,0.00,0.00\nesc-10630,released,,TOTAL,10630.00,10630.00,0.00",
     /must be a two-decimal money figure/,
   ],
   [
     "Infinity amount",
-    "escrowId,outcome,role,inflow,outflow,net\nesc-10630,released,sponsor,0.00,10630.00,-10630.00\nesc-10630,released,creator,Infinity,0.00,10098.50\nesc-10630,released,platform,531.50,0.00,531.50\nesc-10630,released,referrer,0.00,0.00,0.00\nesc-10630,released,TOTAL,10630.00,10630.00,0.00",
+    "escrowId,outcome,currency,role,inflow,outflow,net\nesc-10630,released,,sponsor,0.00,10630.00,-10630.00\nesc-10630,released,,creator,Infinity,0.00,10098.50\nesc-10630,released,,platform,531.50,0.00,531.50\nesc-10630,released,,referrer,0.00,0.00,0.00\nesc-10630,released,,TOTAL,10630.00,10630.00,0.00",
     /must be a two-decimal money figure/,
   ],
   [
     "three-decimal amount",
-    "escrowId,outcome,role,inflow,outflow,net\nesc-10630,released,sponsor,0.00,10630.00,-10630.00\nesc-10630,released,creator,10098.500,0.00,10098.50\nesc-10630,released,platform,531.50,0.00,531.50\nesc-10630,released,referrer,0.00,0.00,0.00\nesc-10630,released,TOTAL,10630.00,10630.00,0.00",
+    "escrowId,outcome,currency,role,inflow,outflow,net\nesc-10630,released,,sponsor,0.00,10630.00,-10630.00\nesc-10630,released,,creator,10098.500,0.00,10098.50\nesc-10630,released,,platform,531.50,0.00,531.50\nesc-10630,released,,referrer,0.00,0.00,0.00\nesc-10630,released,,TOTAL,10630.00,10630.00,0.00",
     /must be a two-decimal money figure/,
   ],
   [
     "negative inflow",
-    "escrowId,outcome,role,inflow,outflow,net\nesc-10630,released,sponsor,0.00,10630.00,-10630.00\nesc-10630,released,creator,-10098.50,0.00,10098.50\nesc-10630,released,platform,531.50,0.00,531.50\nesc-10630,released,referrer,0.00,0.00,0.00\nesc-10630,released,TOTAL,10630.00,10630.00,0.00",
+    "escrowId,outcome,currency,role,inflow,outflow,net\nesc-10630,released,,sponsor,0.00,10630.00,-10630.00\nesc-10630,released,,creator,-10098.50,0.00,10098.50\nesc-10630,released,,platform,531.50,0.00,531.50\nesc-10630,released,,referrer,0.00,0.00,0.00\nesc-10630,released,,TOTAL,10630.00,10630.00,0.00",
     /inflow must not be negative/,
   ],
   [
     "unterminated quoted field",
-    'escrowId,outcome,role,inflow,outflow,net\n"esc-10630,released,sponsor,0.00,10630.00,-10630.00',
+    'escrowId,outcome,currency,role,inflow,outflow,net\n"esc-10630,released,,sponsor,0.00,10630.00,-10630.00',
     /unterminated quoted field/,
   ],
   [
     "character after a closing quote",
-    'escrowId,outcome,role,inflow,outflow,net\n"esc-10630"x,released,sponsor,0.00,10630.00,-10630.00\nesc-10630,released,creator,10098.50,0.00,10098.50\nesc-10630,released,platform,531.50,0.00,531.50\nesc-10630,released,referrer,0.00,0.00,0.00\nesc-10630,released,TOTAL,10630.00,10630.00,0.00',
+    'escrowId,outcome,currency,role,inflow,outflow,net\n"esc-10630"x,released,,sponsor,0.00,10630.00,-10630.00\nesc-10630,released,,creator,10098.50,0.00,10098.50\nesc-10630,released,,platform,531.50,0.00,531.50\nesc-10630,released,,referrer,0.00,0.00,0.00\nesc-10630,released,,TOTAL,10630.00,10630.00,0.00',
     /unexpected character after a closing quote/,
   ],
   [
     "extra row after TOTAL",
-    "escrowId,outcome,role,inflow,outflow,net\nesc-10630,released,sponsor,0.00,10630.00,-10630.00\nesc-10630,released,creator,10098.50,0.00,10098.50\nesc-10630,released,platform,531.50,0.00,531.50\nesc-10630,released,referrer,0.00,0.00,0.00\nesc-10630,released,TOTAL,10630.00,10630.00,0.00\nesc-10630,released,TOTAL,10630.00,10630.00,0.00",
+    "escrowId,outcome,currency,role,inflow,outflow,net\nesc-10630,released,,sponsor,0.00,10630.00,-10630.00\nesc-10630,released,,creator,10098.50,0.00,10098.50\nesc-10630,released,,platform,531.50,0.00,531.50\nesc-10630,released,,referrer,0.00,0.00,0.00\nesc-10630,released,,TOTAL,10630.00,10630.00,0.00\nesc-10630,released,,TOTAL,10630.00,10630.00,0.00",
     /expected 6 records/,
   ],
   [
     "empty escrowId",
-    "escrowId,outcome,role,inflow,outflow,net\n,released,sponsor,0.00,10630.00,-10630.00\n,released,creator,10098.50,0.00,10098.50\n,released,platform,531.50,0.00,531.50\n,released,referrer,0.00,0.00,0.00\n,released,TOTAL,10630.00,10630.00,0.00",
+    "escrowId,outcome,currency,role,inflow,outflow,net\n,released,,sponsor,0.00,10630.00,-10630.00\n,released,,creator,10098.50,0.00,10098.50\n,released,,platform,531.50,0.00,531.50\n,released,,referrer,0.00,0.00,0.00\n,released,,TOTAL,10630.00,10630.00,0.00",
     /escrowId must be a non-empty string/,
   ],
 ];

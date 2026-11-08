@@ -439,20 +439,20 @@ test("demo lines print the settlement report as CSV between the text report and 
   assert.equal(
     reportCsv,
     [
-      "escrowId,outcome,role,inflow,outflow,net",
-      "DEMO-ESC-001,released,sponsor,0.00,10630.00,-10630.00",
-      "DEMO-ESC-001,released,creator,10098.50,0.00,10098.50",
-      "DEMO-ESC-001,released,platform,531.50,0.00,531.50",
-      "DEMO-ESC-001,released,referrer,0.00,0.00,0.00",
-      "DEMO-ESC-001,released,TOTAL,10630.00,10630.00,0.00",
+      "escrowId,outcome,currency,role,inflow,outflow,net",
+      "DEMO-ESC-001,released,,sponsor,0.00,10630.00,-10630.00",
+      "DEMO-ESC-001,released,,creator,10098.50,0.00,10098.50",
+      "DEMO-ESC-001,released,,platform,531.50,0.00,531.50",
+      "DEMO-ESC-001,released,,referrer,0.00,0.00,0.00",
+      "DEMO-ESC-001,released,,TOTAL,10630.00,10630.00,0.00",
     ].join("\n"),
   );
   assert.match(
     text,
     /Settlement report as CSV \(renderReportCsv — the same released report, for bookkeeping imports\):/,
   );
-  assert.ok(text.includes("  DEMO-ESC-001,released,creator,10098.50,0.00,10098.50"));
-  assert.ok(text.includes("  DEMO-ESC-001,released,TOTAL,10630.00,10630.00,0.00"));
+  assert.ok(text.includes("  DEMO-ESC-001,released,,creator,10098.50,0.00,10098.50"));
+  assert.ok(text.includes("  DEMO-ESC-001,released,,TOTAL,10630.00,10630.00,0.00"));
   assert.ok(
     text.includes(
       "  TOTAL row check: inflow 10630.00 = report totalInflow 10630.00, outflow 10630.00 = report totalOutflow 10630.00, net 0.00 = party nets sum 0.00",

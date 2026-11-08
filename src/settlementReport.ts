@@ -100,11 +100,14 @@ export interface SettlementReportInputs {
   /**
    * Optional ISO 4217 alpha-3 currency code for the figures in this
    * report (e.g. "USD"). When given it is carried verbatim onto the
-   * report, the settlement webhook payload, and the batch paths, and is
-   * covered by the webhook signature like every other payload field.
-   * Omit it and the report keeps its previous shape exactly: no
-   * `currency` key is emitted, so existing snapshots, CSV exports, and
-   * receivers see zero change. An illegal value (lowercase, wrong
+   * report, the settlement webhook payload, the CSV export, and the
+   * batch paths, and is covered by the webhook signature like every
+   * other payload field. Omit it and the report keeps its previous
+   * shape exactly: no `currency` key is emitted, so existing
+   * snapshots, JSON exports, and receivers see zero change — the CSV
+   * export still gains a `currency` column, left empty, so a
+   * currency-less report's CSV keeps the same column shape as a
+   * currency-carrying one. An illegal value (lowercase, wrong
    * length, non-letters, non-string) throws `invalid settlement
    * currency: …` before any money math runs. The code is a label only:
    * amounts are never converted, and no exchange rate is applied.
@@ -1045,15 +1048,22 @@ function csvField(value: string): string {
  * text, so callers never have to parse prose lines whose format may change.
  *
  * Shape (lines joined by `\n`, no trailing newline):
- * - Header: `escrowId,outcome,role,inflow,outflow,net`.
+ * - Header: `escrowId,outcome,currency,role,inflow,outflow,net`.
  * - One row per party in the report's party order (sponsor, creator,
  *   platform, referrer), including zero-amount parties, so a row is never
  *   silently absent from an import. Amounts are cent-rounded with exactly
  *   two decimals, matching `renderReport`'s cent precision.
- * - A final `TOTAL` row (`escrowId,outcome,TOTAL,...`) whose inflow/outflow/
+ * - A final `TOTAL` row (`escrowId,outcome,currency,TOTAL,...`) whose inflow/outflow/
  *   net columns are the sums over the party rows above it — computed from
  *   the rows themselves, not copied from the report's totals, so the CSV is
  *   self-consistent even if a hand-built report's totals disagree.
+ *
+ * The `currency` column carries the report's ISO 4217 code on every row
+ * (including `TOTAL`), so a multi-currency bookkeeping import can tell
+ * USD rows from EUR rows without re-querying the report. A report built
+ * without a currency renders the column empty — the column is still
+ * present, so a currency-less export keeps the same 7-column shape and
+ * an importer never has to guess the column count from the header.
  *
  * String fields are RFC 4180-escaped (today's ids/roles/outcomes contain no
  * special characters; the escaping is pinned anyway so a future id carrying
@@ -1061,13 +1071,13 @@ function csvField(value: string): string {
  *
  * The parameter is a full {@link SettlementReport} or the CSV-carried
  * subset returned by {@link parseSettlementReportCsv}: rendering reads
- * only `escrowId`, `outcome`, and `parties`, so a parsed value re-renders
+ * only `escrowId`, `outcome`, `currency`, and `parties`, so a parsed value re-renders
  * byte-identically without rebuilding the fields the CSV never carried.
  *
  * Before rendering, the CSV-carried fields are shape-checked with the
  * shared core also used by {@link assertReportShape} (see below): a non-object
- * report, an empty `escrowId`, an illegal `outcome`, an empty
- * `parties` array, an unknown party role, or a non-finite party amount
+ * report, an empty `escrowId`, an illegal `outcome`, an illegal `currency`,
+ * an empty `parties` array, an unknown party role, or a non-finite party amount
  * throws `cannot render settlement report as CSV: …` instead of
  * emitting a row that reads `Infinity` or `NaN` — the literals
  * `csvMoney` used to produce for such figures. Only the carried fields
@@ -1083,7 +1093,7 @@ export function renderReportCsv(
   report: SettlementReport | SettlementReportCsv,
 ): string {
   assertReportCsvFields(report, "cannot render settlement report as CSV");
-  const lines: string[] = ["escrowId,outcome,role,inflow,outflow,net"];
+  const lines: string[] = ["escrowId,outcome,currency,role,inflow,outflow,net"];
   let totalInflow = 0;
   let totalOutflow = 0;
   let totalNet = 0;
@@ -1092,6 +1102,7 @@ export function renderReportCsv(
       [
         csvField(report.escrowId),
         csvField(report.outcome),
+        csvField(report.currency ?? ""),
         csvField(p.party),
         csvMoney(p.inflow),
         csvMoney(p.outflow),
@@ -1106,6 +1117,7 @@ export function renderReportCsv(
     [
       csvField(report.escrowId),
       csvField(report.outcome),
+      csvField(report.currency ?? ""),
       "TOTAL",
       csvMoney(totalInflow),
       csvMoney(totalOutflow),
@@ -1119,8 +1131,10 @@ export function renderReportCsv(
  * The settlement report as carried by {@link renderReportCsv} — the
  * CSV-carried subset of a {@link SettlementReport}, nothing more.
  *
- * A CSV row carries only `escrowId`, `outcome`, and the per-party
- * `inflow`/`outflow`/`net` ledgers, plus the `TOTAL` row that sums them.
+ * A CSV row carries `escrowId`, `outcome`, the `currency` code when
+ * the report was built with one (the column is empty when it was not),
+ * and the per-party `inflow`/`outflow`/`net` ledgers, plus the `TOTAL`
+ * row that sums them.
  * It does NOT carry the deposit breakdown (`creatorPool`, `baseFee`,
  * `complexityMultiplier`, `loyaltyDiscount`, `oracleFee`), the
  * `settlement` parameters, the `releasePath`, the `eventCount`, or the
@@ -1139,6 +1153,13 @@ export function renderReportCsv(
 export interface SettlementReportCsv {
   escrowId: string;
   outcome: SettlementOutcome;
+  /**
+   * The report's ISO 4217 currency code, when the report was built
+   * with one. Absent when the CSV's currency column was empty — the
+   * column is still present in the file, so a currency-less report
+   * re-renders byte-identically with the empty column.
+   */
+  currency?: string;
   parties: PartyLedger[];
   totalInflow: number;
   totalOutflow: number;
@@ -1268,9 +1289,11 @@ function parseCsvMoney(value: string, where: string): number {
  *
  * The check is structural plus self-consistency, in the other direction
  * from rendering: the header must be exactly
- * `escrowId,outcome,role,inflow,outflow,net`; there must be exactly four
+ * `escrowId,outcome,currency,role,inflow,outflow,net`; there must be exactly four
  * party rows (one per role, each once, in any order) plus a final `TOTAL`
- * row; every row must carry the same `escrowId` and `outcome`; every
+ * row; every row must carry the same `escrowId`, `outcome`, and
+ * `currency` (empty when the report was built without one; a non-empty
+ * code must be a 3-letter uppercase ISO 4217 code); every
  * amount must be a finite two-decimal figure; every party's `net` must
  * equal its `inflow − outflow` at cent precision; and the `TOTAL` row
  * must equal the sums over the party rows. Any violation throws
@@ -1316,23 +1339,31 @@ export function parseSettlementReportCsv(text: string): SettlementReportCsv {
   }
   const header = records[0];
   if (
-    header.length !== 6 ||
+    header.length !== 7 ||
     header[0] !== "escrowId" ||
     header[1] !== "outcome" ||
-    header[2] !== "role" ||
-    header[3] !== "inflow" ||
-    header[4] !== "outflow" ||
-    header[5] !== "net"
+    header[2] !== "currency" ||
+    header[3] !== "role" ||
+    header[4] !== "inflow" ||
+    header[5] !== "outflow" ||
+    header[6] !== "net"
   ) {
-    fail('header must be exactly "escrowId,outcome,role,inflow,outflow,net"');
+    fail('header must be exactly "escrowId,outcome,currency,role,inflow,outflow,net"');
   }
   const escrowId = records[1][0];
   const outcome = records[1][1];
+  const currency = records[1][2];
   if (escrowId === undefined || escrowId === "") {
     fail("escrowId must be a non-empty string");
   }
   if (outcome !== "released" && outcome !== "refunded" && outcome !== "expired" && outcome !== "partially-released") {
     fail('outcome must be "released", "refunded", "expired", or "partially-released"');
+  }
+  if (currency === undefined) {
+    fail("currency must be present (empty when the report carries none)");
+  }
+  if (currency !== "" && !ISO_4217_ALPHA3.test(currency)) {
+    fail(`currency must be a 3-letter uppercase ISO 4217 code, got ${JSON.stringify(currency)}`);
   }
   const parties: PartyLedger[] = [];
   const seen = new Set<string>();
@@ -1342,18 +1373,19 @@ export function parseSettlementReportCsv(text: string): SettlementReportCsv {
   for (let r = 1; r <= 4; r += 1) {
     const row = records[r];
     const where = `party row ${r}`;
-    if (row.length !== 6) fail(`${where} must have 6 columns, got ${row.length}`);
+    if (row.length !== 7) fail(`${where} must have 7 columns, got ${row.length}`);
     if (row[0] !== escrowId) fail(`${where} escrowId ${JSON.stringify(row[0])} does not match ${JSON.stringify(escrowId)}`);
     if (row[1] !== outcome) fail(`${where} outcome ${JSON.stringify(row[1])} does not match ${JSON.stringify(outcome)}`);
-    const role = row[2];
+    if (row[2] !== currency) fail(`${where} currency ${JSON.stringify(row[2])} does not match ${JSON.stringify(currency)}`);
+    const role = row[3];
     if (role !== "sponsor" && role !== "creator" && role !== "platform" && role !== "referrer") {
       fail(`${where} role must be a PartyRole, got ${JSON.stringify(role)}`);
     }
     if (seen.has(role)) fail(`${where} role ${JSON.stringify(role)} appears more than once`);
     seen.add(role);
-    const inflow = parseCsvMoney(row[3], `${where} inflow`);
-    const outflow = parseCsvMoney(row[4], `${where} outflow`);
-    const net = parseCsvMoney(row[5], `${where} net`);
+    const inflow = parseCsvMoney(row[4], `${where} inflow`);
+    const outflow = parseCsvMoney(row[5], `${where} outflow`);
+    const net = parseCsvMoney(row[6], `${where} net`);
     if (inflow < 0) fail(`${where} inflow must not be negative`);
     if (outflow < 0) fail(`${where} outflow must not be negative`);
     if (round2(inflow - outflow) !== net) {
@@ -1371,13 +1403,14 @@ export function parseSettlementReportCsv(text: string): SettlementReportCsv {
     if (!seen.has(role)) fail(`missing party row for role ${JSON.stringify(role)}`);
   }
   const total = records[5];
-  if (total.length !== 6) fail(`TOTAL row must have 6 columns, got ${total.length}`);
+  if (total.length !== 7) fail(`TOTAL row must have 7 columns, got ${total.length}`);
   if (total[0] !== escrowId) fail(`TOTAL row escrowId does not match ${JSON.stringify(escrowId)}`);
   if (total[1] !== outcome) fail(`TOTAL row outcome does not match ${JSON.stringify(outcome)}`);
-  if (total[2] !== "TOTAL") fail(`last row role must be "TOTAL", got ${JSON.stringify(total[2])}`);
-  const totalInflow = parseCsvMoney(total[3], "TOTAL row inflow");
-  const totalOutflow = parseCsvMoney(total[4], "TOTAL row outflow");
-  const totalNet = parseCsvMoney(total[5], "TOTAL row net");
+  if (total[2] !== currency) fail(`TOTAL row currency does not match ${JSON.stringify(currency)}`);
+  if (total[3] !== "TOTAL") fail(`last row role must be "TOTAL", got ${JSON.stringify(total[3])}`);
+  const totalInflow = parseCsvMoney(total[4], "TOTAL row inflow");
+  const totalOutflow = parseCsvMoney(total[5], "TOTAL row outflow");
+  const totalNet = parseCsvMoney(total[6], "TOTAL row net");
   if (totalInflow !== sumInflow) {
     fail(`TOTAL row inflow ${totalInflow} does not equal the sum over party rows ${sumInflow}`);
   }
@@ -1392,6 +1425,10 @@ export function parseSettlementReportCsv(text: string): SettlementReportCsv {
     // Same note as the role cast above: the outcome check already
     // rejected anything outside SettlementOutcome.
     outcome: outcome as SettlementOutcome,
+    // Empty currency column means the report was built without one:
+    // omit the key so the parsed value re-renders byte-identically
+    // (the renderer writes an empty column for an absent currency).
+    ...(currency !== "" ? { currency } : {}),
     parties,
     totalInflow,
     totalOutflow,
@@ -1419,13 +1456,14 @@ export function parseSettlementReportCsv(text: string): SettlementReportCsv {
  */
 /**
  * Validate the fields a CSV row actually carries: `escrowId`, `outcome`,
- * and the per-party ledgers. This is the shared core of the report shape
- * checks: {@link renderReportCsv} applies exactly this (with a CSV
+ * `currency`, and the per-party ledgers. This is the shared core of the
+ * report shape checks: {@link renderReportCsv} applies exactly this (with a CSV
  * prefix) because rendering reads nothing else, and
  * {@link assertReportShape} applies it first and then adds the
- * full-report fields. Totals/`balanced` are carried by both shapes, so
- * when present they must be sane; a bare carried-fields value without
- * them still passes here, and the full-report check below requires them.
+ * full-report fields. `currency`, totals, and `balanced` are carried by
+ * both shapes, so when present they must be sane; a bare carried-fields
+ * value without them still passes here, and the full-report check below
+ * requires the totals and the balanced flag.
  * Every failure throws `<prefix>: …`. No assertion signature: callers
  * keep their own (narrower) parameter types.
  */
@@ -1440,6 +1478,11 @@ function assertReportCsvFields(report: unknown, prefix: string): void {
     fail("escrowId must be a non-empty string");
   if (r.outcome !== "released" && r.outcome !== "refunded" && r.outcome !== "expired" && r.outcome !== "partially-released")
     fail('outcome must be "released", "refunded", "expired", or "partially-released"');
+  if (
+    r.currency !== undefined &&
+    (typeof r.currency !== "string" || !ISO_4217_ALPHA3.test(r.currency))
+  )
+    fail("currency must be a 3-letter uppercase ISO 4217 code when present");
   if (!Array.isArray(r.parties) || r.parties.length === 0)
     fail("parties must be a non-empty array");
   for (const party of r.parties as unknown[]) {
@@ -1479,11 +1522,8 @@ function assertReportShape(
     throw new Error(`${prefix}: ${reason}`);
   };
   const r = report as Record<string, unknown>;
-  if (
-    r.currency !== undefined &&
-    (typeof r.currency !== "string" || !ISO_4217_ALPHA3.test(r.currency))
-  )
-    fail("currency must be a 3-letter uppercase ISO 4217 code when present");
+  // Currency is validated by the shared CSV-fields core above, which
+  // runs first with this same prefix — no second check here.
   if (typeof r.deposit !== "object" || r.deposit === null || Array.isArray(r.deposit))
     fail("deposit must be a FeeBreakdown object");
   const deposit = r.deposit as Record<string, unknown>;
