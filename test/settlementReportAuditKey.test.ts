@@ -34,8 +34,8 @@ function goldenDeposit() {
   });
 }
 
-function keyedReleasedEscrow() {
-  const e = new Escrow("esc-audit-key", { auditKey: KEY });
+function keyedReleasedEscrow(id = "esc-audit-key") {
+  const e = new Escrow(id, { auditKey: KEY });
   e.dispatch("FUND", undefined, 10630);
   e.dispatch("SUBMIT_MILESTONE");
   e.dispatch("VERIFY_PASS");
@@ -162,6 +162,11 @@ test("Buffer-built keyed escrow reports under the same string key", () => {
 
 test("batch wrapper inherits auditKey per escrow without its own path", () => {
   const keyed = keyedReleasedEscrow();
+  // A second, distinct keyed escrow reported without its key: the
+  // per-item failure proves the key rides per escrow, not per batch.
+  // (Since backlog #993 a repeated escrowId aborts the whole batch, so
+  // the no-key entry must be a different escrow than the keyed one.)
+  const keyedNoKey = keyedReleasedEscrow("esc-audit-key-nokey");
   const plain = unkeyedReleasedEscrow();
   const results = buildSettlementReports([
     {
@@ -173,9 +178,9 @@ test("batch wrapper inherits auditKey per escrow without its own path", () => {
       auditKey: KEY,
     },
     {
-      escrowId: keyed.id,
-      history: keyed.history,
-      finalState: keyed.state,
+      escrowId: keyedNoKey.id,
+      history: keyedNoKey.history,
+      finalState: keyedNoKey.state,
       deposit: goldenDeposit(),
       settlement: { proFeeBps: 500 },
       // No key: this entry fails alone, never blocks the batch.

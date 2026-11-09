@@ -514,10 +514,37 @@ export type SettlementReportResult =
  * rides along in the same inputs shape (the wrapper delegates to
  * {@link buildSettlementReport} unchanged), so a batch mixing keyed and
  * unkeyed escrows reports each under its own key.
+ *
+ * One exception to per-item isolation: a repeated `escrowId` aborts the
+ * whole batch. Two entries for the same escrow would produce two
+ * identical reports and `summarizeSettlementReports` would double-count
+ * the same settlement in the day-end totals, so the batch fails closed
+ * before building anything — it throws an error naming the duplicate
+ * id(s) and produces no reports at all. This is a caller bug (a mistyped
+ * batch list), not a per-escrow failure, so it is a throw, not a
+ * per-entry error. The single-escrow {@link buildSettlementReport} is
+ * unaffected: calling it twice for the same escrow is legitimate.
  */
 export function buildSettlementReports(
   inputsList: readonly SettlementReportInputs[],
 ): SettlementReportResult[] {
+  const seen = new Set<string>();
+  const duplicates: string[] = [];
+  for (const inputs of inputsList) {
+    if (seen.has(inputs.escrowId)) {
+      if (!duplicates.includes(inputs.escrowId)) {
+        duplicates.push(inputs.escrowId);
+      }
+    } else {
+      seen.add(inputs.escrowId);
+    }
+  }
+  if (duplicates.length > 0) {
+    const quoted = duplicates.map((id) => `"${id}"`).join(", ");
+    throw new Error(
+      `buildSettlementReports: duplicate escrowId ${quoted} in batch: escrowIds must be unique within a batch (a repeated escrow would produce two identical reports and double-count in summaries)`,
+    );
+  }
   return inputsList.map((inputs) => {
     try {
       return { escrowId: inputs.escrowId, report: buildSettlementReport(inputs) };

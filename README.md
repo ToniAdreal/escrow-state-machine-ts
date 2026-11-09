@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1500 tests, all local
+npm test   # 1508 tests, all local
 ```
 
 ## Quickstart
@@ -1003,6 +1003,11 @@ the same per-escrow inputs as `buildSettlementReport` and returns one
 `{ escrowId, report }` or `{ escrowId, error }` result per input, in input
 order — a non-terminal escrow or a corrupted history fails only its own
 entry, never the whole batch, and building reports mutates nothing.
+One exception: a repeated `escrowId` in the batch aborts the whole call —
+it throws an error naming the duplicate id(s) and produces no reports, so
+a mistyped batch list can never double-count one settlement in
+`summarizeSettlementReports`. Calling the single-escrow
+`buildSettlementReport` twice for the same escrow stays legitimate.
 `summarizeSettlementReports(results)` aggregates such a batch into one
 reconciliation summary — per-outcome counts, error count, total locked
 deposit, total inflow/outflow, the still-locked remainder
@@ -1176,7 +1181,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1500 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1508 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
