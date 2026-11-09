@@ -206,6 +206,25 @@ is chained in keyed mode on rehydration). Legacy (hashless) snapshots are
 still accepted and deterministically chained on rehydration; a snapshot
 that mixes chained and hashless entries is rejected.
 
+Dedupe snapshots get the same treatment as an opt-in layer:
+`SettlementEventDedupe.exportSignedSnapshot(secret)` wraps the
+unsigned `{ v: 1, entries }` snapshot in an HMAC-SHA256 envelope
+`{ v: 1, snapshot, mac }` (same shape and canonical form as the
+sibling rfc9421 `ReplayCache` signed snapshot), and
+`restoreSignedSnapshot(envelope, secret)` verifies the MAC in
+constant time before any snapshot parsing. A rewritten persisted
+file — a deleted consumed `eventId`, an injected forged one, a
+shifted `seenAtMs` — then fails closed at startup instead of
+silently reopening the double-settlement window or discarding a
+legitimate settlement as an apparent duplicate. The unsigned
+snapshot stays accepted as trusted configuration, and the two
+forms never accept each other, so a signed restore cannot
+silently downgrade. The MAC is integrity protection only, not
+encryption: the eventIds inside are wire-visible values, and the
+secret is never written into the envelope — a restored dedupe
+must be handed the secret again, like the audit key above, and
+key storage and distribution remain the caller's responsibility.
+
 ## Deliberately NOT here (production would need it)
 
 - Real oracle/Chainlink/zk-SNARK/TEE verification behind `VERIFY_PASS`

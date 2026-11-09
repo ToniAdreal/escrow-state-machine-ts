@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1539 tests, all local
+npm test   # 1553 tests, all local
 ```
 
 ## Quickstart
@@ -834,6 +834,38 @@ starts them at zero. The snapshot bridges one process across its own
 restart only; two processes restoring the same snapshot afterwards
 diverge, so it is not a substitute for shared storage.
 
+The unsigned snapshot above is trusted configuration: anyone who can
+rewrite the persisted file can delete a consumed `eventId` (a retried
+duplicate settlement is then processed a second time) or inject a
+forged one (a legitimate settlement is then dropped as an apparent
+duplicate). When the persisted file is not fully trusted, use the
+signed envelope instead — `exportSignedSnapshot(secret)` returns
+`{ v: 1, snapshot, mac }` with `mac` = HMAC-SHA256 over the canonical
+JSON of the snapshot, and
+`SettlementEventDedupe.restoreSignedSnapshot(envelope, secret, opts)`
+(alias `fromSignedSnapshot`) verifies it before restoring:
+
+```ts
+// before shutdown:
+persist(JSON.stringify(dedupe.exportSignedSnapshot(process.env.DEDUPE_SNAPSHOT_SECRET!)));
+// at startup:
+const dedupe2 = SettlementEventDedupe.restoreSignedSnapshot(JSON.parse(saved), process.env.DEDUPE_SNAPSHOT_SECRET!, { ttlMs: 24 * 60 * 60_000 });
+```
+
+The secret is never written into the envelope, and the two forms do
+not accept each other — a signed envelope is rejected by the unsigned
+`restore()`, and an unsigned snapshot is rejected by the signed
+restore, so a signed restore cannot silently downgrade to the
+trusted-configuration path. A tampered entry, a tampered `seenAtMs`,
+a tampered `mac`, or a wrong secret all fail closed with no store
+produced, and a MAC-valid envelope whose snapshot is itself malformed
+still fails the strict snapshot validation. The MAC is integrity
+protection only, not encryption: the eventIds inside are wire-visible
+values, so keep the secret where the snapshot writer keeps its other
+signing-side secrets. This mirrors the sibling rfc9421
+`ReplayCache` signed snapshot (`exportSignedSnapshot` /
+`restoreSignedSnapshot`), same envelope shape and canonical form.
+
 Secret rotation: while you roll from an old secret to a new one, pass both
 as candidates — any candidate that matches verifies, all-mismatch still
 fails closed:
@@ -1192,7 +1224,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1539 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1553 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

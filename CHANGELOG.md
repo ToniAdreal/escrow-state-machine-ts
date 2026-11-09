@@ -18,6 +18,20 @@ version changes.
 
 ### Added
 
+- HMAC-signed snapshot envelopes for `SettlementEventDedupe`
+  (2026-11-09, backlog #1010): `exportSignedSnapshot(secret)` wraps
+  the unsigned snapshot in `{ v: 1, snapshot, mac }` (HMAC-SHA256
+  over the canonical JSON of the snapshot, same envelope shape and
+  canonical form as the sibling rfc9421 `ReplayCache` signed
+  snapshot), and `restoreSignedSnapshot(envelope, secret, opts)`
+  (alias `fromSignedSnapshot`) verifies the MAC in constant time
+  before any snapshot parsing — a rewritten persisted file (a
+  deleted consumed `eventId`, an injected forged one, a shifted
+  `seenAtMs`) now fails closed at startup instead of silently
+  reopening the double-settlement window or discarding a
+  legitimate settlement. The secret is never written into the
+  envelope, the two snapshot forms never accept each other, and
+  the unsigned path is unchanged.
 - Benchmark rows for the combined filter and settlement aging
   (2026-11-09, backlog #1007): `npm run bench` now measures
   `escrowsByFilters` over the same fixed 60-escrow batch the
