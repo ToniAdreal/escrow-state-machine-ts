@@ -430,6 +430,7 @@ import {
   escrowsApproachingDeadline,
   escrowsByActor,
   escrowsByEvent,
+  escrowsByFilters,
   escrowsByState,
   historyFromNdjson,
   historyToNdjson,
@@ -448,6 +449,7 @@ import {
   settlePartialReleases,
   settleRefund,
   settleRelease,
+  settlementAging,
   staleEscrows,
   stateDiagram,
   summarizeSettlementReports,
@@ -475,6 +477,7 @@ import {
   type ReconcileSettlementsResult,
   type RefundSettlement,
   type Settlement,
+  type SettlementAgingResult,
   type SettlementEventDedupeSnapshot,
   type SettlementEventDedupeStats,
   type SettlementReport,
@@ -980,6 +983,48 @@ export const DEMO_FILTER_ANONYMOUS_FUND_AT = "2026-03-08T09:00:00.000Z";
 export const DEMO_FILTER_TWICE_ID = "DEMO-FILTER-04";
 export const DEMO_FILTER_TWICE_FUND_AT = "2026-03-08T09:00:00.000Z";
 export const DEMO_FILTER_TWICE_SUBMIT_AT = "2026-03-08T10:00:00.000Z";
+
+/**
+ * Combined-filter + settlement-aging fixtures (backlog #1003): four
+ * escrows screened by `escrowsByFilters` and bucketed by
+ * `settlementAging` on the SAME fixed `now` (DEMO_STALE_NOW,
+ * 2026-03-09T09:00:00.000Z) the watchdog sections already use.
+ * Hand-computed expectations — ages are whole days from the most
+ * recent FUND entry to that `now` (2026 is not a leap year, so
+ * February has 28 days):
+ * - DEMO-AGING-01: FUND as "sponsor" at 2026-02-01T09:00, then
+ *   DISPUTE as "sponsor" at 2026-02-20T09:00, landing in DISPUTED
+ *   — funded 36 days ago (28 days to 2026-03-01, plus 8), so it
+ *   is the only member of the over-30-day bucket, and the only
+ *   escrow matching { state: "DISPUTED", actor: "sponsor",
+ *   event: "DISPUTE" }.
+ * - DEMO-AGING-02: FUND as "sponsor" at 2026-02-25T09:00, stays
+ *   FUNDED — funded 12 days ago (4 days to 2026-03-01, plus 8),
+ *   so it is the only member of the 7–30-day bucket. It is
+ *   sponsor-touched but never disputed, so the combined filter
+ *   skips it on both the state and the event axis.
+ * - DEMO-AGING-03: FUND as "creator" at 2026-03-05T09:00, stays
+ *   FUNDED — funded 4 days ago, so it is the only member of the
+ *   under-7-day bucket. It is creator-touched, so the combined
+ *   filter skips it on the actor axis too.
+ * - DEMO-AGING-04: never dispatched, stays CREATED with no
+ *   history — it has no FUND entry, so aging reports it in the
+ *   `unknown` bucket instead of silently dropping it, and the
+ *   combined filter skips it on every axis.
+ * Note the filter the backlog item first sketched — "FUNDED and
+ * ever disputed" — is empty by construction: DISPUTE moves an
+ * escrow out of FUNDED (see `escrowsByFilters`' own JSDoc), so
+ * the segment filters on DISPUTED, the state a disputed escrow
+ * actually sits in, and says so on its printed line.
+ */
+export const DEMO_AGING_DISPUTED_ID = "DEMO-AGING-01";
+export const DEMO_AGING_DISPUTED_FUND_AT = "2026-02-01T09:00:00.000Z";
+export const DEMO_AGING_DISPUTED_DISPUTE_AT = "2026-02-20T09:00:00.000Z";
+export const DEMO_AGING_MID_ID = "DEMO-AGING-02";
+export const DEMO_AGING_MID_FUND_AT = "2026-02-25T09:00:00.000Z";
+export const DEMO_AGING_FRESH_ID = "DEMO-AGING-03";
+export const DEMO_AGING_FRESH_FUND_AT = "2026-03-05T09:00:00.000Z";
+export const DEMO_AGING_UNFUNDED_ID = "DEMO-AGING-04";
 
 /**
  * Stale-patrol fixtures (backlog #506): five further escrows screened
@@ -3803,6 +3848,37 @@ export interface DemoResult {
    * submitted a milestone, whatever their current state.
    */
   filterSubmittedSelectedIds: string[];
+  /**
+   * The combined-filter + settlement-aging batch, in screening
+   * order: the disputed sponsor escrow, the mid-age sponsor
+   * escrow, the fresh creator escrow, and the never-funded
+   * escrow (see the aging fixture comment above for the pinned
+   * verdict on each).
+   */
+  agingEscrows: Escrow[];
+  /**
+   * The ids `escrowsByFilters` selects from the aging batch for
+   * { state: "DISPUTED", actor: "sponsor", event: "DISPUTE" }:
+   * DEMO-AGING-01 alone — the only escrow that is DISPUTED,
+   * sponsor-touched, and ever disputed.
+   */
+  agingCombinedSelectedIds: string[];
+  /**
+   * `settlementAging` over the aging batch at the fixed
+   * DEMO_STALE_NOW: under 7 days DEMO-AGING-03 (4 days), 7–30
+   * days DEMO-AGING-02 (12 days), over 30 days DEMO-AGING-01
+   * (36 days), unknown DEMO-AGING-04.
+   */
+  agingResult: SettlementAgingResult;
+  /**
+   * The oldest unsettled funds in {@link DemoResult.agingResult}:
+   * the first entry of the over-30-day bucket, DEMO-AGING-01.
+   */
+  agingOldestId: string;
+  /**
+   * Age in whole days of {@link DemoResult.agingOldestId}: 36.
+   */
+  agingOldestAgeDays: number;
   /**
    * The refund-settlement escrow (DEMO-ESC-028): walked to REFUNDED
    * on its own via quorum arbitration, so the `settleRefund`
@@ -9105,6 +9181,106 @@ export async function runDemo(): Promise<DemoResult> {
     `  pure: the calls dispatched nothing — all four escrows keep their state and history length`,
   );
 
+  // --- Combined filter + settlement aging: escrowsByFilters + settlementAging over a mixed batch ---
+  // The single-axis filters answer one question each; a patrol
+  // usually asks all three at once — "which escrows did this
+  // actor touch that are currently disputed after a dispute" —
+  // and `escrowsByFilters` answers that intersection in one
+  // pass, while `settlementAging` buckets the same batch by how
+  // long its locked funds have sat unreleased, so finance ops
+  // can chase the stalest settlement first. The segment reuses
+  // the watchdog's fixed `now` (DEMO_STALE_NOW) for the aging
+  // call, and asserts the pinned shape (states, history
+  // lengths, and bucket membership) before printing anything.
+  // Note the combination is DISPUTED, not FUNDED: DISPUTE moves
+  // an escrow out of FUNDED, so "FUNDED and ever disputed" is
+  // empty by construction — the printed line says so, rather
+  // than demonstrating an empty result.
+  const agingDisputed = new Escrow(DEMO_AGING_DISPUTED_ID);
+  agingDisputed.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "sponsor",
+    at: DEMO_AGING_DISPUTED_FUND_AT,
+  });
+  agingDisputed.dispatch("DISPUTE", "Buyer claims non-delivery", undefined, {
+    actor: "sponsor",
+    at: DEMO_AGING_DISPUTED_DISPUTE_AT,
+  });
+  const agingMid = new Escrow(DEMO_AGING_MID_ID);
+  agingMid.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "sponsor",
+    at: DEMO_AGING_MID_FUND_AT,
+  });
+  const agingFresh = new Escrow(DEMO_AGING_FRESH_ID);
+  agingFresh.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "creator",
+    at: DEMO_AGING_FRESH_FUND_AT,
+  });
+  const agingUnfunded = new Escrow(DEMO_AGING_UNFUNDED_ID);
+  const agingEscrows = [
+    agingDisputed,
+    agingMid,
+    agingFresh,
+    agingUnfunded,
+  ];
+  const agingStatesBefore = agingEscrows.map((e) => e.state);
+  const agingHistoryLengthsBefore = agingEscrows.map(
+    (e) => e.history.length,
+  );
+  const agingCombinedSelected = escrowsByFilters(agingEscrows, {
+    state: "DISPUTED",
+    actor: "sponsor",
+    event: "DISPUTE",
+  });
+  const agingResult = settlementAging(
+    agingEscrows,
+    new Date(DEMO_STALE_NOW),
+  );
+  const agingOldest = agingResult.over30Days[0];
+  if (
+    agingCombinedSelected.map((e) => e.id).join(",") !==
+      DEMO_AGING_DISPUTED_ID ||
+    agingResult.under7Days.length !== 1 ||
+    agingResult.under7Days[0]?.id !== DEMO_AGING_FRESH_ID ||
+    agingResult.under7Days[0]?.ageDays !== 4 ||
+    agingResult.days7To30.length !== 1 ||
+    agingResult.days7To30[0]?.id !== DEMO_AGING_MID_ID ||
+    agingResult.days7To30[0]?.ageDays !== 12 ||
+    agingResult.over30Days.length !== 1 ||
+    agingResult.over30Days[0]?.id !== DEMO_AGING_DISPUTED_ID ||
+    agingResult.over30Days[0]?.ageDays !== 36 ||
+    agingResult.unknown.length !== 1 ||
+    agingResult.unknown[0]?.id !== DEMO_AGING_UNFUNDED_ID ||
+    agingOldest === undefined ||
+    agingEscrows.some(
+      (e, i) =>
+        e.state !== agingStatesBefore[i] ||
+        e.history.length !== agingHistoryLengthsBefore[i],
+    )
+  ) {
+    throw new Error(
+      "demo fixture broken: escrowsByFilters/settlementAging aging batch does not match the pinned shape (combined { DISPUTED, sponsor, DISPUTE } selects DEMO-AGING-01 alone; aging at 2026-03-09T09:00 buckets DEMO-AGING-03 at 4 days under 7 days, DEMO-AGING-02 at 12 days in 7–30 days, DEMO-AGING-01 at 36 days over 30 days, DEMO-AGING-04 unknown; the calls must dispatch nothing and change no state or history length)",
+    );
+  }
+  const agingCombinedSelectedIds = agingCombinedSelected.map((e) => e.id);
+  const agingOldestId = agingOldest.id;
+  const agingOldestAgeDays = agingOldest.ageDays;
+  const agingBucket = (
+    entries: readonly { id: string; ageDays: number }[],
+  ): string =>
+    entries.map((e) => `${e.id} (${e.ageDays} days)`).join(", ");
+  lines.push(
+    "",
+    "Combined filter + settlement aging (escrowsByFilters / settlementAging over a mixed batch):",
+    `  ${agingDisputed.id}: ${agingDisputed.state}, funded ${DEMO_AGING_DISPUTED_FUND_AT}, disputed by sponsor — the only escrow that is DISPUTED, sponsor-touched, and ever disputed`,
+    `  ${agingMid.id}: ${agingMid.state}, funded ${DEMO_AGING_MID_FUND_AT} — sponsor-touched but never disputed, so the combined filter skips it on the state and event axes`,
+    `  ${agingFresh.id}: ${agingFresh.state}, funded ${DEMO_AGING_FRESH_FUND_AT} — creator-funded, 4 days old, so the combined filter skips it on the actor axis too`,
+    `  ${agingUnfunded.id}: ${agingUnfunded.state}, never funded — no funding timestamp, so aging reports it unknown instead of silently dropping it`,
+    `  escrowsByFilters(batch, { state: "DISPUTED", actor: "sponsor", event: "DISPUTE" }): ${agingCombinedSelectedIds.join(", ")} (${agingCombinedSelectedIds.length} escrow) — the three axes intersect in one pass; "FUNDED and ever disputed" would be empty by construction, since DISPUTE moves an escrow out of FUNDED`,
+    `  settlementAging(batch, ${DEMO_STALE_NOW}): under 7 days: ${agingBucket(agingResult.under7Days)}; 7–30 days: ${agingBucket(agingResult.days7To30)}; over 30 days: ${agingBucket(agingResult.over30Days)}; unknown: ${agingResult.unknown.map((e) => e.id).join(", ")}`,
+    `  oldest unsettled funds: ${agingOldestId} at ${agingOldestAgeDays} days — chase the over-30-day bucket first`,
+    `  pure: the calls dispatched nothing — all four escrows keep their state and history length`,
+  );
+
   // --- Refund settlement: settleRefund on a REFUNDED escrow ---
   // The dispute branch above settles its refund through the report
   // layer only; the pure `settleRefund` helper itself never got a
@@ -9822,6 +9998,11 @@ export async function runDemo(): Promise<DemoResult> {
     filterCreatorSelectedIds,
     filterFundedSelectedIds,
     filterSubmittedSelectedIds,
+    agingEscrows,
+    agingCombinedSelectedIds,
+    agingResult,
+    agingOldestId,
+    agingOldestAgeDays,
     refundEscrow,
     refundSettlement,
     partialReleaseGross,

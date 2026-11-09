@@ -18,6 +18,18 @@ version changes.
 
 ### Added
 
+- CLI demo shows the combined filter and settlement aging together
+  (2026-11-09, backlog #1003): one new segment drives four fixed
+  escrows through `escrowsByFilters` ({ state: "DISPUTED", actor:
+  "sponsor", event: "DISPUTE" } selects DEMO-AGING-01 alone) and
+  `settlementAging` at the fixed 2026-03-09T09:00:00.000Z now
+  (DEMO-AGING-03 at 4 days under 7 days, DEMO-AGING-02 at 12 days
+  in 7–30 days, DEMO-AGING-01 at 36 days over 30 days,
+  DEMO-AGING-04 unknown as never funded), printing the oldest
+  unsettled funds — DEMO-AGING-01 at 36 days — so finance ops
+  chase the over-30-day bucket first. The segment notes that
+  "FUNDED and ever disputed" is empty by construction, since
+  DISPUTE moves an escrow out of FUNDED.
 - Standalone `isTerminal(state)` pure function (2026-11-09, backlog
   #995): exported from the package entry, it answers whether an
   `EscrowState` is terminal (`RELEASED` / `REFUNDED` / `EXPIRED`)

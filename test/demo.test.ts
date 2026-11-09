@@ -6,6 +6,14 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import {
   runDemo,
+  DEMO_AGING_DISPUTED_DISPUTE_AT,
+  DEMO_AGING_DISPUTED_FUND_AT,
+  DEMO_AGING_DISPUTED_ID,
+  DEMO_AGING_FRESH_FUND_AT,
+  DEMO_AGING_FRESH_ID,
+  DEMO_AGING_MID_FUND_AT,
+  DEMO_AGING_MID_ID,
+  DEMO_AGING_UNFUNDED_ID,
   DEMO_APPROVAL_LOG_CHECK_AT,
   DEMO_APPROVAL_LOG_ENTRIES,
   DEMO_APPROVAL_LOG_FIRST_AT,
@@ -7858,9 +7866,11 @@ test("demo batch-filter segment is deterministic: two runs print byte-identical 
   const header =
     "Batch filters (escrowsByState / escrowsByActor / escrowsByEvent over a mixed batch):";
   const refundHeader =
-    "Refund settlement (settleRefund on a refunded escrow):";
+    "Combined filter + settlement aging (escrowsByFilters / settlementAging over a mixed batch):";
   // The filter section runs from its header to the
-  // refund-settlement header that follows it.
+  // combined-filter header that follows it (backlog #1003
+  // inserts the aging segment between the filter and
+  // refund-settlement segments).
   const segment = (ls: string[]) =>
     ls.slice(ls.indexOf(header), ls.indexOf(refundHeader) - 1);
   const a = await runDemo();
@@ -7885,6 +7895,148 @@ test("demo batch-filter segment is deterministic: two runs print byte-identical 
     a.filterSubmittedSelectedIds,
     b.filterSubmittedSelectedIds,
   );
+});
+
+test("demo shows combined filter + settlement aging: escrowsByFilters intersects state/actor/event in one pass and settlementAging buckets the same batch by locked-funds age", async () => {
+  const {
+    agingEscrows,
+    agingCombinedSelectedIds,
+    agingResult,
+    agingOldestId,
+    agingOldestAgeDays,
+    lines,
+  } = await runDemo();
+
+  // Hand-pinned fixture shape: disputed sponsor escrow funded
+  // 2026-02-01 (36 days at the fixed now), mid-age sponsor
+  // escrow funded 2026-02-25 (12 days), fresh creator escrow
+  // funded 2026-03-05 (4 days), never-funded escrow — all
+  // judged at the fixed DEMO_STALE_NOW, 2026-03-09T09:00.
+  assert.equal(DEMO_AGING_DISPUTED_ID, "DEMO-AGING-01");
+  assert.equal(DEMO_AGING_DISPUTED_FUND_AT, "2026-02-01T09:00:00.000Z");
+  assert.equal(
+    DEMO_AGING_DISPUTED_DISPUTE_AT,
+    "2026-02-20T09:00:00.000Z",
+  );
+  assert.equal(DEMO_AGING_MID_ID, "DEMO-AGING-02");
+  assert.equal(DEMO_AGING_MID_FUND_AT, "2026-02-25T09:00:00.000Z");
+  assert.equal(DEMO_AGING_FRESH_ID, "DEMO-AGING-03");
+  assert.equal(DEMO_AGING_FRESH_FUND_AT, "2026-03-05T09:00:00.000Z");
+  assert.equal(DEMO_AGING_UNFUNDED_ID, "DEMO-AGING-04");
+  assert.equal(DEMO_STALE_NOW, "2026-03-09T09:00:00.000Z");
+
+  assert.deepEqual(
+    agingEscrows.map((e) => e.id),
+    [
+      DEMO_AGING_DISPUTED_ID,
+      DEMO_AGING_MID_ID,
+      DEMO_AGING_FRESH_ID,
+      DEMO_AGING_UNFUNDED_ID,
+    ],
+  );
+  assert.deepEqual(
+    agingEscrows.map((e) => e.state),
+    ["DISPUTED", "FUNDED", "FUNDED", "CREATED"],
+  );
+  assert.deepEqual(
+    agingEscrows.map((e) => e.history.length),
+    [2, 1, 1, 0],
+  );
+  assert.deepEqual(agingCombinedSelectedIds, [DEMO_AGING_DISPUTED_ID]);
+  assert.deepEqual(agingResult, {
+    under7Days: [{ id: DEMO_AGING_FRESH_ID, ageDays: 4 }],
+    days7To30: [{ id: DEMO_AGING_MID_ID, ageDays: 12 }],
+    over30Days: [{ id: DEMO_AGING_DISPUTED_ID, ageDays: 36 }],
+    unknown: [{ id: DEMO_AGING_UNFUNDED_ID }],
+  });
+  assert.equal(agingOldestId, DEMO_AGING_DISPUTED_ID);
+  assert.equal(agingOldestAgeDays, 36);
+
+  const text = lines.join("\n");
+  const header =
+    "Combined filter + settlement aging (escrowsByFilters / settlementAging over a mixed batch):";
+  assert.ok(
+    text.indexOf(header) >
+      text.indexOf(
+        "Batch filters (escrowsByState / escrowsByActor / escrowsByEvent over a mixed batch):",
+      ),
+    "combined-filter segment must follow the batch-filter segment",
+  );
+  assert.ok(
+    text.indexOf("Refund settlement (settleRefund on a refunded escrow):") >
+      text.indexOf(header),
+    "refund-settlement segment must follow the combined-filter segment",
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_AGING_DISPUTED_ID}: DISPUTED, funded ${DEMO_AGING_DISPUTED_FUND_AT}, disputed by sponsor — the only escrow that is DISPUTED, sponsor-touched, and ever disputed`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_AGING_MID_ID}: FUNDED, funded ${DEMO_AGING_MID_FUND_AT} — sponsor-touched but never disputed, so the combined filter skips it on the state and event axes`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_AGING_FRESH_ID}: FUNDED, funded ${DEMO_AGING_FRESH_FUND_AT} — creator-funded, 4 days old, so the combined filter skips it on the actor axis too`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_AGING_UNFUNDED_ID}: CREATED, never funded — no funding timestamp, so aging reports it unknown instead of silently dropping it`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  escrowsByFilters(batch, { state: "DISPUTED", actor: "sponsor", event: "DISPUTE" }): ${DEMO_AGING_DISPUTED_ID} (1 escrow) — the three axes intersect in one pass; "FUNDED and ever disputed" would be empty by construction, since DISPUTE moves an escrow out of FUNDED`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  settlementAging(batch, ${DEMO_STALE_NOW}): under 7 days: ${DEMO_AGING_FRESH_ID} (4 days); 7–30 days: ${DEMO_AGING_MID_ID} (12 days); over 30 days: ${DEMO_AGING_DISPUTED_ID} (36 days); unknown: ${DEMO_AGING_UNFUNDED_ID}`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  oldest unsettled funds: ${DEMO_AGING_DISPUTED_ID} at 36 days — chase the over-30-day bucket first`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  pure: the calls dispatched nothing — all four escrows keep their state and history length`,
+    ),
+  );
+});
+
+test("demo combined-filter + settlement-aging segment is deterministic: two runs print byte-identical aging lines", async () => {
+  const header =
+    "Combined filter + settlement aging (escrowsByFilters / settlementAging over a mixed batch):";
+  const refundHeader =
+    "Refund settlement (settleRefund on a refunded escrow):";
+  // The aging section runs from its header to the
+  // refund-settlement header that follows it.
+  const segment = (ls: string[]) =>
+    ls.slice(ls.indexOf(header), ls.indexOf(refundHeader) - 1);
+  const a = await runDemo();
+  const b = await runDemo();
+  // Header + 4 member verdicts + combined + aging + oldest +
+  // purity; every printed value is derived from the pinned
+  // fixtures alone, so no normalization is needed.
+  const segA = segment(a.lines);
+  assert.equal(segA.length, 9);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(
+    a.agingEscrows.map((e) => e.id),
+    b.agingEscrows.map((e) => e.id),
+  );
+  assert.deepEqual(
+    a.agingCombinedSelectedIds,
+    b.agingCombinedSelectedIds,
+  );
+  assert.deepEqual(a.agingResult, b.agingResult);
+  assert.equal(a.agingOldestId, b.agingOldestId);
+  assert.equal(a.agingOldestAgeDays, b.agingOldestAgeDays);
 });
 
 test("demo shows refund settlement: settleRefund on a REFUNDED escrow returns the full deposit to the sponsor and balances", async () => {
