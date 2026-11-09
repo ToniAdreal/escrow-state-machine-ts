@@ -18,6 +18,15 @@ version changes.
 
 ### Added
 
+- Standalone `isTerminal(state)` pure function (2026-11-09, backlog
+  #995): exported from the package entry, it answers whether an
+  `EscrowState` is terminal (`RELEASED` / `REFUNDED` / `EXPIRED`)
+  without instantiating an escrow — for batch screening and
+  transition-table checks, mirroring the dataquest lifecycle's
+  `isTerminal(state)`. Unknown states fail closed with
+  `invalid isTerminal: unknown state "…"`. `Escrow.isTerminal` now
+  delegates to it, so the getter and the function share one terminal
+  set and can never drift apart.
 - Arbitration audit note now names the counted approvers (2026-11-09, backlog
   #994): `dispatchArbitration` records `quorum <counted>/<threshold> [signer, …]`
   in the audit note, with the list taken from `quorum.approvals()` — counted

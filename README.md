@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1519 tests, all local
+npm test   # 1527 tests, all local
 ```
 
 ## Quickstart
@@ -246,6 +246,12 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   total is always the *sum* of every `FUND` entry's amount (see
   `depositAmountFromHistory`).
 - `allowedEvents(state)` lists valid next events for UI gating.
+- `isTerminal(state)` is a standalone pure function for the same question
+  without an instance — batch screening and transition-table checks can
+  ask whether a state is terminal (`RELEASED`, `REFUNDED`, `EXPIRED`)
+  without constructing an escrow. Unknown states fail closed (throw),
+  so a typo can never read as "not terminal". `Escrow.isTerminal`
+  delegates to it, so the getter and the function can never drift apart.
 - `transitionTableJson()` exports the whole transition table as canonical
   JSON; `test/__snapshots__/transitionTable.snapshot.json` is the committed
   snapshot (`test/transitionSnapshot.test.ts` fails if the table ever
@@ -1186,7 +1192,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1519 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1527 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

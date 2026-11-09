@@ -74,6 +74,28 @@ export function allowedEvents(state: EscrowState): EscrowEvent[] {
   return Object.keys(TRANSITIONS[state]) as EscrowEvent[];
 }
 
+/** States with no outgoing edges: the escrow is settled for good. */
+const TERMINAL_STATES: ReadonlySet<EscrowState> = new Set([
+  "RELEASED",
+  "REFUNDED",
+  "EXPIRED",
+]);
+
+/**
+ * Is this state terminal? Standalone pure function for callers that need
+ * the answer without instantiating an escrow (batch screening, transition
+ * table checks) — mirrors the dataquest lifecycle's `isTerminal(state)`.
+ * An unknown state (anything outside the EscrowState set) fails fast
+ * instead of silently reading as "not terminal", so a typo ("funded",
+ * "RELEASEDD") cannot masquerade as a live escrow.
+ */
+export function isTerminal(state: EscrowState): boolean {
+  if (!ESCROW_STATES.has(state)) {
+    throw new Error(`invalid isTerminal: unknown state "${String(state)}"`);
+  }
+  return TERMINAL_STATES.has(state);
+}
+
 export interface TransitionEdge {
   from: EscrowState;
   event: EscrowEvent;
@@ -1748,11 +1770,7 @@ export class Escrow {
   }
 
   get isTerminal(): boolean {
-    return (
-      this._state === "RELEASED" ||
-      this._state === "REFUNDED" ||
-      this._state === "EXPIRED"
-    );
+    return isTerminal(this._state);
   }
 
   // ------------------------------------------------------------------
