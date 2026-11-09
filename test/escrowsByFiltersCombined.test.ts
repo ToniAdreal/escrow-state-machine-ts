@@ -250,6 +250,104 @@ describe("escrowsByFilters", () => {
     );
   });
 
+  it("rejects an unknown filter key fail-fast, naming the key (backlog #1012)", () => {
+    const funded = fundedEscrow("m1", "alice");
+    // The classic typo: `state` misspelled as `states` used to be
+    // silently ignored and return the unfiltered batch.
+    assert.throws(
+      () =>
+        escrowsByFilters([funded], { states: "FUNDED" } as never),
+      /invalid escrowsByFilters: unknown filter "states"/,
+    );
+    // Case variants of a legal axis are not legal axes.
+    assert.throws(
+      () =>
+        escrowsByFilters([funded], { State: "FUNDED" } as never),
+      /invalid escrowsByFilters: unknown filter "State"/,
+    );
+    // A plausible-but-nonexistent axis is rejected the same way.
+    assert.throws(
+      () =>
+        escrowsByFilters([funded], { status: "FUNDED" } as never),
+      /invalid escrowsByFilters: unknown filter "status"/,
+    );
+    // The whitelist scan runs before any filtering, even on an
+    // empty batch.
+    assert.throws(
+      () =>
+        escrowsByFilters([], { states: "FUNDED" } as never),
+      /invalid escrowsByFilters: unknown filter "states"/,
+    );
+  });
+
+  it("a legal condition plus an unknown key throws instead of returning a partial slice", () => {
+    const funded = fundedEscrow("n1", "alice");
+    const released = releasedEscrow("n2", "alice");
+    const batch = [funded, released];
+    // The legal half alone would select [n1]; the unknown half must
+    // not be dropped and the call must not return [n1] as if the
+    // extra condition never existed.
+    assert.throws(
+      () =>
+        escrowsByFilters(batch, {
+          state: "FUNDED",
+          states: "FUNDED",
+        } as never),
+      /invalid escrowsByFilters: unknown filter "states"/,
+    );
+    assert.throws(
+      () =>
+        escrowsByFilters(batch, {
+          actor: "alice",
+          status: "FUNDED",
+        } as never),
+      /invalid escrowsByFilters: unknown filter "status"/,
+    );
+  });
+
+  it("rejects a non-object filters argument with a configuration error, not a TypeError", () => {
+    const funded = fundedEscrow("o1");
+    assert.throws(
+      () =>
+        escrowsByFilters([funded], null as never),
+      /invalid escrowsByFilters: filters must be an object, got null/,
+    );
+    assert.throws(
+      () =>
+        escrowsByFilters([funded], undefined as never),
+      /invalid escrowsByFilters: filters must be an object, got undefined/,
+    );
+    assert.throws(
+      () =>
+        escrowsByFilters([funded], 42 as never),
+      /invalid escrowsByFilters: filters must be an object, got number/,
+    );
+    assert.throws(
+      () =>
+        escrowsByFilters([funded], "FUNDED" as never),
+      /invalid escrowsByFilters: filters must be an object, got string/,
+    );
+    assert.throws(
+      () =>
+        escrowsByFilters([funded], [] as never),
+      /invalid escrowsByFilters: filters must be an object, got array/,
+    );
+  });
+
+  it("checks the key whitelist before the value validation", () => {
+    const funded = fundedEscrow("p1");
+    // Both the key and the value are wrong here: the unknown-key
+    // error wins, because the whitelist scan runs at the entry.
+    assert.throws(
+      () =>
+        escrowsByFilters([funded], {
+          state: "FUNDEDD",
+          states: "FUNDED",
+        } as never),
+      /invalid escrowsByFilters: unknown filter "states"/,
+    );
+  });
+
   it("keeps input order and returns the same escrow objects", () => {
     const released = releasedEscrow("k1", "alice");
     const disputed = disputedEscrow("k2", "alice");

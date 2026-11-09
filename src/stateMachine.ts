@@ -2897,14 +2897,36 @@ export interface EscrowsByFiltersOptions {
  * `event` rejects unknown events, and an empty or non-string
  * `actor` fails fast instead of silently returning an empty list —
  * a typo in any axis cannot masquerade as "no escrow matches this
- * combination". Mirrors the dataquest lifecycle's `tasksByFilters`
- * (which has one extra axis, `payoutRef`, that this escrow has no
- * counterpart for).
+ * combination". The same fail-closed rule covers the filter keys
+ * themselves: only `state`, `actor`, and `event` are accepted, so a
+ * misspelled axis name such as `states` throws
+ * `invalid escrowsByFilters: unknown filter "states"` instead of
+ * being silently ignored and returning the unfiltered batch — and a
+ * non-object `filters` argument throws instead of surfacing a
+ * `TypeError` from the first property read. Mirrors the dataquest
+ * lifecycle's `tasksByFilters` (which has one extra axis,
+ * `payoutRef`, that this escrow has no counterpart for).
  */
 export function escrowsByFilters(
   escrows: readonly Escrow[],
   filters: EscrowsByFiltersOptions,
 ): Escrow[] {
+  if (
+    typeof filters !== "object" ||
+    filters === null ||
+    Array.isArray(filters)
+  ) {
+    throw new Error(
+      `invalid escrowsByFilters: filters must be an object, got ${filters === null ? "null" : Array.isArray(filters) ? "array" : typeof filters}`,
+    );
+  }
+  for (const key of Object.keys(filters)) {
+    if (key !== "state" && key !== "actor" && key !== "event") {
+      throw new Error(
+        `invalid escrowsByFilters: unknown filter "${key}"`,
+      );
+    }
+  }
   if (filters.state !== undefined && !ESCROW_STATES.has(filters.state)) {
     throw new Error(
       `invalid escrowsByFilters: unknown state "${String(filters.state)}"`,

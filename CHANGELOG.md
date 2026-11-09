@@ -3431,6 +3431,23 @@ version changes.
   README reconciliation and partial-release sections and test counts
   updated (1376 -> 1386).
 
+### Fixed
+
+- `escrowsByFilters` now rejects unknown filter keys fail-closed
+  (2026-11-09, backlog #1012): only `state`, `actor`, and `event`
+  are accepted — a misspelled axis name such as `states` previously
+  slipped past the per-value validation and returned the unfiltered
+  batch, so a typo masqueraded as "no escrow matches" in reverse
+  (everything matches). An unknown key now throws
+  `invalid escrowsByFilters: unknown filter "<name>"`, checked at
+  the entry before any value validation, and a non-object `filters`
+  argument throws `invalid escrowsByFilters: filters must be an
+  object, got …` instead of a `TypeError` from the first property
+  read. The legal axes, the empty-object "select all" behavior, and
+  the single-axis validation rules are unchanged. 4 new tests in
+  `test/escrowsByFiltersCombined.test.ts`; README filter section and
+  test counts updated (1553 -> 1557).
+
 ## [0.1.0]
 
 The only version declared in `package.json`. Entries cover the commit
