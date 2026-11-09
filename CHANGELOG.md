@@ -1667,6 +1667,19 @@ version changes.
 
 ### Fixed
 
+- `buildSettlementWebhooks` now rejects a repeated `escrowId` in the
+  batch (2026-11-09, backlog #999): the batch previously signed two
+  webhooks with different `eventId`s for one settlement whenever the
+  same report appeared twice in the results list, and a receiver
+  deduplicating on `eventId` could not tell they were the same
+  settlement — the same hole `buildSettlementReports` closed at
+  backlog #993, which this batch entry bypasses when results are
+  hand-assembled. A duplicate now fails the whole batch closed
+  before anything is signed, throwing an error naming every distinct
+  duplicate id; the single-report `buildSettlementWebhook` is
+  unaffected. 10 new tests in
+  `test/settlementWebhooksBatchDuplicateEscrowId.test.ts`.
+
 - `expireOverdueEscrows` now attributes its EXPIRE dispatch to the
   `system` actor (2026-11-07, backlog #965): it previously dispatched
   with no actor at all, so a `requireActor: true` escrow landed

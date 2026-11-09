@@ -352,6 +352,18 @@ export type BuildSettlementWebhooksResult =
  * entries from `buildSettlementReports` never call the factory, so
  * they consume no `eventId` and cannot mask a later duplicate.
  *
+ * One exception to per-item isolation: a repeated `escrowId` aborts
+ * the whole batch, exactly like {@link buildSettlementReports}
+ * (backlog #993). Two entries for the same escrow would produce two
+ * signed webhooks with different `eventId`s for one settlement, and a
+ * receiver deduplicating on `eventId` could not tell they are the
+ * same settlement — so the batch fails closed before building
+ * anything, throwing an error naming the duplicate id(s) and
+ * producing no webhooks at all. This is a caller bug (a mistyped
+ * batch list), not a per-report failure, so it is a throw, not a
+ * per-entry error. The single-report {@link buildSettlementWebhook}
+ * is unaffected: calling it twice for the same escrow is legitimate.
+ *
  * Pure: building never mutates any report, and this wrapper adds no
  * mutation of its own — the input list and its entries are only read.
  *
@@ -395,6 +407,37 @@ export function buildSettlementWebhooks(
   ) {
     throw new Error(
       "cannot build settlement webhooks: invalid 'now' timestamp",
+    );
+  }
+  // Duplicate escrowIds fail the whole batch before anything is built
+  // (the buildSettlementReports guard, backlog #993): two entries for
+  // one escrow would sign two webhooks with different eventIds for the
+  // same settlement, and a receiver deduplicating on eventId could not
+  // tell they are the same settlement. Only string ids are scanned — a
+  // malformed entry with no string id keeps its per-entry failure
+  // below, exactly as before.
+  const seenIds = new Set<string>();
+  const duplicateIds: string[] = [];
+  for (const entry of results) {
+    const id =
+      entry !== null &&
+      typeof entry === "object" &&
+      typeof entry.escrowId === "string"
+        ? entry.escrowId
+        : undefined;
+    if (id === undefined) continue;
+    if (seenIds.has(id)) {
+      if (!duplicateIds.includes(id)) {
+        duplicateIds.push(id);
+      }
+    } else {
+      seenIds.add(id);
+    }
+  }
+  if (duplicateIds.length > 0) {
+    const quoted = duplicateIds.map((id) => `"${id}"`).join(", ");
+    throw new Error(
+      `buildSettlementWebhooks: duplicate escrowId ${quoted} in batch: escrowIds must be unique within a batch (a repeated escrow would produce two signed settlement webhooks with different eventIds, and a receiver deduplicating on eventId could not tell they are the same settlement)`,
     );
   }
   const eventIdFactory = options.eventIdFactory ?? randomUUID;
