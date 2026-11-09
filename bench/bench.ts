@@ -1457,6 +1457,37 @@
  *      cannot drift apart. The over-pay refusal ([600, 600] against a
  *      gross of 1000) is pinned once, outside the timed loop, to throw
  *      the exact cumulative error.
+ *  82. combined batch filter — `escrowsByFilters(batch, { state,
+ *      actor, event })` over the same fixed mixed batch of 60 escrows
+ *      the single-axis rows screen (composition hand-counted in the
+ *      fixture comment below). The #991 helper previously had unit
+ *      tests only, so the patrol query "escrows carol disputed that
+ *      are currently DISPUTED" — the three-axis intersection in one
+ *      pass, instead of chaining three single-axis filters and
+ *      intersecting — had no throughput baseline. One measured op
+ *      screens the batch for { state: "DISPUTED", actor: "carol",
+ *      event: "DISPUTE" } and pins the hand-counted hit list of 6
+ *      ids (all of the DISPUTED group, in batch order) on every
+ *      iteration. The backlog's literal combo — FUNDED + DISPUTE —
+ *      is pinned once, outside the timed loop, to return []: a
+ *      DISPUTE always moves an escrow out of FUNDED, so that slice
+ *      is empty by construction (the helper's own JSDoc says so),
+ *      and the timed row measures the non-empty intersection
+ *      instead.
+ *  83. settlement funding aging — `settlementAging(batch, now)` over
+ *      one fixed mixed batch of 10 escrows (composition hand-counted
+ *      in the fixture comment below: 3 under 7 days, 3 in 7–30 days,
+ *      2 over 30 days, 2 never funded — including the pinned 7-day
+ *      and 30-day bucket endpoints and the 6-day / 29-day
+ *      just-inside cases). The #992 helper previously had unit tests
+ *      only, so the finance-ops "chase the stale settlements first"
+ *      screen — bucketing the funded, not-yet-settled population by
+ *      whole days since its most recent FUND — had no throughput
+ *      baseline. The helper is pure, so the same batch is
+ *      re-bucketed on every iteration and each result is checked
+ *      against the hand-counted bucket contents (ids and ageDays,
+ *      in batch order) on every iteration, at fixture build time as
+ *      well.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -1496,6 +1527,7 @@ import {
   escrowsApproachingDeadline,
   escrowsByActor,
   escrowsByEvent,
+  escrowsByFilters,
   escrowsByState,
   expiredEscrows,
   expireOverdueEscrows,
@@ -1516,6 +1548,7 @@ import {
   settlePartialRelease,
   settlePartialReleases,
   settleRefund,
+  settlementAging,
   SettlementEventDedupe,
   staleEscrows,
   stateDiagram,
@@ -1537,6 +1570,7 @@ import {
   type PartialSettlementInputs,
   type PartialReleasesInputs,
   type SettlementReport,
+  type SettlementAgingResult,
   type SettlementReportCsv,
   type SettlementReportInputs,
   type SettlementWebhookEndpoint,
@@ -5865,6 +5899,135 @@ checkFilterThrows(
   () => escrowsByEvent(filterBatch, "DISPUTED" as never),
   /invalid escrowsByEvent: unknown event "DISPUTED"/,
   "escrowsByEvent state name is not an event",
+);
+
+// Combined-filter expectation over the same 60-escrow batch (#991
+// helper, previously unit-tested only): { state: "DISPUTED", actor:
+// "carol", event: "DISPUTE" } selects exactly the DISPUTED group —
+// F funded by bob and disputed by carol, and no other group is
+// DISPUTED, so no other escrow can match all three axes. Hand-counted
+// (NOT produced by the implementation): 6 ids, batch order.
+const FILTER_COMBINED_IDS: string[] = [...filterIds("F", 6)];
+checkFilterIds(
+  escrowsByFilters(filterBatch, {
+    state: "DISPUTED",
+    actor: "carol",
+    event: "DISPUTE",
+  }),
+  FILTER_COMBINED_IDS,
+  "escrowsByFilters",
+);
+// The backlog's literal combo, pinned to its honest answer: a DISPUTE
+// always moves an escrow out of FUNDED (see `escrowsByFilters`' own
+// JSDoc and the #1003 demo segment), so "FUNDED and ever disputed"
+// is empty by construction — the filter reports that empty slice, it
+// does not invent one. Any actor gives the same [] here; bob is the
+// F group's funder, so this is the sharpest form of the question.
+checkFilterIds(
+  escrowsByFilters(filterBatch, {
+    state: "FUNDED",
+    actor: "bob",
+    event: "DISPUTE",
+  }),
+  [],
+  "escrowsByFilters FUNDED+DISPUTE is empty by construction",
+);
+
+// Settlement-aging fixture: one fixed mixed batch of 10 escrows,
+// bucketed by `settlementAging` at the fixed AGING_NOW =
+// 2026-03-09T09:00:00.000Z — the same `now` the #1003 demo segment
+// pins, so the bench ages agree with the demo's printed ages.
+// Composition, hand-counted (ids are BENCH-AGE-<nn>; every FUND is
+// by alice for 1000, at 09:00:00.000Z sharp so whole-day ages are
+// exact, no floor ambiguity; 2026 is not a leap year, so Feb has
+// 28 days: Feb 25 -> Mar 9 is 3 + 9 = 12 days, Feb 8 -> Mar 9 is
+// 20 + 9 = 29 days, Feb 7 -> Mar 9 is 21 + 9 = 30 days, Feb 1 ->
+// Mar 9 is 27 + 9 = 36 days):
+//   01  FUND 2026-03-08 (1 day)   -> under7Days
+//   02  FUND 2026-03-05 (4 days)  -> under7Days
+//   03  FUND 2026-03-03 (6 days, just inside) -> under7Days
+//   04  FUND 2026-03-02 (7 days, pinned endpoint) -> days7To30
+//   05  FUND 2026-02-25 (12 days) -> days7To30
+//   06  FUND 2026-02-08 (29 days, just inside) -> days7To30
+//   07  FUND 2026-02-07 (30 days, pinned endpoint) -> over30Days
+//   08  FUND 2026-02-01 (36 days) -> over30Days
+//   09  CREATED, never funded -> unknown
+//   10  CREATED, never funded -> unknown
+// Hand-counted expectations (NOT produced by the implementation):
+//   under7Days: 01 (1), 02 (4), 03 (6) — 3 entries
+//   days7To30: 04 (7), 05 (12), 06 (29) — 3 entries
+//   over30Days: 07 (30), 08 (36) — 2 entries
+//   unknown: 09, 10 — 2 entries
+const AGING_NOW = new Date("2026-03-09T09:00:00.000Z");
+function agingFunded(id: string, fundedAt: string): Escrow {
+  const escrow = new Escrow(id);
+  escrow.dispatch("FUND", undefined, 1000, { actor: "alice", at: fundedAt });
+  return escrow;
+}
+function agingIds(count: number): string[] {
+  return Array.from(
+    { length: count },
+    (_, i) => `BENCH-AGE-${String(i + 1).padStart(2, "0")}`,
+  );
+}
+const agingBatch: Escrow[] = [
+  agingFunded("BENCH-AGE-01", "2026-03-08T09:00:00.000Z"),
+  agingFunded("BENCH-AGE-02", "2026-03-05T09:00:00.000Z"),
+  agingFunded("BENCH-AGE-03", "2026-03-03T09:00:00.000Z"),
+  agingFunded("BENCH-AGE-04", "2026-03-02T09:00:00.000Z"),
+  agingFunded("BENCH-AGE-05", "2026-02-25T09:00:00.000Z"),
+  agingFunded("BENCH-AGE-06", "2026-02-08T09:00:00.000Z"),
+  agingFunded("BENCH-AGE-07", "2026-02-07T09:00:00.000Z"),
+  agingFunded("BENCH-AGE-08", "2026-02-01T09:00:00.000Z"),
+  new Escrow("BENCH-AGE-09"),
+  new Escrow("BENCH-AGE-10"),
+];
+if (agingBatch.length !== 10) {
+  throw new Error("benchmark fixture failed: aging batch size");
+}
+const AGING_EXPECTED: SettlementAgingResult = {
+  under7Days: [
+    { id: "BENCH-AGE-01", ageDays: 1 },
+    { id: "BENCH-AGE-02", ageDays: 4 },
+    { id: "BENCH-AGE-03", ageDays: 6 },
+  ],
+  days7To30: [
+    { id: "BENCH-AGE-04", ageDays: 7 },
+    { id: "BENCH-AGE-05", ageDays: 12 },
+    { id: "BENCH-AGE-06", ageDays: 29 },
+  ],
+  over30Days: [
+    { id: "BENCH-AGE-07", ageDays: 30 },
+    { id: "BENCH-AGE-08", ageDays: 36 },
+  ],
+  unknown: [{ id: "BENCH-AGE-09" }, { id: "BENCH-AGE-10" }],
+};
+function checkAgingResult(
+  found: SettlementAgingResult,
+  expected: SettlementAgingResult,
+  label: string,
+): void {
+  for (const bucket of ["under7Days", "days7To30", "over30Days"] as const) {
+    const f = found[bucket];
+    const e = expected[bucket];
+    if (
+      f.length !== e.length ||
+      f.some((entry, i) => entry.id !== e[i].id || entry.ageDays !== e[i].ageDays)
+    ) {
+      throw new Error(`benchmark aging check failed: ${label} ${bucket}`);
+    }
+  }
+  if (
+    found.unknown.length !== expected.unknown.length ||
+    found.unknown.some((entry, i) => entry.id !== expected.unknown[i].id)
+  ) {
+    throw new Error(`benchmark aging check failed: ${label} unknown`);
+  }
+}
+checkAgingResult(
+  settlementAging(agingBatch, AGING_NOW),
+  AGING_EXPECTED,
+  "settlementAging",
 );
 
 // Deadline-warning fixture: one fixed mixed batch of 14 escrows,
@@ -10526,6 +10689,30 @@ function benchEscrowsByEvent(): number {
   }, ITERATIONS);
 }
 
+function benchEscrowsByFilters(): number {
+  return measure(() => {
+    checkFilterIds(
+      escrowsByFilters(filterBatch, {
+        state: "DISPUTED",
+        actor: "carol",
+        event: "DISPUTE",
+      }),
+      FILTER_COMBINED_IDS,
+      "escrowsByFilters",
+    );
+  }, ITERATIONS);
+}
+
+function benchSettlementAging(): number {
+  return measure(() => {
+    checkAgingResult(
+      settlementAging(agingBatch, AGING_NOW),
+      AGING_EXPECTED,
+      "settlementAging",
+    );
+  }, ITERATIONS);
+}
+
 function benchEscrowsApproachingDeadline(): number {
   return measure(() => {
     checkWatchdogIds(
@@ -11811,6 +11998,8 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "escrowsByState (batch 60 escrows, 22 FUNDED)", ops: benchEscrowsByState() },
   { path: "escrowsByActor (batch 60 escrows, 39 alice)", ops: benchEscrowsByActor() },
   { path: "escrowsByEvent (batch 60 escrows, 6 DISPUTE)", ops: benchEscrowsByEvent() },
+  { path: "escrowsByFilters (batch 60 escrows, 6 DISPUTED+carol+DISPUTE)", ops: benchEscrowsByFilters() },
+  { path: "settlementAging (batch 10 escrows, 3/3/2/2 buckets)", ops: benchSettlementAging() },
   { path: "escrowsApproachingDeadline (batch 14 escrows, 6 approaching)", ops: benchEscrowsApproachingDeadline() },
   { path: "nextEscrowDeadline (batch 10 escrows, earliest 2026-06-03)", ops: benchNextEscrowDeadline() },
 ];

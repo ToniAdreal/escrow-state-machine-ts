@@ -1947,6 +1947,25 @@ two FUND entries) and EXPIRE at 5 ids (the actor-less EXPIRE entry
 still counts, because the event lens reads entries, not actors),
 and the fail-fast shapes are pinned: an unknown event and a state
 name passed as an event (DISPUTED) each throw their exact error.
+The new `escrowsByFilters` row measures the #991 combination as a
+cost path: one measured op screens the same fixed batch of 60
+escrows for { state: "DISPUTED", actor: "carol", event: "DISPUTE" }
+— the patrol query "escrows carol disputed that are currently
+DISPUTED", the three-axis intersection in one pass instead of
+chaining three single-axis filters — and pins the hand-counted hit
+list of 6 ids (all of the DISPUTED group, in batch order) on every
+iteration. Outside the timed loop, the backlog's literal combo is
+pinned to its honest answer: { state: "FUNDED", actor: "bob",
+event: "DISPUTE" } returns [], because a DISPUTE always moves an
+escrow out of FUNDED, so that slice is empty by construction.
+The new `settlementAging` row measures the #992 combination as a
+cost path: one measured op buckets one fixed mixed batch of 10
+escrows at the fixed 2026-03-09T09:00:00.000Z now (the same `now`
+the CLI demo pins) — 3 under 7 days, 3 in 7–30 days, 2 over 30
+days, 2 never funded — including the pinned 7-day and 30-day
+bucket endpoints and the 6-day / 29-day just-inside cases, and
+pins the hand-counted bucket contents (ids and ageDays, in batch
+order) on every iteration, at fixture build time as well.
 The new `escrowsApproachingDeadline` row measures the #902
 combination as a cost path: one measured op screens one fixed mixed
 batch of 14 escrows (deadlines in-window, exactly at the inclusive
@@ -2061,6 +2080,8 @@ One real run on 2026-11-04:
 | escrowsByState (batch 60 escrows, 22 FUNDED) | ~410,480 ops/sec (2.44 µs/op) |
 | escrowsByActor (batch 60 escrows, 39 alice) | ~9,706 ops/sec (103.02 µs/op) |
 | escrowsByEvent (batch 60 escrows, 6 DISPUTE) | ~7,971 ops/sec (125.45 µs/op) |
+| escrowsByFilters (batch 60 escrows, 6 DISPUTED+carol+DISPUTE) | ~50,789 ops/sec (19.69 µs/op) |
+| settlementAging (batch 10 escrows, 3/3/2/2 buckets) | ~148,075 ops/sec (6.75 µs/op) |
 | escrowsApproachingDeadline (batch 14 escrows, 6 approaching) | ~315,088 ops/sec (3.17 µs/op) |
 | nextEscrowDeadline (batch 10 escrows, earliest 2026-06-03) | ~316,600 ops/sec (3.16 µs/op) |
 
@@ -2069,7 +2090,8 @@ and the settlePartialRelease row above were measured on
 2026-11-05 runs; the nextEscrowDeadline row and the
 escrowsByEvent row above were measured on 2026-11-06 runs; the
 settlePartialReleases row above was measured on a 2026-11-08 run; the
-rest of the table is the 2026-11-04 run. Those runs' other rows
+escrowsByFilters and settlementAging rows above were measured on a
+2026-11-09 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
 came in mixed under shared-host load, so refreshing the whole
 table would misreport changes in paths these additions never
 touched.

@@ -18,6 +18,17 @@ version changes.
 
 ### Added
 
+- Benchmark rows for the combined filter and settlement aging
+  (2026-11-09, backlog #1007): `npm run bench` now measures
+  `escrowsByFilters` over the same fixed 60-escrow batch the
+  single-axis rows screen ({ state: "DISPUTED", actor: "carol",
+  event: "DISPUTE" } pins 6 ids on every iteration) and
+  `settlementAging` over a fixed 10-escrow batch at the fixed
+  2026-03-09T09:00:00.000Z now (3 under 7 days, 3 in 7–30 days,
+  2 over 30 days, 2 never funded, bucket contents pinned on every
+  iteration). The backlog's literal FUNDED + DISPUTE combo is
+  pinned to [] outside the timed loop: a DISPUTE always moves an
+  escrow out of FUNDED, so that slice is empty by construction.
 - CLI demo shows the combined filter and settlement aging together
   (2026-11-09, backlog #1003): one new segment drives four fixed
   escrows through `escrowsByFilters` ({ state: "DISPUTED", actor:
