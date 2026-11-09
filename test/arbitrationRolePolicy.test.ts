@@ -121,7 +121,7 @@ describe("dispatchArbitration x rolePolicy", () => {
     assert.equal(last.from, "DISPUTED");
     assert.equal(last.to, "RELEASED");
     assert.equal(last.actor, "moderator");
-    assert.equal(last.note, "DAO vote passed [quorum 5/5]");
+    assert.equal(last.note, "DAO vote passed [quorum 5/5 [dao-1, dao-2, dao-3, dao-4, dao-5]]");
     assert.equal(verifyHistoryChain(escrow.history), true);
   });
 
@@ -138,7 +138,7 @@ describe("dispatchArbitration x rolePolicy", () => {
     const last = escrow.history[escrow.history.length - 1];
     assert.equal(last.event, "ARBITRATE_REFUND");
     assert.equal(last.actor, "moderator");
-    assert.equal(last.note, "quorum 6/5");
+    assert.equal(last.note, "quorum 6/5 [dao-1, dao-2, dao-3, dao-4, dao-5, dao-6]");
     assert.equal(verifyHistoryChain(escrow.history), true);
   });
 

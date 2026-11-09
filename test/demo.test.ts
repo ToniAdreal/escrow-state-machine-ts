@@ -1147,7 +1147,7 @@ test("demo dispute branch reaches DISPUTED, is refused below quorum, then refund
   assert.equal(last.at, DEMO_ARBITRATION_AT);
   assert.equal(
     last.note,
-    `Dispute upheld — refund the sponsor [quorum ${DEMO_QUORUM_THRESHOLD}/${DEMO_QUORUM_THRESHOLD}]`,
+    `Dispute upheld — refund the sponsor [quorum ${DEMO_QUORUM_THRESHOLD}/${DEMO_QUORUM_THRESHOLD} [${DEMO_QUORUM_SIGNERS[0]}, ${DEMO_QUORUM_SIGNERS[1]}]]`,
   );
   // Quorum: 2-of-3 reached, approval log on the fixed injected clock.
   assert.equal(disputeQuorum.threshold, DEMO_QUORUM_THRESHOLD);

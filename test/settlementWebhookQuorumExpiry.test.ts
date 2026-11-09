@@ -156,7 +156,7 @@ test("re-approval inside the window restores clean arbitration, report, and veri
   assert.equal(last.event, "ARBITRATE_RELEASE");
   assert.equal(last.from, "DISPUTED");
   assert.equal(last.to, "RELEASED");
-  assert.equal(last.note, "quorum 5/5");
+  assert.equal(last.note, "quorum 5/5 [dao-1, dao-2, dao-3, dao-4, dao-5]");
 
   const report = buildSettlementReport(inputsFor(escrow));
   assert.equal(report.outcome, "released");

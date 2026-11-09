@@ -58,7 +58,7 @@ describe("dispatchArbitration", () => {
     assert.equal(last.event, "ARBITRATE_RELEASE");
     assert.equal(last.from, "DISPUTED");
     assert.equal(last.to, "RELEASED");
-    assert.equal(last.note, "quorum 5/5");
+    assert.equal(last.note, "quorum 5/5 [dao-1, dao-2, dao-3, dao-4, dao-5]");
   });
 
   it("dispatches ARBITRATE_REFUND once quorum is reached", () => {
@@ -70,7 +70,7 @@ describe("dispatchArbitration", () => {
 
     const last = escrow.history[escrow.history.length - 1];
     assert.equal(last.event, "ARBITRATE_REFUND");
-    assert.equal(last.note, "quorum 6/5");
+    assert.equal(last.note, "quorum 6/5 [dao-1, dao-2, dao-3, dao-4, dao-5, dao-6]");
   });
 
   it("appends the caller note in front of the quorum tally", () => {
@@ -79,7 +79,7 @@ describe("dispatchArbitration", () => {
 
     dispatchArbitration(escrow, quorum, "release", "DAO vote passed");
     const last = escrow.history[escrow.history.length - 1];
-    assert.equal(last.note, "DAO vote passed [quorum 5/5]");
+    assert.equal(last.note, "DAO vote passed [quorum 5/5 [dao-1, dao-2, dao-3, dao-4, dao-5]]");
   });
 
   it("forwards opts.at / opts.actor to the arbitration audit entry", () => {

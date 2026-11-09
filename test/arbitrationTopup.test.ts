@@ -20,7 +20,7 @@ import type { SettlementReportInputs } from "../src/index.js";
  * independent of how large the locked total is. The report carries no
  * quorum field (see #786), so the quorum shows up here exactly as it
  * does elsewhere: the reached escrow's outcome/releasePath and the
- * `quorum 5/5` tally in its audit history's last entry, and the
+ * `quorum 5/5 [dao-1, dao-2, dao-3, dao-4, dao-5]` tally in its audit history's last entry, and the
  * below-threshold escrow having no settlement at all.
  *
  * Rules under test:
@@ -154,7 +154,7 @@ test("below-quorum refund rejection consumes nothing: the 5th approval retries c
   assert.equal(last.event, "ARBITRATE_REFUND");
   assert.equal(last.from, "DISPUTED");
   assert.equal(last.to, "REFUNDED");
-  assert.equal(last.note, "quorum 5/5");
+  assert.equal(last.note, "quorum 5/5 [dao-1, dao-2, dao-3, dao-4, dao-5]");
 });
 
 test("reached-quorum release settles the topped-up total with the 5% split", () => {
@@ -166,7 +166,7 @@ test("reached-quorum release settles the topped-up total with the 5% split", () 
   assert.equal(last.event, "ARBITRATE_RELEASE");
   assert.equal(last.from, "DISPUTED");
   assert.equal(last.to, "RELEASED");
-  assert.equal(last.note, "quorum 5/5");
+  assert.equal(last.note, "quorum 5/5 [dao-1, dao-2, dao-3, dao-4, dao-5]");
 
   const report = buildSettlementReport(inputsFor(escrow));
   assert.equal(report.outcome, "released");
@@ -206,7 +206,7 @@ test("reached-quorum refund returns the full topped-up total to the sponsor", ()
   assert.equal(escrow.state, "REFUNDED");
   const last = escrow.history[escrow.history.length - 1];
   assert.equal(last.event, "ARBITRATE_REFUND");
-  assert.equal(last.note, "quorum 5/5");
+  assert.equal(last.note, "quorum 5/5 [dao-1, dao-2, dao-3, dao-4, dao-5]");
 
   const report = buildSettlementReport(inputsFor(escrow));
   assert.equal(report.outcome, "refunded");
@@ -250,5 +250,5 @@ test("quorum threshold is independent of the locked total", () => {
   quorum.approve(SIGNERS[4]);
   assert.equal(dispatchArbitration(escrow, quorum, "release"), "RELEASED");
   assert.equal(escrow.state, "RELEASED");
-  assert.equal(escrow.history[escrow.history.length - 1].note, "quorum 5/5");
+  assert.equal(escrow.history[escrow.history.length - 1].note, "quorum 5/5 [dao-1, dao-2, dao-3, dao-4, dao-5]");
 });

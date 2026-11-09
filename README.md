@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1508 tests, all local
+npm test   # 1519 tests, all local
 ```
 
 ## Quickstart
@@ -601,6 +601,9 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   reached, `hasQuorum()` — see the usage example
   in its JSDoc). `approvalLog()` records who approved and when
   (timestamps injectable via `QuorumConfig.now` for deterministic tests).
+  The arbitration audit entry itself also carries the counted signer list
+  (`quorum 5/9 [dao-1, dao-2, dao-3, dao-4, dao-5]`), so the history alone
+  proves who approved even after the `Quorum` object is dropped.
   `approve()` also accepts an optional `evidence` reference — a
   vote-record link, governance proposal id, or attestation reference —
   carried on the log entry and the snapshot. Evidence is a caller
@@ -628,8 +631,10 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   and re-approving records a fresh timestamp; revoking an expired
   approval is allowed and removes its entries. `src/arbitration.ts` wires the two together:
   `dispatchArbitration(escrow, quorum, outcome)` refuses to dispatch until
-  `hasQuorum()` is true and auto-records `quorum <approvals>/<threshold>`
-  in the audit note; an optional final argument forwards retry-safety
+  `hasQuorum()` is true and auto-records `quorum <approvals>/<threshold> [signer, …]`
+  in the audit note — the counted signers, in approval-time order,
+  deduplicated, with expired approvals excluded — so the history alone
+  proves *who* approved, not just how many; an optional final argument forwards retry-safety
   metadata to the arbitration entry — an injectable audit timestamp /
   actor (the same `at` / `actor` the plain dispatch accepts) plus an
   `idempotencyKey` (a repeated, e.g. timed-out, arbitration call with the
@@ -1181,7 +1186,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1508 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1519 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
@@ -1530,7 +1535,7 @@ lower bound on the dispatch-only throughput, the same accounting
 the watchdog-execution rows use; the dispatch is pinned to a
 fixed audit timestamp, and every iteration checks the REFUNDED
 terminal state, exactly one appended `ARBITRATE_REFUND` entry,
-and its `quorum 5/5` note), and
+and its `quorum 5/5 [dao-1, dao-2, dao-3, dao-4, dao-5]` note), and
 deadline judgement (`isOverdue` over a fixed 4-case corpus — a
 past-deadline FUNDED escrow, a future-deadline FUNDED escrow, a
 deadline-less FUNDED escrow, and a past-deadline terminal

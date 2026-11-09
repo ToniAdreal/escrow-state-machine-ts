@@ -169,7 +169,7 @@ test("dispatchArbitration rejects a caller note that overflows once the quorum s
     quorum.approve(signer);
   }
   // Exactly at the limit as given, but dispatchArbitration appends
-  // " [quorum 5/5]" — the combined note must fail, not silently
+  // " [quorum 5/5 [dao-1, dao-2, dao-3, dao-4, dao-5]]" — the combined note must fail, not silently
   // truncate or overflow the audit history.
   assert.throws(
     () =>

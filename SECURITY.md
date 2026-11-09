@@ -34,8 +34,9 @@ quorum approvals (`approveSigned()`).
   quorum per arbitration. A snapshot carries recorded `verified`
   flags as data and restoring one does not re-verify signatures.
   `src/arbitration.ts` wires the *count* to `dispatchArbitration` (it refuses
-  to dispatch below threshold and records `quorum <approvals>/<threshold>`
-  in the audit note), but it does not make the approvals cryptographic —
+  to dispatch below threshold and records `quorum <approvals>/<threshold> [signer, …]`
+  in the audit note — the counted signers, approval-time order, expired approvals
+  excluded — but it does not make the approvals cryptographic —
   see the honesty note in its header comment.
 - **`VERIFY_PASS` is a caller trust decision.** Dispatching it verifies no
   oracle signatures, zero-knowledge proofs, or TEE attestations

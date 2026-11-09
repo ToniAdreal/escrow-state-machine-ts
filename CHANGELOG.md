@@ -18,6 +18,13 @@ version changes.
 
 ### Added
 
+- Arbitration audit note now names the counted approvers (2026-11-09, backlog
+  #994): `dispatchArbitration` records `quorum <counted>/<threshold> [signer, …]`
+  in the audit note, with the list taken from `quorum.approvals()` — counted
+  approvals only, deduplicated, in approval-time order, expired approvals
+  excluded — so the append-only history alone proves who approved, not just
+  how many. The caller's own note is still kept in front. Existing pinned
+  notes (tests, demo, bench self-checks) updated to the new shape.
 - Settlement funding aging `settlementAging()` (2026-11-09, backlog
   #992): `settlementAging(escrows, now?)` buckets every funded,
   non-terminal escrow by whole days since its most recent `FUND`

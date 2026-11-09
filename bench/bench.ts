@@ -245,7 +245,7 @@
  *      Every timed iteration checks the returned and stored state
  *      is REFUNDED, the history grew by exactly one entry, and that
  *      entry is the ARBITRATE_REFUND from DISPUTED carrying the
- *      hand-pinned note `quorum 5/5`.
+ *      hand-pinned note `quorum 5/5 [dao-1, dao-2, dao-3, dao-4, dao-5]`.
  *  24. deadline judgement — `isOverdue(escrow, now)` over a fixed
  *      4-case corpus (a past-deadline FUNDED escrow, a
  *      future-deadline FUNDED escrow, a deadline-less FUNDED
@@ -1174,7 +1174,7 @@
  *      RELEASED with exactly one appended entry pinned field
  *      for field (seq 3, ARBITRATE_RELEASE, DISPUTED ->
  *      RELEASED, at BASE + 2s, actor "moderator", note
- *      "quorum 5/5") and an intact hash chain. Outside the
+ *      "quorum 5/5 [dao-1, dao-2, dao-3, dao-4, dao-5]") and an intact hash chain. Outside the
  *      timed loop, a below-threshold quorum with an
  *      unauthorized actor is pinned to the quorum error, not
  *      the policy error, proving the quorum gate runs first.
@@ -7208,7 +7208,7 @@ checkCalculateDepositCorpus();
 // calling dispatchArbitration itself: the call returns REFUNDED,
 // the history grows by exactly one entry, and that entry is
 // ARBITRATE_REFUND from DISPUTED to REFUNDED carrying the note
-// "quorum 5/5" (approvalCount 5 over threshold 5, no caller note)
+// "quorum 5/5 [dao-1, dao-2, dao-3, dao-4, dao-5]" (approvalCount 5 over threshold 5, no caller note)
 // at the pinned dispatch timestamp BASE_MS + 2s.
 // ---------------------------------------------------------------------
 const ARBITRATION_ESCROW_ID = "BENCH-ARB-001";
@@ -7246,7 +7246,7 @@ function checkDispatchArbitration(): void {
     last.event !== "ARBITRATE_REFUND" ||
     last.from !== "DISPUTED" ||
     last.to !== "REFUNDED" ||
-    last.note !== "quorum 5/5" ||
+    last.note !== "quorum 5/5 [dao-1, dao-2, dao-3, dao-4, dao-5]" ||
     last.at !== ARBITRATION_AT
   ) {
     throw new Error("benchmark self-check failed: dispatchArbitration");
@@ -11559,7 +11559,7 @@ function benchDispatchRolePolicy(): number {
 //     succeeds to RELEASED with exactly one appended entry
 //     pinned field for field (seq 3, ARBITRATE_RELEASE,
 //     DISPUTED -> RELEASED, at BASE + 2s, actor "moderator",
-//     note "quorum 5/5" — no caller note was given) and an
+//     note "quorum 5/5 [dao-1, dao-2, dao-3, dao-4, dao-5]" — no caller note was given) and an
 //     intact hash chain.
 // The escrow and quorum are rebuilt on every iteration because
 // the moderator dispatch mutates the escrow to terminal
@@ -11640,7 +11640,7 @@ function checkArbitrationRolePolicy(
     last.to !== "RELEASED" ||
     last.at !== ARBITRATION_AT ||
     last.actor !== "moderator" ||
-    last.note !== "quorum 5/5" ||
+    last.note !== "quorum 5/5 [dao-1, dao-2, dao-3, dao-4, dao-5]" ||
     run.quorum.approvalCount() !== 5 ||
     !run.quorum.hasQuorum() ||
     !verifyHistoryChain(run.escrow.history)

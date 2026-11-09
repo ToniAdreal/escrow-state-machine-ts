@@ -75,8 +75,15 @@ const OUTCOME_EVENTS: Record<ArbitrationOutcome, EscrowEvent> = {
  *   the escrow's state and history are left unchanged — the failed gating
  *   never touches the audit log.
  * - On success, dispatches `ARBITRATE_RELEASE` / `ARBITRATE_REFUND` and
- *   automatically records `quorum <approvals>/<threshold>` in the audit
- *   note (appended after the caller's own note when one is given).
+ *   automatically records `quorum <approvals>/<threshold> [signer, …]`
+ *   in the audit note (appended after the caller's own note when one is
+ *   given). The signer list names the approvals that actually counted
+ *   toward the threshold — `quorum.approvals()`, in approval-time
+ *   order, deduplicated, with expired approvals (see
+ *   `maxApprovalAgeMs`) excluded — so the append-only history alone
+ *   proves *who* approved, not just how many. A caller that drops
+ *   the `Quorum` object after dispatching loses nothing: the audit
+ *   trail still carries the voter list.
  * - `opts` optionally forwards retry-safety metadata to that dispatch
  *   (see {@link ArbitrationDispatchOptions}): an injectable audit
  *   timestamp and/or actor, an `idempotencyKey` that turns a repeated
@@ -115,7 +122,8 @@ export function dispatchArbitration(
       `arbitration requires quorum: ${quorum.approvalCount()}/${quorum.threshold} approvals`
     );
   }
-  const quorumNote = `quorum ${quorum.approvalCount()}/${quorum.threshold}`;
+  const signers = quorum.approvals();
+  const quorumNote = `quorum ${quorum.approvalCount()}/${quorum.threshold} [${signers.join(", ")}]`;
   const fullNote = note === undefined ? quorumNote : `${note} [${quorumNote}]`;
   return escrow.dispatch(event, fullNote, undefined, opts);
 }

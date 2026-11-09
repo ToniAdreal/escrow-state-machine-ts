@@ -70,7 +70,7 @@ test("quorum-reached release reports, below-threshold disputed escrow errors per
   assert.equal(reached.state, "RELEASED");
   const reachedLast = reached.history[reached.history.length - 1];
   assert.equal(reachedLast.event, "ARBITRATE_RELEASE");
-  assert.equal(reachedLast.note, "quorum 5/5");
+  assert.equal(reachedLast.note, "quorum 5/5 [dao-1, dao-2, dao-3, dao-4, dao-5]");
 
   const unreached = disputedEscrow("q-open");
   const historyBefore = unreached.history.length;
@@ -154,7 +154,7 @@ test("quorum-reached release + quorum-reached refund: batch reports match single
   dispatchArbitration(released, quorumWith(5), "release");
   const refunded = disputedEscrow("q-both-ref");
   dispatchArbitration(refunded, quorumWith(6), "refund");
-  assert.equal(refunded.history[refunded.history.length - 1].note, "quorum 6/5");
+  assert.equal(refunded.history[refunded.history.length - 1].note, "quorum 6/5 [dao-1, dao-2, dao-3, dao-4, dao-5, dao-6]");
 
   const inputs = [inputsFor(released), inputsFor(refunded)];
   const results = buildSettlementReports(inputs);

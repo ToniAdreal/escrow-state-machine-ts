@@ -217,7 +217,7 @@ describe("dispatchArbitration retry-safety opts (idempotencyKey / expectedSeq)",
     assert.equal(last.event, "ARBITRATE_REFUND");
     assert.equal(last.actor, "dao-1");
     assert.equal(last.at, "2026-03-07T13:30:00.000Z");
-    assert.equal(last.note, "quorum 5/5");
+    assert.equal(last.note, "quorum 5/5 [dao-1, dao-2, dao-3, dao-4, dao-5]");
   });
 
   it("opts omitted keeps the exact historical behavior", () => {
@@ -228,7 +228,7 @@ describe("dispatchArbitration retry-safety opts (idempotencyKey / expectedSeq)",
     assert.equal(state, "RELEASED");
     const last = escrow.history[escrow.history.length - 1];
     assert.equal(last.event, "ARBITRATE_RELEASE");
-    assert.equal(last.note, "quorum 5/5");
+    assert.equal(last.note, "quorum 5/5 [dao-1, dao-2, dao-3, dao-4, dao-5]");
     assert.equal(last.actor, undefined);
   });
 });

@@ -124,7 +124,7 @@ describe("dispatchArbitration with expiring quorum approvals", () => {
     assert.equal(state, "RELEASED");
     const last = escrow.history[escrow.history.length - 1];
     assert.equal(last.event, "ARBITRATE_RELEASE");
-    assert.equal(last.note, "quorum 5/5");
+    assert.equal(last.note, "quorum 5/5 [dao-1, dao-2, dao-3, dao-4, dao-5]");
   });
 
   it("still allows arbitration at the inclusive expiry boundary", () => {
