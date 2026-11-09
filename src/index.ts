@@ -1,4 +1,4 @@
-export { Escrow, allowedEvents, transition, transitionTable, transitionTableJson, stateDiagram, assertNonNegativeMoney, diffEscrowSnapshots, isOverdue, expiredEscrows, expireOverdueEscrows, nextEscrowDeadline, escrowsApproachingDeadline, escrowsByActor, escrowsByEvent, escrowsByFilters, escrowsByState, staleEscrows, actOnStaleEscrows, verifyHistoryChain, parseEscrowHistory, GENESIS_PREV_HASH, SNAPSHOT_VERSION, MAX_NOTE_LENGTH } from "./stateMachine.js";
+export { Escrow, allowedEvents, transition, transitionTable, transitionTableJson, stateDiagram, assertNonNegativeMoney, diffEscrowSnapshots, isOverdue, expiredEscrows, expireOverdueEscrows, nextEscrowDeadline, escrowsApproachingDeadline, escrowsByActor, escrowsByEvent, escrowsByFilters, escrowsByState, staleEscrows, settlementAging, actOnStaleEscrows, verifyHistoryChain, parseEscrowHistory, GENESIS_PREV_HASH, SNAPSHOT_VERSION, MAX_NOTE_LENGTH } from "./stateMachine.js";
 export { historyToNdjson, historyFromNdjson } from "./ndjson.js";
 export type {
   AuditKey,
@@ -17,8 +17,11 @@ export type {
   StaleEscrowActionResult,
   ListenerErrorContext,
   RolePolicy,
+  SettlementAgingEntry,
+  SettlementAgingResult,
   SubscribeOptions,
   TransitionEdge,
+  UnknownSettlementAgingEntry,
 } from "./stateMachine.js";
 export { calculateDeposit } from "./feeCalculator.js";
 export type { FeeBreakdown, FeeInputs } from "./feeCalculator.js";

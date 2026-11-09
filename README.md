@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1487 tests, all local
+npm test   # 1500 tests, all local
 ```
 
 ## Quickstart
@@ -448,7 +448,16 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   is the single obvious action for an overdue escrow, but a stale
   escrow's right disposition — notify the parties, escalate to
   arbitration, or expire it — is a state-dependent caller decision,
-  so the action is a required argument.
+  so the action is a required argument. A distinct aging view is
+  `settlementAging(escrows, now?)`: it buckets every funded,
+  non-terminal escrow by whole days since its most recent `FUND`
+  entry — `under7Days` / `days7To30` / `over30Days`, with exactly 7
+  days landing in `days7To30` and exactly 30 in `over30Days` — so
+  finance ops can chase the stalest locked funds first (a top-up
+  re-ages the escrow). Terminal escrows never appear; a non-terminal
+  escrow with no `FUND` entry (never funded) lands in `unknown`
+  rather than being silently dropped. It mirrors the dataquest
+  lifecycle's `payoutAging` and is pure.
 - Dispatch subscriptions (in-process fan-out seam): `escrow.subscribe(listener)`
   registers a listener called with `(event, from, to, entry)` after every
   *successful* dispatch, in subscription order; the returned function
@@ -1167,7 +1176,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1487 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1500 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

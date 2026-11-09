@@ -3074,6 +3074,104 @@ export function staleEscrows(
   });
 }
 
+/** One funded, non-terminal escrow together with its age, as returned by {@link settlementAging}. */
+export interface SettlementAgingEntry {
+  /** Escrow id of the funded escrow. */
+  id: string;
+  /**
+   * Whole days from the most recent `FUND` entry to `now` (floor of the
+   * exact age). A funding timestamp in the future — clock skew, not
+   * a real age — counts as 0 days, never negative.
+   */
+  ageDays: number;
+}
+
+/** A non-terminal escrow with no usable funding timestamp, as returned by {@link settlementAging}. */
+export interface UnknownSettlementAgingEntry {
+  /** Escrow id of the unaged escrow. */
+  id: string;
+}
+
+/** The four-way result of {@link settlementAging}, in input order within each bucket. */
+export interface SettlementAgingResult {
+  /** Age under 7 whole days (`ageDays < 7`). */
+  under7Days: SettlementAgingEntry[];
+  /** Age from 7 up to (not including) 30 whole days (`7 <= ageDays < 30`). */
+  days7To30: SettlementAgingEntry[];
+  /** Age of 30 whole days or more (`ageDays >= 30`). */
+  over30Days: SettlementAgingEntry[];
+  /** No `FUND` entry (or no parseable timestamp on it): aged by nothing, dropped by nothing. */
+  unknown: UnknownSettlementAgingEntry[];
+}
+
+/**
+ * Aging helper: from a batch of escrows, bucket the funded,
+ * not-yet-settled population by how long its locked funds have sat
+ * unreleased — the "how stale is the chase" answer the bare screen
+ * does not give, so finance ops can triage by staleness instead of
+ * hand-computing a time difference per escrow with an ad-hoc origin.
+ *
+ * The age origin is fixed, not caller-chosen: the most recent `FUND`
+ * entry's `at` timestamp (a top-up re-ages the escrow — the locked
+ * funds were refreshed then). Buckets are on whole days, with pinned
+ * endpoints: exactly 7 days lands in `days7To30`, exactly 30 days
+ * lands in `over30Days`. Terminal escrows (RELEASED / REFUNDED /
+ * EXPIRED) never appear in any bucket: their funds are settled, so
+ * there is nothing left to chase. A non-terminal escrow with no
+ * `FUND` entry at all — a CREATED escrow that was never funded —
+ * goes to `unknown` rather than being silently dropped, as does a
+ * FUND entry whose timestamp does not parse, mirroring the
+ * dataquest lifecycle's `payoutAging` defensive branch.
+ *
+ * Pure: reads the escrows, never mutates or dispatches. An invalid
+ * `now` fails fast instead of returning an empty result. The `now`
+ * default is the real clock, so unit tests pin it to a fixed date.
+ *
+ *   const aging = settlementAging(allEscrows, now);
+ *   // chase over30Days first, then days7To30, then under7Days
+ */
+export function settlementAging(
+  escrows: readonly Escrow[],
+  now: Date = new Date(),
+): SettlementAgingResult {
+  const nowMs = now.getTime();
+  if (!Number.isFinite(nowMs)) {
+    throw new Error("invalid now: expected a valid Date");
+  }
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const result: SettlementAgingResult = {
+    under7Days: [],
+    days7To30: [],
+    over30Days: [],
+    unknown: [],
+  };
+  for (const escrow of escrows) {
+    if (escrow.isTerminal) continue;
+    let funded: EscrowHistoryEntry | undefined;
+    for (const entry of escrow.history) {
+      if (entry.event === "FUND") funded = entry;
+    }
+    if (funded === undefined) {
+      result.unknown.push({ id: escrow.id });
+      continue;
+    }
+    const fundedMs = Date.parse(funded.at);
+    if (!Number.isFinite(fundedMs)) {
+      result.unknown.push({ id: escrow.id });
+      continue;
+    }
+    const ageDays = Math.max(
+      0,
+      Math.floor((nowMs - fundedMs) / DAY_MS),
+    );
+    const entry: SettlementAgingEntry = { id: escrow.id, ageDays };
+    if (ageDays < 7) result.under7Days.push(entry);
+    else if (ageDays < 30) result.days7To30.push(entry);
+    else result.over30Days.push(entry);
+  }
+  return result;
+}
+
 /** Action {@link actOnStaleEscrows} runs for each stale escrow. */
 export type StaleEscrowAction = (escrow: Escrow) => void;
 

@@ -18,6 +18,15 @@ version changes.
 
 ### Added
 
+- Settlement funding aging `settlementAging()` (2026-11-09, backlog
+  #992): `settlementAging(escrows, now?)` buckets every funded,
+  non-terminal escrow by whole days since its most recent `FUND`
+  entry — `under7Days` / `days7To30` / `over30Days`, with exactly 7
+  days in `days7To30` and exactly 30 in `over30Days` (a top-up
+  re-ages the escrow); terminal escrows never appear, and a
+  non-terminal escrow with no `FUND` entry lands in `unknown`
+  instead of being silently dropped. Mirrors the dataquest
+  lifecycle's `payoutAging`; pure, invalid `now` fails fast.
 - Combined batch filter `escrowsByFilters()` (2026-11-08, backlog
   #991): `escrowsByFilters(escrows, { state?, actor?, event? })`
   returns the escrows matching every condition given, in input order,
