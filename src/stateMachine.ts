@@ -2835,6 +2835,97 @@ export function escrowsByEvent(
 }
 
 /**
+ * Combined batch filter: from a batch of escrows, return the ones
+ * matching every condition given, in input order.
+ */
+export interface EscrowsByFiltersOptions {
+  /** Current state the escrow must be in (same rule as {@link escrowsByState}). */
+  state?: EscrowState;
+  /** Actor whose name must appear on at least one history entry (same rule as {@link escrowsByActor}). */
+  actor?: string;
+  /** Event that must appear at least once in the history (same rule as {@link escrowsByEvent}). */
+  event?: EscrowEvent;
+}
+
+/**
+ * Batch filter: from a batch of escrows, return the ones matching every
+ * condition given, in input order.
+ *
+ * This is the combined counterpart to the single-axis selectors
+ * {@link escrowsByState}, {@link escrowsByActor}, and
+ * {@link escrowsByEvent}: a patrol that wants "escrows alice touched
+ * that are currently DISPUTED after a dispute" had to chain the
+ * single-axis filters and intersect the results — and each chained
+ * filter re-scanned every escrow's history. This helper does the same
+ * intersection in one pass:
+ *
+ *   const disputedByAlice = escrowsByFilters(allEscrows, {
+ *     state: "DISPUTED",
+ *     actor: "alice",
+ *     event: "DISPUTE",
+ *   });
+ *
+ * (Note the state in that example is DISPUTED, not FUNDED: a DISPUTE
+ * always moves an escrow out of FUNDED, so "FUNDED and ever disputed"
+ * is empty by construction — the transition table has no edge back.)
+ *
+ * Pure: reads the escrows' current states and histories, never
+ * mutates, dispatches, or copies the escrows — the returned array
+ * holds the same escrow objects, in input order, so callers can act
+ * on them directly. An empty condition object selects every escrow,
+ * so the same call shape serves both "everything" and "exactly
+ * this slice". Each condition uses its single-axis selector's
+ * validation and matching rule, so `state` rejects unknown states,
+ * `event` rejects unknown events, and an empty or non-string
+ * `actor` fails fast instead of silently returning an empty list —
+ * a typo in any axis cannot masquerade as "no escrow matches this
+ * combination". Mirrors the dataquest lifecycle's `tasksByFilters`
+ * (which has one extra axis, `payoutRef`, that this escrow has no
+ * counterpart for).
+ */
+export function escrowsByFilters(
+  escrows: readonly Escrow[],
+  filters: EscrowsByFiltersOptions,
+): Escrow[] {
+  if (filters.state !== undefined && !ESCROW_STATES.has(filters.state)) {
+    throw new Error(
+      `invalid escrowsByFilters: unknown state "${String(filters.state)}"`,
+    );
+  }
+  if (
+    filters.actor !== undefined &&
+    (typeof filters.actor !== "string" || filters.actor.length === 0)
+  ) {
+    throw new Error(
+      `invalid escrowsByFilters: actor must be a non-empty string, got ${JSON.stringify(filters.actor)}`,
+    );
+  }
+  if (filters.event !== undefined && !ESCROW_EVENTS.has(filters.event)) {
+    throw new Error(
+      `invalid escrowsByFilters: unknown event "${String(filters.event)}"`,
+    );
+  }
+  return escrows.filter((escrow) => {
+    if (filters.state !== undefined && escrow.state !== filters.state) {
+      return false;
+    }
+    if (
+      filters.actor !== undefined &&
+      !escrow.history.some((entry) => entry.actor === filters.actor)
+    ) {
+      return false;
+    }
+    if (
+      filters.event !== undefined &&
+      !escrow.history.some((entry) => entry.event === filters.event)
+    ) {
+      return false;
+    }
+    return true;
+  });
+}
+
+/**
  * Watchdog helper: from a batch of escrows, return the ones whose
  * deadline is coming up — non-terminal AND with a deadline inside the
  * half-open window `(now, now + withinMs]`.

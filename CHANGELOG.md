@@ -18,6 +18,18 @@ version changes.
 
 ### Added
 
+- Combined batch filter `escrowsByFilters()` (2026-11-08, backlog
+  #991): `escrowsByFilters(escrows, { state?, actor?, event? })`
+  returns the escrows matching every condition given, in input order,
+  in a single pass — the patrol query "escrows alice touched that are
+  currently DISPUTED after a dispute" without chaining the
+  single-axis selectors and intersecting the results. Each condition
+  uses its single-axis selector's validation and matching rule
+  (unknown state/event and empty/non-string actor fail fast), an
+  empty condition object returns every escrow, and the result holds
+  the same escrow objects (pure, no mutation or dispatch). One
+  honest limit is documented: a DISPUTE always moves an escrow out
+  of FUNDED, so "FUNDED and ever disputed" is empty by construction.
 - Quorum signature-verified approvals `approveSigned()` (2026-11-08,
   backlog #987): `QuorumConfig.signerPublicKeys` registers Ed25519
   public keys per signer (non-Ed25519/private keys, non-KeyObject

@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1474 tests, all local
+npm test   # 1487 tests, all local
 ```
 
 ## Quickstart
@@ -414,7 +414,18 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   whether it was ever disputed). All three are pure, return the same
   escrow objects in input order, and fail fast on an unknown state,
   an empty/non-string actor, or an unknown event instead of silently
-  returning an empty list.
+  returning an empty list. The three selectors above each filter on
+  one axis. `escrowsByFilters()` combines them: give any subset of
+  `state`, `actor`, and `event`, and it returns the escrows matching
+  every condition given, in input order, in a single pass over the
+  batch — the patrol query "escrows alice touched that are currently
+  DISPUTED after a dispute" without chaining filters and intersecting
+  the results. Each condition uses its single-axis selector's rule
+  and validation, an empty condition object returns every escrow, and
+  a typo in any axis throws instead of returning []. (One honest
+  limit: a DISPUTE always moves an escrow out of FUNDED, so "FUNDED
+  and ever disputed" is empty by construction — the transition table
+  has no edge back.)
   The deadline rides along in `toJSON()`/`fromJSON()` snapshots (a
   tampered or non-canonical deadline is rejected by snapshot validation).
   A distinct screening is `staleEscrows(escrows, maxAgeByState, now?)`:
@@ -1156,7 +1167,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1474 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1487 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
