@@ -7255,7 +7255,7 @@ test("demo shows fan-out limits: over-cap throws before any request, deadline ke
   // per-attempt timeout, so the deadline - not the timeout -
   // is what stops the hanging delivery.
   assert.equal(DEMO_FANOUT_LIMIT_CAP, 2);
-  assert.equal(DEMO_FANOUT_LIMIT_DEADLINE_MS, 100);
+  assert.equal(DEMO_FANOUT_LIMIT_DEADLINE_MS, 1000);
   assert.equal(DEMO_FANOUT_LIMIT_TIMEOUT_MS, 10_000);
   assert.equal(DEMO_FANOUT_LIMIT_AT, "2026-03-08T12:00:00.000Z");
   assert.equal(DEMO_FANOUT_LIMIT_EVENT_ID, "evt_demo_fanout_limit_001");

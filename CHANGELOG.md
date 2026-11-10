@@ -18,6 +18,36 @@ version changes.
 
 ### Added
 
+- Fan-out concurrency cap `maxConcurrency` for
+  `deliverSettlementWebhookToMany` (2026-11-10, backlog #1032):
+  `DeliverSettlementWebhookToManyOptions.maxConcurrency` is an
+  opt-in positive integer bounding how many endpoint deliveries run
+  at once — the fan-out becomes a bounded pool (a new endpoint
+  starts only when one settles), so a 50-endpoint fan-out never
+  opens 50 simultaneous connections. Unset, every endpoint starts
+  at once, as before. Invalid values throw before any request, the
+  same way as `maxEndpoints`; `overallDeadlineMs` keeps its
+  meaning (the deadline still aborts every in-flight delivery, and
+  an endpoint that has not started when the deadline fires is
+  reported as a deadline failure with 0 attempts and no request
+  made). Results stay in endpoint order, and `delivered`/`failed`
+  count exactly what happened, either way.
+
+### Fixed
+
+- Deadline test margin in `webhookFanoutLimits.test.ts` and the demo
+  fan-out segment in `src/demo.ts` (2026-11-10, backlog #1032):
+  both used a 100ms `overallDeadlineMs`, but a loopback fetch on a
+  loaded machine routinely takes 100-300ms to start (measured
+  2026-11-10: 212ms for a warmed fetch), so the fast endpoint was
+  aborted by the deadline itself and the tests failed on unmodified
+  HEAD (`webhookFanoutLimits` 7/8, demo 137/138 in isolation). The
+  deadline is now 1000ms in both places; each still proves the same
+  behaviour (hanging endpoint aborted by the deadline, completed
+  results kept, `deadlineExceeded: true`). The sibling 100ms test
+  (per-endpoint signal override, hanging endpoint only) needs no
+  fast endpoint and is unchanged.
+
 - HMAC-signed snapshot envelopes for `SettlementWebhookOutbox`
   (2026-11-10, backlog #1030): `exportSignedSnapshot(secret)` wraps
   the unsigned snapshot in `{ v: 1, snapshot, mac }` (HMAC-SHA256

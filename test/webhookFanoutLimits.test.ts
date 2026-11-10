@@ -235,7 +235,12 @@ test("overallDeadlineMs stops a hanging endpoint, keeps completed results, deadl
       {
         ...BASE_OPTS,
         timeoutMs: 10_000,
-        overallDeadlineMs: 100,
+        // 1000ms, not 100ms: a loopback fetch on a loaded machine
+        // routinely takes 100-300ms to even start (measured
+        // 2026-11-10), so a 100ms deadline raced the transport
+        // itself and failed the fast endpoint. The deadline still
+        // aborts the hanging endpoint far before its 10s timeout.
+        overallDeadlineMs: 1000,
       },
     );
     const elapsed = Date.now() - started;
@@ -254,7 +259,7 @@ test("overallDeadlineMs stops a hanging endpoint, keeps completed results, deadl
       ok: false,
       attempts: 1,
       error:
-        "settlement webhook delivery timed out: overall deadline of 100ms exceeded",
+        "settlement webhook delivery timed out: overall deadline of 1000ms exceeded",
     });
     assert.equal(out.delivered, 1);
     assert.equal(out.failed, 1);

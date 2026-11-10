@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1637 tests, all local
+npm test   # 1646 tests, all local
 ```
 
 ## Quickstart
@@ -1160,6 +1160,14 @@ endpoints that already completed keep their results, and the
 aggregate carries `deadlineExceeded: true`. Both options are
 call-level configuration: invalid values throw before any request.
 
+Pass `maxConcurrency` to cap how many deliveries run at once: the
+fan-out then runs as a bounded pool (a new endpoint starts only when
+one settles), so a 50-endpoint fan-out never opens 50 simultaneous
+connections. Unset, every endpoint starts at once, as before. A
+deadline that fires while endpoints are still queued reports those
+endpoints as deadline failures with 0 attempts and no request made;
+results stay in endpoint order either way.
+
 Honest limit: there is no durable queue. If the process dies
 mid-fan-out, some endpoints may have received the event and others
 not — the caller reconciles by re-delivering and letting receivers
@@ -1355,7 +1363,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1637 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1646 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

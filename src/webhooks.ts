@@ -2516,6 +2516,20 @@ export interface DeliverSettlementWebhookToManyOptions
    */
   maxEndpoints?: number;
   /**
+   * Maximum number of endpoint deliveries in flight at once. When
+   * set, the fan-out runs as a bounded pool: a new endpoint starts
+   * only when a running one settles, so a 50-endpoint fan-out never
+   * opens 50 simultaneous connections. When unset, every endpoint
+   * starts at once (the historical behaviour, unchanged). Must be a
+   * positive integer when present. The per-endpoint result shape is
+   * identical either way (`results[i]` still corresponds to
+   * `endpoints[i]`), and `overallDeadlineMs` keeps its meaning: the
+   * deadline still aborts every in-flight delivery, and an endpoint
+   * that has not started when the deadline fires is reported as a
+   * deadline failure with 0 attempts and no request made.
+   */
+  maxConcurrency?: number;
+  /**
    * Overall wall-clock budget for the whole fan-out, in milliseconds.
    * When set, a timer aborts every in-flight endpoint delivery once
    * the budget expires (composed with each endpoint's own signal, so
@@ -2599,6 +2613,21 @@ function combineAbortSignals(
 }
 
 /**
+ * The endpoint identifier for a fan-out result: the endpoint's URL
+ * exactly as supplied, or "" when the entry is not an object with a
+ * string url. A malformed entry is reported as its endpoint's failed
+ * result (see `deliverOne` below), never thrown, so the identifier
+ * must be computable without assuming the entry's shape.
+ */
+function fanoutEndpointUrl(endpoint: unknown): string {
+  return endpoint !== null &&
+    typeof endpoint === "object" &&
+    typeof (endpoint as { url?: unknown }).url === "string"
+    ? (endpoint as { url: string }).url
+    : "";
+}
+
+/**
  * Fan one settled escrow's settlement webhook out to many endpoints at
  * once — the shape where a single settlement must notify accounting,
  * notifications, and reconciliation systems simultaneously, each
@@ -2618,7 +2647,10 @@ function combineAbortSignals(
  *   exhausted, network error, even a per-endpoint configuration problem
  *   such as an invalid URL or an empty secret — is reported as that
  *   endpoint's `{ ok: false, attempts, error }` result and never blocks
- *   or fails the other endpoints.
+ *   or fails the other endpoints. `maxConcurrency` (when set) bounds
+ *   that concurrency: at most that many deliveries are in flight at
+ *   once, and the next endpoint starts only when one settles.
+ *   Unset, every endpoint starts at once.
  * - Call-level configuration errors DO throw before any request is
  *   made: a missing/empty/non-array `endpoints`, invalid global
  *   delivery options, or an invalid shared `now`/`eventId` are caller
@@ -2626,6 +2658,11 @@ function combineAbortSignals(
  * - `maxEndpoints` caps the fan-out size: more endpoints than the cap
  *   throws before any request, and an invalid cap (non-integer, <= 0,
  *   non-finite, non-number) throws the same way.
+ * - `maxConcurrency` caps the in-flight concurrency: an invalid cap
+ *   (non-integer, <= 0, non-finite, non-number) throws before any
+ *   request, the same way as `maxEndpoints`. A deadline that fires
+ *   while endpoints are still queued reports those endpoints as
+ *   deadline failures with 0 attempts and no request made.
  * - `overallDeadlineMs` caps the whole call's wall-clock time: when
  *   the budget expires, every still-in-flight endpoint is aborted
  *   through a deadline signal composed with that endpoint's own
@@ -2686,6 +2723,16 @@ export async function deliverSettlementWebhookToMany(
     );
   }
   if (
+    opts.maxConcurrency !== undefined &&
+    (!Number.isInteger(opts.maxConcurrency) || opts.maxConcurrency < 1)
+  ) {
+    throw new Error(
+      `cannot deliver settlement webhook to many endpoints: maxConcurrency must be a positive integer, got ${String(
+        opts.maxConcurrency,
+      )}`,
+    );
+  }
+  if (
     opts.overallDeadlineMs !== undefined &&
     (!Number.isFinite(opts.overallDeadlineMs) || opts.overallDeadlineMs <= 0)
   ) {
@@ -2719,80 +2766,121 @@ export async function deliverSettlementWebhookToMany(
     }, opts.overallDeadlineMs);
   }
 
-  const results = await Promise.all(
-    endpoints.map(async (endpoint, index): Promise<SettlementWebhookEndpointResult> => {
-      const url =
-        endpoint !== null &&
-        typeof endpoint === "object" &&
-        typeof endpoint.url === "string"
-          ? endpoint.url
-          : "";
-      try {
-        if (
-          endpoint === null ||
-          typeof endpoint !== "object" ||
-          typeof endpoint.url !== "string"
-        ) {
-          throw new Error(
-            `cannot deliver settlement webhook to many endpoints: endpoints[${index}] must be an object with a string url and a secret`,
-          );
-        }
-        assertSecret(endpoint.secret);
-        const webhook: SettlementWebhook = {
-          payload,
-          signature: sign(body, endpoint.secret),
-        };
-        // Compose the deadline with the endpoint's own signal (or the
-        // call-level one): a per-endpoint signal override does not
-        // exempt the endpoint from the overall deadline.
-        const { signal, dispose } = combineAbortSignals([
-          endpoint.signal ?? opts.signal,
-          deadlineSignal,
-        ]);
-        try {
-          const result = await deliverSettlementWebhook(endpoint.url, webhook, {
-            retries: endpoint.retries ?? opts.retries,
-            backoffMs: endpoint.backoffMs ?? opts.backoffMs,
-            timeoutMs: endpoint.timeoutMs ?? opts.timeoutMs,
-            maxRetryDelayMs: endpoint.maxRetryDelayMs ?? opts.maxRetryDelayMs,
-            jitterMs: endpoint.jitterMs ?? opts.jitterMs,
-            signal,
-            allowInsecureHttp: endpoint.allowInsecureHttp ?? opts.allowInsecureHttp,
-            fetchImpl: endpoint.fetchImpl ?? opts.fetchImpl,
-          });
-          return { url, ok: true, attempts: result.attempts, status: result.status };
-        } finally {
-          dispose();
-        }
-      } catch (err) {
-        // Per-endpoint failures (invalid URL, empty secret, invalid
-        // per-endpoint override, exhausted retries, aborts) fail only
-        // this endpoint. Attempts/status ride on the delivery errors
-        // themselves (see withDeliveryOutcome); pre-flight failures
-        // made zero requests.
-        const annotated = err as Partial<DeliveryError>;
-        const rawError = err instanceof Error ? err.message : String(err);
-        // Only a deadline-stopped abort is rewritten: an abort that
-        // landed while the deadline signal was live. An endpoint
-        // aborted on its own signal before the deadline fired keeps
-        // the plain abort text, and non-abort failures keep theirs.
-        const error =
-          deadlineSignal?.aborted && rawError === "webhook delivery aborted"
-            ? `settlement webhook delivery timed out: overall deadline of ${opts.overallDeadlineMs}ms exceeded`
-            : rawError;
-        return {
-          url,
-          ok: false,
-          attempts:
-            typeof annotated.attempts === "number" ? annotated.attempts : 0,
-          ...(typeof annotated.status === "number"
-            ? { status: annotated.status }
-            : {}),
-          error,
-        };
+  // One endpoint's delivery, in input position `index`. Every failure
+  // mode is a per-endpoint result, never a throw: only the call-level
+  // validation above throws.
+  const deadlineError = `settlement webhook delivery timed out: overall deadline of ${opts.overallDeadlineMs}ms exceeded`;
+  const deliverOne = async (
+    endpoint: SettlementWebhookEndpoint,
+    index: number,
+  ): Promise<SettlementWebhookEndpointResult> => {
+    const url = fanoutEndpointUrl(endpoint);
+    try {
+      if (
+        endpoint === null ||
+        typeof endpoint !== "object" ||
+        typeof endpoint.url !== "string"
+      ) {
+        throw new Error(
+          `cannot deliver settlement webhook to many endpoints: endpoints[${index}] must be an object with a string url and a secret`,
+        );
       }
-    }),
+      assertSecret(endpoint.secret);
+      const webhook: SettlementWebhook = {
+        payload,
+        signature: sign(body, endpoint.secret),
+      };
+      // Compose the deadline with the endpoint's own signal (or the
+      // call-level one): a per-endpoint signal override does not
+      // exempt the endpoint from the overall deadline.
+      const { signal, dispose } = combineAbortSignals([
+        endpoint.signal ?? opts.signal,
+        deadlineSignal,
+      ]);
+      try {
+        const result = await deliverSettlementWebhook(endpoint.url, webhook, {
+          retries: endpoint.retries ?? opts.retries,
+          backoffMs: endpoint.backoffMs ?? opts.backoffMs,
+          timeoutMs: endpoint.timeoutMs ?? opts.timeoutMs,
+          maxRetryDelayMs: endpoint.maxRetryDelayMs ?? opts.maxRetryDelayMs,
+          jitterMs: endpoint.jitterMs ?? opts.jitterMs,
+          signal,
+          allowInsecureHttp: endpoint.allowInsecureHttp ?? opts.allowInsecureHttp,
+          fetchImpl: endpoint.fetchImpl ?? opts.fetchImpl,
+        });
+        return { url, ok: true, attempts: result.attempts, status: result.status };
+      } finally {
+        dispose();
+      }
+    } catch (err) {
+      // Per-endpoint failures (invalid URL, empty secret, invalid
+      // per-endpoint override, exhausted retries, aborts) fail only
+      // this endpoint. Attempts/status ride on the delivery errors
+      // themselves (see withDeliveryOutcome); pre-flight failures
+      // made zero requests.
+      const annotated = err as Partial<DeliveryError>;
+      const rawError = err instanceof Error ? err.message : String(err);
+      // Only a deadline-stopped abort is rewritten: an abort that
+      // landed while the deadline signal was live. An endpoint
+      // aborted on its own signal before the deadline fired keeps
+      // the plain abort text, and non-abort failures keep theirs.
+      const error =
+        deadlineSignal?.aborted && rawError === "webhook delivery aborted"
+          ? deadlineError
+          : rawError;
+      return {
+        url,
+        ok: false,
+        attempts:
+          typeof annotated.attempts === "number" ? annotated.attempts : 0,
+        ...(typeof annotated.status === "number"
+          ? { status: annotated.status }
+          : {}),
+        error,
+      };
+    }
+  };
+
+  // Unbounded (the historical path): every endpoint starts at once.
+  // Bounded (`maxConcurrency` set): a pool of at most that many
+  // workers, each taking the next endpoint only when one settles.
+  // `results[i]` still corresponds to `endpoints[i]` either way, and
+  // the single-worker loop below assigns indices without awaiting
+  // between read and increment, so no two workers take one endpoint.
+  const results: SettlementWebhookEndpointResult[] = new Array(
+    endpoints.length,
   );
+  if (opts.maxConcurrency === undefined) {
+    const settled = await Promise.all(
+      endpoints.map((endpoint, index) => deliverOne(endpoint, index)),
+    );
+    for (let i = 0; i < settled.length; i++) results[i] = settled[i];
+  } else {
+    const workerCount = Math.min(opts.maxConcurrency, endpoints.length);
+    let next = 0;
+    const runWorker = async (): Promise<void> => {
+      for (;;) {
+        const index = next;
+        next += 1;
+        if (index >= endpoints.length) return;
+        if (deadlineSignal?.aborted) {
+          // The deadline fired before this endpoint started: report
+          // the deadline failure without making a request.
+          results[index] = {
+            url: fanoutEndpointUrl(endpoints[index]),
+            ok: false,
+            attempts: 0,
+            error: deadlineError,
+          };
+          continue;
+        }
+        results[index] = await deliverOne(endpoints[index], index);
+      }
+    };
+    await Promise.all(
+      Array.from({ length: workerCount }, () => runWorker()),
+    );
+  }
   if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
   const delivered = results.filter((r) => r.ok).length;
   return {
