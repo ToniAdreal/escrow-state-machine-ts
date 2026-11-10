@@ -475,7 +475,7 @@ export function buildSettlementWebhooks(
       }
       const webhook = buildSettlementWebhook(entry.report, {
         secret: options.secret,
-        now: options.now,
+        ...(options.now !== undefined ? { now: options.now } : {}),
         eventId,
       });
       issuedEventIds.add(eventId);
@@ -1334,7 +1334,7 @@ export interface SettlementWebhookOutboxAttempt {
    * outbox clock (`now`). Inject it for deterministic tests or to
    * record an attempt that happened earlier.
    */
-  at?: number;
+  at?: number | undefined;
 }
 
 /**
@@ -3060,7 +3060,10 @@ export async function deliverSettlementWebhookToMany(
   }
   // One logical event: build the shared payload body exactly once. A
   // bad shared `now`/`eventId` throws here, before any request.
-  const payload = buildPayload(report, { now: opts.now, eventId: opts.eventId });
+  const payload = buildPayload(report, {
+    ...(opts.now !== undefined ? { now: opts.now } : {}),
+    ...(opts.eventId !== undefined ? { eventId: opts.eventId } : {}),
+  });
   const body = canonicalJson(payload);
 
   // Overall deadline: one timer for the whole call. It flips
@@ -3114,15 +3117,27 @@ export async function deliverSettlementWebhookToMany(
         deadlineSignal,
       ]);
       try {
+        // Per-endpoint overrides fall back to the call-level options;
+        // either side may be unset, so each field is spread in only
+        // when defined — DeliverWebhookOptions no longer accepts an
+        // explicit undefined (exactOptionalPropertyTypes).
+        const retries = endpoint.retries ?? opts.retries;
+        const backoffMs = endpoint.backoffMs ?? opts.backoffMs;
+        const timeoutMs = endpoint.timeoutMs ?? opts.timeoutMs;
+        const maxRetryDelayMs = endpoint.maxRetryDelayMs ?? opts.maxRetryDelayMs;
+        const jitterMs = endpoint.jitterMs ?? opts.jitterMs;
+        const allowInsecureHttp =
+          endpoint.allowInsecureHttp ?? opts.allowInsecureHttp;
+        const fetchImpl = endpoint.fetchImpl ?? opts.fetchImpl;
         const result = await deliverSettlementWebhook(endpoint.url, webhook, {
-          retries: endpoint.retries ?? opts.retries,
-          backoffMs: endpoint.backoffMs ?? opts.backoffMs,
-          timeoutMs: endpoint.timeoutMs ?? opts.timeoutMs,
-          maxRetryDelayMs: endpoint.maxRetryDelayMs ?? opts.maxRetryDelayMs,
-          jitterMs: endpoint.jitterMs ?? opts.jitterMs,
-          signal,
-          allowInsecureHttp: endpoint.allowInsecureHttp ?? opts.allowInsecureHttp,
-          fetchImpl: endpoint.fetchImpl ?? opts.fetchImpl,
+          ...(retries !== undefined ? { retries } : {}),
+          ...(backoffMs !== undefined ? { backoffMs } : {}),
+          ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+          ...(maxRetryDelayMs !== undefined ? { maxRetryDelayMs } : {}),
+          ...(jitterMs !== undefined ? { jitterMs } : {}),
+          ...(signal !== undefined ? { signal } : {}),
+          ...(allowInsecureHttp !== undefined ? { allowInsecureHttp } : {}),
+          ...(fetchImpl !== undefined ? { fetchImpl } : {}),
         });
         return { url, ok: true, attempts: result.attempts, status: result.status };
       } finally {

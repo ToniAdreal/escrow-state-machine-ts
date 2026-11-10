@@ -10,7 +10,7 @@ export interface SettlementInputs {
   gross: number;
   /** Platform fee in basis points, e.g. 500 = 5% */
   proFeeBps: number;
-  referralCredits?: number;
+  referralCredits?: number | undefined;
 }
 
 export interface Settlement {
@@ -26,7 +26,7 @@ export interface PartialSettlementInputs {
   released: number;
   /** Platform fee in basis points, e.g. 500 = 5%; charged on the released amount only. */
   proFeeBps: number;
-  referralCredits?: number;
+  referralCredits?: number | undefined;
 }
 
 export interface PartialSettlement {
@@ -88,7 +88,7 @@ export interface PartialReleasesInputs {
    * helper exactly. Credits with no releases throw instead of being
    * silently dropped.
    */
-  referralCredits?: number;
+  referralCredits?: number | undefined;
 }
 
 export interface PartialReleases {

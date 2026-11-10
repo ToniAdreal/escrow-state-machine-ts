@@ -106,8 +106,11 @@ describe("EscrowOptions.maxDeposit", () => {
     escrow.dispatch("FUND", "initial", 100_000_000);
     escrow.dispatch("FUND", "big top-up", 999_999_999);
     assert.equal(escrow.history.length, 2);
-    // Explicit undefined behaves like unset.
-    const escrow2 = new Escrow("e-cap-6b", { maxDeposit: undefined });
+    // Omitting the field behaves like unset (an explicit
+    // `maxDeposit: undefined` no longer compiles under
+    // `exactOptionalPropertyTypes` — see
+    // test/exactOptionalPropertyTypes.test.ts).
+    const escrow2 = new Escrow("e-cap-6b", {});
     escrow2.dispatch("FUND", "initial", 5_000_000);
     assert.equal(escrow2.history.length, 1);
   });

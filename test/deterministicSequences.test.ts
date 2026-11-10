@@ -75,7 +75,7 @@ function lockedBalance(escrow: Escrow): number {
 function dispatchRandomLegalEvent(
   escrow: Escrow,
   rand: () => number,
-): { event: EscrowEvent; amount?: number } | null {
+): { event: EscrowEvent; amount?: number | undefined } | null {
   const allowed = allowedEvents(escrow.state);
   const start = Math.floor(rand() * allowed.length);
   for (let i = 0; i < allowed.length; i++) {

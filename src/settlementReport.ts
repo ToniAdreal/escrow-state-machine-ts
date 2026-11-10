@@ -159,7 +159,7 @@ export interface SettlementReport {
   currency?: string;
   outcome: SettlementOutcome;
   /** e.g. "VERIFY_PASS → RELEASE" for released, undefined otherwise */
-  releasePath?: string;
+  releasePath?: string | undefined;
   deposit: FeeBreakdown;
   /** Present only for the `released` outcome. */
   settlement?: Settlement;

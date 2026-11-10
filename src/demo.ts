@@ -4179,7 +4179,11 @@ export async function runDemo(): Promise<DemoResult> {
 
   for (const { event, actor, note, at, amount, evidence } of steps) {
     const from = escrow.state;
-    const to = escrow.dispatch(event, note, amount, { actor, at, evidence });
+    const to = escrow.dispatch(event, note, amount, {
+      actor,
+      at,
+      ...(evidence !== undefined ? { evidence } : {}),
+    });
     lines.push(`  ${event.padEnd(18)} ${from.padEnd(19)} -> ${to}  (${actor})`);
   }
 
@@ -5613,7 +5617,11 @@ export async function runDemo(): Promise<DemoResult> {
     },
   ];
   for (const { event, actor, note, at, amount, evidence } of topupSteps) {
-    topupEscrow.dispatch(event, note, amount, { actor, at, evidence });
+    topupEscrow.dispatch(event, note, amount, {
+      actor,
+      at,
+      ...(evidence !== undefined ? { evidence } : {}),
+    });
   }
   if (topupEscrow.state !== "RELEASED" || topupEscrow.history.length !== 5) {
     throw new Error(

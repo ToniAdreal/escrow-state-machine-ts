@@ -107,7 +107,10 @@ function stubFetch(scripts: Record<string, ScriptStep[]>): {
     times[url].push(Date.now());
     bodies[url].push(String(init?.body ?? ""));
     const step = script[Math.min(times[url].length - 1, script.length - 1)];
-    return new Response("{}", { status: step.status, headers: step.headers });
+    return new Response("{}", {
+      status: step.status,
+      ...(step.headers !== undefined ? { headers: step.headers } : {}),
+    });
   }) as typeof fetch;
   return {
     times,

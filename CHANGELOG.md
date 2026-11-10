@@ -51,6 +51,25 @@ version changes.
   made). Results stay in endpoint order, and `delivered`/`failed`
   count exactly what happened, either way.
 
+### Changed
+
+- `tsconfig.json` enables `exactOptionalPropertyTypes` (2026-11-10,
+  backlog #1036; mirrors the rfc9421-signing-demo pilot, #1021):
+  optional config properties (`EscrowOptions`, `DispatchOptions`,
+  `EscrowsByFiltersOptions`, `BuildWebhookOptions`,
+  `DeliverWebhookOptions`, `SettlementWebhookOutboxOptions`) no longer
+  accept an explicit `undefined` assignment — omitting the field is
+  the only way to take the default. Data shapes that genuinely carry
+  `undefined` at runtime keep accepting it
+  (`EscrowHistoryEntry.note`/`amount`, `EscrowSnapshot.deadline`,
+  `SettlementInputs`/`PartialSettlementInputs`/`PartialReleasesInputs`
+  `referralCredits`, `SettlementWebhookOutboxAttempt.at`,
+  `SettlementReport.releasePath`). Internal forwarding omits unset
+  values via conditional spread instead of passing `undefined`
+  through. This is a small type-level breaking change: no runtime
+  behavior changes. New `test/exactOptionalPropertyTypes.test.ts`
+  pins both sides with `@ts-expect-error` cases plus one runtime case.
+
 ### Fixed
 
 - Deadline test margin in `webhookFanoutLimits.test.ts` and the demo

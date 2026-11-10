@@ -243,9 +243,12 @@ describe("escrowsByFilters", () => {
       () => escrowsByFilters([funded], { actor: 42 as unknown as string }),
       /invalid escrowsByFilters: actor must be a non-empty string, got 42/,
     );
-    // Explicitly: undefined is not a condition, so it must not throw.
+    // Omitting the field is not a condition, so it must not throw.
+    // (An explicit `actor: undefined` no longer compiles under
+    // `exactOptionalPropertyTypes` — see
+    // test/exactOptionalPropertyTypes.test.ts.)
     assert.deepEqual(
-      escrowsByFilters([funded], { actor: undefined }).map((e) => e.id),
+      escrowsByFilters([funded], {}).map((e) => e.id),
       ["j1"],
     );
   });

@@ -190,14 +190,14 @@ export interface EscrowHistoryEntry {
    * long can never be written by the live path or smuggled in through
    * a rehydrated snapshot.
    */
-  note?: string;
+  note?: string | undefined;
   /**
    * Deposit amount in base currency units. Only present on FUND and
    * PARTIAL_RELEASE entries (dispatch validates it as a finite
    * non-negative number; PARTIAL_RELEASE additionally requires it to
    * be greater than zero and no larger than the still-locked balance).
    */
-  amount?: number;
+  amount?: number | undefined;
   /**
    * Reference to the oracle/attestation evidence behind a VERIFY_PASS —
    * e.g. a Chainlink request ID, zk proof commitment, or TEE attestation
@@ -272,7 +272,7 @@ export interface EscrowSnapshot {
    * the escrow has one set — see Escrow.setDeadline. Absent means no
    * deadline, matching the live object's undefined.
    */
-  deadline?: string;
+  deadline?: string | undefined;
   /**
    * Consumed dispatch idempotency keys (see
    * {@link DispatchOptions.idempotencyKey}), in first-consumption order.

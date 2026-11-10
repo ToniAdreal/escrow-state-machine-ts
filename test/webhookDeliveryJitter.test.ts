@@ -53,7 +53,10 @@ function goldenWebhook(): SettlementWebhook {
 }
 
 const json = (status: number, headers?: Record<string, string>) =>
-  new Response("{}", { status, headers });
+  new Response("{}", {
+    status,
+    ...(headers !== undefined ? { headers } : {}),
+  });
 
 /**
  * Replace the global fetch with a canned response/error sequence (stays
