@@ -18,6 +18,19 @@ version changes.
 
 ### Added
 
+- CLI demo webhook-outbox closing segment (2026-11-10, backlog
+  #1024): `src/demo.ts` now ends on a `SettlementWebhookOutbox`
+  segment — the main escrow's signed webhook is delivered to the
+  billing endpoint through a scripted `fetchImpl` answering 500
+  three times (`retries: 0`, one recorded attempt each), so the
+  pair reads pending at attempts 2 after two failures and
+  dead-letters at the `maxAttempts: 3` cap after the third, and a
+  second event fails once then delivers 200 so its success clears
+  its own pair (ledger ends pending 0, dead letter 1). Two new
+  `test/demo.test.ts` cases pin the ledger state at each stage and
+  the printed lines byte-identically across two runs; the
+  snapshot-comparison tests now bound their slice at the outbox
+  header.
 - Settlement webhook delivery-failure ledger `SettlementWebhookOutbox`
   (2026-11-10, backlog #1019): an in-memory outbox keyed by
   `(endpoint, eventId)` — `recordAttempt({ endpoint, eventId, ok,

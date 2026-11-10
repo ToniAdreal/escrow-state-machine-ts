@@ -191,6 +191,12 @@ import {
   DEMO_SNAPSHOT_DIFF_ID,
   DEMO_SNAPSHOT_DIFF_OTHER_ID,
   DEMO_SNAPSHOT_DIFF_SUBMIT_AT,
+  DEMO_OUTBOX_DEAD_LAST_ERROR,
+  DEMO_OUTBOX_ENDPOINT,
+  DEMO_OUTBOX_MAX_ATTEMPTS,
+  DEMO_OUTBOX_NOW,
+  DEMO_OUTBOX_RECOVERED_AT,
+  DEMO_OUTBOX_RECOVERED_EVENT_ID,
   DEMO_RETRY_AFTER_DELIVERY_HINT,
   DEMO_RETRY_AFTER_DELIVERY_HINT_MS,
   DEMO_RETRY_AFTER_DELIVERY_SCRIPTED_STATUSES,
@@ -3316,9 +3322,10 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
       "  groups: matched 1, report-only 1, ledger-only 1, amount mismatch 1 — matched outflow 10630",
     ),
   );
-  // Snapshot-comparison tail: the closing segment diffs two
-  // snapshots of one escrow and ends on the cross-escrow
-  // rejection line.
+  // Snapshot-comparison tail: the segment diffs two snapshots of
+  // one escrow and ends on the cross-escrow rejection line —
+  // followed now by the webhook-outbox segment that closes the
+  // demo.
   assert.match(
     out,
     /Snapshot comparison \(diffEscrowSnapshots between two snapshots of one escrow\):/,
@@ -3329,10 +3336,38 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
     ),
   );
   assert.ok(
+    out.includes(
+      `  cross-escrow diff rejected: snapshot diff failed: cannot diff snapshots of different escrows ("DEMO-ESC-033" vs "DEMO-ESC-034")`,
+    ),
+  );
+  // Webhook-outbox tail: the closing segment records three
+  // scripted 500s into the outbox (pending, then dead-letter)
+  // and clears the recovered pair with its 200, and the demo
+  // ends on the recovered-event line.
+  assert.match(
+    out,
+    /Webhook outbox \(SettlementWebhookOutbox: failed deliveries stay pending, then dead-letter\):/,
+  );
+  assert.ok(
+    out.includes(
+      `  ${DEMO_OUTBOX_ENDPOINT} — event ${DEMO_WEBHOOK_EVENT_ID}: 3 scripted 500s, no retries (retries 0, backoffMs 0), each recorded in the outbox`,
+    ),
+  );
+  assert.ok(
+    out.includes(
+      "  after 2 failures: pending 1 (attempts 2), dead letter 0 — still retryable",
+    ),
+  );
+  assert.ok(
+    out.includes(
+      "  after 3 failures: pending 0, dead letter 1 (attempts 3, capped at maxAttempts 3) — needs a human",
+    ),
+  );
+  assert.ok(
     out
       .trimEnd()
       .endsWith(
-        `  cross-escrow diff rejected: snapshot diff failed: cannot diff snapshots of different escrows ("DEMO-ESC-033" vs "DEMO-ESC-034")`,
+        `  recovered event ${DEMO_OUTBOX_RECOVERED_EVENT_ID}: 1 failure (pending, attempts 1), then 200 — the success cleared the pair; ledger ends pending 0, dead letter 1`,
       ),
   );
 });
@@ -8639,8 +8674,9 @@ test("demo shows snapshot comparison: diffEscrowSnapshots reports the state chan
     `snapshot diff failed: cannot diff snapshots of different escrows ("DEMO-ESC-033" vs "DEMO-ESC-034")`,
   );
 
-  // The printed section is the demo's closing section, after the
-  // settlement-reconciliation segment.
+  // The printed section follows the settlement-reconciliation
+  // segment and precedes the webhook-outbox segment that now
+  // closes the demo.
   const header =
     "Snapshot comparison (diffEscrowSnapshots between two snapshots of one escrow):";
   assert.ok(
@@ -8668,9 +8704,13 @@ test("demo shows snapshot comparison: diffEscrowSnapshots reports the state chan
 test("demo snapshot-comparison segment is deterministic: two runs print byte-identical snapshot lines", async () => {
   const header =
     "Snapshot comparison (diffEscrowSnapshots between two snapshots of one escrow):";
-  // The snapshot section is the demo's last section, so it runs
-  // from the blank line before its header to the end.
-  const segment = (ls: string[]) => ls.slice(ls.indexOf(header) - 1);
+  const outboxHeader =
+    "Webhook outbox (SettlementWebhookOutbox: failed deliveries stay pending, then dead-letter):";
+  // The snapshot section is followed by the webhook-outbox section
+  // that now closes the demo, so it runs from the blank line before
+  // its header to the blank line before the outbox header.
+  const segment = (ls: string[]) =>
+    ls.slice(ls.indexOf(header) - 1, ls.indexOf(outboxHeader) - 1);
   const a = await runDemo();
   const b = await runDemo();
   // Blank + header + change line + identical line + rejection
@@ -8682,4 +8722,138 @@ test("demo snapshot-comparison segment is deterministic: two runs print byte-ide
   assert.deepEqual(a.snapshotDiff, b.snapshotDiff);
   assert.deepEqual(a.snapshotDiffIdentical, b.snapshotDiffIdentical);
   assert.equal(a.snapshotDiffCrossIdError, b.snapshotDiffCrossIdError);
+});
+
+test("demo shows webhook outbox: three 500s dead-letter the pair, one failure then 200 clears the recovered pair", async () => {
+  const {
+    webhook,
+    outbox,
+    outboxPendingAfterTwo,
+    outboxDeadAfterTwo,
+    outboxPendingAfterThree,
+    outboxDeadAfterThree,
+    outboxRecoveredWebhook,
+    outboxRecoveredDelivery,
+    outboxDeadFetchCalls,
+    outboxRecoveredFetchCalls,
+    outboxPendingFinal,
+    outboxDeadFinal,
+    lines,
+  } = await runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned fixtures: the dead-letter pair is the main
+  // webhook's eventId to the fan-out billing endpoint, recorded
+  // on the fixed outbox clock; the recovered event is its own
+  // fixed eventId built over the same report.
+  assert.equal(DEMO_OUTBOX_ENDPOINT, "https://billing.example.com/hooks/settlement");
+  assert.equal(DEMO_OUTBOX_MAX_ATTEMPTS, 3);
+  assert.equal(DEMO_OUTBOX_NOW, "2026-03-08T13:00:00.000Z");
+  assert.equal(DEMO_OUTBOX_RECOVERED_EVENT_ID, "evt_demo_outbox_002");
+  assert.equal(DEMO_OUTBOX_RECOVERED_AT, "2026-03-08T13:00:00.000Z");
+  assert.equal(
+    DEMO_OUTBOX_DEAD_LAST_ERROR,
+    "webhook delivery to https://billing.example.com/hooks/settlement failed after 1 attempt: server responded with status 500",
+  );
+
+  // After two failures the pair is still retryable: pending 1 at
+  // attempts 2, dead letter empty.
+  assert.deepEqual(outboxPendingAfterTwo, [
+    {
+      endpoint: DEMO_OUTBOX_ENDPOINT,
+      eventId: DEMO_WEBHOOK_EVENT_ID,
+      attempts: 2,
+      lastError: DEMO_OUTBOX_DEAD_LAST_ERROR,
+      lastAt: Date.parse(DEMO_OUTBOX_NOW),
+    },
+  ]);
+  assert.deepEqual(outboxDeadAfterTwo, []);
+
+  // After the third failure the pair leaves pending and
+  // dead-letters at the cap, keeping the exact delivery error.
+  assert.deepEqual(outboxPendingAfterThree, []);
+  assert.deepEqual(outboxDeadAfterThree, [
+    {
+      endpoint: DEMO_OUTBOX_ENDPOINT,
+      eventId: DEMO_WEBHOOK_EVENT_ID,
+      attempts: 3,
+      lastError: DEMO_OUTBOX_DEAD_LAST_ERROR,
+      lastAt: Date.parse(DEMO_OUTBOX_NOW),
+    },
+  ]);
+
+  // The recovered event is its own webhook over the same report:
+  // same escrow, same demo secret, its own fixed eventId and `at`.
+  assert.equal(outboxRecoveredWebhook.payload.eventId, DEMO_OUTBOX_RECOVERED_EVENT_ID);
+  assert.equal(outboxRecoveredWebhook.payload.escrowId, webhook.payload.escrowId);
+  assert.equal(outboxRecoveredWebhook.payload.at, DEMO_OUTBOX_RECOVERED_AT);
+  assert.notEqual(
+    outboxRecoveredWebhook.signature,
+    webhook.signature,
+  );
+  // Its second call delivered 200 on the first attempt, and the
+  // success record cleared only its own pair.
+  assert.deepEqual(outboxRecoveredDelivery, { status: 200, attempts: 1 });
+  assert.equal(outboxDeadFetchCalls, 3);
+  assert.equal(outboxRecoveredFetchCalls, 2);
+  assert.deepEqual(outboxPendingFinal, []);
+  assert.deepEqual(outboxDeadFinal, outboxDeadAfterThree);
+  // The exposed ledger is the live one the segment used.
+  assert.deepEqual(outbox.pending(), outboxPendingFinal);
+  assert.deepEqual(outbox.deadLetter(), outboxDeadFinal);
+
+  // The printed section is the demo's closing section, after the
+  // snapshot-comparison segment.
+  const header =
+    "Webhook outbox (SettlementWebhookOutbox: failed deliveries stay pending, then dead-letter):";
+  assert.ok(
+    text.indexOf(header) >
+      text.indexOf(
+        "Snapshot comparison (diffEscrowSnapshots between two snapshots of one escrow):",
+      ),
+    "webhook-outbox segment must follow the snapshot-comparison segment",
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_OUTBOX_ENDPOINT} — event ${DEMO_WEBHOOK_EVENT_ID}: 3 scripted 500s, no retries (retries 0, backoffMs 0), each recorded in the outbox`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  after 2 failures: pending 1 (attempts 2), dead letter 0 — still retryable",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  after 3 failures: pending 0, dead letter 1 (attempts 3, capped at maxAttempts 3) — needs a human",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  recovered event ${DEMO_OUTBOX_RECOVERED_EVENT_ID}: 1 failure (pending, attempts 1), then 200 — the success cleared the pair; ledger ends pending 0, dead letter 1`,
+    ),
+  );
+});
+
+test("demo webhook-outbox segment is deterministic: two runs print byte-identical outbox lines", async () => {
+  const header =
+    "Webhook outbox (SettlementWebhookOutbox: failed deliveries stay pending, then dead-letter):";
+  // The outbox section is the demo's last section, so it runs
+  // from the blank line before its header to the end.
+  const segment = (ls: string[]) => ls.slice(ls.indexOf(header) - 1);
+  const a = await runDemo();
+  const b = await runDemo();
+  // Blank + header + endpoint line + after-2 line + after-3 line
+  // + recovered line; every printed value derives from the pinned
+  // fixtures alone, so no normalization is needed.
+  const segA = segment(a.lines);
+  assert.equal(segA.length, 6);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(a.outboxPendingAfterTwo, b.outboxPendingAfterTwo);
+  assert.deepEqual(a.outboxDeadAfterTwo, b.outboxDeadAfterTwo);
+  assert.deepEqual(a.outboxPendingAfterThree, b.outboxPendingAfterThree);
+  assert.deepEqual(a.outboxDeadAfterThree, b.outboxDeadAfterThree);
+  assert.deepEqual(a.outboxRecoveredDelivery, b.outboxRecoveredDelivery);
+  assert.deepEqual(a.outboxPendingFinal, b.outboxPendingFinal);
+  assert.deepEqual(a.outboxDeadFinal, b.outboxDeadFinal);
 });

@@ -393,6 +393,18 @@
  * the report layer, so this is the first segment that shows
  * the refund arithmetic itself. All sides are asserted
  * outside the printing against hand-pinned expectations.
+ * The demo finally closes with a webhook-outbox
+ * segment: the main escrow's signed webhook is delivered to
+ * the billing endpoint through a scripted fetch that answers
+ * 500 three times — each failure recorded in a
+ * `SettlementWebhookOutbox` on a fixed clock — so after two
+ * failures the pair is still pending (attempts 2) and after
+ * the third it dead-letters at the maxAttempts cap of 3, the
+ * one that needs a human; a second event fails once and then
+ * delivers 200, so its success clears its own pair and the
+ * ledger ends pending 0, dead letter 1. All sides are
+ * asserted outside the printing against hand-pinned
+ * expectations.
  *
  * Usage: `npm run demo` (builds with tsc, then runs node on the compiled
  * output). Zero runtime dependencies: this file only imports the library
@@ -411,6 +423,7 @@ import {
   Escrow,
   GENESIS_PREV_HASH,
   SettlementEventDedupe,
+  SettlementWebhookOutbox,
   actOnStaleEscrows,
   assertNonNegativeMoney,
   allowedEvents,
@@ -480,6 +493,7 @@ import {
   type SettlementAgingResult,
   type SettlementEventDedupeSnapshot,
   type SettlementEventDedupeStats,
+  type SettlementWebhookOutboxEntry,
   type SettlementReport,
   type SettlementReportCsv,
   type SettlementReportResult,
@@ -2353,6 +2367,44 @@ export const DEMO_PARTIAL_RELEASE_REPORT_FUND_AT = "2026-03-16T09:00:00.000Z";
 export const DEMO_PARTIAL_RELEASES_GUARD_ID = "DEMO-ESC-036";
 export const DEMO_PARTIAL_RELEASES_GUARD_FUND_AT = "2026-03-17T09:00:00.000Z";
 
+/**
+ * Webhook-outbox fixtures (backlog #1024): the delivery-failure
+ * ledger story the earlier delivery segments never show — a
+ * receiver that answers 500 three times in a row, and a second
+ * event that fails once and then recovers. The dead-letter pair
+ * reuses the main escrow's signed webhook (its fixed eventId
+ * {@link DEMO_WEBHOOK_EVENT_ID}) delivered to the fan-out billing
+ * endpoint — the same receiver that answered 200 in the fan-out
+ * segment, now down — with `retries: 0` so each scripted 500 is
+ * exactly one recorded attempt; the outbox runs on a fixed clock
+ * (its `lastAt` values are never printed, but no wall clock
+ * enters the segment either way). Hand-pinned expectations —
+ * written from `SettlementWebhookOutbox`'s documented counting
+ * rules (default `maxAttempts: 3`, attempts capped at the cap,
+ * a success clears the pair) and cross-checked against
+ * test/settlementWebhookOutbox.test.ts:
+ * - after 2 failures the pair is pending (attempts 2) and the
+ *   dead letter is empty — still retryable;
+ * - after the 3rd failure the pair leaves pending and lands in
+ *   `deadLetter()` at attempts 3 (capped at maxAttempts 3),
+ *   its `lastError` the exact delivery error below — the one
+ *   that needs a human (fix the endpoint, re-issue the event);
+ * - the recovered event (its own fixed eventId, built over the
+ *   same report with the demo secret) fails once (pending,
+ *   attempts 1) and then delivers 200, so the success record
+ *   clears the pair — the ledger ends pending 0, dead letter 1.
+ * All timestamps fixed; the printed lines carry the endpoint,
+ * eventIds, and counts only, so no wall clock enters the output.
+ */
+export const DEMO_OUTBOX_NOW = "2026-03-08T13:00:00.000Z";
+export const DEMO_OUTBOX_ENDPOINT =
+  "https://billing.example.com/hooks/settlement";
+export const DEMO_OUTBOX_MAX_ATTEMPTS = 3;
+export const DEMO_OUTBOX_DEAD_LAST_ERROR =
+  "webhook delivery to https://billing.example.com/hooks/settlement failed after 1 attempt: server responded with status 500";
+export const DEMO_OUTBOX_RECOVERED_EVENT_ID = "evt_demo_outbox_002";
+export const DEMO_OUTBOX_RECOVERED_AT = "2026-03-08T13:00:00.000Z";
+
 export interface DemoResult {
   escrow: Escrow;
   report: SettlementReport;
@@ -3986,6 +4038,71 @@ export interface DemoResult {
    * negative example, never a demo failure.
    */
   snapshotDiffCrossIdError: string;
+  /**
+   * The webhook-outbox ledger after the demo's dead-letter run:
+   * the billing endpoint's failure record for the main webhook's
+   * eventId, after three scripted 500s. Exposed so tests can assert
+   * on the ledger itself, not just on the printed counts.
+   */
+  outbox: SettlementWebhookOutbox;
+  /**
+   * `outbox.pending()` after the first two recorded failures of
+   * the dead-letter pair: exactly one entry — the billing
+   * endpoint, the main webhook's eventId, attempts 2 — while
+   * `deadLetter()` is still empty.
+   */
+  outboxPendingAfterTwo: SettlementWebhookOutboxEntry[];
+  /**
+   * `outbox.deadLetter()` after the first two recorded failures:
+   * empty — the pair is still retryable at attempts 2.
+   */
+  outboxDeadAfterTwo: SettlementWebhookOutboxEntry[];
+  /**
+   * `outbox.pending()` after the third recorded failure: empty —
+   * the pair has left the retryable set.
+   */
+  outboxPendingAfterThree: SettlementWebhookOutboxEntry[];
+  /**
+   * `outbox.deadLetter()` after the third recorded failure:
+   * exactly one entry — attempts 3, capped at
+   * {@link DEMO_OUTBOX_MAX_ATTEMPTS}, `lastError` the exact
+   * delivery error
+   * {@link DEMO_OUTBOX_DEAD_LAST_ERROR}.
+   */
+  outboxDeadAfterThree: SettlementWebhookOutboxEntry[];
+  /**
+   * The recovered event's own signed webhook (same report, demo
+   * secret, fixed `at` {@link DEMO_OUTBOX_RECOVERED_AT} and
+   * eventId {@link DEMO_OUTBOX_RECOVERED_EVENT_ID}): it fails
+   * once, then delivers 200.
+   */
+  outboxRecoveredWebhook: SettlementWebhook;
+  /**
+   * `deliverSettlementWebhook` result for the recovered event's
+   * successful attempt: `{status: 200, attempts: 1}` — the
+   * success the outbox records to clear the pair.
+   */
+  outboxRecoveredDelivery: WebhookDeliveryResult;
+  /**
+   * Scripted-fetch call counts for the outbox segment: 3 calls
+   * against the dead-letter pair (one per recorded failure, no
+   * retries) and 2 against the recovered pair (one failed, one
+   * successful).
+   */
+  outboxDeadFetchCalls: number;
+  outboxRecoveredFetchCalls: number;
+  /**
+   * `outbox.pending()` at the end of the segment: empty — the
+   * dead-lettered pair is not pending, and the recovered pair
+   * was cleared by its success.
+   */
+  outboxPendingFinal: SettlementWebhookOutboxEntry[];
+  /**
+   * `outbox.deadLetter()` at the end of the segment: still
+   * exactly the one dead-lettered pair — the recovery cleared
+   * only its own pair, never the dead letter.
+   */
+  outboxDeadFinal: SettlementWebhookOutboxEntry[];
   lines: string[];
 }
 
@@ -9760,6 +9877,209 @@ export async function runDemo(): Promise<DemoResult> {
     `  cross-escrow diff rejected: ${snapshotDiffCrossIdError}`,
   );
 
+  // --- Webhook outbox: failed deliveries stay pending, then dead-letter ---
+  // The delivery segments so far prove the signature and the retry
+  // path, but none ever shows what happens to a delivery that keeps
+  // failing: `deliverSettlementWebhook` returns one call's outcome
+  // and keeps no memory, so a caller whose endpoint stays down had
+  // no ready answer to "what is still undelivered, and what has
+  // exhausted its retries". Here the main escrow's signed webhook
+  // is delivered to the billing endpoint — the same receiver that
+  // answered 200 in the fan-out segment, now down — through a
+  // scripted `fetchImpl` (zero network, no `globalThis` swap: the
+  // option exists precisely for this) that answers 500 every
+  // time, with `retries: 0` so each scripted 500 is exactly one
+  // recorded attempt, and each failure is recorded in a fresh
+  // `SettlementWebhookOutbox` on the fixed clock: after two
+  // failures the pair is pending (attempts 2) and the dead letter
+  // is empty — still retryable — and after the third the pair
+  // leaves pending and dead-letters at the maxAttempts cap of 3,
+  // its `lastError` the exact delivery error. A second event
+  // (its own fixed eventId, built over the same report with the
+  // demo secret) then fails once and delivers 200 on its second
+  // call, so the success record clears its own pair: the ledger
+  // ends pending 0, dead letter 1. Hand-pinned expectations (see
+  // the fixture comment above), asserted HERE, outside the
+  // printing: the pending/dead-letter counts and attempt numbers
+  // at each stage, the dead entry's `lastError` verbatim, every
+  // captured call a POST to the pinned endpoint carrying the
+  // byte-identical signed body, and the recovery's success
+  // clearing only its own pair. Zero network, zero real waiting,
+  // no wall clock.
+  const outboxNowMs = Date.parse(DEMO_OUTBOX_NOW);
+  const outbox = new SettlementWebhookOutbox({
+    maxAttempts: DEMO_OUTBOX_MAX_ATTEMPTS,
+    now: () => outboxNowMs,
+  });
+  const outboxDeadCalls: Array<{
+    url: string;
+    method: string;
+    body: string;
+    signature: string;
+  }> = [];
+  const outboxDeadFetch: typeof fetch = async (input, init) => {
+    outboxDeadCalls.push({
+      url: String(input),
+      method: String(init?.method ?? ""),
+      body: String(init?.body ?? ""),
+      signature: String(
+        new Headers(init?.headers).get("x-signature") ?? "",
+      ),
+    });
+    return new Response("boom", {
+      status: 500,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  const recordDeadFailure = async (): Promise<void> => {
+    try {
+      await deliverSettlementWebhook(DEMO_OUTBOX_ENDPOINT, webhook, {
+        retries: 0,
+        backoffMs: 0,
+        fetchImpl: outboxDeadFetch,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      outbox.recordAttempt({
+        endpoint: DEMO_OUTBOX_ENDPOINT,
+        eventId: webhook.payload.eventId,
+        ok: false,
+        status: 500,
+        error: message,
+        at: outboxNowMs,
+      });
+      return;
+    }
+    throw new Error(
+      "demo fixture broken: outbox dead-letter delivery unexpectedly succeeded (scripted 500, retries 0)",
+    );
+  };
+  await recordDeadFailure();
+  await recordDeadFailure();
+  const outboxPendingAfterTwo = outbox.pending();
+  const outboxDeadAfterTwo = outbox.deadLetter();
+  await recordDeadFailure();
+  const outboxPendingAfterThree = outbox.pending();
+  const outboxDeadAfterThree = outbox.deadLetter();
+  const outboxRecoveredWebhook = buildSettlementWebhook(report, {
+    secret: DEMO_WEBHOOK_SECRET,
+    now: DEMO_OUTBOX_RECOVERED_AT,
+    eventId: DEMO_OUTBOX_RECOVERED_EVENT_ID,
+  });
+  const outboxRecoveredCalls: Array<{
+    url: string;
+    method: string;
+    body: string;
+    signature: string;
+  }> = [];
+  const outboxRecoveredFetch: typeof fetch = async (input, init) => {
+    outboxRecoveredCalls.push({
+      url: String(input),
+      method: String(init?.method ?? ""),
+      body: String(init?.body ?? ""),
+      signature: String(
+        new Headers(init?.headers).get("x-signature") ?? "",
+      ),
+    });
+    const status = outboxRecoveredCalls.length === 1 ? 500 : 200;
+    return new Response(status === 200 ? "{}" : "boom", {
+      status,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  let outboxRecoveredFailure: string | undefined;
+  try {
+    await deliverSettlementWebhook(
+      DEMO_OUTBOX_ENDPOINT,
+      outboxRecoveredWebhook,
+      { retries: 0, backoffMs: 0, fetchImpl: outboxRecoveredFetch },
+    );
+  } catch (err) {
+    outboxRecoveredFailure =
+      err instanceof Error ? err.message : String(err);
+    outbox.recordAttempt({
+      endpoint: DEMO_OUTBOX_ENDPOINT,
+      eventId: DEMO_OUTBOX_RECOVERED_EVENT_ID,
+      ok: false,
+      status: 500,
+      error: outboxRecoveredFailure,
+      at: outboxNowMs,
+    });
+  }
+  if (outboxRecoveredFailure === undefined) {
+    throw new Error(
+      "demo fixture broken: outbox recovery first delivery unexpectedly succeeded (scripted 500, retries 0)",
+    );
+  }
+  const outboxRecoveredPendingAfterFailure = outbox.pending();
+  const outboxRecoveredDelivery = await deliverSettlementWebhook(
+    DEMO_OUTBOX_ENDPOINT,
+    outboxRecoveredWebhook,
+    { retries: 0, backoffMs: 0, fetchImpl: outboxRecoveredFetch },
+  );
+  outbox.recordAttempt({
+    endpoint: DEMO_OUTBOX_ENDPOINT,
+    eventId: DEMO_OUTBOX_RECOVERED_EVENT_ID,
+    ok: true,
+    status: outboxRecoveredDelivery.status,
+    at: outboxNowMs,
+  });
+  const outboxPendingFinal = outbox.pending();
+  const outboxDeadFinal = outbox.deadLetter();
+  if (
+    outboxPendingAfterTwo.length !== 1 ||
+    outboxPendingAfterTwo[0]?.endpoint !== DEMO_OUTBOX_ENDPOINT ||
+    outboxPendingAfterTwo[0]?.eventId !== webhook.payload.eventId ||
+    outboxPendingAfterTwo[0]?.attempts !== 2 ||
+    outboxPendingAfterTwo[0]?.lastAt !== outboxNowMs ||
+    outboxDeadAfterTwo.length !== 0 ||
+    outboxPendingAfterThree.length !== 0 ||
+    outboxDeadAfterThree.length !== 1 ||
+    outboxDeadAfterThree[0]?.endpoint !== DEMO_OUTBOX_ENDPOINT ||
+    outboxDeadAfterThree[0]?.eventId !== webhook.payload.eventId ||
+    outboxDeadAfterThree[0]?.attempts !== DEMO_OUTBOX_MAX_ATTEMPTS ||
+    outboxDeadAfterThree[0]?.lastError !== DEMO_OUTBOX_DEAD_LAST_ERROR ||
+    outboxDeadAfterThree[0]?.lastAt !== outboxNowMs ||
+    outboxDeadCalls.length !== DEMO_OUTBOX_MAX_ATTEMPTS ||
+    outboxDeadCalls.some(
+      (call) =>
+        call.url !== DEMO_OUTBOX_ENDPOINT ||
+        call.method !== "POST" ||
+        call.body !== JSON.stringify(webhook.payload) ||
+        call.signature !== webhook.signature,
+    ) ||
+    outboxRecoveredFailure !== DEMO_OUTBOX_DEAD_LAST_ERROR ||
+    outboxRecoveredPendingAfterFailure.length !== 1 ||
+    outboxRecoveredPendingAfterFailure[0]?.eventId !==
+      DEMO_OUTBOX_RECOVERED_EVENT_ID ||
+    outboxRecoveredPendingAfterFailure[0]?.attempts !== 1 ||
+    outboxRecoveredDelivery.status !== 200 ||
+    outboxRecoveredDelivery.attempts !== 1 ||
+    outboxRecoveredCalls.length !== 2 ||
+    outboxRecoveredCalls.some(
+      (call) =>
+        call.url !== DEMO_OUTBOX_ENDPOINT ||
+        call.method !== "POST" ||
+        call.body !== JSON.stringify(outboxRecoveredWebhook.payload) ||
+        call.signature !== outboxRecoveredWebhook.signature,
+    ) ||
+    outboxPendingFinal.length !== 0 ||
+    outboxDeadFinal.length !== 1 ||
+    outboxDeadFinal[0]?.eventId !== webhook.payload.eventId
+  ) {
+    throw new Error(
+      "demo fixture broken: webhook outbox segment does not match the pinned shape (dead-letter pair pending 1 at attempts 2 after two 500s then dead-lettered at attempts 3 with the pinned last error, recovered pair pending at attempts 1 after one 500 then cleared by its 200, every captured call a POST carrying the byte-identical signed body)",
+    );
+  }
+  lines.push(
+    "",
+    "Webhook outbox (SettlementWebhookOutbox: failed deliveries stay pending, then dead-letter):",
+    `  ${DEMO_OUTBOX_ENDPOINT} — event ${webhook.payload.eventId}: 3 scripted 500s, no retries (retries 0, backoffMs 0), each recorded in the outbox`,
+    `  after 2 failures: pending 1 (attempts 2), dead letter 0 — still retryable`,
+    `  after 3 failures: pending 0, dead letter 1 (attempts 3, capped at maxAttempts 3) — needs a human`,
+    `  recovered event ${DEMO_OUTBOX_RECOVERED_EVENT_ID}: 1 failure (pending, attempts 1), then 200 — the success cleared the pair; ledger ends pending 0, dead letter 1`,
+  );
+
   return {
     escrow,
     report,
@@ -10018,6 +10338,17 @@ export async function runDemo(): Promise<DemoResult> {
     snapshotDiff,
     snapshotDiffIdentical,
     snapshotDiffCrossIdError,
+    outbox,
+    outboxPendingAfterTwo,
+    outboxDeadAfterTwo,
+    outboxPendingAfterThree,
+    outboxDeadAfterThree,
+    outboxRecoveredWebhook,
+    outboxRecoveredDelivery,
+    outboxDeadFetchCalls: outboxDeadCalls.length,
+    outboxRecoveredFetchCalls: outboxRecoveredCalls.length,
+    outboxPendingFinal,
+    outboxDeadFinal,
     lines,
   };
 }
