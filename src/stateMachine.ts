@@ -25,6 +25,7 @@ export type EscrowEvent =
   | "SUBMIT_MILESTONE"
   | "VERIFY_PASS"
   | "VERIFY_FAIL"
+  | "PARTIAL_RELEASE"
   | "RELEASE"
   | "DISPUTE"
   | "ARBITRATE_RELEASE"
@@ -42,6 +43,15 @@ const TRANSITIONS: Record<
     // depositAmountFromHistory, which sums every FUND amount). A FUND
     // dispatched from any other state is still rejected.
     FUND: "FUNDED",
+    // Self-loop: a partial release pays out one tranche while the
+    // escrow stays FUNDED — milestone-based staged payouts (one
+    // tranche per completed milestone) are the core escrow scenario
+    // the settlement helpers (`settlePartialRelease` /
+    // `settlePartialReleases`) already compute but no transition
+    // could record. The released amount is tracked separately (see
+    // releasedAmountFromHistory): the locked balance is FUND total
+    // minus released total, and a release may never exceed it.
+    PARTIAL_RELEASE: "FUNDED",
     SUBMIT_MILESTONE: "MILESTONE_SUBMITTED",
     DISPUTE: "DISPUTED",
     EXPIRE: "EXPIRED",
@@ -49,6 +59,11 @@ const TRANSITIONS: Record<
   MILESTONE_SUBMITTED: {
     VERIFY_PASS: "VERIFIED",
     VERIFY_FAIL: "DISPUTED",
+    // A milestone under review can still pay out an earlier agreed
+    // tranche: the release lands back in FUNDED (the milestone is
+    // re-opened for the remaining tranches), it never settles the
+    // escrow — a full release still requires VERIFY_PASS + RELEASE.
+    PARTIAL_RELEASE: "FUNDED",
     DISPUTE: "DISPUTED",
     EXPIRE: "EXPIRED",
   },
@@ -177,8 +192,10 @@ export interface EscrowHistoryEntry {
    */
   note?: string;
   /**
-   * Deposit amount in base currency units. Only present on FUND entries
-   * (dispatch validates it as a finite non-negative number).
+   * Deposit amount in base currency units. Only present on FUND and
+   * PARTIAL_RELEASE entries (dispatch validates it as a finite
+   * non-negative number; PARTIAL_RELEASE additionally requires it to
+   * be greater than zero and no larger than the still-locked balance).
    */
   amount?: number;
   /**
@@ -583,7 +600,7 @@ function isCanonicalIso(s: unknown): s is string {
  *  - every (from, event) -> to edge must be a legal transition edge
  *  - timestamps must be canonical ISO-8601 and non-decreasing
  *  - `amount`, when present, must be a finite non-negative number and may
- *    only appear on FUND entries
+ *    only appear on FUND and PARTIAL_RELEASE entries
  *  - `note`, when present, must be a string no longer than
  *    {@link MAX_NOTE_LENGTH} characters (oversized notes in an
  *    untrusted log are malformed — the same bar dispatch() applies)
@@ -757,8 +774,10 @@ function parseEscrowSnapshot(
       entry.note = raw.note;
     }
     if (raw.amount !== undefined) {
-      if (event !== "FUND") {
-        throw new Error(`${tag}: amount only allowed on FUND entries`);
+      if (event !== "FUND" && event !== "PARTIAL_RELEASE") {
+        throw new Error(
+          `${tag}: amount only allowed on FUND and PARTIAL_RELEASE entries`
+        );
       }
       if (
         typeof raw.amount !== "number" ||
@@ -908,8 +927,9 @@ function parseEscrowSnapshot(
  * bar {@link parseEscrowSnapshot} applies inside a snapshot envelope
  * (seq from 1 with no gaps, from/to chain continuous from CREATED,
  * every edge legal, canonical non-decreasing timestamps, `amount`
- * only on FUND, `evidence` only on VERIFY_PASS, unknown entry fields
- * rejected, and a fully chained history's hash chain re-verified —
+ * only on FUND and PARTIAL_RELEASE, `evidence` only on VERIFY_PASS,
+ * unknown entry fields rejected, and a fully chained history's hash
+ * chain re-verified —
  * with `auditKey` when the chain is keyed).
  *
  * This exists for history-only transports that carry no snapshot
@@ -1160,6 +1180,28 @@ function totalFundedAmount(history: readonly EscrowHistoryEntry[]): number {
   let total = 0;
   for (const entry of history) {
     if (entry.event === "FUND" && typeof entry.amount === "number") {
+      total += entry.amount;
+    }
+  }
+  return total;
+}
+
+/**
+ * Sum of all PARTIAL_RELEASE amounts in the audit history. Mirrors
+ * `totalFundedAmount` (and the exported
+ * `releasedAmountFromHistory` in settlementReport.ts, which applies
+ * the strict reading — a PARTIAL_RELEASE entry without an amount
+ * throws there). Kept local here to avoid a circular import between
+ * the two modules, same as `totalFundedAmount`. The dispatch path
+ * always records an amount on PARTIAL_RELEASE, so this sum is exact
+ * for live escrows; the locked balance is funded minus released.
+ */
+function totalReleasedAmount(
+  history: readonly EscrowHistoryEntry[]
+): number {
+  let total = 0;
+  for (const entry of history) {
+    if (entry.event === "PARTIAL_RELEASE" && typeof entry.amount === "number") {
       total += entry.amount;
     }
   }
@@ -1562,11 +1604,15 @@ export interface EscrowOptions {
   requireVerifyEvidence?: boolean;
 
   /**
-   * Optional cap on the total locked deposit (sum of all FUND amounts).
+   * Optional cap on the total locked deposit (sum of all FUND amounts
+   * minus all PARTIAL_RELEASE amounts — the net locked balance).
    * A `dispatch("FUND", note, amount)` that would push the locked total
    * above this cap throws a descriptive error and appends nothing — the
-   * failed dispatch leaves no audit residue. FUND dispatches without an
-   * amount are not counted toward the cap (they carry no money).
+   * failed dispatch leaves no audit residue. A partial release frees
+   * locked room again: after releasing, a top-up up to the freed amount
+   * is legal, so the cap never contradicts a release-then-top-up
+   * sequence. FUND dispatches without an amount are not counted toward
+   * the cap (they carry no money).
    *
    * Must be a finite non-negative number when set (validated with
    * `assertNonNegativeMoney` in the constructor). Default: undefined
@@ -1949,6 +1995,16 @@ export class Escrow {
    * @param event  The event to dispatch. FUND from CREATED is the initial
    *               deposit; FUND from FUNDED is a top-up (self-loop) that adds
    *               to the locked total — see `depositAmountFromHistory`.
+   *               PARTIAL_RELEASE from FUNDED or MILESTONE_SUBMITTED pays
+   *               out one tranche and stays FUNDED (self-loop from FUNDED,
+   *               back to FUNDED from MILESTONE_SUBMITTED): the amount is
+   *               mandatory, must be greater than zero and no larger than
+   *               the still-locked balance (FUND total minus released
+   *               total, see `releasedAmountFromHistory`), and is rounded
+   *               to cents like every other amount. Releasing exactly the
+   *               remaining balance is legal and still records
+   *               PARTIAL_RELEASE — it is not silently rewritten as a
+   *               full RELEASE, which requires VERIFY_PASS first.
    * @param note   Optional human-readable note recorded in the audit history.
    *               A non-string note is rejected with a descriptive error
    *               before anything is appended (mirrors the fromJSON
@@ -1957,15 +2013,21 @@ export class Escrow {
    *               is append-only and serialized verbatim, so an
    *               unbounded note would permanently inflate every
    *               snapshot/export).
-   * @param amount Optional deposit amount, accepted ONLY on FUND. Must be a
+   * @param amount Optional deposit amount, accepted ONLY on FUND and
+   *               PARTIAL_RELEASE (required on PARTIAL_RELEASE). Must be a
    *               finite non-negative number (NaN, ±Infinity, negatives, and
-   *               non-numbers are rejected with a descriptive error). The
+   *               non-numbers are rejected with a descriptive error); on
+   *               PARTIAL_RELEASE it must additionally be greater than zero
+   *               and no larger than the still-locked balance. The
    *               validated amount is rounded to cents (`round2`, the
-   *               library's money model) and recorded on the FUND history
-   *               entry — new dispatches never produce sub-cent amounts.
+   *               library's money model) and recorded on the FUND /
+   *               PARTIAL_RELEASE history entry — new dispatches never
+   *               produce sub-cent amounts.
    *               When the escrow was constructed with a `maxDeposit`, a FUND
    *               whose amount would push the locked total above the cap
-   *               throws a `deposit cap exceeded` error and appends nothing.
+   *               throws a `deposit cap exceeded` error and appends nothing;
+   *               the locked total is net of partial releases, so a release
+   *               frees room for a later top-up.
    * @param opts   Optional {@link DispatchOptions}. When `idempotencyKey`
    *               was seen before, dispatch is a no-op returning the current
    *               state; otherwise the key is recorded only after a
@@ -2160,9 +2222,9 @@ export class Escrow {
         'verify evidence required: dispatch("VERIFY_PASS") requires a non-empty evidence reference when requireVerifyEvidence is enabled'
       );
     }
-    if (amount !== undefined && event !== "FUND") {
+    if (amount !== undefined && event !== "FUND" && event !== "PARTIAL_RELEASE") {
       throw new Error(
-        `amount is only accepted on FUND, not on ${event}`
+        `amount is only accepted on FUND and PARTIAL_RELEASE, not on ${event}`
       );
     }
     const from = this._state;
@@ -2204,26 +2266,65 @@ export class Escrow {
       // only new dispatches stop producing them.
       amount = round2(amount);
     }
+    // Partial release (backlog #1028): the amount is the event — a
+    // release of nothing is accounting noise, so it is mandatory, not
+    // optional like FUND's. It must be greater than zero (a sub-cent
+    // amount rounds to 0.00 and is rejected on the same grounds) and
+    // no larger than the still-locked balance (FUND total minus
+    // released total, at cent precision). Checked after the transition
+    // and RBAC checks like the FUND amount validation, before anything
+    // is appended, so a rejected release leaves no history residue and
+    // consumes no idempotency key. A release of exactly the remaining
+    // balance is legal — it still records PARTIAL_RELEASE and stays
+    // FUNDED; only VERIFY_PASS + RELEASE settles the escrow.
+    if (event === "PARTIAL_RELEASE") {
+      if (amount === undefined) {
+        throw new Error(
+          "amount is required on PARTIAL_RELEASE: the release amount is the event"
+        );
+      }
+      assertNonNegativeMoney("amount", amount);
+      amount = round2(amount);
+      if (amount <= 0) {
+        throw new Error(
+          `invalid dispatch: PARTIAL_RELEASE amount must be greater than 0, got ${amount}`
+        );
+      }
+      const locked = round2(
+        totalFundedAmount(this._history) - totalReleasedAmount(this._history)
+      );
+      if (amount > locked) {
+        throw new Error(
+          `partial release exceeds locked balance: release ${amount} exceeds locked ${locked}`
+        );
+      }
+    }
     // Deposit cap (payments risk control): the cap is checked after the
     // transition and amount validation, before anything is appended, so a
     // capped-out FUND leaves no history residue — mirroring the budget
     // exhaustion semantics of the dataquest lifecycle. FUND dispatches
-    // without an amount carry no money and are never capped.
+    // without an amount carry no money and are never capped. The
+    // comparison is against the NET locked total (funded minus released):
+    // a partial release frees room again, so a top-up after a release
+    // is judged on what is actually still locked, not on the gross
+    // ever funded.
     if (
       this._maxDeposit !== undefined &&
       event === "FUND" &&
       amount !== undefined
     ) {
-      const funded = totalFundedAmount(this._history);
+      const locked = round2(
+        totalFundedAmount(this._history) - totalReleasedAmount(this._history)
+      );
       // Cent-precision comparison, not raw floats: this library's money
       // model is "all amounts are rounded to cents", and raw float addition
       // can be off by an ulp — e.g. locked 0.2 + new FUND 0.1 sums to
       // 0.30000000000000004 while the cap is exactly 0.3. Comparing raw
       // floats would reject a legitimate funding sitting exactly on the
       // cap. Matches the #69 settlement-report comparison semantics.
-      if (round2(funded + amount) > round2(this._maxDeposit)) {
+      if (round2(locked + amount) > round2(this._maxDeposit)) {
         throw new Error(
-          `deposit cap exceeded: locked ${funded} + new funding ${amount} would exceed maxDeposit ${this._maxDeposit}`
+          `deposit cap exceeded: locked ${locked} + new funding ${amount} would exceed maxDeposit ${this._maxDeposit}`
         );
       }
     }
@@ -2260,7 +2361,10 @@ export class Escrow {
       at: at ?? new Date().toISOString(),
       ...(actor !== undefined ? { actor } : {}),
       note,
-      ...(event === "FUND" && amount !== undefined ? { amount } : {}),
+      ...((event === "FUND" || event === "PARTIAL_RELEASE") &&
+      amount !== undefined
+        ? { amount }
+        : {}),
       ...(event === "VERIFY_PASS" && evidence !== undefined
         ? { evidence }
         : {}),
@@ -2717,7 +2821,8 @@ export class Escrow {
    * code path `fromJSON` enforces inside its envelope: seq from 1
    * with no gaps, the from/to chain continuous from `CREATED`, every
    * edge a legal transition, canonical non-decreasing timestamps,
-   * `amount` only on FUND, `evidence` only on VERIFY_PASS, unknown
+   * `amount` only on FUND and PARTIAL_RELEASE, `evidence` only on
+   * VERIFY_PASS, unknown
    * entry fields rejected, and a fully chained history's hash chain
    * re-verified. Malformed histories throw the parser's descriptive
    * error instead of yielding a corrupt escrow. A fully hashless

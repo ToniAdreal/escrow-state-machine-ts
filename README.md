@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1587 tests, all local
+npm test   # 1603 tests, all local
 ```
 
 ## Quickstart
@@ -180,11 +180,13 @@ stateDiagram-v2
     CREATED --> FUNDED : FUND
     CREATED --> EXPIRED : EXPIRE
     FUNDED --> FUNDED : FUND
+    FUNDED --> FUNDED : PARTIAL_RELEASE
     FUNDED --> MILESTONE_SUBMITTED : SUBMIT_MILESTONE
     FUNDED --> DISPUTED : DISPUTE
     FUNDED --> EXPIRED : EXPIRE
     MILESTONE_SUBMITTED --> VERIFIED : VERIFY_PASS
     MILESTONE_SUBMITTED --> DISPUTED : VERIFY_FAIL
+    MILESTONE_SUBMITTED --> FUNDED : PARTIAL_RELEASE
     MILESTONE_SUBMITTED --> DISPUTED : DISPUTE
     MILESTONE_SUBMITTED --> EXPIRED : EXPIRE
     VERIFIED --> RELEASED : RELEASE
@@ -240,11 +242,28 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   `FUND` accepts an optional `amount`
   argument — it is validated as a finite non-negative number at the dispatch
   boundary (anything else throws) and recorded on the audit entry; passing an
-  amount with any other event throws. `FUND` from `CREATED` is the initial
-  deposit; `FUND` from `FUNDED` is a self-loop that adds a top-up to the
-  locked total — real escrows often need extra collateral, and the locked
-  total is always the *sum* of every `FUND` entry's amount (see
-  `depositAmountFromHistory`).
+  amount with any other event throws, except `PARTIAL_RELEASE` (below).
+  `FUND` from `CREATED` is the initial deposit; `FUND` from `FUNDED` is a
+  self-loop that adds a top-up to the locked total — real escrows often need
+  extra collateral, and the locked total is always the sum of every `FUND`
+  entry's amount minus every `PARTIAL_RELEASE` entry's amount (see
+  `depositAmountFromHistory` / `releasedAmountFromHistory`).
+- `PARTIAL_RELEASE` pays out one tranche while the escrow stays `FUNDED` —
+  milestone-based staged payouts, one tranche per completed milestone. It is
+  legal from `FUNDED` (self-loop) and from `MILESTONE_SUBMITTED` (back to
+  `FUNDED`, re-opening the milestone for the remaining tranches). The amount
+  is mandatory: it must be greater than zero, no larger than the still-locked
+  balance (FUND total minus released total), and is rounded to cents like
+  every other amount; zero, negative, non-finite, missing, or over-balance
+  amounts throw with no history residue and consume no idempotency key.
+  Releasing exactly the remaining balance is legal and still records
+  `PARTIAL_RELEASE` — it is not silently rewritten as a full `RELEASE`,
+  which still requires `VERIFY_PASS` first. `releasedAmountFromHistory`
+  reads the paid-out tranche total back out of the audit history (0 when
+  nothing was released; it throws when a `PARTIAL_RELEASE` entry carries no
+  amount), so reports and webhook payloads can compute the still-locked
+  balance as deposit minus released, and the `maxDeposit` cap is judged on
+  that net locked balance.
 - `allowedEvents(state)` lists valid next events for UI gating.
 - `isTerminal(state)` is a standalone pure function for the same question
   without an instance — batch screening and transition-table checks can
@@ -284,9 +303,12 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
 - Deposit caps: `new Escrow(id, { maxDeposit })` caps the total locked
   deposit at a finite non-negative number (risk control / contract limits).
   A `FUND` whose amount would push the locked total — the sum of every
-  `FUND` entry's amount — above the cap throws a `deposit cap exceeded`
+  `FUND` entry's amount minus every `PARTIAL_RELEASE` entry's amount, the
+  net locked balance — above the cap throws a `deposit cap exceeded`
   error *after* transition and amount validation and appends nothing, so a
-  failed FUND leaves no audit residue. `FUND` dispatches without an amount
+  failed FUND leaves no audit residue. A partial release frees locked room
+  again: after releasing, a top-up up to the freed amount is legal.
+  `FUND` dispatches without an amount
   carry no money and are never capped. The cap IS part of
   `toJSON()`/`fromJSON()` snapshots (`maxDeposit`, written only when
   a cap is set, so a cap-free snapshot keeps its legacy shape), so a
@@ -487,7 +509,7 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   strictly validated as if untrusted (seq restarts at 1 with no gaps,
   from→to chain continuous from `CREATED`, every edge a legal transition,
   canonical ISO-8601 non-decreasing timestamps, `amount` finite and
-  non-negative on FUND entries only); malformed snapshots throw a
+  non-negative on FUND and PARTIAL_RELEASE entries only); malformed snapshots throw a
   descriptive `invalid snapshot: …` error instead of yielding a corrupt
   escrow. Unknown fields are rejected fail-closed at both levels —
   top level allows only `v`/`id`/`state`/`history`/`deadline`/`idempotencyKeys`/`rolePolicy`/`maxDeposit`/`requireVerifyEvidence` and an
@@ -1199,7 +1221,13 @@ held — `remaining` is also a top-level field, with the full
 ledger is identical to the full-release report's. The escrow itself
 stays FUNDED — a partial release is evidence of a slice, not a state
 change — and `partialRelease` with a terminal state throws, as does a
-FUNDED escrow reported without it. The batch wrapper inherits the
+FUNDED escrow reported without it. Since this release, the slice can also
+be recorded as a real transition: `dispatch("PARTIAL_RELEASE", note, amount)`
+from `FUNDED` or `MILESTONE_SUBMITTED` appends the tranche to the audit
+history and stays `FUNDED`, so a staged payout is auditable tranche by
+tranche instead of living only in the report inputs — `releasedAmountFromHistory`
+reads the paid-out total back, and the report's `partialRelease` slice is
+still a proposed slice, not a read-back of the recorded tranches. The batch wrapper inherits the
 outcome, the summary counts it under `outcomes["partially-released"]`
 and sums the still-locked remainder into `totalRemaining` (top level
 and per-currency bucket), and the JSON/CSV round-trips carry it (the
@@ -1290,7 +1318,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1587 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1603 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
@@ -1314,8 +1342,8 @@ cost inside the timed region because dispatch mutates the
 escrow; every iteration checks the one-step advance
 FUNDED → MILESTONE_SUBMITTED, exactly one appended entry, and a
 gap-free seq continuation, and outside the timed loop an
-exhaustive pure-`transition()` check pins all 8 states × 9
-events — the 14 legal edges returning their hand-pinned targets
+exhaustive pure-`transition()` check pins all 8 states × 10
+events — the 16 legal edges returning their hand-pinned targets
 and every other pair throwing the exact
 `invalid transition: <event> from <state>` message, including
 the illegal RELEASE dispatch from FUNDED),
@@ -1670,25 +1698,25 @@ transition-table JSON export (`transitionTableJson` with no
 arguments — the canonical JSON form in declaration order with
 2-space indent and a single trailing newline — parsed back on
 every iteration and checked against hand-pinned expectations:
-14 edges, the first edge CREATED → FUNDED via FUND, the release
-edge VERIFIED → RELEASED via RELEASE at index 10, the last edge
+16 edges, the first edge CREATED → FUNDED via FUND, the release
+edge VERIFIED → RELEASED via RELEASE at index 12, the last edge
 DISPUTED → REFUNDED via ARBITRATE_REFUND, and every edge's keys
 in from / event / to order), and
 transition-table pure object construction (`transitionTable` with
 no arguments — the plain-object edge list in declaration order,
 without any serialization, that the JSON export and the diagram
 both derive from — checked on every iteration against hand-pinned
-expectations: all 14 edges written out in full in declaration
+expectations: all 16 edges written out in full in declaration
 order with every edge's keys in from / event / to order,
 spot-checked against the `transitionTableJson` edge set through
-the shared pinned first / release (index 10) / last edges, and
+the shared pinned first / release (index 12) / last edges, and
 outside the timed loop compared edge for edge to the parsed JSON
 edge set with a hand-pinned non-existent edge
 CREATED → RELEASED via RELEASE confirmed absent from both), and
 state diagram generation (`stateDiagram` with no arguments —
 the fenced Mermaid stateDiagram-v2 block the README embeds
 verbatim — checked on every iteration against hand-pinned
-expectations: 21 lines in total, all 14 edge lines written out
+expectations: 23 lines in total, all 16 edge lines written out
 in full in declaration order, the start line pinning CREATED,
 the 3 terminal lines RELEASED / REFUNDED / EXPIRED, and all 8
 declared states present as an edge source or target), and

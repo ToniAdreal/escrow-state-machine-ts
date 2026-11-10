@@ -16,6 +16,11 @@
   },
   {
     "from": "FUNDED",
+    "event": "PARTIAL_RELEASE",
+    "to": "FUNDED"
+  },
+  {
+    "from": "FUNDED",
     "event": "SUBMIT_MILESTONE",
     "to": "MILESTONE_SUBMITTED"
   },
@@ -38,6 +43,11 @@
     "from": "MILESTONE_SUBMITTED",
     "event": "VERIFY_FAIL",
     "to": "DISPUTED"
+  },
+  {
+    "from": "MILESTONE_SUBMITTED",
+    "event": "PARTIAL_RELEASE",
+    "to": "FUNDED"
   },
   {
     "from": "MILESTONE_SUBMITTED",

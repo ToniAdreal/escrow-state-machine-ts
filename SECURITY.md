@@ -136,7 +136,9 @@ quorum approvals (`approveSigned()`).
 - **Strict snapshot validation.** `Escrow.fromJSON` runs
   `parseEscrowSnapshot` on untrusted input: non-empty id, seq from 1 with no
   gaps, continuous from/to chain starting at CREATED, canonical ISO-8601
-  non-decreasing timestamps, `amount` only on FUND entries, string-only
+  non-decreasing timestamps, `amount` only on FUND and PARTIAL_RELEASE
+  entries (a `PARTIAL_RELEASE` amount must also be greater than zero and
+  no larger than the still-locked balance), string-only
   notes, `actor` (when present) a non-empty string, `rolePolicy`
   (when present) a valid allowlist of known events, and
   `idempotencyKeys` (when present) an array of non-empty

@@ -146,7 +146,7 @@
  * The demo then shows a state-diagram generation
  * segment: `stateDiagram()` renders the transition table as the
  * Mermaid stateDiagram-v2 block the README embeds verbatim —
- * 21 lines, 14 of them edge lines, one per transition-table
+ * 23 lines, 16 of them edge lines, one per transition-table
  * edge — and the segment asserts, outside the printing, that
  * the edge count equals `transitionTable()`'s edge count, so a
  * diagram whose shape broke would fail the demo itself.
@@ -207,7 +207,7 @@
  * and the segment asserts, outside the printing, that the
  * edges parsed back from the JSON match `transitionTable()`
  * edge for edge (every `from` / `event` / `to` triple), with
- * the edge total hand-pinned at the same 14 the committed
+ * the edge total hand-pinned at the same 16 the committed
  * snapshot and the diagram tests pin.
  * The demo then shows a money-guard segment:
  * `assertNonNegativeMoney()` — the boundary check every
@@ -1206,7 +1206,7 @@ export const DEMO_SNAPSHOT_SERIALIZED_BYTES = 1344;
  * cross-checked against test/transitionSnapshot.test.ts and
  * the diagram tests, which pin the same table:
  * - exactly {@link DEMO_TRANSITION_TABLE_EDGE_COUNT} edges
- *   (14), the first CREATED --FUND--> FUNDED and the last
+ *   (16), the first CREATED --FUND--> FUNDED and the last
  *   DISPUTED --ARBITRATE_REFUND--> REFUNDED
  * - the serialized text is exactly
  *   {@link DEMO_TRANSITION_TABLE_JSON_BYTES} bytes as UTF-8
@@ -1218,8 +1218,8 @@ export const DEMO_SNAPSHOT_SERIALIZED_BYTES = 1344;
  * The segment is pure: no escrow instance, no dispatch, no
  * network, no randomness, no wall clock.
  */
-export const DEMO_TRANSITION_TABLE_EDGE_COUNT = 14;
-export const DEMO_TRANSITION_TABLE_JSON_BYTES = 1160;
+export const DEMO_TRANSITION_TABLE_EDGE_COUNT = 16;
+export const DEMO_TRANSITION_TABLE_JSON_BYTES = 1337;
 
 /**
  * Money-guard expectations for the closing segment:
@@ -2798,7 +2798,7 @@ export interface DemoResult {
   overdueChecks: Array<{ at: string; overdue: boolean }>;
   /**
    * Full `stateDiagram()` Mermaid block text (no trailing
-   * newline): 21 lines — the fenced stateDiagram-v2 block the
+   * newline): 23 lines — the fenced stateDiagram-v2 block the
    * README embeds verbatim, rendered from `transitionTable()`.
    */
   stateDiagramText: string;
@@ -2893,7 +2893,7 @@ export interface DemoResult {
   /**
    * UTF-8 byte count of
    * {@link DemoResult.transitionTableJsonText}:
-   * {@link DEMO_TRANSITION_TABLE_JSON_BYTES} (1,160).
+   * {@link DEMO_TRANSITION_TABLE_JSON_BYTES} (1,337).
    */
   transitionTableJsonBytes: number;
   /**
@@ -2905,7 +2905,7 @@ export interface DemoResult {
   transitionTableEdges: TransitionEdge[];
   /**
    * Number of edges in {@link DemoResult.transitionTableEdges}:
-   * {@link DEMO_TRANSITION_TABLE_EDGE_COUNT} (14), equal to
+   * {@link DEMO_TRANSITION_TABLE_EDGE_COUNT} (16), equal to
    * `transitionTable().length`.
    */
   transitionTableEdgeCount: number;
@@ -5824,16 +5824,16 @@ export async function runDemo(): Promise<DemoResult> {
   // stateDiagram itself (the demo tests cross-check the full
   // generated block line by line as well, and bench's
   // stateDiagram fixture pins the same shape independently):
-  //   21 lines in total, 14 of them edge lines
+  //   23 lines in total, 16 of them edge lines
   //   line 1:  ```mermaid (the opening fence)
   //   line 2:  stateDiagram-v2
   //   line 3:      [*] --> CREATED (the initial transition)
   //   line 4:      CREATED --> FUNDED : FUND (the first edge)
-  //   line 17:     DISPUTED --> REFUNDED : ARBITRATE_REFUND (last edge)
-  //   lines 18-20: RELEASED / REFUNDED / EXPIRED --> [*] (terminals)
-  //   line 21: ``` (the closing fence)
+  //   line 19:     DISPUTED --> REFUNDED : ARBITRATE_REFUND (last edge)
+  //   lines 20-22: RELEASED / REFUNDED / EXPIRED --> [*] (terminals)
+  //   line 23: ``` (the closing fence)
   // The edge-line count must equal the transition table's edge
-  // count — the same 14 the committed snapshot pins — and the
+  // count — the same 16 the committed snapshot pins — and the
   // segment asserts that here, outside the printed summary: a
   // diagram whose shape broke would fail the demo itself, not
   // just a test. The segment is pure: no escrow instance, no
@@ -5844,7 +5844,7 @@ export async function runDemo(): Promise<DemoResult> {
   const stateDiagramEdgeCount = stateDiagramEdgeLines.length;
   const stateDiagramTerminalLines = stateDiagramLines.slice(-4, -1);
   if (
-    stateDiagramLines.length !== 21 ||
+    stateDiagramLines.length !== 23 ||
     stateDiagramLines[0] !== "```mermaid" ||
     stateDiagramLines[1] !== "stateDiagram-v2" ||
     stateDiagramLines[2] !== "    [*] --> CREATED" ||
@@ -5857,7 +5857,7 @@ export async function runDemo(): Promise<DemoResult> {
     stateDiagramLines[stateDiagramLines.length - 1] !== "```"
   ) {
     throw new Error(
-      "demo fixture broken: stateDiagram() output does not have the pinned shape (21 lines, mermaid fence, stateDiagram-v2 header, CREATED start, one edge line per transition-table edge, RELEASED/REFUNDED/EXPIRED terminals, closing fence)",
+      "demo fixture broken: stateDiagram() output does not have the pinned shape (23 lines, mermaid fence, stateDiagram-v2 header, CREATED start, one edge line per transition-table edge, RELEASED/REFUNDED/EXPIRED terminals, closing fence)",
     );
   }
   lines.push(
@@ -5868,8 +5868,8 @@ export async function runDemo(): Promise<DemoResult> {
     `  second line: ${stateDiagramLines[1]}`,
     `  initial transition (line 3): ${stateDiagramLines[2].trim()}`,
     `  first edge (line 4): ${stateDiagramEdgeLines[0].trim()}`,
-    `  last edge (line 17): ${stateDiagramEdgeLines.at(-1)!.trim()}`,
-    `  terminal lines (lines 18-20): ${stateDiagramTerminalLines.map((line) => line.trim()).join(", ")}`,
+    `  last edge (line 19): ${stateDiagramEdgeLines.at(-1)!.trim()}`,
+    `  terminal lines (lines 20-22): ${stateDiagramTerminalLines.map((line) => line.trim()).join(", ")}`,
     `  last line: ${stateDiagramLines.at(-1)}`,
   );
 
@@ -6181,13 +6181,13 @@ export async function runDemo(): Promise<DemoResult> {
   // snapshot test/__snapshots__/transitionTable.snapshot.json
   // that test/transitionSnapshot.test.ts guards against
   // drift. The demo prints the serialized byte count and the
-  // edge total, not the 1,160-byte text itself.
+  // edge total, not the 1,337-byte text itself.
   // Hand-pinned expectations — written out here from
   // TRANSITIONS in src/stateMachine.ts, never derived by
   // calling transitionTableJson itself (the transition
   // snapshot tests and bench's transitionTableJson fixture
   // pin the same shape independently):
-  //   14 edges, 1,160 serialized bytes, first edge
+  //   16 edges, 1,337 serialized bytes, first edge
   //   CREATED --FUND--> FUNDED, last edge
   //   DISPUTED --ARBITRATE_REFUND--> REFUNDED, every parsed
   //   edge carrying exactly the keys from/event/to in order
@@ -6238,7 +6238,7 @@ export async function runDemo(): Promise<DemoResult> {
       "DISPUTED:ARBITRATE_REFUND:REFUNDED"
   ) {
     throw new Error(
-      "demo fixture broken: transitionTableJson() output does not have the pinned shape (1,160 bytes, 14 edges matching transitionTable() edge for edge, pinned key order, first CREATED --FUND--> FUNDED, last DISPUTED --ARBITRATE_REFUND--> REFUNDED, exactly one trailing newline)",
+      "demo fixture broken: transitionTableJson() output does not have the pinned shape (1,337 bytes, 16 edges matching transitionTable() edge for edge, pinned key order, first CREATED --FUND--> FUNDED, last DISPUTED --ARBITRATE_REFUND--> REFUNDED, exactly one trailing newline)",
     );
   }
   lines.push(

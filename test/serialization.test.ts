@@ -163,13 +163,13 @@ test("fromJSON: rejects a catalog of corrupted snapshots with clear errors", () 
       /empty history but state is FUNDED/,
     ],
     [
-      "amount on non-FUND entry",
+      "amount on a non-FUND/PARTIAL_RELEASE entry",
       () => {
         const s = structuredClone(valid);
         s.history[1].amount = 5;
         Escrow.fromJSON(s);
       },
-      /amount only allowed on FUND entries/,
+      /amount only allowed on FUND and PARTIAL_RELEASE entries/,
     ],
     [
       "negative amount on FUND",

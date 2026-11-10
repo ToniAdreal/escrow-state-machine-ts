@@ -237,6 +237,42 @@ export function depositAmountFromHistory(
   return total;
 }
 
+/**
+ * Sum of all PARTIAL_RELEASE amounts in the audit history — the total
+ * paid out in tranches so far. Symmetric to
+ * {@link depositAmountFromHistory} (same shape, same `escrowId` for
+ * error messages), with one deliberate asymmetry: an escrow with no
+ * PARTIAL_RELEASE event at all has released 0, not an error — a
+ * fresh escrow's released total is 0 by definition, and callers
+ * computing the still-locked balance (`deposit - released`) need
+ * that zero, not a throw. The strict half is kept: a
+ * PARTIAL_RELEASE entry recorded without an amount throws
+ * `settlement requires a PARTIAL_RELEASE amount` instead of letting
+ * an uncorroborated release silently understate the paid-out total.
+ * Dispatch always records an amount on PARTIAL_RELEASE, so a live
+ * escrow never hits that throw — it guards hand-built or legacy
+ * histories. Use it wherever a report or webhook payload needs the
+ * paid-out tranche total alongside the locked deposit.
+ */
+export function releasedAmountFromHistory(
+  history: readonly EscrowHistoryEntry[],
+  escrowId = "escrow",
+): number {
+  let total = 0;
+  let hasRelease = false;
+  for (const entry of history) {
+    if (entry.event !== "PARTIAL_RELEASE") continue;
+    hasRelease = true;
+    if (entry.amount === undefined) {
+      throw new Error(
+        `settlement requires a PARTIAL_RELEASE amount for ${escrowId}: a PARTIAL_RELEASE event was recorded without an amount`,
+      );
+    }
+    total += entry.amount;
+  }
+  return hasRelease ? total : 0;
+}
+
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }

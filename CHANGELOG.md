@@ -18,6 +18,27 @@ version changes.
 
 ### Added
 
+- `PARTIAL_RELEASE` milestone partial-release event (2026-11-10, backlog
+  #1028): `dispatch("PARTIAL_RELEASE", note, amount)` pays out one
+  tranche while the escrow stays `FUNDED` — legal from `FUNDED`
+  (self-loop) and from `MILESTONE_SUBMITTED` (back to `FUNDED`), so
+  milestone-based staged payouts are auditable tranche by tranche
+  instead of living only in the pure settlement helpers. The amount is
+  mandatory, must be greater than zero and no larger than the
+  still-locked balance (FUND total minus released total, cent-rounded),
+  and is refused with no history residue otherwise; releasing exactly
+  the remaining balance is legal and still records `PARTIAL_RELEASE`,
+  never a silent full `RELEASE`. New `releasedAmountFromHistory`
+  (exported from the package entry) sums the paid-out tranches (0 with
+  no releases, throws on an amountless `PARTIAL_RELEASE` entry), and
+  the `maxDeposit` cap is now judged on the net locked balance, so a
+  release frees room for a later top-up. The transition table grows
+  from 14 to 16 edges (snapshot, diagram, demo and bench fixtures
+  updated); 16 new `test/partialRelease.test.ts` cases cover both legal
+  states, cumulative releases, the exact-balance edge, all four illegal
+  amounts, missing amount, illegal states, snapshot/fromHistory
+  round-trips, idempotency, the net-locked cap, cent rounding, and the
+  updated amount error message.
 - CLI demo webhook-outbox closing segment (2026-11-10, backlog
   #1024): `src/demo.ts` now ends on a `SettlementWebhookOutbox`
   segment — the main escrow's signed webhook is delivered to the

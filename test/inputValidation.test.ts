@@ -68,16 +68,16 @@ test("FUND rejects negative / NaN / infinite amounts without state change", () =
   }
 });
 
-test("amount is rejected on any event other than FUND", () => {
+test("amount is rejected on any event other than FUND and PARTIAL_RELEASE", () => {
   const e = new Escrow("cmp-input-005");
   assert.throws(
     () => e.dispatch("RELEASE", undefined, 100),
-    /amount is only accepted on FUND, not on RELEASE/,
+    /amount is only accepted on FUND and PARTIAL_RELEASE, not on RELEASE/,
   );
   e.dispatch("FUND");
   assert.throws(
     () => e.dispatch("SUBMIT_MILESTONE", undefined, 100),
-    /amount is only accepted on FUND/,
+    /amount is only accepted on FUND and PARTIAL_RELEASE/,
   );
   assert.equal(e.state, "FUNDED");
   assert.equal(e.history.length, 1);
@@ -87,10 +87,10 @@ test("amount check fires before transition check for non-FUND events", () => {
   const e = new Escrow("cmp-input-006");
   e.dispatch("FUND");
   // double FUND is now a legal top-up self-loop (#43); use a non-FUND event
-  // with an amount instead: the FUND-only rule must fire first, not the
-  // invalid-transition rule.
+  // with an amount instead: the FUND/PARTIAL_RELEASE-only rule must fire
+  // first, not the invalid-transition rule.
   assert.throws(
     () => e.dispatch("RELEASE", undefined, 500),
-    /amount is only accepted on FUND, not on RELEASE/,
+    /amount is only accepted on FUND and PARTIAL_RELEASE, not on RELEASE/,
   );
 });

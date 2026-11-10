@@ -28,6 +28,7 @@ const ALL_EVENTS: EscrowEvent[] = [
   "SUBMIT_MILESTONE",
   "VERIFY_PASS",
   "VERIFY_FAIL",
+  "PARTIAL_RELEASE",
   "RELEASE",
   "DISPUTE",
   "ARBITRATE_RELEASE",
@@ -49,7 +50,7 @@ test("transition table matches the committed JSON snapshot (no accidental edits)
   // Belt and suspenders: structured comparison, not just string equality.
   assert.deepEqual(JSON.parse(snapshot), transitionTable());
   // The snapshot is machine-generated; guard its shape by hand-count too.
-  assert.equal(transitionTable().length, 14);
+  assert.equal(transitionTable().length, 16);
 });
 
 test("transitionTableJson is deterministic with pinned key order", () => {
