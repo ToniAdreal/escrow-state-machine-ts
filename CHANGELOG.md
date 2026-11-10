@@ -18,6 +18,24 @@ version changes.
 
 ### Added
 
+- Opt-in outbox retry runner `retrySettlementWebhookOutbox`
+  (2026-11-10, backlog #1034): `retrySettlementWebhookOutbox(outbox,
+  deliverOne, opts?)` re-delivers a `SettlementWebhookOutbox`'s
+  pending pairs — a success acknowledges (clears) the pair, a
+  failure records one more attempt toward the dead letter, and
+  dead-lettered pairs are never re-delivered. `opts` carries
+  `maxRounds` (default 1), `backoffMs` (default 1000, exponential
+  between rounds, same schedule as the delivery backoff), opt-in
+  `jitterMs`, `maxConcurrency` (default 1, serial; same bounded-pool
+  semantics as the fan-out cap), `signal` (abort stops at round
+  boundaries with earlier results kept), and injectable `sleepImpl` /
+  `now` for deterministic tests. Returns `{ attempted,
+  acknowledged, stillPending, deadLettered, aborted }`. A
+  `deliverOne` that throws is recorded as a failed attempt; a
+  non-boolean result is a caller bug and throws. The runner is
+  in-process only and persists nothing — no durable queue (see
+  README Limitations).
+
 - Fan-out concurrency cap `maxConcurrency` for
   `deliverSettlementWebhookToMany` (2026-11-10, backlog #1032):
   `DeliverSettlementWebhookToManyOptions.maxConcurrency` is an

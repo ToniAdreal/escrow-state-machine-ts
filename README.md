@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1646 tests, all local
+npm test   # 1663 tests, all local
 ```
 
 ## Quickstart
@@ -782,10 +782,13 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
 - **No durable queue.** `deliverSettlementWebhook` keeps no memory of
   failed deliveries, and the `SettlementWebhookOutbox` failure ledger
   is in-process only: a process that dies loses it unless it exported
-  a snapshot first, and the outbox records failures but never retries
-  — the retry loop stays the caller's job. A deployment that needs
-  retries across restarts or processes must build them over shared
-  storage (a database outbox table, a queue, …) instead.
+  a snapshot first. The outbox itself never retries, but the opt-in
+  `retrySettlementWebhookOutbox` runner re-delivers the pending pairs
+  in-process (bounded rounds, exponential backoff, dead letters never
+  retried) — it is still process-local and persists nothing, so a
+  deployment that needs retries across restarts or processes must
+  build them over shared storage (a database outbox table, a
+  queue, …) instead.
 - **Fee formula is the case study's**, not a general pricing engine: arbitrary
   fee schedules are out of scope.
 - **Trust boundaries.** What the library enforces (money input validation,
@@ -986,8 +989,49 @@ the strict snapshot validation. The MAC is integrity protection only,
 not encryption: the endpoints and eventIds inside are wire-visible
 values, so keep the secret where the snapshot writer keeps its other
 signing-side secrets. Same envelope shape and canonical form as the
-dedupe envelope above. Honest limit: the outbox records only — it
-never retries, the retry loop stays the caller's job, and a dead
+dedupe envelope above.
+
+The outbox records only — it never retries on its own. The opt-in
+`retrySettlementWebhookOutbox(outbox, deliverOne, opts?)` runner is
+the one correct retry loop over the ledger, so callers do not have to
+hand-write it (and hand-write its two easiest mistakes: retrying a
+dead letter, and forgetting to clear a pair after a success). You
+supply the re-delivery — usually one line wrapping
+`deliverSettlementWebhook` — and the runner takes the pending list,
+re-delivers each pair, acknowledges successes, records failures
+toward the dead letter, and sleeps the exponential backoff between
+rounds:
+
+```ts
+import { retrySettlementWebhookOutbox } from "escrow-state-machine-ts";
+
+const summary = await retrySettlementWebhookOutbox(
+  outbox,
+  async (endpoint, eventId) => {
+    try {
+      // Rebuild the signed webhook for this (endpoint, eventId) pair
+      // and deliver it; `true` means the receiver answered 2xx.
+      await deliverSettlementWebhook(endpoint, webhook, { retries: 0 });
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  { maxRounds: 3, backoffMs: 1000 },
+);
+// summary: { attempted, acknowledged, stillPending, deadLettered, aborted }
+```
+
+Each round re-reads `outbox.pending()`, so dead-lettered pairs are
+never re-delivered and a pair that dead-letters mid-run is not
+revisited. `maxRounds` (default 1) bounds the loop; `backoffMs`
+(default 1000) is the exponential base between rounds, with opt-in
+`jitterMs`; `maxConcurrency` (default 1, serial) bounds the
+in-flight re-deliveries the same way `deliverSettlementWebhookToMany`
+bounds its fan-out; `signal` aborts at round boundaries with
+already-made attempts kept. A `deliverOne` that throws is recorded
+as a failed attempt with its message, never a runner crash. Honest
+limit: the runner is in-process only and persists nothing — a dead
 process loses the ledger unless it exported a snapshot first (see
 Limitations).
 
@@ -1363,7 +1407,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1646 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1663 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

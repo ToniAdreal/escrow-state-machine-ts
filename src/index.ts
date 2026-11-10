@@ -35,7 +35,7 @@ export { settleRelease, settlePartialRelease, settlePartialReleases, settleRefun
 export type { Settlement, SettlementInputs, PartialSettlement, PartialSettlementInputs, PartialReleases, PartialReleasesInputs, RefundSettlement, RefundSettlementInputs } from "./settlement.js";
 export { buildSettlementReport, buildSettlementReports, depositAmountFromHistory, releasedAmountFromHistory, parseSettlementReportCsv, parseSettlementReportJson, reconcileSettlements, renderReport, renderReportCsv, renderReportJson, summarizeSettlementReports, UNSPECIFIED_SETTLEMENT_CURRENCY } from "./settlementReport.js";
 export type { SettlementReportCsv } from "./settlementReport.js";
-export { buildSettlementWebhook, buildSettlementWebhooks, deliverSettlementWebhook, deliverSettlementWebhookToMany, parseRetryAfter, verifySettlementWebhook, SettlementEventDedupe, SettlementWebhookOutbox } from "./webhooks.js";
+export { buildSettlementWebhook, buildSettlementWebhooks, deliverSettlementWebhook, deliverSettlementWebhookToMany, parseRetryAfter, retrySettlementWebhookOutbox, verifySettlementWebhook, SettlementEventDedupe, SettlementWebhookOutbox } from "./webhooks.js";
 export type {
   BuildSettlementWebhooksOptions,
   BuildSettlementWebhooksResult,
@@ -47,8 +47,11 @@ export type {
   SettlementEventDedupeSnapshot,
   SettlementEventDedupeStats,
   SettlementWebhookOutboxAttempt,
+  SettlementWebhookOutboxDeliverOne,
   SettlementWebhookOutboxEntry,
   SettlementWebhookOutboxOptions,
+  SettlementWebhookOutboxRetryOptions,
+  SettlementWebhookOutboxRetrySummary,
   SettlementWebhookOutboxSignedSnapshotEnvelope,
   SettlementWebhookOutboxSnapshot,
   SettlementWebhook,
