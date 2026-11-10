@@ -49,6 +49,7 @@ export type {
   SettlementWebhookOutboxAttempt,
   SettlementWebhookOutboxEntry,
   SettlementWebhookOutboxOptions,
+  SettlementWebhookOutboxSignedSnapshotEnvelope,
   SettlementWebhookOutboxSnapshot,
   SettlementWebhook,
   SettlementWebhookEndpoint,

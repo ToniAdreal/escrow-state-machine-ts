@@ -18,6 +18,21 @@ version changes.
 
 ### Added
 
+- HMAC-signed snapshot envelopes for `SettlementWebhookOutbox`
+  (2026-11-10, backlog #1030): `exportSignedSnapshot(secret)` wraps
+  the unsigned snapshot in `{ v: 1, snapshot, mac }` (HMAC-SHA256
+  over the canonical JSON of the snapshot, same envelope shape and
+  canonical form as the #1010 dedupe envelope), and
+  `restoreSignedSnapshot(envelope, secret, opts)` (alias
+  `fromSignedSnapshot`) verifies the MAC in constant time before
+  any snapshot parsing — a rewritten persisted file (a lowered
+  `attempts` count resurrecting a dead letter, an inflated one
+  killing retries, a forged `lastError`/`lastAt` or
+  `(endpoint, eventId)` key) now fails closed at restore instead of
+  silently rewriting the failure ledger. The secret is never
+  written into the envelope, the two snapshot forms never accept
+  each other, and the unsigned path is unchanged.
+
 - Integer-cents fee API `calculateDepositCents` (2026-11-10, backlog
   #1029): the same deposit formula as `calculateDeposit`, but every
   money field is a whole number of cents in and out

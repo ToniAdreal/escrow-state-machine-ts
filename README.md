@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1619 tests, all local
+npm test   # 1637 tests, all local
 ```
 
 ## Quickstart
@@ -960,10 +960,36 @@ keyed by `(endpoint, eventId)`, so one endpoint's failures never
 pollute another's retry count. `exportSnapshot()` /
 `SettlementWebhookOutbox.restore()` carry the ledger across a restart
 of the same process (unsigned, trusted-configuration snapshot — the
-same posture as the dedupe's unsigned snapshot above). Honest limit:
-the outbox records only — it never retries, the retry loop stays the
-caller's job, and a dead process loses the ledger unless it exported
-a snapshot first (see Limitations).
+same posture as the dedupe's unsigned snapshot above). When the
+persisted file is not fully trusted, use the signed envelope instead
+— `exportSignedSnapshot(secret)` returns `{ v: 1, snapshot, mac }`
+with `mac` = HMAC-SHA256 over the canonical JSON of the snapshot,
+and `SettlementWebhookOutbox.restoreSignedSnapshot(envelope, secret,
+opts)` (alias `fromSignedSnapshot`) verifies it before restoring:
+
+```ts
+// before shutdown:
+persist(JSON.stringify(outbox.exportSignedSnapshot(process.env.OUTBOX_SNAPSHOT_SECRET!)));
+// at startup:
+const outbox2 = SettlementWebhookOutbox.restoreSignedSnapshot(JSON.parse(saved), process.env.OUTBOX_SNAPSHOT_SECRET!, { maxAttempts: 3 });
+```
+
+The secret is never written into the envelope, and the two forms do
+not accept each other — a signed envelope is rejected by the unsigned
+`restore()`, and an unsigned snapshot is rejected by the signed
+restore, so a signed restore cannot silently downgrade to the
+trusted-configuration path. A tampered attempts count, a tampered
+`lastError`/`lastAt`, a tampered `(endpoint, eventId)` key, a tampered
+`mac`, or a wrong secret all fail closed with no outbox produced, and
+a MAC-valid envelope whose snapshot is itself malformed still fails
+the strict snapshot validation. The MAC is integrity protection only,
+not encryption: the endpoints and eventIds inside are wire-visible
+values, so keep the secret where the snapshot writer keeps its other
+signing-side secrets. Same envelope shape and canonical form as the
+dedupe envelope above. Honest limit: the outbox records only — it
+never retries, the retry loop stays the caller's job, and a dead
+process loses the ledger unless it exported a snapshot first (see
+Limitations).
 
 Secret rotation: while you roll from an old secret to a new one, pass both
 as candidates — any candidate that matches verifies, all-mismatch still
@@ -1329,7 +1355,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1619 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1637 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
