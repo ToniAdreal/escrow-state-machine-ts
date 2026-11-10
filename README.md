@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1557 tests, all local
+npm test   # 1568 tests, all local
 ```
 
 ## Quickstart
@@ -511,7 +511,29 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   without them restores uncapped with the gate off, and an explicit
   `fromJSON` opt overrides either value entirely; a tampered cap or
   gate in a stored snapshot is rejected. The audit key is never in a
-  snapshot. Snapshot diffing:
+  snapshot. Signed snapshots close the remaining gap: the hash chain
+  covers history entries only, so the snapshot-level fields
+  (`state`, `deadline`, `rolePolicy`, `idempotencyKeys`,
+  `maxDeposit`, `requireVerifyEvidence`) sit outside it — a
+  rewritten persisted file could push a deadline back, loosen a
+  policy, clear consumed keys, or lift a cap without breaking any
+  history link. `escrow.exportSignedSnapshot(secret)` wraps the
+  snapshot in `{ v: 1, snapshot, mac }` (HMAC-SHA256 over the
+  canonical JSON of the whole snapshot, same envelope shape as the
+  `SettlementEventDedupe` signed snapshot), and
+  `Escrow.restoreSignedSnapshot(envelope, secret, opts?)` (alias
+  `fromSignedSnapshot`) verifies the MAC in constant time before any
+  snapshot parsing — a tampered field, a wrong secret, or a smuggled
+  extra field fails closed with no escrow produced, and a MAC-valid
+  envelope whose snapshot is itself malformed still fails strict
+  snapshot validation. `opts.auditKey` is handed through to
+  `fromJSON`, so a keyed history chain still needs its own key on
+  restore; the envelope secret need not equal the audit key. The
+  secret is never written into the envelope, the MAC is integrity
+  protection only (not encryption), and the unsigned path is
+  unchanged — the two forms never accept each other, so a signed
+  restore cannot silently downgrade to trusted configuration.
+  Snapshot diffing:
   `diffEscrowSnapshots(before, after)` reports only what changed
   (`stateChanged` / `deadlineChanged` / `historyAppended` /
   `rolePolicyChanged` / `depositCapChanged` / `evidenceGateChanged` /
@@ -1228,7 +1250,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1557 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1568 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

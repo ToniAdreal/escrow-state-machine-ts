@@ -32,6 +32,23 @@ version changes.
   legitimate settlement. The secret is never written into the
   envelope, the two snapshot forms never accept each other, and
   the unsigned path is unchanged.
+- HMAC-signed snapshot envelopes for `Escrow`
+  (2026-11-10, backlog #1017): `exportSignedSnapshot(secret)` wraps
+  the whole `EscrowSnapshot` in `{ v: 1, snapshot, mac }`
+  (HMAC-SHA256 over the canonical JSON of the snapshot, same
+  envelope shape and canonical form as the #1010 dedupe envelope),
+  and `restoreSignedSnapshot(envelope, secret, opts)` (alias
+  `fromSignedSnapshot`) verifies the MAC in constant time before
+  any snapshot parsing — closing the gap the hash chain leaves
+  open (it covers history entries only): a rewritten persisted
+  file that pushes a deadline back, loosens a `rolePolicy`, clears
+  consumed idempotency keys, or lifts a deposit cap now fails
+  closed at restore instead of silently applying. `opts.auditKey`
+  is handed through to `fromJSON`, so a keyed chain still needs
+  its own key on restore; the envelope secret need not equal the
+  audit key. The secret is never written into the envelope, the
+  two snapshot forms never accept each other, and the unsigned
+  path is unchanged.
 - Benchmark rows for the combined filter and settlement aging
   (2026-11-09, backlog #1007): `npm run bench` now measures
   `escrowsByFilters` over the same fixed 60-escrow batch the

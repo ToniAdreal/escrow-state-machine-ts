@@ -225,6 +225,24 @@ secret is never written into the envelope — a restored dedupe
 must be handed the secret again, like the audit key above, and
 key storage and distribution remain the caller's responsibility.
 
+Escrow snapshots get the same treatment at the snapshot level:
+`Escrow.exportSignedSnapshot(secret)` wraps the whole
+`EscrowSnapshot` in an HMAC-SHA256 envelope `{ v: 1, snapshot, mac }`
+(same shape and canonical form as the dedupe envelope), and
+`Escrow.restoreSignedSnapshot(envelope, secret, opts?)` verifies
+the MAC in constant time before any snapshot parsing. This closes
+the gap the hash chain leaves open: the chain covers history
+entries only, so without the envelope a rewritten persisted file
+could push a deadline back, loosen a `rolePolicy`, clear consumed
+idempotency keys, or lift a deposit cap without breaking any
+history link — with the envelope, any such rewrite fails closed
+at restore. The envelope secret need not equal the escrow's
+`auditKey` (they protect different things and are managed
+independently); `opts.auditKey` is still handed to `fromJSON` on
+restore so a keyed chain re-verifies under its own key. The
+unsigned `fromJSON()` path stays accepted as trusted
+configuration, and the two forms never accept each other.
+
 ## Deliberately NOT here (production would need it)
 
 - Real oracle/Chainlink/zk-SNARK/TEE verification behind `VERIFY_PASS`

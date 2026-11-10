@@ -10,6 +10,7 @@ export type {
   EscrowsByFiltersOptions,
   EscrowSnapshot,
   EscrowSnapshotDiff,
+  EscrowSignedSnapshotEnvelope,
   EscrowState,
   ExpireOverdueResult,
   NextEscrowDeadline,
