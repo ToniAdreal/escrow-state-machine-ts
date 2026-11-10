@@ -18,6 +18,20 @@ version changes.
 
 ### Added
 
+- Integer-cents fee API `calculateDepositCents` (2026-11-10, backlog
+  #1029): the same deposit formula as `calculateDeposit`, but every
+  money field is a whole number of cents in and out
+  (`creatorPoolCents` / `baseFeeCents` / `loyaltyDiscountCents` /
+  `oracleFeeCents`, `complexityMultiplier` unchanged), so callers that
+  already keep money as integer cents never round-trip through float
+  dollars. The multiplier is applied once and rounded a single time,
+  half-up, to the nearest cent, so the two APIs agree to the cent on
+  the same inputs; the golden vector is 1,063,000 cents. Non-integer,
+  negative, or non-finite cent inputs fail fast, as do a non-positive
+  multiplier, a negative deposit, and an overflowing computation (same
+  error messages as the dollar version). `calculateDeposit` is
+  unchanged; the cents API is the recommended path for new callers.
+
 - `PARTIAL_RELEASE` milestone partial-release event (2026-11-10, backlog
   #1028): `dispatch("PARTIAL_RELEASE", note, amount)` pays out one
   tranche while the escrow stays `FUNDED` — legal from `FUNDED`

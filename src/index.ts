@@ -24,8 +24,13 @@ export type {
   TransitionEdge,
   UnknownSettlementAgingEntry,
 } from "./stateMachine.js";
-export { calculateDeposit } from "./feeCalculator.js";
-export type { FeeBreakdown, FeeInputs } from "./feeCalculator.js";
+export { calculateDeposit, calculateDepositCents } from "./feeCalculator.js";
+export type {
+  FeeBreakdown,
+  FeeBreakdownCents,
+  FeeInputs,
+  FeeInputsCents,
+} from "./feeCalculator.js";
 export { settleRelease, settlePartialRelease, settlePartialReleases, settleRefund } from "./settlement.js";
 export type { Settlement, SettlementInputs, PartialSettlement, PartialSettlementInputs, PartialReleases, PartialReleasesInputs, RefundSettlement, RefundSettlementInputs } from "./settlement.js";
 export { buildSettlementReport, buildSettlementReports, depositAmountFromHistory, releasedAmountFromHistory, parseSettlementReportCsv, parseSettlementReportJson, reconcileSettlements, renderReport, renderReportCsv, renderReportJson, summarizeSettlementReports, UNSPECIFIED_SETTLEMENT_CURRENCY } from "./settlementReport.js";

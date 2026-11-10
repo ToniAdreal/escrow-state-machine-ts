@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1603 tests, all local
+npm test   # 1619 tests, all local
 ```
 
 ## Quickstart
@@ -720,6 +720,17 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   amounts are normalized to cents at entry — no new dispatch can produce
   a sub-cent amount in the audit trail (legacy snapshots with sub-cent
   amounts are still accepted by the parsers, not re-normalized).
+  Callers that already keep money as integer cents can skip float
+  dollars entirely with `calculateDepositCents` (the recommended path):
+  it takes and returns whole cents (`creatorPoolCents` /
+  `baseFeeCents` / `loyaltyDiscountCents` / `oracleFeeCents`, the
+  `complexityMultiplier` unchanged), applies the multiplier once and
+  rounds a single time, half-up, to the nearest cent — so it agrees
+  with `calculateDeposit` to the cent on the same inputs, with no
+  `0.1 + 0.2` dust to mop up. The golden vector is 1,063,000 cents.
+  Non-integer, negative, or non-finite cent inputs fail fast, as do a
+  non-positive multiplier, a negative deposit, and an overflowing
+  computation (same error messages as the dollar version).
   Finite-but-huge fee inputs that would overflow the deposit computation
   to `Infinity` are rejected: `calculateDeposit` throws
   `deposit computation overflowed: inputs too large` instead of returning
@@ -1318,7 +1329,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1603 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1619 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
