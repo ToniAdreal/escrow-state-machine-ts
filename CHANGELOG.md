@@ -18,6 +18,23 @@ version changes.
 
 ### Added
 
+- Benchmark rows for `SettlementWebhookOutbox` (2026-11-10,
+  backlog #1038): `bench/bench.ts` measures the failure ledger's
+  hot paths over a fixed outbox (`maxAttempts: 3`, injected fixed
+  clock) — `recordAttempt` per fresh `(endpoint, eventId)` pair,
+  the 3-failure dead-letter boundary, `pending()` / `deadLetter()`
+  over a fixed 1,000-pair ledger (700 pending, 300 dead-lettered),
+  `acknowledge` clearing a pending pair, `exportSnapshot`, and
+  `restore` from the JSON round-tripped form — each with
+  per-iteration self-checks pinning counts and dead-letter state
+  exactly, and malformed snapshots pinned to be rejected by
+  `restore` outside the timed loop. Real run (2026-11-10, Node
+  v24.22.1, AMD EPYC 9D25): record ~1,350,808 ops/sec,
+  dead-letter boundary ~480,216, lists ~16,411, acknowledge
+  ~688,089, exportSnapshot ~12,582, restore ~2,859. README
+  Benchmarks table refreshed with these six rows only; the rest
+  of the table keeps its earlier runs (see the table footnote).
+
 - Opt-in outbox retry runner `retrySettlementWebhookOutbox`
   (2026-11-10, backlog #1034): `retrySettlementWebhookOutbox(outbox,
   deliverOne, opts?)` re-delivers a `SettlementWebhookOutbox`'s

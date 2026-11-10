@@ -1700,6 +1700,29 @@ sitting in the map is excluded — and outside the timed loop a
 mutated detached snapshot is pinned to leave a re-read
 unchanged and an empty dedupe is pinned to report all-zero
 stats),
+settlement webhook outbox
+(`SettlementWebhookOutbox.recordAttempt` recording one failure
+per fresh `(endpoint, eventId)` pair under a fixed injected
+clock — `maxAttempts: 3`, so the dead-letter boundary is the
+third consecutive failure — with the ledger size pinned to the
+hand-counted total on every iteration; one pair driven through
+the 3-failure dead-letter boundary on a fresh outbox on every
+iteration, the rebuild cost inside the timed region, the same
+accounting the dedupe-clear row uses; `pending()` /
+`deadLetter()` over a fixed 1,000-pair ledger — 700 pending
+(350 at 1 attempt, 350 at 2), 300 dead-lettered at 3 — with the
+pinned attempts / error / timestamp spot-checked on every
+iteration; `acknowledge` clearing a pending pair at 2 failures
+on a fresh outbox on every iteration, again with the rebuild
+cost inside the timed region; `exportSnapshot` exporting that
+same 1,000-pair ledger and `restore` rebuilding it from its
+JSON round-tripped form, the restored lists checked against the
+hand-written composition on every iteration; the full
+entry-for-entry ledger comparison, the detached-copy and
+empty-store export shapes, the restore-keeps-counting shape,
+the `maxAttempts: 1` boundary re-derivation, and the 7 malformed
+snapshots pinned to be rejected by `restore` all once, outside
+the timed loop),
 settlement webhook verify x dedupe receiver flow
 (`verifySettlementWebhook` + `SettlementEventDedupe.checkAndRecord`
 over the fixed signed webhook — one measured op is three
@@ -2266,6 +2289,12 @@ One real run on 2026-11-04:
 | SettlementEventDedupe.exportSnapshot (1,000-entry snapshot) | ~21,476 ops/sec (46.56 µs/op) |
 | SettlementEventDedupe.clear (1,000 recorded ids, fresh fixture) | ~6,778 ops/sec (147.54 µs/op) |
 | SettlementEventDedupe.stats (5 live entries, 1 expired) | ~3,142,309 ops/sec (0.32 µs/op) |
+| SettlementWebhookOutbox recordAttempt (failure, fresh pair) | ~1,350,808 ops/sec (0.74 µs/op) |
+| SettlementWebhookOutbox recordAttempt (dead-letter boundary, 3 failures, 1 pair) | ~480,216 ops/sec (2.08 µs/op) |
+| SettlementWebhookOutbox pending/deadLetter (700 pending + 300 dead-lettered) | ~16,411 ops/sec (60.94 µs/op) |
+| SettlementWebhookOutbox acknowledge (pending pair, 2 failures) | ~688,089 ops/sec (1.45 µs/op) |
+| SettlementWebhookOutbox exportSnapshot (1,000-pair ledger) | ~12,582 ops/sec (79.48 µs/op) |
+| SettlementWebhookOutbox restore (1,000-pair snapshot, JSON round-trip) | ~2,859 ops/sec (349.78 µs/op) |
 | expiredEscrows (batch 100 escrows) | ~42,594 ops/sec (23.48 µs/op) |
 | staleEscrows (batch 100 escrows) | ~15,865 ops/sec (63.03 µs/op) |
 | expireOverdueEscrows (batch 100 escrows) | ~698.2 ops/sec (1432.23 µs/op) |
@@ -2306,7 +2335,7 @@ and the settlePartialRelease row above were measured on
 escrowsByEvent row above were measured on 2026-11-06 runs; the
 settlePartialReleases row above was measured on a 2026-11-08 run; the
 escrowsByFilters and settlementAging rows above were measured on a
-2026-11-09 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
+2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
 came in mixed under shared-host load, so refreshing the whole
 table would misreport changes in paths these additions never
 touched.
