@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1568 tests, all local
+npm test   # 1585 tests, all local
 ```
 
 ## Quickstart
@@ -746,6 +746,13 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   timer or auto-expire), and a shared/distributed idempotency store
   (this repo's consumed keys persist only inside each escrow's own
   snapshot); the `Escrow` class is in-memory.
+- **No durable queue.** `deliverSettlementWebhook` keeps no memory of
+  failed deliveries, and the `SettlementWebhookOutbox` failure ledger
+  is in-process only: a process that dies loses it unless it exported
+  a snapshot first, and the outbox records failures but never retries
+  — the retry loop stays the caller's job. A deployment that needs
+  retries across restarts or processes must build them over shared
+  storage (a database outbox table, a queue, …) instead.
 - **Fee formula is the case study's**, not a general pricing engine: arbitrary
   fee schedules are out of scope.
 - **Trust boundaries.** What the library enforces (money input validation,
@@ -891,6 +898,39 @@ values, so keep the secret where the snapshot writer keeps its other
 signing-side secrets. This mirrors the sibling rfc9421
 `ReplayCache` signed snapshot (`exportSignedSnapshot` /
 `restoreSignedSnapshot`), same envelope shape and canonical form.
+
+On the sending side, delivery itself keeps no memory: a failed
+`deliverSettlementWebhook` call only tells you that one call failed.
+`SettlementWebhookOutbox` is the in-memory ledger that answers "which
+`(endpoint, eventId)` pairs are still undelivered, and which have
+exhausted their retries":
+
+```ts
+import { SettlementWebhookOutbox } from "escrow-state-machine-ts";
+
+const outbox = new SettlementWebhookOutbox({ maxAttempts: 3 });
+try {
+  await deliverSettlementWebhook(url, webhook, { retries: 0 });
+  outbox.acknowledge(url, webhook.payload.eventId);
+} catch (err) {
+  outbox.recordAttempt({ endpoint: url, eventId: webhook.payload.eventId, ok: false, error: (err as Error).message });
+}
+outbox.pending();    // failed but not yet exhausted — still worth a retry
+outbox.deadLetter(); // 3 consecutive failures — needs a human, not another retry
+```
+
+A failed attempt increments the pair's consecutive-failure count
+(capped at `maxAttempts`, while later failures still refresh
+`lastError`/`lastAt`); a success (`ok: true`, or `acknowledge()`)
+clears the pair, so a later failure counts from 1 again. Pairs are
+keyed by `(endpoint, eventId)`, so one endpoint's failures never
+pollute another's retry count. `exportSnapshot()` /
+`SettlementWebhookOutbox.restore()` carry the ledger across a restart
+of the same process (unsigned, trusted-configuration snapshot — the
+same posture as the dedupe's unsigned snapshot above). Honest limit:
+the outbox records only — it never retries, the retry loop stays the
+caller's job, and a dead process loses the ledger unless it exported
+a snapshot first (see Limitations).
 
 Secret rotation: while you roll from an old secret to a new one, pass both
 as candidates — any candidate that matches verifies, all-mismatch still
@@ -1250,7 +1290,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1568 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1585 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

@@ -18,6 +18,20 @@ version changes.
 
 ### Added
 
+- Settlement webhook delivery-failure ledger `SettlementWebhookOutbox`
+  (2026-11-10, backlog #1019): an in-memory outbox keyed by
+  `(endpoint, eventId)` — `recordAttempt({ endpoint, eventId, ok,
+  status?, error?, at? })` counts consecutive failures (default
+  `maxAttempts: 3`, constructor-validated), `pending()` lists pairs
+  still worth a retry, `deadLetter()` lists pairs that exhausted
+  their retries, and a success (`ok: true`, or `acknowledge()`)
+  clears the pair so a later failure counts from 1 again. Unsigned
+  `exportSnapshot()` / `restore()` (alias `fromSnapshot`) carry the
+  ledger across a restart of the same process, with the same strict
+  validation and trusted-configuration posture as the dedupe's
+  unsigned snapshot. The outbox records only — it never retries, and
+  `deliverSettlementWebhook` / `deliverSettlementWebhookToMany` are
+  unchanged.
 - HMAC-signed snapshot envelopes for `SettlementEventDedupe`
   (2026-11-09, backlog #1010): `exportSignedSnapshot(secret)` wraps
   the unsigned snapshot in `{ v: 1, snapshot, mac }` (HMAC-SHA256
