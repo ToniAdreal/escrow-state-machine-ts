@@ -18,6 +18,23 @@ version changes.
 
 ### Added
 
+- `MAX_IDEMPOTENCY_KEY_LENGTH` cap on dispatch idempotency keys
+  (2026-11-11, backlog #1064): `dispatch()`'s `opts.idempotencyKey`,
+  constructor seeding (`idempotencyKeys`), and the snapshot parser
+  reject a key longer than 256 characters (`invalid dispatch options:
+  idempotencyKey must be at most 256 characters, got N` /
+  `invalid option: idempotencyKeys entries must be at most 256
+  characters, got N` / `invalid snapshot: idempotencyKeys entries
+  must be at most 256 characters, got N`), so an oversized key can
+  neither be consumed live nor smuggled in through a rehydrated
+  snapshot; `Escrow.fromHistory` is covered through the constructor.
+  The constant is exported from the package entry and shares its
+  value with `MAX_ESCROW_ID_LENGTH` and the webhook
+  `MAX_EVENT_ID_LENGTH`. Keys are rejected outright, never truncated
+  (truncation would change which deliveries a key dedupes), and a
+  rejected dispatch consumes no key. 10 tests in
+  `test/idempotencyKeyLength.test.ts`.
+
 - `MAX_EVIDENCE_LENGTH` cap on quorum approval `evidence`
   (2026-11-11, backlog #1063): `approve()`, `approveSigned()`, and
   the snapshot parser behind `restoreQuorum()` reject evidence

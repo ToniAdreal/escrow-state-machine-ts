@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1762 tests, all local
+npm test   # 1772 tests, all local
 ```
 
 ## Quickstart
@@ -295,9 +295,15 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   snapshot (`test/transitionSnapshot.test.ts` fails if the table ever
   changes without regenerating it).
 - Retry safety: `dispatch` accepts a fourth argument `opts` with an optional
-  `idempotencyKey` (non-empty string). A dispatch whose key was already seen
+  `idempotencyKey` (non-empty string, no longer than
+  `MAX_IDEMPOTENCY_KEY_LENGTH` — 256 characters, exported from the package
+  entry). A dispatch whose key was already seen
   is a no-op — it returns the *current* state and appends nothing to the
   audit history, so a retried `FUND` can never double-count the deposit.
+  An oversized key is rejected outright at `dispatch`, at constructor
+  seeding (`idempotencyKeys`), and on snapshot restore — never truncated,
+  because truncation would change which deliveries the key dedupes, and a
+  rejected dispatch consumes no key.
   Keys are global to the escrow instance (the same key on a different event
   is still a duplicate), are recorded only after a *successful* dispatch (a
   failed dispatch leaves the key unused, so the caller can retry with
@@ -1470,7 +1476,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1762 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1772 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

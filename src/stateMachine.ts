@@ -325,6 +325,30 @@ export const MAX_ACTOR_LENGTH = 256;
  */
 export const MAX_ESCROW_ID_LENGTH = 256;
 
+/**
+ * Maximum length (in UTF-16 code units, i.e. `String.length`) of a
+ * dispatch idempotency key. A key is a short identifier — a UUID is
+ * 36 characters, the demo's keys are shorter still — so 256 leaves
+ * orders of magnitude of headroom over any honest value while
+ * bounding what a caller can write verbatim into the consumed-key
+ * set and, through it, into every snapshot that persists that set
+ * (see {@link EscrowSnapshot.idempotencyKeys}). The cap is enforced
+ * at the same three points a key can enter the system — `dispatch()`,
+ * constructor seeding (`EscrowOptions.idempotencyKeys`), and the
+ * snapshot parser (which also covers `Escrow.fromHistory`, whose
+ * keys arrive through the constructor) — so an oversized key can
+ * neither be consumed live nor smuggled in through a rehydrated
+ * snapshot, and it is rejected outright, never silently truncated
+ * (truncation would change which deliveries the key dedupes).
+ * The dispatch check runs up front, next to the existing non-empty
+ * check and before the dedup lookup, so an oversized key reports
+ * the length error first and consumes nothing. Same value as
+ * {@link MAX_ESCROW_ID_LENGTH} and the webhook
+ * `MAX_EVENT_ID_LENGTH`: all three guard short caller-supplied
+ * identifiers that land in persisted artifacts.
+ */
+export const MAX_IDEMPOTENCY_KEY_LENGTH = 256;
+
 export interface EscrowSnapshot {
   /**
    * Snapshot schema version. `toJSON()` always writes the current
@@ -360,7 +384,9 @@ export interface EscrowSnapshot {
    * a restart with an already-consumed key stays a no-op — this is what
    * makes idempotency survive restarts. Duplicate entries are deduped
    * on parse (first occurrence wins); any non-array value or
-   * non-string/empty entry throws `invalid snapshot: …`.
+   * non-string/empty entry — or an entry longer than
+   * {@link MAX_IDEMPOTENCY_KEY_LENGTH} characters — throws
+   * `invalid snapshot: …`.
    *
    * The schema version stays 1: the field is optional and additive, so
    * snapshots WITHOUT it (everything written before this field existed)
@@ -518,11 +544,14 @@ const ESCROW_OPTION_FIELDS = new Set([
  * Validate a list of idempotency keys into a deduped set.
  *
  * `undefined` means "no keys" (the default). Otherwise the value must be
- * an array of non-empty strings — the same bar dispatch() applies to a
- * single key. Duplicates are deduped (first occurrence wins, preserving
- * insertion order for snapshot round-trips), mirroring the dataquest
- * lifecycle's `assertIdempotencyKeys`. Anything else throws
- * `<tag>: idempotencyKeys …`.
+ * an array of non-empty strings no longer than
+ * {@link MAX_IDEMPOTENCY_KEY_LENGTH} characters — the same bar
+ * dispatch() applies to a single key. Duplicates are deduped (first
+ * occurrence wins, preserving insertion order for snapshot round-trips),
+ * mirroring the dataquest lifecycle's `assertIdempotencyKeys`.
+ * Anything else throws `<tag>: idempotencyKeys …`. An oversized key is
+ * rejected outright, never truncated: truncation would change which
+ * deliveries the key dedupes.
  */
 function assertIdempotencyKeys(value: unknown, tag: string): Set<string> {
   const keys = new Set<string>();
@@ -538,6 +567,11 @@ function assertIdempotencyKeys(value: unknown, tag: string): Set<string> {
         `${tag}: idempotencyKeys entries must be non-empty strings, got ${JSON.stringify(key)}`
       );
     }
+    if (key.length > MAX_IDEMPOTENCY_KEY_LENGTH) {
+      throw new Error(
+        `${tag}: idempotencyKeys entries must be at most ${MAX_IDEMPOTENCY_KEY_LENGTH} characters, got ${key.length}`
+      );
+    }
     keys.add(key);
   }
   return keys;
@@ -547,12 +581,13 @@ function assertIdempotencyKeys(value: unknown, tag: string): Set<string> {
  * Validate a snapshot's `idempotencyKeys` field into a deduped set.
  *
  * `undefined` means "no keys consumed" (the legacy shape). Otherwise the
- * value must be an array of non-empty strings — the same bar dispatch()
- * applies to a single key. Duplicates are deduped (first occurrence
- * wins, preserving insertion order for snapshot round-trips), mirroring
- * the dataquest lifecycle's `assertIdempotencyKeys`. Anything else
- * throws `invalid snapshot: idempotencyKeys …`: a tampered key list is
- * rejected, never silently trusted or dropped.
+ * value must be an array of non-empty strings no longer than
+ * {@link MAX_IDEMPOTENCY_KEY_LENGTH} characters — the same bar
+ * dispatch() applies to a single key. Duplicates are deduped (first
+ * occurrence wins, preserving insertion order for snapshot round-trips),
+ * mirroring the dataquest lifecycle's `assertIdempotencyKeys`. Anything
+ * else throws `invalid snapshot: idempotencyKeys …`: a tampered key
+ * list is rejected, never silently trusted or dropped.
  */
 function parseSnapshotIdempotencyKeys(value: unknown): Set<string> {
   return assertIdempotencyKeys(value, "invalid snapshot");
@@ -1561,7 +1596,12 @@ export interface DispatchOptions {
   /**
    * Optional idempotency key (payments-style retry safety).
    *
-   * The key must be a non-empty string. When a key has been seen before,
+   * The key must be a non-empty string no longer than
+   * {@link MAX_IDEMPOTENCY_KEY_LENGTH} characters (256). A longer key
+   * is rejected outright, never truncated — truncation would change
+   * which deliveries the key dedupes — and a rejected dispatch
+   * consumes no key, so the caller can retry with a shorter one.
+   * When a key has been seen before,
    * dispatch is a no-op: it returns the *current* state and appends nothing
    * to the audit history, without validating the transition (a duplicate
    * delivery must not fail just because the escrow has since moved on).
@@ -1857,7 +1897,9 @@ export interface EscrowOptions {
    *
    * Validated strictly at construction via `assertIdempotencyKeys`
    * with tag `invalid option`: the value must be an array of
-   * non-empty strings (duplicates are deduped); anything else throws
+   * non-empty strings, each no longer than
+   * {@link MAX_IDEMPOTENCY_KEY_LENGTH} characters (duplicates are
+   * deduped); anything else throws
    * `invalid option: idempotencyKeys …` before the escrow exists.
    * Default: undefined (empty key set, unchanged legacy behavior).
    *
@@ -2287,6 +2329,17 @@ export class Escrow {
             `invalid dispatch options: idempotencyKey must be a non-empty string, got ${String(
               idempotencyKey
             )}`
+          );
+        }
+        // Same bar as the actor/note/evidence caps: an oversized key is
+        // rejected outright, never silently truncated (truncation would
+        // change which deliveries the key dedupes). Checked here, up
+        // front with the shape check — before the dedup lookup — so an
+        // oversized key reports the length error first and consumes
+        // nothing, and a rejected dispatch leaves the key reusable.
+        if (idempotencyKey.length > MAX_IDEMPOTENCY_KEY_LENGTH) {
+          throw new Error(
+            `invalid dispatch options: idempotencyKey must be at most ${MAX_IDEMPOTENCY_KEY_LENGTH} characters, got ${idempotencyKey.length}`
           );
         }
         if (this._seenIdempotencyKeys.has(idempotencyKey)) {
