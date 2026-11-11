@@ -3232,6 +3232,15 @@ export interface EscrowsByFiltersOptions {
   actor?: string;
   /** Event that must appear at least once in the history (same rule as {@link escrowsByEvent}). */
   event?: EscrowEvent;
+  /**
+   * Overdue axis (same rule as {@link isOverdue}): `true` keeps only
+   * escrows past their deadline, `false` keeps only escrows that are
+   * not overdue (no deadline, terminal, or deadline still ahead).
+   * Omitted means no overdue filtering. Judged against the `now`
+   * argument of {@link escrowsByFilters}, boundary inclusive
+   * (`now >= deadline` counts as overdue).
+   */
+  overdue?: boolean;
 }
 
 /**
@@ -3266,9 +3275,16 @@ export interface EscrowsByFiltersOptions {
  * `event` rejects unknown events, and an empty or non-string
  * `actor` fails fast instead of silently returning an empty list —
  * a typo in any axis cannot masquerade as "no escrow matches this
- * combination". The same fail-closed rule covers the filter keys
- * themselves: only `state`, `actor`, and `event` are accepted, so a
- * misspelled axis name such as `states` throws
+ * combination". The `overdue` axis uses {@link isOverdue}'s rule
+ * (past deadline, non-terminal, boundary `now >= deadline`
+ * inclusive); `false` selects the complement (no deadline,
+ * terminal, or deadline still ahead). The `now` argument pins the
+ * screening instant for that axis and defaults to the real clock,
+ * so unit tests pin it to a fixed date; an invalid `now` throws
+ * fail-fast when the `overdue` axis is present. The same fail-closed
+ * rule covers the filter keys themselves: only `state`, `actor`,
+ * `event`, and `overdue` are accepted, so a misspelled axis name
+ * such as `states` throws
  * `invalid escrowsByFilters: unknown filter "states"` instead of
  * being silently ignored and returning the unfiltered batch — and a
  * non-object `filters` argument throws instead of surfacing a
@@ -3279,6 +3295,7 @@ export interface EscrowsByFiltersOptions {
 export function escrowsByFilters(
   escrows: readonly Escrow[],
   filters: EscrowsByFiltersOptions,
+  now: Date = new Date(),
 ): Escrow[] {
   if (
     typeof filters !== "object" ||
@@ -3290,7 +3307,12 @@ export function escrowsByFilters(
     );
   }
   for (const key of Object.keys(filters)) {
-    if (key !== "state" && key !== "actor" && key !== "event") {
+    if (
+      key !== "state" &&
+      key !== "actor" &&
+      key !== "event" &&
+      key !== "overdue"
+    ) {
       throw new Error(
         `invalid escrowsByFilters: unknown filter "${key}"`,
       );
@@ -3314,6 +3336,14 @@ export function escrowsByFilters(
       `invalid escrowsByFilters: unknown event "${String(filters.event)}"`,
     );
   }
+  if (filters.overdue !== undefined && typeof filters.overdue !== "boolean") {
+    throw new Error(
+      `invalid escrowsByFilters: overdue must be a boolean, got ${JSON.stringify(filters.overdue)}`,
+    );
+  }
+  if (filters.overdue !== undefined && !Number.isFinite(now.getTime())) {
+    throw new Error("invalid now: expected a valid Date");
+  }
   return escrows.filter((escrow) => {
     if (filters.state !== undefined && escrow.state !== filters.state) {
       return false;
@@ -3327,6 +3357,12 @@ export function escrowsByFilters(
     if (
       filters.event !== undefined &&
       !escrow.history.some((entry) => entry.event === filters.event)
+    ) {
+      return false;
+    }
+    if (
+      filters.overdue !== undefined &&
+      isOverdue(escrow, now) !== filters.overdue
     ) {
       return false;
     }

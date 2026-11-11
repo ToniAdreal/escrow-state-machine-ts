@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1674 tests, all local
+npm test   # 1686 tests, all local
 ```
 
 ## Quickstart
@@ -444,14 +444,19 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   an empty/non-string actor, or an unknown event instead of silently
   returning an empty list. The three selectors above each filter on
   one axis. `escrowsByFilters()` combines them: give any subset of
-  `state`, `actor`, and `event`, and it returns the escrows matching
-  every condition given, in input order, in a single pass over the
-  batch — the patrol query "escrows alice touched that are currently
-  DISPUTED after a dispute" without chaining filters and intersecting
-  the results. Each condition uses its single-axis selector's rule
-  and validation, an empty condition object returns every escrow, and
-  a typo in any axis throws instead of returning [] — including a
-  typo in a filter key itself: an unknown key such as `states`
+  `state`, `actor`, `event`, and `overdue`, and it returns the escrows
+  matching every condition given, in input order, in a single pass
+  over the batch — the patrol query "escrows alice touched that are
+  currently DISPUTED after a dispute" without chaining filters and
+  intersecting the results. The `overdue` axis follows `isOverdue`'s
+  rule (past deadline, non-terminal, boundary `now >= deadline`
+  inclusive); `false` selects the complement, and omitting it leaves
+  the deadline out of the match. Its screening instant is the
+  optional third argument `now` (default: the real clock). Each
+  condition uses its single-axis selector's rule and validation, an
+  empty condition object returns every escrow, and a typo in any axis
+  throws instead of returning [] — including a typo in a filter key
+  itself: an unknown key such as `states`
   throws `invalid escrowsByFilters: unknown filter "states"` instead
   of being silently ignored and returning the unfiltered batch, and
   a non-object filters argument throws a configuration error. (One honest
@@ -1413,7 +1418,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1674 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1686 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

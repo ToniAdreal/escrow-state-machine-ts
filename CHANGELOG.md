@@ -18,6 +18,16 @@ version changes.
 
 ### Added
 
+- `escrowsByFilters` overdue axis (2026-11-11, backlog #1048):
+  `EscrowsByFiltersOptions.overdue` (`true` keeps only past-deadline
+  non-terminal escrows, `false` keeps the complement, omitted means no
+  overdue filtering), reusing `isOverdue()`'s rule exactly (boundary
+  `now >= deadline` inclusive, no-deadline and terminal escrows never
+  overdue); the screening instant is the new optional third argument
+  `now` (default: the real clock), validated fail-fast when the axis
+  is present, and a non-boolean `overdue` value throws. 12 tests in
+  `test/escrowsByFiltersOverdue.test.ts`.
+
 - Outbox `lastError` length cap (2026-11-11, backlog #1043):
   `MAX_OUTBOX_ERROR_LENGTH` (1024 characters) and `truncateOutboxError`
   in `src/webhooks.ts`; `SettlementWebhookOutbox.recordAttempt()`
