@@ -18,6 +18,21 @@ version changes.
 
 ### Added
 
+- `MAX_ACTOR_LENGTH` cap on dispatch actor names (2026-11-11, backlog #1056):
+  `dispatch()` and the snapshot/history parsers reject an `actor`
+  longer than 256 characters (`invalid dispatch options: actor must
+  be at most 256 characters, got N` / `invalid snapshot:
+  history[i]: actor must be at most 256 characters, got N`), with
+  no history residue and no idempotency-key consumption on a failed
+  dispatch. An actor is a short person/service identifier, so 256
+  leaves orders of magnitude of headroom; oversized actors are
+  rejected, never truncated, and the length error is reported before
+  the RBAC error on a gated escrow. `rolePolicy` names deliberately
+  carry no cap (configuration, not audit data — a name longer than
+  the cap can never match a legal dispatch anyway). 16 tests in
+  `test/maxActorLength.test.ts` (mutation-checked: weakening the cap
+  by one character fails 10 of them).
+
 - `MAX_EVIDENCE_LENGTH` cap on VERIFY_PASS evidence (2026-11-11, backlog #1052):
   `dispatch("VERIFY_PASS")` and the snapshot/history parsers reject an
   `evidence` reference longer than 32,768 characters (`invalid dispatch:

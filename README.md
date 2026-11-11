@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1713 tests, all local
+npm test   # 1729 tests, all local
 ```
 
 ## Quickstart
@@ -220,7 +220,14 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   (32,768 characters, exported from the package entry): `dispatch()`
   and the snapshot/history parsers both reject longer references
   outright, never truncating them, so an oversized reference can never
-  inflate the log or a persisted snapshot.
+  inflate the log or a persisted snapshot. Actor names are capped the
+  same way at `MAX_ACTOR_LENGTH` (256 characters, exported from the
+  package entry): `dispatch()` and the snapshot/history parsers both
+  reject longer actors outright, never truncating them, so an
+  oversized actor can never inflate the log or a persisted snapshot
+  (`rolePolicy` names carry no cap — a policy is configuration, not
+  audit data, and a name longer than the cap can never match a legal
+  dispatch anyway; see `MAX_ACTOR_LENGTH` in `src/stateMachine.ts`).
   Each entry is also **hash-chained**:
   `prevHash` links to the previous entry's `hash` (genesis links to the
   `"GENESIS"` constant) and `hash` is SHA-256 over the canonical entry
@@ -325,7 +332,8 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
 - Event-level RBAC (opt-in): `new Escrow(id, { rolePolicy })` maps events
   to the actor names allowed to dispatch them, e.g.
   `{ RELEASE: ["treasury"], ARBITRATE_RELEASE: ["dao-arbitrator"] }`.
-  `dispatch` then requires `opts.actor` (a non-empty string, recorded on
+  `dispatch` then requires `opts.actor` (a non-empty string of at most
+  `MAX_ACTOR_LENGTH` (256) characters, recorded on
   the audit entry and covered by its hash chain) to exactly match the
   allowlist for gated events — a missing or non-allowlisted actor throws
   `actor not authorized for …` after the transition-legality check and
@@ -1437,7 +1445,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1713 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1729 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

@@ -175,7 +175,11 @@ export interface EscrowHistoryEntry {
   /**
    * Caller-supplied actor name for this dispatch (see
    * {@link DispatchOptions.actor}). Only present when the dispatch
-   * carried an actor; `undefined` is the anonymous form. Recorded
+   * carried an actor; `undefined` is the anonymous form. At most
+   * {@link MAX_ACTOR_LENGTH} characters: `dispatch()` and the
+   * snapshot/history parsers both reject longer actors, so an
+   * oversized actor can never be written by the live path or smuggled
+   * in through a rehydrated snapshot. Recorded
    * verbatim and covered by the hash chain, so a persisted entry whose
    * actor is rewritten breaks {@link verifyHistoryChain}. Legacy
    * (pre-RBAC) entries carry no actor and are still accepted — the
@@ -273,6 +277,34 @@ export const MAX_NOTE_LENGTH = 32_768;
  * artifact should store it out-of-band and reference it by ID.
  */
 export const MAX_EVIDENCE_LENGTH = 32_768;
+
+/**
+ * Maximum length (in UTF-16 code units, i.e. `String.length`) of a
+ * dispatch actor name. An actor is a short identifier — a person name
+ * or service name, normally tens of characters — so 256 leaves orders
+ * of magnitude of headroom over any honest value while bounding what
+ * a caller can write verbatim into the append-only audit history (and
+ * hence into every snapshot and NDJSON export that serializes it).
+ * The cap is enforced at the same two points as the note/evidence
+ * caps (`dispatch()` and the snapshot/history parser), so an oversized
+ * actor can neither be written by the live path nor smuggled in
+ * through a rehydrated snapshot, and it is rejected outright, never
+ * silently truncated (truncation would change who the entry says
+ * acted). `dispatch()` checks the length up front, before the
+ * idempotency dedup and the RBAC check, so an oversized actor reports
+ * the length error first and consumes no idempotency key.
+ *
+ * Deliberately NOT applied to {@link RolePolicy} names: a policy is
+ * configuration, not audit data — it is never written into the
+ * history, so a long name cannot inflate any persisted log. A role
+ * name longer than this cap can simply never match a legal dispatch
+ * (dispatch rejects oversized actors before the RBAC check), so it is
+ * dead configuration rather than a hole, and capping the policy would
+ * additionally break restore of snapshots written before this cap
+ * existed that legitimately carry long role names. The asymmetry is
+ * intentional and is pinned by `test/maxActorLength.test.ts`.
+ */
+export const MAX_ACTOR_LENGTH = 256;
 
 export interface EscrowSnapshot {
   /**
@@ -530,6 +562,13 @@ const HISTORY_ENTRY_FIELDS = new Set([
  * configuration that survives `toJSON()`/`fromJSON()` round-trips
  * (like `requireVerifyEvidence`/`maxDeposit`, and unlike `auditKey`,
  * which is never stored — see {@link EscrowSnapshot.rolePolicy}).
+ *
+ * Policy names are NOT capped at {@link MAX_ACTOR_LENGTH}: the cap
+ * guards the append-only history, and a policy name is never written
+ * there — and a name longer than the cap can never match a legal
+ * dispatch anyway (dispatch rejects oversized actors before the RBAC
+ * check), so it is dead configuration, not a hole. See
+ * {@link MAX_ACTOR_LENGTH} for the full reasoning.
  */
 export type RolePolicy = Partial<Record<EscrowEvent, string[]>>;
 
@@ -660,7 +699,8 @@ function isCanonicalIso(s: unknown): s is string {
  *    means the gate is off (the legacy shape). Same treatment as
  *    `maxDeposit`: validated strictly, governs future dispatches only
  *  - `actor`, when present on a history entry, must be a non-empty
- *    string (the same bar dispatch() applies); absent is the
+ *    string no longer than {@link MAX_ACTOR_LENGTH} characters (the
+ *    same bar dispatch() applies); absent is the
  *    anonymous / legacy form
  *  - unknown fields are rejected (fail-closed), never silently dropped:
  *    top level allows only
@@ -778,6 +818,14 @@ function parseEscrowSnapshot(
       if (typeof raw.actor !== "string" || raw.actor.length === 0) {
         throw new Error(
           `${tag}: actor must be a non-empty string, got ${JSON.stringify(raw.actor)}`
+        );
+      }
+      // Same bar as dispatch(): an oversized actor in an untrusted log
+      // is malformed, so a corrupted snapshot cannot blow up
+      // rehydration with a multi-megabyte actor string.
+      if (raw.actor.length > MAX_ACTOR_LENGTH) {
+        throw new Error(
+          `${tag}: actor must be at most ${MAX_ACTOR_LENGTH} characters, got ${raw.actor.length}`
         );
       }
       entry.actor = raw.actor;
@@ -1453,10 +1501,15 @@ export interface DispatchOptions {
    * assertion) is performing it, e.g. `"dao-arbitrator"`, `"oracle"`,
    * or `"system"`.
    *
-   * When present it must be a non-empty string, otherwise dispatch
+   * When present it must be a non-empty string no longer than
+   * {@link MAX_ACTOR_LENGTH} characters (256), otherwise dispatch
    * throws `invalid dispatch options: actor must be a non-empty
-   * string, got …` before anything is appended (an empty actor has
-   * zero audit value — `undefined` is the anonymous form). A valid
+   * string, got …` (or `… actor must be at most 256 characters,
+   * got …` for an oversized one) before anything is appended (an
+   * empty actor has zero audit value — `undefined` is the anonymous
+   * form; the length check runs before the idempotency dedup and the
+   * RBAC check, so an oversized actor reports the length error
+   * first). A valid
    * actor is recorded verbatim on the audit history entry
    * ({@link EscrowHistoryEntry.actor}) and covered by its hash chain.
    *
@@ -2176,6 +2229,17 @@ export class Escrow {
         if (typeof opts.actor !== "string" || opts.actor.length === 0) {
           throw new Error(
             `invalid dispatch options: actor must be a non-empty string, got ${JSON.stringify(opts.actor)}`
+          );
+        }
+        // Same bar as the note/evidence caps: an oversized actor is
+        // rejected outright, never silently truncated (truncation
+        // would change who the entry says acted). Checked here, up
+        // front with the shape check — before the idempotency dedup
+        // and the RBAC check — so an oversized actor reports the
+        // length error first and consumes no idempotency key.
+        if (opts.actor.length > MAX_ACTOR_LENGTH) {
+          throw new Error(
+            `invalid dispatch options: actor must be at most ${MAX_ACTOR_LENGTH} characters, got ${opts.actor.length}`
           );
         }
         actor = opts.actor;
