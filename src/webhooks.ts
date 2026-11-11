@@ -1309,6 +1309,49 @@ export interface SettlementWebhookOutboxOptions {
 }
 
 /**
+ * Maximum length, in characters, of the `lastError` text a
+ * {@link SettlementWebhookOutbox} keeps per `(endpoint, eventId)`
+ * pair. `recordAttempt()` truncates a longer `error` to exactly this
+ * many characters (see {@link truncateOutboxError}) before storing
+ * it, so one oversized failure — a full HTML error page, a long
+ * stack trace — cannot bloat the failure ledger or the snapshot
+ * (signed or unsigned) exported from it.
+ *
+ * Why 1024: `lastError` is a diagnostic hint for the human who reads
+ * the dead letter, not the failure itself — the first kilobyte of an
+ * error message carries the cause in practice, and a 1024-character
+ * ceiling keeps a 1,000-pair ledger under ~1 MB of error text even
+ * if every pair failed with a maximal message. Callers that need the
+ * full error body should log it where the delivery happened, before
+ * handing the short form to the outbox. This mirrors the audit
+ * log's {@link MAX_NOTE_LENGTH} precedent (a hard cap on
+ * caller-supplied text at the point it enters the record), at a
+ * smaller value because an error hint needs less room than a note.
+ */
+export const MAX_OUTBOX_ERROR_LENGTH = 1024;
+
+/** Marker appended to a truncated outbox error (12 characters). */
+const OUTBOX_ERROR_TRUNCATION_MARKER = "…[truncated]";
+
+/**
+ * Truncate an outbox error to {@link MAX_OUTBOX_ERROR_LENGTH}
+ * characters. Errors at or under the cap pass through byte-for-byte
+ * (the returned string is the input string); longer ones keep their
+ * first `MAX_OUTBOX_ERROR_LENGTH - marker.length` characters and end
+ * with `…[truncated]`, so a truncated value is always recognizable
+ * as truncated and its total length is exactly the cap.
+ */
+export function truncateOutboxError(error: string): string {
+  if (error.length <= MAX_OUTBOX_ERROR_LENGTH) return error;
+  return (
+    error.slice(
+      0,
+      MAX_OUTBOX_ERROR_LENGTH - OUTBOX_ERROR_TRUNCATION_MARKER.length,
+    ) + OUTBOX_ERROR_TRUNCATION_MARKER
+  );
+}
+
+/**
  * One delivery attempt recorded in a {@link SettlementWebhookOutbox}.
  * This is the input shape for `recordAttempt()` — it describes a
  * single outcome, not the accumulated record (see
@@ -1327,7 +1370,14 @@ export interface SettlementWebhookOutboxAttempt {
    * never retries on its own.
    */
   status?: number;
-  /** Human-readable failure reason (error message, status text). */
+  /**
+   * Human-readable failure reason (error message, status text).
+   * `recordAttempt()` stores at most
+   * {@link MAX_OUTBOX_ERROR_LENGTH} characters of it (see
+   * {@link truncateOutboxError}); pass the full text here and let
+   * the outbox cap it, or log the full body where the delivery
+   * happened and pass the short form.
+   */
   error?: string;
   /**
    * Attempt time in milliseconds since the epoch. Defaults to the
@@ -1346,7 +1396,10 @@ export interface SettlementWebhookOutboxAttempt {
  *   pending while `attempts < maxAttempts` and dead-lettered once
  *   `attempts >= maxAttempts`.
  * - `lastError`: the `error` of the most recent failed attempt, when
- *   the caller supplied one.
+ *   the caller supplied one, truncated to
+ *   {@link MAX_OUTBOX_ERROR_LENGTH} characters at record time (see
+ *   {@link truncateOutboxError}) — a truncated value ends with
+ *   `…[truncated]` and is exactly the cap long.
  * - `lastAt`: timestamp (ms since the epoch) of the most recent
  *   failed attempt.
  */
@@ -1519,7 +1572,9 @@ function computeOutboxSnapshotMac(
  *   (capped at `maxAttempts` — a dead-lettered pair stays at the cap
  *   while later failures still refresh `lastError`/`lastAt`, so the
  *   record keeps describing the latest failure instead of growing
- *   without bound);
+ *   without bound); the refreshed `lastError` is truncated to
+ *   {@link MAX_OUTBOX_ERROR_LENGTH} characters at record time, so
+ *   the ledger itself stays bounded too;
  * - a successful attempt (`ok: true`, or `acknowledge()`) removes the
  *   pair entirely, so a later failure starts counting from 1 again;
  * - `pending()` lists pairs with `attempts < maxAttempts`,
@@ -1557,7 +1612,10 @@ export class SettlementWebhookOutbox {
    * Record one delivery attempt. A failed attempt increments the
    * pair's consecutive-failure count (capped at `maxAttempts`) and
    * refreshes `lastError`/`lastAt`; a successful attempt removes the
-   * pair, exactly like `acknowledge()`.
+   * pair, exactly like `acknowledge()`. A supplied `error` longer
+   * than {@link MAX_OUTBOX_ERROR_LENGTH} characters is truncated
+   * at record time (see {@link truncateOutboxError}), so the stored
+   * `lastError` — and any snapshot exported from it — stays bounded.
    *
    * Caller bugs fail fast: an empty/non-string `endpoint` or
    * `eventId`, a non-boolean `ok`, a non-finite `status`/`at`, or a
@@ -1617,7 +1675,8 @@ export class SettlementWebhookOutbox {
       attempts: Math.min((prev?.attempts ?? 0) + 1, this.maxAttempts),
       lastAt: at,
     };
-    if (attempt.error !== undefined) entry.lastError = attempt.error;
+    if (attempt.error !== undefined)
+      entry.lastError = truncateOutboxError(attempt.error);
     byEvent.set(eventId, entry);
   }
 

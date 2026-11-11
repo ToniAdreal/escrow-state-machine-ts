@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1666 tests, all local
+npm test   # 1674 tests, all local
 ```
 
 ## Quickstart
@@ -958,7 +958,13 @@ outbox.deadLetter(); // 3 consecutive failures — needs a human, not another re
 A failed attempt increments the pair's consecutive-failure count
 (capped at `maxAttempts`, while later failures still refresh
 `lastError`/`lastAt`); a success (`ok: true`, or `acknowledge()`)
-clears the pair, so a later failure counts from 1 again. Pairs are
+clears the pair, so a later failure counts from 1 again. The stored
+`lastError` is capped at `MAX_OUTBOX_ERROR_LENGTH` (1024 characters)
+at record time — a longer error keeps its prefix and ends with
+`…[truncated]`, so one oversized failure (a full HTML error page, a
+long stack trace) cannot bloat the ledger or the snapshot exported
+from it. The full error body belongs in the log where the delivery
+happened; the outbox keeps only the diagnostic hint. Pairs are
 keyed by `(endpoint, eventId)`, so one endpoint's failures never
 pollute another's retry count. `exportSnapshot()` /
 `SettlementWebhookOutbox.restore()` carry the ledger across a restart
@@ -1407,7 +1413,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1666 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1674 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

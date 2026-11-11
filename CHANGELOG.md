@@ -18,6 +18,17 @@ version changes.
 
 ### Added
 
+- Outbox `lastError` length cap (2026-11-11, backlog #1043):
+  `MAX_OUTBOX_ERROR_LENGTH` (1024 characters) and `truncateOutboxError`
+  in `src/webhooks.ts`; `SettlementWebhookOutbox.recordAttempt()`
+  truncates an oversized `error` at record time (prefix kept, ends
+  with `…[truncated]`), so one oversized failure cannot bloat the
+  ledger or the snapshot exported from it. Errors at or under the cap
+  are stored verbatim; truncation touches neither the attempts count
+  nor the dead-letter boundary. 8 tests in
+  `test/outboxLastErrorCap.test.ts` (mutation-checked: removing the
+  truncation fails 6 of them).
+
 - Benchmark rows for the three signed-snapshot envelopes (2026-11-11,
   backlog #1040): `bench/bench.ts` measures `exportSignedSnapshot` /
   `restoreSignedSnapshot` on `SettlementEventDedupe`, `Escrow`, and
