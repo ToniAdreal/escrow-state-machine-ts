@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1741 tests, all local
+npm test   # 1751 tests, all local
 ```
 
 ## Quickstart
@@ -228,6 +228,13 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   (`rolePolicy` names carry no cap — a policy is configuration, not
   audit data, and a name longer than the cap can never match a legal
   dispatch anyway; see `MAX_ACTOR_LENGTH` in `src/stateMachine.ts`).
+  Escrow ids are capped the same way at `MAX_ESCROW_ID_LENGTH`
+  (256 characters, exported from the package entry): the constructor
+  and the snapshot/history parsers (including `Escrow.fromHistory`)
+  all reject longer ids outright, never truncating them — an id is
+  identity, and truncation would change which escrow a log belongs
+  to — so an oversized id can never inflate the log, a snapshot, an
+  NDJSON export, a settlement report, or a webhook payload.
   Each entry is also **hash-chained**:
   `prevHash` links to the previous entry's `hash` (genesis links to the
   `"GENESIS"` constant) and `hash` is SHA-256 over the canonical entry
@@ -1456,7 +1463,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1741 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1751 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

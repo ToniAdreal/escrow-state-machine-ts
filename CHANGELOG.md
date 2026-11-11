@@ -18,6 +18,19 @@ version changes.
 
 ### Added
 
+- `MAX_ESCROW_ID_LENGTH` cap on escrow ids (2026-11-11, backlog #1061):
+  the constructor, the snapshot parser, and `Escrow.fromHistory`
+  reject an id longer than 256 characters (`invalid escrow: id must
+  be at most 256 characters, got N` / `invalid snapshot: id must be
+  at most 256 characters, got N` / `invalid history: id must be at
+  most 256 characters, got N`), so an oversized id can neither be
+  created live nor smuggled in through a rehydrated snapshot or a
+  bare history log. The default ids are short (`demo-cap`, 36-char
+  UUIDs), so 256 leaves orders of magnitude of headroom; oversized
+  ids are rejected, never truncated, because truncation would change
+  which escrow a log belongs to. 10 tests in
+  `test/maxEscrowIdLength.test.ts`.
+
 - `MAX_EVENT_ID_LENGTH` cap on settlement webhook `eventId`s (2026-11-11, backlog #1059):
   `buildSettlementWebhook`, `SettlementEventDedupe.checkAndRecord`,
   and `SettlementWebhookOutbox.recordAttempt` reject an `eventId`

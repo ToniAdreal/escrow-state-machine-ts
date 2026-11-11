@@ -1,4 +1,4 @@
-export { Escrow, allowedEvents, isTerminal, transition, transitionTable, transitionTableJson, stateDiagram, assertNonNegativeMoney, diffEscrowSnapshots, isOverdue, expiredEscrows, expireOverdueEscrows, nextEscrowDeadline, escrowsApproachingDeadline, escrowsByActor, escrowsByEvent, escrowsByFilters, escrowsByState, staleEscrows, settlementAging, actOnStaleEscrows, verifyHistoryChain, parseEscrowHistory, GENESIS_PREV_HASH, SNAPSHOT_VERSION, MAX_NOTE_LENGTH, MAX_EVIDENCE_LENGTH, MAX_ACTOR_LENGTH } from "./stateMachine.js";
+export { Escrow, allowedEvents, isTerminal, transition, transitionTable, transitionTableJson, stateDiagram, assertNonNegativeMoney, diffEscrowSnapshots, isOverdue, expiredEscrows, expireOverdueEscrows, nextEscrowDeadline, escrowsApproachingDeadline, escrowsByActor, escrowsByEvent, escrowsByFilters, escrowsByState, staleEscrows, settlementAging, actOnStaleEscrows, verifyHistoryChain, parseEscrowHistory, GENESIS_PREV_HASH, SNAPSHOT_VERSION, MAX_NOTE_LENGTH, MAX_EVIDENCE_LENGTH, MAX_ACTOR_LENGTH, MAX_ESCROW_ID_LENGTH } from "./stateMachine.js";
 export { historyToNdjson, historyFromNdjson } from "./ndjson.js";
 export type {
   AuditKey,

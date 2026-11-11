@@ -306,6 +306,25 @@ export const MAX_EVIDENCE_LENGTH = 32_768;
  */
 export const MAX_ACTOR_LENGTH = 256;
 
+/**
+ * Maximum length (in UTF-16 code units, i.e. `String.length`) of an
+ * escrow id. An id is a short identifier — the demo uses `demo-cap`,
+ * a UUID is 36 characters — so 256 leaves orders of magnitude of
+ * headroom over any honest value while bounding what a caller can
+ * write verbatim into every history entry, snapshot, NDJSON export,
+ * settlement report, and webhook payload that carries it (the id is
+ * stamped on all of those). The cap is enforced at the same three
+ * points an id can enter the system — the constructor, the
+ * snapshot/history parser, and `Escrow.fromHistory` — so an oversized
+ * id can neither be created live nor smuggled in through a rehydrated
+ * snapshot or a bare history log, and it is rejected outright, never
+ * silently truncated (truncation would change which escrow a log
+ * belongs to). The constructor checks the length up front, next to
+ * the existing non-empty check, so an oversized id reports the length
+ * error before any option is consumed.
+ */
+export const MAX_ESCROW_ID_LENGTH = 256;
+
 export interface EscrowSnapshot {
   /**
    * Snapshot schema version. `toJSON()` always writes the current
@@ -316,6 +335,13 @@ export interface EscrowSnapshot {
    * a future format evolution stays distinguishable from corruption.
    */
   v?: number;
+  /**
+   * Escrow identifier. At most {@link MAX_ESCROW_ID_LENGTH}
+   * characters — the constructor, the snapshot parser, and
+   * `Escrow.fromHistory` all reject longer ids outright, never
+   * truncating them (truncation would change which escrow a log
+   * belongs to).
+   */
   id: string;
   state: EscrowState;
   history: EscrowHistoryEntry[];
@@ -742,6 +768,11 @@ function parseEscrowSnapshot(
   }
   if (typeof snapshot.id !== "string" || snapshot.id.length === 0) {
     throw new Error("invalid snapshot: id must be a non-empty string");
+  }
+  if (snapshot.id.length > MAX_ESCROW_ID_LENGTH) {
+    throw new Error(
+      `invalid snapshot: id must be at most ${MAX_ESCROW_ID_LENGTH} characters, got ${snapshot.id.length}`
+    );
   }
   if (!ESCROW_STATES.has(snapshot.state as EscrowState)) {
     throw new Error(`invalid snapshot: unknown state ${String(snapshot.state)}`);
@@ -1951,6 +1982,11 @@ export class Escrow {
     if (typeof id !== "string" || id.length === 0) {
       throw new Error("invalid escrow: id must be a non-empty string");
     }
+    if (id.length > MAX_ESCROW_ID_LENGTH) {
+      throw new Error(
+        `invalid escrow: id must be at most ${MAX_ESCROW_ID_LENGTH} characters, got ${id.length}`
+      );
+    }
     if (opts !== undefined) {
       if (typeof opts !== "object" || opts === null || Array.isArray(opts)) {
         throw new Error("invalid escrow options: opts must be an object");
@@ -2933,7 +2969,12 @@ export class Escrow {
    * The escrow id is not recoverable from the log (history entries
    * carry no id), so it is passed explicitly rather than invented;
    * an empty or non-string id throws
-   * `invalid history: id must be a non-empty string`.
+   * `invalid history: id must be a non-empty string`, and an id
+   * longer than {@link MAX_ESCROW_ID_LENGTH} characters throws
+   * `invalid history: id must be at most 256 characters, got N` —
+   * the same ceiling the constructor and the snapshot parser enforce,
+   * so a bare log can never rebuild an escrow its own snapshot
+   * validation would reject.
    *
    * Validation is exactly {@link parseEscrowHistory}'s — the same
    * code path `fromJSON` enforces inside its envelope: seq from 1
@@ -2999,6 +3040,11 @@ export class Escrow {
   ): Escrow {
     if (typeof id !== "string" || id.length === 0) {
       throw new Error("invalid history: id must be a non-empty string");
+    }
+    if (id.length > MAX_ESCROW_ID_LENGTH) {
+      throw new Error(
+        `invalid history: id must be at most ${MAX_ESCROW_ID_LENGTH} characters, got ${id.length}`
+      );
     }
     // Constructing first validates opts (auditKey/rolePolicy/maxDeposit)
     // before any history is consumed, mirroring dataquest's fromHistory.
