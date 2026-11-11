@@ -2966,6 +2966,92 @@ export interface ExpireOverdueResult {
    * dispatches leave this absent.
    */
   entry?: EscrowHistoryEntry;
+  /**
+   * Dry-run only (`expireOverdueEscrows(..., { dryRun: true })`):
+   * whether the live run would expire this escrow — true exactly when
+   * the escrow is in the screened set, an `EXPIRE` edge is legal from
+   * its current state, the pinned `now` is not earlier than its last
+   * history entry, and the `system` actor passes its `rolePolicy`
+   * (when the policy lists `EXPIRE`). Present only on dry-run
+   * results; the live run reports the actual outcome via `expired`
+   * instead, and leaves this absent.
+   */
+  wouldExpire?: boolean;
+}
+
+/**
+ * Options for {@link expireOverdueEscrows}.
+ */
+export interface ExpireOverdueEscrowsOptions {
+  /**
+   * Dry run: predict instead of expiring. When true, the executor
+   * dispatches nothing — no state change, no history append, no
+   * subscription notification — and returns the same per-escrow
+   * results the live run would have attempted, each carrying
+   * `wouldExpire` (and, when false, the same-wording `error` the
+   * live run would have reported). `expired` is false throughout a
+   * dry run and `entry` is never present. Illegal values fail fast
+   * (`opts` must be an object, `dryRun` must be a boolean).
+   */
+  dryRun?: boolean;
+}
+
+/**
+ * Dry-run prediction for one screened escrow: replay, in the same
+ * order, the checks the live `dispatch("EXPIRE", undefined, undefined,
+ * { actor: "system", at: now })` would run — without dispatching
+ * anything, so the escrow is untouched and no listener is notified:
+ *
+ * (1) the pinned `now` must not move the audit clock backwards (same
+ * check dispatch runs first, same wording); (2) edge legality, read
+ * off the transition table via `transition()` (its throw carries the
+ * exact message the live run would report); (3) RBAC, read off the
+ * escrow's snapshot policy — the live run dispatches as the `system`
+ * actor, so a policy that lists `EXPIRE` must include it. The
+ * `requireActor` gate needs no prediction: the live run always passes
+ * an actor (`system`), and `EXPIRE` carries no amount, so the
+ * money/cap checks never apply to it.
+ */
+function predictExpireOverdueEscrow(
+  escrow: Escrow,
+  now: Date
+): ExpireOverdueResult {
+  // (1) Backward clock: dispatch pins `now` as the EXPIRE entry's `at`
+  // and rejects it when it predates the last history entry.
+  const at = now.toISOString();
+  const history = escrow.history;
+  const last = history[history.length - 1];
+  if (last !== undefined && Date.parse(at) < Date.parse(last.at)) {
+    return {
+      escrow,
+      expired: false,
+      wouldExpire: false,
+      error: `invalid dispatch options: at ${at} is earlier than the previous entry's at ${last.at}`,
+    };
+  }
+  // (2) Edge legality from the transition table, no dispatch.
+  try {
+    transition(escrow.state, "EXPIRE");
+  } catch (err) {
+    return {
+      escrow,
+      expired: false,
+      wouldExpire: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+  // (3) RBAC: the live run dispatches as `system`; toJSON writes the
+  // policy only when non-empty, so an absent policy means unrestricted.
+  const allowedRoles = escrow.toJSON().rolePolicy?.["EXPIRE"];
+  if (allowedRoles !== undefined && !allowedRoles.includes("system")) {
+    return {
+      escrow,
+      expired: false,
+      wouldExpire: false,
+      error: `actor not authorized for EXPIRE: "system" is not in [${allowedRoles.join(", ")}]`,
+    };
+  }
+  return { escrow, expired: false, wouldExpire: true };
 }
 
 /**
@@ -3009,12 +3095,44 @@ export interface ExpireOverdueResult {
  * batch continues. This is deliberate: the pinned `now` is the
  * screening instant, and an audit entry can never be older than the
  * events it follows.
+ *
+ * Dry run (`opts.dryRun: true`): the safe rehearsal port for an
+ * operator about to expire a batch — the executor screens the same
+ * set, in the same order, but dispatches nothing: no state change, no
+ * history append, no subscription notification. Each result carries
+ * `wouldExpire` (true exactly when the live run would have expired
+ * that escrow) and, when false, the same-wording `error` the live run
+ * would have reported (no `EXPIRE` edge, backdated `now`, or a
+ * `rolePolicy` that does not admit `system`); `expired` is false
+ * throughout and `entry` is never present. The prediction reads edge
+ * legality off the transition table and the clock/RBAC checks off the
+ * escrow's own history and snapshot policy — it never dispatches, so
+ * a dry run leaves no residue and the same batch can immediately be
+ * expired for real. Illegal `opts` throw fail-fast, before any
+ * screening.
  */
 export function expireOverdueEscrows(
   escrows: readonly Escrow[],
-  now: Date = new Date()
+  now: Date = new Date(),
+  opts?: ExpireOverdueEscrowsOptions
 ): ExpireOverdueResult[] {
-  return expiredEscrows(escrows, now).map((escrow) => {
+  if (opts !== undefined) {
+    if (typeof opts !== "object" || opts === null || Array.isArray(opts)) {
+      throw new Error(
+        "invalid expireOverdueEscrows options: opts must be an object"
+      );
+    }
+    if (opts.dryRun !== undefined && typeof opts.dryRun !== "boolean") {
+      throw new Error(
+        `invalid expireOverdueEscrows options: dryRun must be a boolean, got ${JSON.stringify(opts.dryRun)}`
+      );
+    }
+  }
+  const screened = expiredEscrows(escrows, now);
+  if (opts?.dryRun === true) {
+    return screened.map((escrow) => predictExpireOverdueEscrow(escrow, now));
+  }
+  return screened.map((escrow) => {
     try {
       // Pin the screening `now` as the EXPIRE audit entry's `at`: every
       // entry in the batch carries the same timestamp as the screening

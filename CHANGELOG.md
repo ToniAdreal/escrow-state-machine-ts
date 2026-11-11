@@ -18,6 +18,22 @@ version changes.
 
 ### Added
 
+- `expireOverdueEscrows` opt-in `dryRun` (2026-11-11, backlog #1050):
+  `expireOverdueEscrows(escrows, now, { dryRun: true })` screens the
+  same overdue set in the same order but dispatches nothing — no state
+  change, no history append, no subscription notification — and each
+  result carries `wouldExpire` (true exactly when the live run would
+  have expired that escrow) and, when false, the same-wording `error`
+  the live run would have reported (no `EXPIRE` edge, backdated
+  `now`, or a `rolePolicy` that does not admit `system`); `expired`
+  is false throughout and `entry` is never present. The prediction
+  replays dispatch's checks in dispatch's order (backward clock,
+  transition-table edge legality, RBAC for the `system` actor) off the
+  escrow's own history and snapshot policy. Illegal options throw
+  fail-fast. 12 tests in `test/expireOverdueDryRun.test.ts`
+  (mutation-checked: every failure mode is pinned against a twin
+  escrow expired by the live run, byte-for-byte error wording).
+
 - `escrowsByFilters` overdue axis (2026-11-11, backlog #1048):
   `EscrowsByFiltersOptions.overdue` (`true` keeps only past-deadline
   non-terminal escrows, `false` keeps the complement, omitted means no

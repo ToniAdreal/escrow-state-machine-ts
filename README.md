@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1686 tests, all local
+npm test   # 1698 tests, all local
 ```
 
 ## Quickstart
@@ -409,6 +409,17 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   `now` must not predate an escrow's last history entry; a backdated
   `now` lands as a per-escrow `{expired: false, error}` and the batch
   continues.)
+  For a safe rehearsal before expiring a batch, pass
+  `{ dryRun: true }`: `expireOverdueEscrows(escrows, now, { dryRun:
+  true })` screens the same set in the same order but dispatches
+  nothing — no state change, no history append, no subscription
+  notification — and each result carries `wouldExpire` (true exactly
+  when the live run would have expired that escrow) and, when false,
+  the same-wording `error` the live run would have reported (no
+  `EXPIRE` edge, backdated `now`, or a `rolePolicy` that does not
+  admit `system`); `expired` is false throughout and `entry` is never
+  present. A dry run leaves no residue, so the same batch can
+  immediately be expired for real. Illegal options throw fail-fast.
   The scheduler companion is `nextEscrowDeadline(escrows, now?)`: it
   returns the non-terminal escrow whose deadline comes first, as
   `{ escrow, deadline }` (canonical ISO), or `undefined` when none
@@ -1418,7 +1429,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1686 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1698 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

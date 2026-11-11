@@ -12,6 +12,7 @@ export type {
   EscrowSnapshotDiff,
   EscrowSignedSnapshotEnvelope,
   EscrowState,
+  ExpireOverdueEscrowsOptions,
   ExpireOverdueResult,
   NextEscrowDeadline,
   StaleEscrowAction,
