@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1729 tests, all local
+npm test   # 1741 tests, all local
 ```
 
 ## Quickstart
@@ -880,7 +880,14 @@ bookkeeping import can tell USD rows from EUR rows, and
 UUID v4 (inject your own via `BuildWebhookOptions.eventId` for deterministic
 tests), and the signature covers it, so tampering with it fails verification.
 Retries of the same notification reuse the original `eventId`; two
-independent settlements never share one. Store seen `eventId`s on the
+independent settlements never share one. An `eventId` longer than
+`MAX_EVENT_ID_LENGTH` (256 characters) is rejected wherever it can enter
+the system — the build, `SettlementEventDedupe.checkAndRecord`, and
+`SettlementWebhookOutbox.recordAttempt`, plus both snapshot restores —
+never truncated, since truncation would change the deduplication key.
+The default UUID is 36 characters, so the cap leaves orders of magnitude
+of headroom; a caller that needs a longer reference should store it
+out-of-band and deduplicate on a short id. Store seen `eventId`s on the
 receiving end and drop duplicates — that is how you tell "retry re-send"
 apart from "second settlement":
 
@@ -904,7 +911,8 @@ duplicate hit never extends the window. At capacity, expired entries
 are reclaimed before the least recently seen entry is evicted.
 Illegal configuration (`ttlMs` not a positive finite number,
 `maxEntries` not a positive integer) throws at construction, and an
-empty or non-string `eventId` throws instead of silently passing.
+empty, non-string, or overlong (longer than `MAX_EVENT_ID_LENGTH`)
+`eventId` throws instead of silently passing.
 `size` and `stats()` (`{ size, hits, misses, evictions }`) expose
 observability, and `clear()` resets both. Honest limit: the store is
 single-process and in-memory only — two receiver processes cannot see
@@ -998,7 +1006,10 @@ long stack trace) cannot bloat the ledger or the snapshot exported
 from it. The full error body belongs in the log where the delivery
 happened; the outbox keeps only the diagnostic hint. Pairs are
 keyed by `(endpoint, eventId)`, so one endpoint's failures never
-pollute another's retry count. `exportSnapshot()` /
+pollute another's retry count, and an `eventId` longer than
+`MAX_EVENT_ID_LENGTH` (256 characters) is rejected at `recordAttempt()`
+and at snapshot restore, never truncated — truncation would change
+the pair's key. `exportSnapshot()` /
 `SettlementWebhookOutbox.restore()` carry the ledger across a restart
 of the same process (unsigned, trusted-configuration snapshot — the
 same posture as the dedupe's unsigned snapshot above). When the
@@ -1445,7 +1456,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1729 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1741 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

@@ -18,6 +18,21 @@ version changes.
 
 ### Added
 
+- `MAX_EVENT_ID_LENGTH` cap on settlement webhook `eventId`s (2026-11-11, backlog #1059):
+  `buildSettlementWebhook`, `SettlementEventDedupe.checkAndRecord`,
+  and `SettlementWebhookOutbox.recordAttempt` reject an `eventId`
+  longer than 256 characters (`cannot build settlement webhook:
+  'eventId' must be at most 256 characters, got N` / `SettlementEventDedupe:
+  eventId must be at most 256 characters, got N` /
+  `SettlementWebhookOutbox: eventId must be at most 256 characters,
+  got N`), and both snapshot restores reject an overlong entry the
+  same way. The default `eventId` is a 36-character UUID, so 256
+  leaves orders of magnitude of headroom; oversized ids are rejected,
+  never truncated, because truncation would change the deduplication
+  key. A batch `eventIdFactory` that returns an overlong id fails
+  only that report (per-item isolation, later reports still build).
+  12 tests in `test/maxEventIdLength.test.ts`.
+
 - `MAX_ACTOR_LENGTH` cap on dispatch actor names (2026-11-11, backlog #1056):
   `dispatch()` and the snapshot/history parsers reject an `actor`
   longer than 256 characters (`invalid dispatch options: actor must

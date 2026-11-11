@@ -31,6 +31,27 @@ import type {
   SettlementReportResult,
 } from "./settlementReport.js";
 
+/**
+ * Maximum length (in UTF-16 code units, i.e. `String.length`) of a
+ * settlement webhook `eventId`. The default `eventId` is a UUID (36
+ * characters), so 256 leaves orders of magnitude of headroom over any
+ * honest identifier while bounding what a caller can write verbatim
+ * into the signed payload, the receiver-side dedupe key, and the
+ * sender-side outbox ledger (and hence into every snapshot that
+ * serializes those records). The cap is enforced at the same points
+ * an `eventId` can enter the system — the build
+ * (`buildSettlementWebhook` / `buildSettlementWebhooks`), the dedupe
+ * (`SettlementEventDedupe.checkAndRecord` and snapshot restore), and
+ * the outbox (`SettlementWebhookOutbox.recordAttempt` and snapshot
+ * restore) — so an oversized id can neither be signed nor smuggled
+ * in through a rehydrated snapshot. It is rejected outright, never
+ * silently truncated: truncation would change the deduplication key,
+ * letting two distinct events collapse into one (or one event's
+ * retries split into two), and a truncated id would no longer match
+ * the `eventId` the sender originally issued.
+ */
+export const MAX_EVENT_ID_LENGTH = 256;
+
 /** Compact machine-readable settlement notification. */
 export interface SettlementWebhookPayload {
   event: "escrow.settled";
@@ -98,7 +119,8 @@ export interface BuildWebhookOptions {
   /**
    * Payload `eventId`. Defaults to `crypto.randomUUID()`; inject a fixed
    * value in tests to make signatures deterministic. Must be a non-empty
-   * string when provided.
+   * string when provided, and no longer than
+   * {@link MAX_EVENT_ID_LENGTH} characters.
    */
   eventId?: string;
 }
@@ -198,6 +220,14 @@ function buildPayload(
       `cannot build settlement webhook: 'eventId' must be a non-empty string for ${report.escrowId}`,
     );
   }
+  if (
+    options.eventId !== undefined &&
+    options.eventId.length > MAX_EVENT_ID_LENGTH
+  ) {
+    throw new Error(
+      `cannot build settlement webhook: 'eventId' must be at most ${MAX_EVENT_ID_LENGTH} characters, got ${options.eventId.length} for ${report.escrowId}`,
+    );
+  }
   const eventId = options.eventId ?? randomUUID();
 
   // Same currency rule as the report builder (mirrored here so a
@@ -251,7 +281,8 @@ function buildPayload(
  * Every figure in the payload is derived from the report (which itself is
  * derived from the append-only audit history): nothing is invented here.
  * Throws when the secret is empty, `now` is not a valid timestamp, or an
- * injected `eventId` is not a non-empty string.
+ * injected `eventId` is not a non-empty string no longer than
+ * {@link MAX_EVENT_ID_LENGTH} characters.
  */
 export function buildSettlementWebhook(
   report: SettlementReport,
@@ -285,7 +316,8 @@ export interface BuildSettlementWebhooksOptions {
    * batch must never reuse one `eventId` across reports, or receivers
    * deduplicating on `eventId` would drop all but the first settlement
    * as apparent duplicates. A factory that returns a non-string or
-   * empty value fails only that report (the single-build validation
+   * empty value — or one longer than {@link MAX_EVENT_ID_LENGTH}
+   * characters — fails only that report (the single-build validation
    * runs per report); a non-function value is a call-level
    * configuration error and throws. A factory that returns an `eventId`
    * already issued earlier in the same batch is caught here, not by
@@ -346,7 +378,7 @@ export type BuildSettlementWebhooksResult =
  * `duplicate eventId "<id>" in batch: eventIds must be unique within
  * a batch`, and later reports are still attempted — the per-item
  * isolation above applies to duplicates too. Only issued ids are
- * recorded: a report whose build fails (a non-string/empty factory
+ * recorded: a report whose build fails (a non-string/empty/overlong factory
  * value, a structurally broken report) never claims its `eventId`, so
  * a later report may legitimately reuse that value. Forwarded error
  * entries from `buildSettlementReports` never call the factory, so
@@ -942,12 +974,21 @@ export class SettlementEventDedupe {
    *
    * An empty or non-string `eventId` is a caller bug and throws —
    * silently accepting it would disable deduplication for exactly the
-   * malformed deliveries that need it most.
+   * malformed deliveries that need it most. An `eventId` longer than
+   * {@link MAX_EVENT_ID_LENGTH} characters throws the same way: a
+   * dedupe key must stay bounded, and a caller that needs a longer
+   * reference should store it out-of-band and deduplicate on a short
+   * id instead.
    */
   checkAndRecord(eventId: string): boolean {
     if (typeof eventId !== "string" || eventId.length === 0) {
       throw new Error(
         "SettlementEventDedupe: eventId must be a non-empty string",
+      );
+    }
+    if (eventId.length > MAX_EVENT_ID_LENGTH) {
+      throw new Error(
+        `SettlementEventDedupe: eventId must be at most ${MAX_EVENT_ID_LENGTH} characters, got ${eventId.length}`,
       );
     }
     const t = this.clock();
@@ -1065,7 +1106,7 @@ export class SettlementEventDedupe {
    * The input is untrusted data and is validated strictly: a
    * non-object snapshot, an unknown top-level field, a `v` other than
    * `1`, a non-array `entries`, or a malformed entry (not an
-   * `[eventId, seenAtMs]` pair, an empty/non-string `eventId`, a
+   * `[eventId, seenAtMs]` pair, an empty/non-string/overlong `eventId`, a
    * non-finite or negative `seenAtMs`) throws — a corrupt snapshot
    * fails loudly at startup rather than silently disabling
    * deduplication.
@@ -1116,6 +1157,13 @@ export class SettlementEventDedupe {
       const seenAtMs: unknown = pair[1];
       if (typeof eventId !== "string" || eventId === "")
         fail(`entries[${i}]: eventId must be a non-empty string`);
+      if (
+        typeof eventId === "string" &&
+        eventId.length > MAX_EVENT_ID_LENGTH
+      )
+        fail(
+          `entries[${i}]: eventId must be at most ${MAX_EVENT_ID_LENGTH} characters, got ${eventId.length}`,
+        );
       if (
         typeof seenAtMs !== "number" ||
         !Number.isFinite(seenAtMs) ||
@@ -1618,10 +1666,12 @@ export class SettlementWebhookOutbox {
    * `lastError` — and any snapshot exported from it — stays bounded.
    *
    * Caller bugs fail fast: an empty/non-string `endpoint` or
-   * `eventId`, a non-boolean `ok`, a non-finite `status`/`at`, or a
-   * non-string `error` throws before anything is recorded — silently
-   * accepting a malformed attempt would corrupt the ledger for
-   * exactly the deliveries that need it most.
+   * `eventId`, an `eventId` longer than
+   * {@link MAX_EVENT_ID_LENGTH} characters, a non-boolean `ok`, a
+   * non-finite `status`/`at`, or a non-string `error` throws before
+   * anything is recorded — silently accepting a malformed attempt
+   * would corrupt the ledger for exactly the deliveries that need it
+   * most.
    */
   recordAttempt(attempt: SettlementWebhookOutboxAttempt): void {
     const { endpoint, eventId, ok } = attempt;
@@ -1633,6 +1683,11 @@ export class SettlementWebhookOutbox {
     if (typeof eventId !== "string" || eventId.length === 0) {
       throw new Error(
         "SettlementWebhookOutbox: eventId must be a non-empty string",
+      );
+    }
+    if (eventId.length > MAX_EVENT_ID_LENGTH) {
+      throw new Error(
+        `SettlementWebhookOutbox: eventId must be at most ${MAX_EVENT_ID_LENGTH} characters, got ${eventId.length}`,
       );
     }
     if (typeof ok !== "boolean") {
@@ -1807,11 +1862,12 @@ export class SettlementWebhookOutbox {
    * non-object snapshot, an unknown top-level field, a `v` other than
    * `1`, a non-array `entries`, or a malformed entry (not an object
    * with exactly `endpoint`/`eventId`/`attempts`/`lastAt` plus an
-   * optional `lastError`, an empty/non-string `endpoint`/`eventId`, a
-   * non-positive-integer `attempts`, a non-string `lastError`, a
-   * non-finite `lastAt`) throws — a corrupt snapshot fails loudly at
-   * startup rather than silently clearing a dead letter. Duplicate
-   * `(endpoint, eventId)` pairs collapse to their last occurrence.
+   * optional `lastError`, an empty/non-string `endpoint`, an
+   * empty/non-string/overlong `eventId`, a non-positive-integer
+   * `attempts`, a non-string `lastError`, a non-finite `lastAt`)
+   * throws — a corrupt snapshot fails loudly at startup rather than
+   * silently clearing a dead letter. Duplicate `(endpoint, eventId)`
+   * pairs collapse to their last occurrence.
    *
    * Whether a restored entry reads as pending or dead-lettered is
    * derived from its `attempts` against the new outbox's
@@ -1869,6 +1925,13 @@ export class SettlementWebhookOutbox {
         fail(`entries[${i}]: endpoint must be a non-empty string`);
       if (typeof eventId !== "string" || eventId === "")
         fail(`entries[${i}]: eventId must be a non-empty string`);
+      if (
+        typeof eventId === "string" &&
+        eventId.length > MAX_EVENT_ID_LENGTH
+      )
+        fail(
+          `entries[${i}]: eventId must be at most ${MAX_EVENT_ID_LENGTH} characters, got ${eventId.length}`,
+        );
       if (
         typeof attempts !== "number" ||
         !Number.isInteger(attempts) ||
