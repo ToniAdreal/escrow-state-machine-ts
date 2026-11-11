@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1698 tests, all local
+npm test   # 1713 tests, all local
 ```
 
 ## Quickstart
@@ -216,6 +216,11 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   (32,768 characters, exported from the package entry): `dispatch()` and
   the snapshot/history parsers both reject longer notes, so an unbounded
   note can never inflate the append-only log or a persisted snapshot.
+  Evidence references are capped the same way at `MAX_EVIDENCE_LENGTH`
+  (32,768 characters, exported from the package entry): `dispatch()`
+  and the snapshot/history parsers both reject longer references
+  outright, never truncating them, so an oversized reference can never
+  inflate the log or a persisted snapshot.
   Each entry is also **hash-chained**:
   `prevHash` links to the previous entry's `hash` (genesis links to the
   `"GENESIS"` constant) and `hash` is SHA-256 over the canonical entry
@@ -649,6 +654,9 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   non-empty `evidence` reference (Chainlink request ID, zk proof commitment,
   TEE quote hash — passed via `DispatchOptions.evidence`) and records it
   verbatim on the audit entry, surviving `toJSON()`/`fromJSON()` round-trips.
+  Evidence references are capped at `MAX_EVIDENCE_LENGTH` (32,768 characters,
+  exported from the package entry): `dispatch()` and the snapshot/history
+  parsers reject longer references outright, never truncating them.
   It turns "someone said pass" into "someone said pass, citing X" — the
   reference is auditable but still *not* verified by the library. The flag
   IS part of the snapshot (`requireVerifyEvidence`, written only when
@@ -1429,7 +1437,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1698 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1713 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

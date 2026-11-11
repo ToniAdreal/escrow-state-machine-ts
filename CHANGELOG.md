@@ -18,6 +18,19 @@ version changes.
 
 ### Added
 
+- `MAX_EVIDENCE_LENGTH` cap on VERIFY_PASS evidence (2026-11-11, backlog #1052):
+  `dispatch("VERIFY_PASS")` and the snapshot/history parsers reject an
+  `evidence` reference longer than 32,768 characters (`invalid dispatch:
+  evidence must be at most 32768 characters, got N` / `invalid snapshot:
+  history[i]: evidence must be at most 32768 characters, got N`), with
+  no history residue and no idempotency-key consumption on a failed
+  dispatch. The cap mirrors `MAX_NOTE_LENGTH` (same value, same two
+  enforcement points); oversized references are rejected, never
+  truncated, and a gated escrow reports the length error before the
+  `requireVerifyEvidence` error. 15 tests in
+  `test/maxEvidenceLength.test.ts` (mutation-checked: weakening both
+  guards by one character fails 7 of them).
+
 - `expireOverdueEscrows` opt-in `dryRun` (2026-11-11, backlog #1050):
   `expireOverdueEscrows(escrows, now, { dryRun: true })` screens the
   same overdue set in the same order but dispatches nothing — no state

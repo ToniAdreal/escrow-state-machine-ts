@@ -202,9 +202,11 @@ export interface EscrowHistoryEntry {
    * Reference to the oracle/attestation evidence behind a VERIFY_PASS —
    * e.g. a Chainlink request ID, zk proof commitment, or TEE attestation
    * quote hash. Only present on VERIFY_PASS entries (dispatch validates
-   * it as a non-empty string and rejects it on any other event). The
-   * library cannot verify that the referenced evidence is real — see
-   * {@link EscrowOptions.requireVerifyEvidence} and SECURITY.md.
+   * it as a non-empty string no longer than
+   * {@link MAX_EVIDENCE_LENGTH} characters, and rejects it on any other
+   * event). The library cannot verify that the referenced evidence is
+   * real — see {@link EscrowOptions.requireVerifyEvidence} and
+   * SECURITY.md.
    */
   evidence?: string;
   /**
@@ -253,6 +255,24 @@ export const SNAPSHOT_VERSION = 1;
  * `dispatch()` and the snapshot/history parser).
  */
 export const MAX_NOTE_LENGTH = 32_768;
+
+/**
+ * Maximum length (in UTF-16 code units, i.e. `String.length`) of a
+ * VERIFY_PASS evidence reference. Evidence is a reference, not a
+ * payload — a Chainlink request ID, a zk proof commitment, or a TEE
+ * attestation quote hash is normally tens of characters — so the same
+ * 32,768-character ceiling as {@link MAX_NOTE_LENGTH} is deliberately
+ * generous: it keeps a single evidence reference well under ~128 KiB
+ * worst case while leaving orders of magnitude of headroom over any
+ * honest identifier. The cap is enforced at the same two points as
+ * the note cap (`dispatch()` and the snapshot/history parser), so an
+ * oversized reference can neither be written by the live path nor
+ * smuggled in through a rehydrated snapshot, and it can never inflate
+ * the append-only history or the signed snapshot envelope that
+ * serializes it verbatim. Callers that need to point at a larger
+ * artifact should store it out-of-band and reference it by ID.
+ */
+export const MAX_EVIDENCE_LENGTH = 32_768;
 
 export interface EscrowSnapshot {
   /**
@@ -604,8 +624,10 @@ function isCanonicalIso(s: unknown): s is string {
  *  - `note`, when present, must be a string no longer than
  *    {@link MAX_NOTE_LENGTH} characters (oversized notes in an
  *    untrusted log are malformed — the same bar dispatch() applies)
- *  - `evidence`, when present, must be a non-empty string and may only
- *    appear on VERIFY_PASS entries
+ *  - `evidence`, when present, must be a non-empty string no longer
+ *    than {@link MAX_EVIDENCE_LENGTH} characters and may only
+ *    appear on VERIFY_PASS entries (oversized evidence in an
+ *    untrusted log is malformed — the same bar dispatch() applies)
  *  - `prevHash`/`hash`, when present, must both be non-empty strings and
  *    appear on every entry (mixed chained/hashless histories are
  *    rejected); when every entry carries them, the hash chain is
@@ -796,6 +818,13 @@ function parseEscrowSnapshot(
       }
       if (typeof raw.evidence !== "string" || raw.evidence.length === 0) {
         throw new Error(`${tag}: evidence must be a non-empty string`);
+      }
+      // Same bar as dispatch(): oversized evidence in an untrusted log is
+      // malformed, so a corrupted snapshot cannot blow up rehydration.
+      if (raw.evidence.length > MAX_EVIDENCE_LENGTH) {
+        throw new Error(
+          `${tag}: evidence must be at most ${MAX_EVIDENCE_LENGTH} characters, got ${raw.evidence.length}`
+        );
       }
       entry.evidence = raw.evidence;
     }
@@ -1476,7 +1505,10 @@ export interface DispatchOptions {
    * request ID, a zk proof commitment, or a TEE attestation quote hash.
    *
    * Accepted ONLY on VERIFY_PASS (any other event throws). When present it
-   * must be a non-empty string and is recorded verbatim on the audit
+   * must be a non-empty string no longer than
+   * {@link MAX_EVIDENCE_LENGTH} characters (longer references are
+   * rejected, never truncated — truncation would change what the
+   * reference points at) and is recorded verbatim on the audit
    * history entry. The library does NOT verify the evidence — it records
    * the caller's claim so downstream tooling can audit it. When the escrow
    * was constructed with `requireVerifyEvidence: true`, evidence is
@@ -2210,6 +2242,20 @@ export class Escrow {
           `invalid dispatch: evidence must be a non-empty string, got ${String(
             evidence
           )}`
+        );
+      }
+      // Same bar as the note cap: an oversized reference is rejected
+      // outright, never silently truncated (truncation would change
+      // what the reference points at). Checked here, before the
+      // requireVerifyEvidence gate below, so a gated escrow reports
+      // the length error first — the caller supplied evidence, it
+      // is just too long — instead of the misleading "evidence
+      // required" error. Like the other evidence-shape checks this
+      // runs after the idempotency dedup: a duplicate delivery stays
+      // a pure no-op, and a failed dispatch consumes no key.
+      if (evidence.length > MAX_EVIDENCE_LENGTH) {
+        throw new Error(
+          `invalid dispatch: evidence must be at most ${MAX_EVIDENCE_LENGTH} characters, got ${evidence.length}`
         );
       }
     }
