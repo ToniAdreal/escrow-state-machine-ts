@@ -445,3 +445,87 @@ test("keyed history chain still needs its auditKey on signed restore", () => {
     /invalid snapshot: history hash chain is broken/,
   );
 });
+
+// A note-less lifecycle — the ordinary shape, every dispatch without
+// a note — must export and restore a signed snapshot: `dispatch`
+// used to write an explicit `note: undefined` key on such entries,
+// and the signed-snapshot canonicalizer rightly refuses non-JSON
+// values, so the export threw for any escrow with a note-less
+// dispatch (backlog #1040 bench found it on the plain BENCH-001
+// FUND -> RELEASED chain).
+test("note-less dispatches export and restore a signed snapshot", () => {
+  const escrow = new Escrow("escrow-signed-noteless");
+  escrow.dispatch("FUND", undefined, 10630, {
+    at: "2026-11-09T00:00:00.000Z",
+  });
+  escrow.dispatch("SUBMIT_MILESTONE", undefined, undefined, {
+    at: "2026-11-09T01:00:00.000Z",
+  });
+  escrow.dispatch("VERIFY_PASS", undefined, undefined, {
+    at: "2026-11-09T02:00:00.000Z",
+  });
+  escrow.dispatch("RELEASE", undefined, undefined, {
+    at: "2026-11-09T03:00:00.000Z",
+  });
+  assert.equal(escrow.state, "RELEASED");
+  assert.equal(verifyHistoryChain(escrow.history), true);
+  const envelope = escrow.exportSignedSnapshot(SECRET);
+  assert.equal(envelope.v, 1);
+  assert.match(envelope.mac, /^[0-9a-f]{64}$/);
+  const restored = Escrow.restoreSignedSnapshot(envelope, SECRET);
+  assert.equal(restored.id, "escrow-signed-noteless");
+  assert.equal(restored.state, "RELEASED");
+  assert.equal(restored.history.length, 4);
+  assert.equal(verifyHistoryChain(restored.history), true);
+  // A restored escrow keeps dispatching, and the new entries are
+  // signed-exportable too (the fix is in dispatch, not in a one-off
+  // snapshot scrub): restore a second note-less escrow at VERIFIED
+  // and release it after the restore.
+  const preRelease = new Escrow("escrow-signed-noteless-2");
+  preRelease.dispatch("FUND", undefined, 10630, {
+    at: "2026-11-09T00:00:00.000Z",
+  });
+  preRelease.dispatch("SUBMIT_MILESTONE", undefined, undefined, {
+    at: "2026-11-09T01:00:00.000Z",
+  });
+  preRelease.dispatch("VERIFY_PASS", undefined, undefined, {
+    at: "2026-11-09T02:00:00.000Z",
+  });
+  const restoredPreRelease = Escrow.restoreSignedSnapshot(
+    preRelease.exportSignedSnapshot(SECRET),
+    SECRET,
+  );
+  assert.equal(restoredPreRelease.state, "VERIFIED");
+  restoredPreRelease.dispatch("RELEASE", undefined, undefined, {
+    at: "2026-11-09T03:00:00.000Z",
+  });
+  const reexported = restoredPreRelease.exportSignedSnapshot(SECRET);
+  assert.equal(reexported.snapshot.state, "RELEASED");
+  assert.equal(reexported.snapshot.history.length, 4);
+  assert.equal(
+    verifyHistoryChain(restoredPreRelease.history),
+    true,
+  );
+});
+
+// The entry shape itself: a note-less dispatch carries no `note`
+// key at all (not an explicit undefined), so live entries match
+// what the parser builds and what JSON.stringify already produced.
+test("note-less dispatch entries carry no explicit note key", () => {
+  const escrow = new Escrow("escrow-signed-noteless-keys");
+  escrow.dispatch("FUND", undefined, 100, {
+    at: "2026-11-09T00:00:00.000Z",
+  });
+  escrow.dispatch("SUBMIT_MILESTONE");
+  const [fund, milestone] = escrow.history;
+  assert.equal("note" in fund, false);
+  assert.equal("note" in milestone, false);
+  assert.equal(fund.note, undefined);
+  assert.equal(milestone.note, undefined);
+  // A noted dispatch still records its note, and the hash chain is
+  // unchanged by the omission (the hash canonical form already
+  // omitted an absent note).
+  escrow.dispatch("VERIFY_PASS", "oracle ok");
+  assert.equal(escrow.history[2].note, "oracle ok");
+  assert.equal(verifyHistoryChain(escrow.history), true);
+});

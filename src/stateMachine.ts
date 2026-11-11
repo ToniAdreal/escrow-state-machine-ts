@@ -2360,7 +2360,15 @@ export class Escrow {
       to,
       at: at ?? new Date().toISOString(),
       ...(actor !== undefined ? { actor } : {}),
-      note,
+      // Omit `note` entirely when absent: an explicit `note: undefined`
+      // key survives on the live entry (unlike the parser, which only
+      // sets the field when present, and unlike the hash canonical form,
+      // which omits it), and `exportSignedSnapshot`'s canonicalizer
+      // rightly refuses non-JSON values — so a note-less dispatch used
+      // to make every later signed-snapshot export throw. Key
+      // presence is not part of the hash input (see
+      // `canonicalHistoryEntry`), so omitting it changes no hash.
+      ...(note !== undefined ? { note } : {}),
       ...((event === "FUND" || event === "PARTIAL_RELEASE") &&
       amount !== undefined
         ? { amount }

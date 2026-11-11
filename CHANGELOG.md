@@ -18,6 +18,29 @@ version changes.
 
 ### Added
 
+- Benchmark rows for the three signed-snapshot envelopes (2026-11-11,
+  backlog #1040): `bench/bench.ts` measures `exportSignedSnapshot` /
+  `restoreSignedSnapshot` on `SettlementEventDedupe`, `Escrow`, and
+  `SettlementWebhookOutbox` over the fixtures the unsigned snapshot
+  rows already pin — the dedupe's fixed 1,000-entry snapshot, the
+  escrow's fixed BENCH-001 FUND -> RELEASED 4-entry chain, the
+  outbox's fixed 1,000-pair ledger (700 pending, 300 dead-lettered)
+  — with the restore rows running through the JSON round-tripped
+  envelope on every iteration and per-iteration self-checks pinning
+  the restored state exactly; each signed envelope's snapshot is
+  pinned byte-identical to its unsigned snapshot, and a tampered
+  envelope and a wrong secret are pinned to be rejected with the
+  MAC-mismatch error outside the timed loop. Real run (2026-11-11,
+  Node v24.22.1, AMD EPYC 9D25, second full run — the first full
+  run the same day read dedupe export 1,896 / restore 828.5,
+  escrow export 16,998 / restore 6,477, outbox export 368.3 /
+  restore 231.3 under shared-host load; the table keeps the
+  second run per the repo's two-run convention): dedupe export
+  ~1,800 ops/sec, dedupe restore ~796, escrow export ~51,300,
+  escrow restore ~8,900, outbox export ~313, outbox restore ~222. README
+  Benchmarks table refreshed with these six rows only; the rest
+  of the table keeps its earlier runs (see the table footnote).
+
 - Benchmark rows for `SettlementWebhookOutbox` (2026-11-10,
   backlog #1038): `bench/bench.ts` measures the failure ledger's
   hot paths over a fixed outbox (`maxAttempts: 3`, injected fixed
@@ -88,6 +111,18 @@ version changes.
   pins both sides with `@ts-expect-error` cases plus one runtime case.
 
 ### Fixed
+
+- Note-less dispatches broke signed-snapshot export (2026-11-11,
+  found while benchmarking backlog #1040): `dispatch` wrote an
+  explicit `note: undefined` key on every history entry without a
+  note, and the signed-snapshot canonicalizer rightly refuses
+  non-JSON values, so `exportSignedSnapshot` threw for any escrow
+  with a note-less dispatch — the ordinary shape. `dispatch` now
+  omits the `note` key entirely when absent; key presence is not
+  part of the hash input (`canonicalHistoryEntry` only includes
+  `note` when defined), so no hash changes. Covered by a regression
+  test exporting and restoring a signed snapshot over a note-less
+  FUND -> RELEASED chain, including dispatching after restore.
 
 - Deadline test margin in `webhookFanoutLimits.test.ts` and the demo
   fan-out segment in `src/demo.ts` (2026-11-10, backlog #1032):

@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1664 tests, all local
+npm test   # 1666 tests, all local
 ```
 
 ## Quickstart
@@ -1407,7 +1407,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1664 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1666 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
@@ -1723,6 +1723,31 @@ empty-store export shapes, the restore-keeps-counting shape,
 the `maxAttempts: 1` boundary re-derivation, and the 7 malformed
 snapshots pinned to be rejected by `restore` all once, outside
 the timed loop),
+signed-snapshot envelopes
+(`exportSignedSnapshot` / `restoreSignedSnapshot` on all three
+HMAC-SHA256 signed snapshot envelopes — `SettlementEventDedupe`
+#1010, `Escrow` #1017, `SettlementWebhookOutbox` #1030 — six
+rows over the fixtures the unsigned snapshot rows already pin:
+the dedupe exports / restores its fixed 1,000-entry snapshot
+(ids `bench-restore-0000` .. `bench-restore-0999` under the fixed
+restore clock), the escrow exports / restores the fixed BENCH-001
+FUND -> RELEASED 4-entry chain, and the outbox exports / restores
+its fixed 1,000-pair ledger (700 pending, 300 dead-lettered);
+the restore rows run through the JSON round-tripped envelope on
+every iteration — the persisted form a process reloads at startup
+— and every per-iteration self-check pins the restored state
+against the hand-written composition (dedupe size 1,000 with the
+first / middle / last ids still duplicates, escrow id / state /
+4-entry history entry for entry through the canonical NDJSON
+serializer, outbox size / pending / dead-letter counts with their
+pinned attempts / error / timestamp); outside the timed loop,
+each signed envelope's snapshot is pinned byte-identical to its
+unsigned snapshot, and a tampered envelope and a wrong secret are
+pinned to be rejected by each `restoreSignedSnapshot` with the
+MAC-mismatch error while a previously restored instance keeps its
+state — this is the restart cost a gateway pays for
+tamper-evident persistence, the canonical-JSON + HMAC overhead
+over the unsigned snapshot rows),
 settlement webhook verify x dedupe receiver flow
 (`verifySettlementWebhook` + `SettlementEventDedupe.checkAndRecord`
 over the fixed signed webhook — one measured op is three
@@ -2295,6 +2320,12 @@ One real run on 2026-11-04:
 | SettlementWebhookOutbox acknowledge (pending pair, 2 failures) | ~688,089 ops/sec (1.45 µs/op) |
 | SettlementWebhookOutbox exportSnapshot (1,000-pair ledger) | ~12,582 ops/sec (79.48 µs/op) |
 | SettlementWebhookOutbox restore (1,000-pair snapshot, JSON round-trip) | ~2,859 ops/sec (349.78 µs/op) |
+| SettlementEventDedupe exportSignedSnapshot (1,000-entry snapshot) | ~1,800 ops/sec (553.49 µs/op) |
+| SettlementEventDedupe restoreSignedSnapshot (1,000-entry snapshot, JSON round-trip) | ~796 ops/sec (1256.52 µs/op) |
+| Escrow exportSignedSnapshot (4-entry history) | ~51,300 ops/sec (19.49 µs/op) |
+| Escrow restoreSignedSnapshot (4-entry history, JSON round-trip) | ~8,900 ops/sec (112.62 µs/op) |
+| SettlementWebhookOutbox exportSignedSnapshot (1,000-pair ledger) | ~313 ops/sec (3192.62 µs/op) |
+| SettlementWebhookOutbox restoreSignedSnapshot (1,000-pair snapshot, JSON round-trip) | ~222 ops/sec (4499.49 µs/op) |
 | expiredEscrows (batch 100 escrows) | ~42,594 ops/sec (23.48 µs/op) |
 | staleEscrows (batch 100 escrows) | ~15,865 ops/sec (63.03 µs/op) |
 | expireOverdueEscrows (batch 100 escrows) | ~698.2 ops/sec (1432.23 µs/op) |
@@ -2335,7 +2366,7 @@ and the settlePartialRelease row above were measured on
 escrowsByEvent row above were measured on 2026-11-06 runs; the
 settlePartialReleases row above was measured on a 2026-11-08 run; the
 escrowsByFilters and settlementAging rows above were measured on a
-2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
+2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the signed-snapshot rows above were measured on a 2026-11-11 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
 came in mixed under shared-host load, so refreshing the whole
 table would misreport changes in paths these additions never
 touched.
