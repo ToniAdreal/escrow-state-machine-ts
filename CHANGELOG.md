@@ -18,6 +18,22 @@ version changes.
 
 ### Added
 
+- `MAX_EVIDENCE_LENGTH` cap on quorum approval `evidence`
+  (2026-11-11, backlog #1063): `approve()`, `approveSigned()`, and
+  the snapshot parser behind `restoreQuorum()` reject evidence
+  longer than 32,768 characters (`quorum approval evidence must be
+  at most 32768 characters, got N` / `invalid quorum snapshot:
+  approvals[i]: evidence must be at most 32768 characters, got N`),
+  reusing the same constant as the escrow history evidence cap, so
+  an oversized reference can neither be recorded live nor smuggled
+  in through a rehydrated snapshot. Signer ids are capped alongside
+  at `MAX_ACTOR_LENGTH` (256) in `createQuorum`'s config validation
+  (`quorum signer id must be at most 256 characters, got N`) —
+  unlike `RolePolicy` names, which are uncapped configuration, a
+  signer id is stamped verbatim onto every approval log entry and
+  snapshot, so it is audit data. Both caps reject outright, never
+  truncate. 11 tests in `test/maxQuorumEvidenceLength.test.ts`.
+
 - `MAX_ESCROW_ID_LENGTH` cap on escrow ids (2026-11-11, backlog #1061):
   the constructor, the snapshot parser, and `Escrow.fromHistory`
   reject an id longer than 256 characters (`invalid escrow: id must

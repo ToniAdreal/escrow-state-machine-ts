@@ -47,11 +47,22 @@
  */
 
 import { KeyObject, verify } from "node:crypto";
+import { MAX_ACTOR_LENGTH, MAX_EVIDENCE_LENGTH } from "./stateMachine.js";
 
 export interface QuorumConfig {
   /** Approvals required, 1 ≤ threshold ≤ signers.length */
   threshold: number;
-  /** Unique signer identifiers; order is not significant */
+  /**
+   * Unique signer identifiers; order is not significant. Each id is
+   * capped at {@link MAX_ACTOR_LENGTH} characters (256): unlike a
+   * `RolePolicy` name — configuration that is never written into any
+   * history — a signer id is stamped verbatim onto every approval
+   * log entry and snapshot that carries it, so it is audit data and
+   * the actor-cap logic applies (see `MAX_ACTOR_LENGTH` in
+   * `src/stateMachine.ts` for the full reasoning). The same cap is
+   * enforced when a snapshot is restored, because a snapshot's
+   * signers must match this configuration.
+   */
   signers: readonly string[];
   /**
    * Clock for approval timestamps, in milliseconds since the Unix epoch.
@@ -104,6 +115,13 @@ export interface ApprovalLogEntry {
    * it does NOT verify that the referenced evidence is real and
    * performs no signature verification on it — the same honest scope
    * as the VERIFY_PASS evidence reference on escrow history entries.
+   * Capped at {@link MAX_EVIDENCE_LENGTH} characters (32,768): the
+   * same ceiling as the escrow history evidence, enforced at the
+   * write points (`approve()` / `approveSigned()`) and at snapshot
+   * restore, so an oversized reference can neither be recorded live
+   * nor smuggled in through a rehydrated snapshot. Oversized
+   * evidence is rejected outright, never truncated — truncation
+   * would change what the audit trail says the evidence was.
    */
   readonly evidence?: string;
   /**
@@ -174,9 +192,12 @@ export interface Quorum {
    * The optional `evidence` is a caller-asserted reference to
    * off-chain evidence behind the vote (a vote-record link, a
    * governance proposal id, an attestation reference). It must be a
-   * non-empty string when given; the quorum records it verbatim and
-   * never verifies it. Counting (`hasQuorum` / `approvalCount` /
-   * `approvals`) is unaffected by whether evidence is present.
+   * non-empty string when given, and at most
+   * {@link MAX_EVIDENCE_LENGTH} characters (32,768) — longer
+   * evidence is rejected outright, never truncated. The quorum
+   * records it verbatim and never verifies it. Counting
+   * (`hasQuorum` / `approvalCount` / `approvals`) is unaffected by
+   * whether evidence is present.
    */
   approve(signerId: string, evidence?: string): void;
   /**
@@ -271,6 +292,10 @@ function assertValidConfig({
   for (const s of signers) {
     if (typeof s !== "string" || s.length === 0)
       throw new Error("quorum signer ids must be non-empty strings");
+    if (s.length > MAX_ACTOR_LENGTH)
+      throw new Error(
+        `quorum signer id must be at most ${MAX_ACTOR_LENGTH} characters, got ${s.length}`
+      );
     if (seen.has(s))
       throw new Error(`quorum signer id duplicated: ${JSON.stringify(s)}`);
     seen.add(s);
@@ -320,6 +345,25 @@ interface TimedApproval {
   readonly evidence?: string;
   /** True only for entries recorded via `approveSigned()`. */
   readonly verified?: boolean;
+}
+
+/**
+ * Shared evidence guard for `approve()` and `approveSigned()`:
+ * evidence must be a non-empty string and at most
+ * {@link MAX_EVIDENCE_LENGTH} characters. Oversized evidence is
+ * rejected outright, never truncated — truncation would change what
+ * the audit trail says the evidence was — and the rejection happens
+ * before anything is recorded, so a failed call leaves no residue
+ * in the log.
+ */
+function assertValidEvidence(evidence: string | undefined): void {
+  if (evidence === undefined) return;
+  if (typeof evidence !== "string" || evidence.length === 0)
+    throw new Error("quorum approval evidence must be a non-empty string");
+  if (evidence.length > MAX_EVIDENCE_LENGTH)
+    throw new Error(
+      `quorum approval evidence must be at most ${MAX_EVIDENCE_LENGTH} characters, got ${evidence.length}`
+    );
 }
 
 /**
@@ -374,13 +418,7 @@ function buildQuorum(
     approve(signerId: string, evidence?: string): void {
       if (!signers.has(signerId))
         throw new Error(`unknown quorum signer: ${JSON.stringify(signerId)}`);
-      if (
-        evidence !== undefined &&
-        (typeof evidence !== "string" || evidence.length === 0)
-      )
-        throw new Error(
-          "quorum approval evidence must be a non-empty string"
-        );
+      assertValidEvidence(evidence);
       const current = latestBySigner().get(signerId);
       if (current !== undefined && isCounted(current)) return; // still counts — no-op, evidence unchanged
       log.push({
@@ -401,13 +439,7 @@ function buildQuorum(
         throw new Error(
           `quorum approveSigned: no public key registered for signer ${JSON.stringify(signerId)}`
         );
-      if (
-        evidence !== undefined &&
-        (typeof evidence !== "string" || evidence.length === 0)
-      )
-        throw new Error(
-          "quorum approval evidence must be a non-empty string"
-        );
+      assertValidEvidence(evidence);
       // Buffer extends Uint8Array, so one check covers both shapes.
       if (!(signature instanceof Uint8Array))
         throw new Error(
@@ -528,7 +560,8 @@ const QUORUM_SNAPSHOT_FIELDS = new Set([
  *  - an approval entry that is not exactly `{ signerId, at }` plus
  *    an optional `evidence` and an optional `verified: true`, names an
  *    unknown signer, carries a non-canonical-ISO timestamp, carries an
- *    `evidence` that is present but not a non-empty string, carries a
+ *    `evidence` that is present but not a non-empty string or is
+ *    longer than {@link MAX_EVIDENCE_LENGTH} characters, carries a
  *    `verified` that is present but not `true` (a snapshot never
  *    records `verified: false` — unverified entries omit the key),
  *    is an exact duplicate of an earlier entry (same signer, same
@@ -626,7 +659,12 @@ export function restoreQuorum(
     if (entry.evidence !== undefined) {
       if (typeof entry.evidence !== "string" || entry.evidence.length === 0)
         fail(`${tag}: evidence must be a non-empty string`);
-      evidence = entry.evidence as string;
+      const evidenceString = entry.evidence as string;
+      if (evidenceString.length > MAX_EVIDENCE_LENGTH)
+        fail(
+          `${tag}: evidence must be at most ${MAX_EVIDENCE_LENGTH} characters, got ${evidenceString.length}`
+        );
+      evidence = evidenceString;
     }
     let verified: boolean | undefined;
     if (entry.verified !== undefined) {

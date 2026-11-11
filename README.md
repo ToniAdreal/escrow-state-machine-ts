@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1751 tests, all local
+npm test   # 1762 tests, all local
 ```
 
 ## Quickstart
@@ -702,7 +702,14 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   carried on the log entry and the snapshot. Evidence is a caller
   assertion, exactly like `VERIFY_PASS` evidence: the quorum records
   it verbatim, never verifies that it is real, and counting is
-  identical with or without it.
+  identical with or without it. Evidence is capped at 32,768
+  characters (the same `MAX_EVIDENCE_LENGTH` ceiling as escrow
+  history evidence), enforced at `approve()`, `approveSigned()`, and
+  snapshot restore — oversized evidence is rejected, never truncated.
+  Signer ids are capped at 256 characters (`MAX_ACTOR_LENGTH`):
+  they are written verbatim into the approval log and snapshots, so
+  they are audit data, unlike `RolePolicy` names, which are uncapped
+  configuration.
   Opt-in signature verification is available: register Ed25519 public
   keys in `QuorumConfig.signerPublicKeys` and collect votes with
   `approveSigned(signerId, signature)` — each vote is verified against
@@ -1463,7 +1470,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1751 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1762 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

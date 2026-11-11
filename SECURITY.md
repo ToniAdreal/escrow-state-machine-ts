@@ -33,6 +33,14 @@ quorum approvals (`approveSigned()`).
   is meaningful only inside the quorum it was collected for; use one
   quorum per arbitration. A snapshot carries recorded `verified`
   flags as data and restoring one does not re-verify signatures.
+  Quorum approval `evidence` is capped at 32,768 characters (the
+  same `MAX_EVIDENCE_LENGTH` ceiling as escrow history evidence),
+  enforced at `approve()`, `approveSigned()`, and snapshot restore,
+  so an oversized reference can neither be recorded live nor smuggled
+  in through a rehydrated snapshot; signer ids are capped at 256
+  characters (`MAX_ACTOR_LENGTH`) because they are written verbatim
+  into the approval log and snapshots. Both caps reject outright,
+  never truncate.
   `src/arbitration.ts` wires the *count* to `dispatchArbitration` (it refuses
   to dispatch below threshold and records `quorum <approvals>/<threshold> [signer, …]`
   in the audit note — the counted signers, approval-time order, expired approvals
