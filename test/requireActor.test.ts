@@ -24,10 +24,13 @@ import { Escrow, type EscrowOptions } from "../src/index.js";
  *    reports the RBAC error first; an unlisted event with no actor
  *    reports actor-required
  *  - a rejected dispatch consumes no idempotency key and leaves no seq gap
- *  - the switch is escrow configuration, not audit data: it is never
- *    written into the toJSON() snapshot
- *  - fromJSON() does not restore the switch (advisory again after restore);
+ *  - the switch IS written into the toJSON() snapshot (backlog
+ *    #1078): `requireActor: true` only when the gate is on, so a
+ *    restored escrow keeps enforcing it
+ *  - fromJSON() restores the switch (an explicit `opts.requireActor`
+ *    overrides the snapshot's value);
  *    fromHistory(id, history, { requireActor: true }) re-attaches it
+ *    (a bare history carries no gate)
  *  - with requireVerifyEvidence also on, a VERIFY_PASS with an actor but
  *    no evidence reports the evidence error; with neither, the evidence
  *    error reports first (the evidence gate runs before the actor gate
@@ -144,21 +147,19 @@ test("rejected dispatch consumes no idempotency key and leaves no seq gap", () =
   assert.equal(e.history[e.history.length - 1].seq, before + 1);
 });
 
-test("the switch is not written into the toJSON() snapshot", () => {
-  const e = toVerified("ra-8", { requireActor: true });
-  const snapshot = e.toJSON();
-  assert.equal("requireActor" in snapshot, false);
+test("the switch is written into the toJSON() snapshot when on, absent when off (backlog #1078)", () => {
+  const gated = toVerified("ra-8", { requireActor: true });
+  assert.equal(gated.toJSON().requireActor, true);
+  const open = toVerified("ra-8b");
+  assert.equal("requireActor" in open.toJSON(), false);
 });
 
-test("fromJSON() does not restore the switch: advisory again after restore", () => {
+test("fromJSON() restores the switch: restored escrow still requires an actor (backlog #1078)", () => {
   const e = toVerified("ra-9", { requireActor: true });
   const restored = Escrow.fromJSON(JSON.parse(JSON.stringify(e.toJSON())));
-  restored.dispatch("RELEASE", undefined, undefined, undefined);
+  assert.throws(() => restored.dispatch("RELEASE"), /actor required/);
+  restored.dispatch("RELEASE", undefined, undefined, { actor: "treasury" });
   assert.equal(restored.state, "RELEASED");
-  assert.equal(
-    restored.history[restored.history.length - 1].actor,
-    undefined,
-  );
 });
 
 test("fromHistory() re-attaches the switch via options", () => {

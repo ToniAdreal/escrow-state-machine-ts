@@ -18,6 +18,27 @@ version changes.
 
 ### Added
 
+- `requireActor` gate now survives snapshots (2026-11-12, backlog
+  #1078): `EscrowSnapshot` gains the optional `requireActor`
+  field, written by `toJSON()` only when the gate is on, so a
+  restored escrow keeps rejecting anonymous dispatches instead of
+  silently losing the gate on restart. `fromJSON()` restores it
+  unless an explicit `opts.requireActor` overrides it (either
+  direction); a legacy snapshot without the field restores with
+  the gate off, and a non-boolean field is rejected as
+  `invalid snapshot: requireActor must be a boolean, …`.
+  `diffEscrowSnapshots()` reports `actorGateChanged` on a true
+  off->on or on->off flip (absent field and explicit `false` are
+  the same gate-off state). Signed snapshots inherit the field
+  automatically — flipping it inside an envelope fails the MAC
+  check. A bare history still carries no gate, so `fromHistory`
+  keeps the re-attach-via-options semantics. README, SECURITY.md,
+  and the `EscrowOptions.requireActor` JSDoc now state the
+  snapshot semantics instead of the old "never written" wording;
+  the two `test/requireActor.test.ts` cases that pinned the old
+  behavior now assert the new one. 12 tests in
+  `test/requireActorSnapshot.test.ts`.
+
 - Opt-in settlement-reference gate `EscrowOptions.requireSettlementRef`
   (2026-11-12, backlog #1075): `new Escrow(id, { requireSettlementRef: true })`
   makes `dispatch("RELEASE")` without a `settlementRef` throw

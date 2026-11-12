@@ -481,6 +481,20 @@ export interface EscrowSnapshot {
    * The schema version stays 1 for the same reason as `maxDeposit`.
    */
   requireVerifyEvidence?: boolean;
+  /**
+   * Audit-attribution gate (see {@link EscrowOptions.requireActor}),
+   * present only when the gate is enabled. `toJSON()` writes this
+   * field ONLY when true, so a gate-off escrow's snapshot keeps its
+   * exact legacy shape. `fromJSON()` restores it the same way as
+   * `requireVerifyEvidence` (strict boolean validation; an explicit
+   * `opts.requireActor` overrides the snapshot's value). A legacy
+   * snapshot without the field restores with the gate off — the
+   * pre-#1078 shape, in which a restored escrow silently lost the
+   * gate and accepted anonymous dispatches it would previously
+   * have rejected. The schema version stays 1 for the same reason
+   * as `requireVerifyEvidence`.
+   */
+  requireActor?: boolean;
 }
 
 /**
@@ -503,7 +517,7 @@ export interface EscrowSnapshot {
  * Why this exists: the audit hash chain covers the history entries
  * only — the snapshot-level fields (`state`, `deadline`,
  * `rolePolicy`, `idempotencyKeys`, `maxDeposit`,
- * `requireVerifyEvidence`) sit outside the chain, so a rewritten
+ * `requireVerifyEvidence`, `requireActor`) sit outside the chain, so a rewritten
  * persisted snapshot could push a deadline back, loosen a policy,
  * clear consumed idempotency keys, or lift a deposit cap without
  * breaking any history link. The envelope MAC covers the whole
@@ -553,6 +567,7 @@ const SNAPSHOT_FIELDS = new Set([
   "rolePolicy",
   "maxDeposit",
   "requireVerifyEvidence",
+  "requireActor",
 ]);
 
 /**
@@ -660,7 +675,7 @@ const HISTORY_ENTRY_FIELDS = new Set([
  * trail records the actor string it was given, and that dispatches
  * violating the declared policy never happen. The policy is escrow
  * configuration that survives `toJSON()`/`fromJSON()` round-trips
- * (like `requireVerifyEvidence`/`maxDeposit`, and unlike `auditKey`,
+ * (like `requireVerifyEvidence`/`maxDeposit`/`requireActor`, and unlike `auditKey`,
  * which is never stored — see {@link EscrowSnapshot.rolePolicy}).
  *
  * Policy names are NOT capped at {@link MAX_ACTOR_LENGTH}: the cap
@@ -822,6 +837,13 @@ function isCanonicalIso(s: unknown): s is string {
  *  - `requireVerifyEvidence`, when present, must be a boolean; absent
  *    means the gate is off (the legacy shape). Same treatment as
  *    `maxDeposit`: validated strictly, governs future dispatches only
+ *  - `requireActor`, when present, must be a boolean; absent means
+ *    the gate is off (the legacy shape). Same treatment as
+ *    `requireVerifyEvidence`: validated strictly, governs future
+ *    dispatches only — a snapshot that omits the field (written
+ *    before backlog #1078) restores gate-off, exactly like a
+ *    default-constructed escrow, while a snapshot carrying
+ *    `requireActor: true` restores gate-on
  *  - `actor`, when present on a history entry, must be a non-empty
  *    string no longer than {@link MAX_ACTOR_LENGTH} characters (the
  *    same bar dispatch() applies); absent is the
@@ -829,7 +851,7 @@ function isCanonicalIso(s: unknown): s is string {
  *  - unknown fields are rejected (fail-closed), never silently dropped:
  *    top level allows only
  *    `v`/`id`/`state`/`history`/`deadline`/`idempotencyKeys`/`rolePolicy`/
- *    `maxDeposit`/`requireVerifyEvidence`
+ *    `maxDeposit`/`requireVerifyEvidence`/`requireActor`
  *    (`unknown field "<name>"`), and a history entry allows only
  *    `seq`/`event`/`from`/`to`/`at`/`actor`/`note`/`amount`/`evidence`/
  *    `settlementRef`/`prevHash`/`hash` (`history[i]: unknown field "<name>"). A typo
@@ -1128,6 +1150,15 @@ function parseEscrowSnapshot(
     }
     requireVerifyEvidence = snapshot.requireVerifyEvidence;
   }
+  let requireActor: boolean | undefined;
+  if (snapshot.requireActor !== undefined) {
+    if (typeof snapshot.requireActor !== "boolean") {
+      throw new Error(
+        `invalid snapshot: requireActor must be a boolean, got ${JSON.stringify(snapshot.requireActor)}`
+      );
+    }
+    requireActor = snapshot.requireActor;
+  }
 
   return {
     v: SNAPSHOT_VERSION,
@@ -1149,6 +1180,7 @@ function parseEscrowSnapshot(
     ...(requireVerifyEvidence === undefined
       ? {}
       : { requireVerifyEvidence }),
+    ...(requireActor === undefined ? {} : { requireActor }),
   };
 }
 
@@ -1218,6 +1250,13 @@ export interface EscrowSnapshotDiff {
    * off), so only a true off->on or on->off flip is a change.
    */
   evidenceGateChanged?: { from: boolean; to: boolean };
+  /**
+   * Audit-attribution gate flipped. Same reporting as
+   * `evidenceGateChanged`: an absent field and an explicit `false`
+   * are the same state (gate off), so only a true off->on or
+   * on->off flip is a change.
+   */
+  actorGateChanged?: { from: boolean; to: boolean };
   /**
    * Consumed idempotency-key set moved (a key consumed, or a key
    * dropped on restore). Reported as a plain boolean: the set is
@@ -1293,7 +1332,9 @@ function idempotencyKeysKey(keys: readonly string[] | undefined): string {
  * `maxDeposit` (setting, clearing, or changing it is a change), the
  * verify-evidence gate `requireVerifyEvidence` (only an off->on or
  * on->off flip counts — an absent field and an explicit `false` are
- * the same gate-off state), the consumed idempotency-key set (as a
+ * the same gate-off state), the audit-attribution gate
+ * `requireActor` (same flip-only reporting as the evidence gate),
+ * the consumed idempotency-key set (as a
  * set — order-insensitive, a missing field is the empty set), and
  * history appends. Only `v` is deliberately not reported: the
  * version is schema metadata, not escrow state. The key set used to
@@ -1370,6 +1411,12 @@ export function diffEscrowSnapshots(
     diff.evidenceGateChanged = {
       from: a.requireVerifyEvidence === true,
       to: b.requireVerifyEvidence === true,
+    };
+  }
+  if ((a.requireActor === true) !== (b.requireActor === true)) {
+    diff.actorGateChanged = {
+      from: a.requireActor === true,
+      to: b.requireActor === true,
     };
   }
   if (idempotencyKeysKey(a.idempotencyKeys) !== idempotencyKeysKey(b.idempotencyKeys)) {
@@ -1957,11 +2004,15 @@ export interface EscrowOptions {
    * transition-legality, RBAC, and deposit-cap checks and before
    * anything is appended or any idempotency key is consumed, so a
    * rejected dispatch leaves no trace and a retry with an actor and
-   * the same key still executes. Like `auditKey`, the switch is
-   * escrow configuration, not audit data: it is never written into
-   * the `toJSON()` snapshot envelope, so a restored escrow must
-   * re-enable it via `Escrow.fromJSON(snapshot, { requireActor: true })`
-   * or `Escrow.fromHistory(id, history, { requireActor: true })`.
+   * the same key still executes. The flag IS part of
+   * `toJSON()`/`fromJSON()` snapshots (as `requireActor`, written
+   * only when true — see {@link EscrowSnapshot}): a restored escrow
+   * keeps enforcing the gate unless
+   * `Escrow.fromJSON(snapshot, { requireActor: false })` explicitly
+   * overrides it. A legacy snapshot without the field restores with
+   * the gate off. A bare history carries no gate, so
+   * `Escrow.fromHistory(id, history, { requireActor: true })` is
+   * still the way to re-attach it there.
    * Invalid values throw `invalid option: …` at construction.
    *
    * Default: false (unchanged legacy behavior).
@@ -2930,8 +2981,10 @@ export class Escrow {
    * The deposit cap, when set, is exported as `maxDeposit`; absent
    * when there is no cap. The verify-evidence gate, when enabled,
    * is exported as `requireVerifyEvidence: true`; absent when the
-   * gate is off. Both keep a guardrail-free escrow's snapshot in
-   * its exact legacy shape, and both are restored by
+   * gate is off. The audit-attribution gate, when enabled, is
+   * exported as `requireActor: true`; absent when the gate is off.
+   * All three keep a guardrail-free escrow's snapshot in its exact
+   * legacy shape, and all three are restored by
    * {@link Escrow.fromJSON} unless an explicit option overrides
    * them. The audit key is NEVER exported (see
    * {@link EscrowOptions.auditKey}).
@@ -2962,6 +3015,7 @@ export class Escrow {
       ...(this._requireVerifyEvidence
         ? { requireVerifyEvidence: true }
         : {}),
+      ...(this._requireActor ? { requireActor: true } : {}),
     };
   }
 
@@ -2972,8 +3026,8 @@ export class Escrow {
    * canonical JSON of the snapshot under `secret`. Persist the
    * envelope (plain JSON) before a restart and restore it with
    * {@link Escrow.restoreSignedSnapshot} — a process that restarts
-   * keeps its deadline, policy, deposit cap, and consumed
-   * idempotency keys, and anyone who rewrites the persisted file
+   * keeps its deadline, policy, deposit cap, verify-evidence gate,
+   * actor gate, and consumed idempotency keys, and anyone who rewrites the persisted file
    * without the secret is caught at restore instead of silently
    * pushing a deadline back, loosening a policy, clearing consumed
    * keys, or lifting a cap.
@@ -3021,24 +3075,26 @@ export class Escrow {
    * restored and keeps being enforced after a restart; a legacy
    * snapshot without the field restores unrestricted.
    *
-   * The snapshot's deposit cap (`maxDeposit`, when present) and
-   * verify-evidence gate (`requireVerifyEvidence`, when present) are
+   * The snapshot's deposit cap (`maxDeposit`, when present),
+   * verify-evidence gate (`requireVerifyEvidence`, when present),
+   * and audit-attribution gate (`requireActor`, when present) are
    * likewise restored and keep being enforced after a restart; a
    * legacy snapshot without the fields restores uncapped with the
-   * gate off. The audit key is the exception: it is never stored in
+   * gates off. The audit key is the exception: it is never stored in
    * a snapshot, so a keyed chain still needs the key re-supplied
    * here (see below).
    *
    * @param opts - Optional per-instance dispatch configuration, passed
    *   straight through to the constructor (same validation rules).
-   *   `maxDeposit` and `requireVerifyEvidence` ARE snapshot state
-   *   now (see above), so they follow override semantics instead of
+   *   `maxDeposit`, `requireVerifyEvidence`, and `requireActor` ARE
+   *   snapshot state now (see above), so they follow override semantics instead of
    *   re-enable semantics, mirroring `rolePolicy`/`deadline`: when
-   *   `opts.maxDeposit` / `opts.requireVerifyEvidence` is provided
+   *   `opts.maxDeposit` / `opts.requireVerifyEvidence` /
+   *   `opts.requireActor` is provided
    *   it replaces the snapshot's value entirely — it is NOT merged
    *   with it. When omitted (`undefined`), the snapshot's value is
-   *   restored as-is. A legacy snapshot carrying neither field
-   *   restores uncapped with the gate off, exactly like a
+   *   restored as-is. A legacy snapshot carrying none of the fields
+   *   restores uncapped with the gates off, exactly like a
    *   default-constructed escrow.
    *
    *   `opts.rolePolicy` is the exception to that pattern: the policy
@@ -3068,22 +3124,25 @@ export class Escrow {
    */
   static fromJSON(snapshot: unknown, opts?: EscrowOptions): Escrow {
     const parsed = parseEscrowSnapshot(snapshot, opts?.auditKey);
-    // maxDeposit / requireVerifyEvidence are snapshot state with
-    // override semantics (see JSDoc): an explicit (non-undefined)
-    // opt wins, otherwise the snapshot's value is installed through
-    // the constructor — the fields are readonly, so merging into
-    // the constructor opts is the only way to restore them. An
-    // explicit `undefined` counts as omitted, mirroring the
-    // deadline/rolePolicy handling below. Invalid opts (null, an
-    // array, a non-object) pass through untouched so the constructor
-    // rejects them with its own message instead of being masked by
-    // the merge (`{...null}` would silently become `{}`).
+    // maxDeposit / requireVerifyEvidence / requireActor are snapshot
+    // state with override semantics (see JSDoc): an explicit
+    // (non-undefined) opt wins, otherwise the snapshot's value is
+    // installed through the constructor — the fields are readonly,
+    // so merging into the constructor opts is the only way to
+    // restore them. An explicit `undefined` counts as omitted,
+    // mirroring the deadline/rolePolicy handling below. Invalid opts
+    // (null, an array, a non-object) pass through untouched so the
+    // constructor rejects them with its own message instead of being
+    // masked by the merge (`{...null}` would silently become `{}`).
     const snapshotGuardrails: EscrowOptions = {
       ...(parsed.maxDeposit !== undefined
         ? { maxDeposit: parsed.maxDeposit }
         : {}),
       ...(parsed.requireVerifyEvidence !== undefined
         ? { requireVerifyEvidence: parsed.requireVerifyEvidence }
+        : {}),
+      ...(parsed.requireActor !== undefined
+        ? { requireActor: parsed.requireActor }
         : {}),
     };
     const effectiveOpts: EscrowOptions | undefined =
@@ -3152,8 +3211,8 @@ export class Escrow {
    * `1`, a malformed `mac`, or a MAC that does not match the
    * snapshot under `secret` throws a descriptive configuration
    * `Error` and no escrow is produced — a tampered `state`,
-   * `deadline`, `rolePolicy`, `idempotencyKeys`, `maxDeposit`, or
-   * `requireVerifyEvidence`, a tampered history entry, or a wrong
+   * `deadline`, `rolePolicy`, `idempotencyKeys`, `maxDeposit`,
+   * `requireVerifyEvidence`, or `requireActor`, a tampered history entry, or a wrong
    * secret all fail here, before any snapshot parsing, so a
    * tampered envelope can never partially install. A MAC-valid
    * envelope whose snapshot is itself malformed then fails through
@@ -3266,8 +3325,8 @@ export class Escrow {
    *   passed straight through to the constructor, with the same
    *   re-attach semantics as {@link Escrow.fromJSON}'s options:
    *   `requireVerifyEvidence`/`maxDeposit`/`requireActor` are never
-   *   stored anywhere in the log (unlike a snapshot, which carries the
-   *   first two), so a rebuilt escrow silently loses those guardrails
+   *   stored anywhere in the log (unlike a snapshot, which carries
+   *   all three), so a rebuilt escrow silently loses those guardrails
    *   unless the caller re-enables them here — use `fromJSON` when they
    *   must survive a restart.
    *   `opts.idempotencyKeys` re-attaches the consumed dispatch
@@ -3288,9 +3347,9 @@ export class Escrow {
    *   overrides stored state; a bare history carries no policy at
    *   all, so here the option is the only source — when provided it
    *   is installed by the constructor, when omitted the rebuilt
-   *   escrow is unrestricted. (`maxDeposit` and
-   *   `requireVerifyEvidence` differ the same way: a snapshot
-   *   carries them, a bare history does not.)
+   *   escrow is unrestricted. (`maxDeposit`,
+   *   `requireVerifyEvidence`, and `requireActor` differ the same
+   *   way: a snapshot carries them, a bare history does not.)
    *
    *   What a bare history cannot restore by itself: the log carries
    *   no deadline, so a rebuild without `opts.deadline` starts with

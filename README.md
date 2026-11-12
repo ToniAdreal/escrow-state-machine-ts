@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1813 tests, all local
+npm test   # 1825 tests, all local
 ```
 
 ## Quickstart
@@ -390,11 +390,16 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   only constrains the events it lists, while `requireActor` constrains all
   of them (a listed event without an actor still reports the RBAC error
   first, since that check runs earlier). Non-boolean values throw
-  `invalid option: requireActor …` at construction. Like the audit key,
-  the switch is configuration, not audit data: it is never written into
-  `toJSON()` snapshots, so a restored escrow must re-enable it via
-  `Escrow.fromJSON(snapshot, { requireActor: true })` or
-  `Escrow.fromHistory(id, history, { requireActor: true })`. Honest limit:
+  `invalid option: requireActor …` at construction. Like the deposit
+  cap and the evidence gate, the switch IS part of `toJSON()`/`fromJSON()`
+  snapshots (`requireActor`, only when true; a tampered gate in a stored
+  snapshot is rejected), and an explicit
+  `Escrow.fromJSON(snapshot, { requireActor: false })` overrides it. A
+  legacy snapshot without the field restores with the gate off, so a
+  restored escrow keeps enforcing attribution instead of silently
+  dropping it. A bare history carries no gate, so
+  `Escrow.fromHistory(id, history, { requireActor: true })` is still the
+  way to re-attach it there. Honest limit:
   requiring an actor cannot verify who the actor really is — it only
   guarantees the audit trail names one (see SECURITY.md).
 - Settlement reference (opt-in): `new Escrow(id, { requireSettlementRef: true })`
@@ -594,7 +599,7 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   non-negative on FUND and PARTIAL_RELEASE entries only); malformed snapshots throw a
   descriptive `invalid snapshot: …` error instead of yielding a corrupt
   escrow. Unknown fields are rejected fail-closed at both levels —
-  top level allows only `v`/`id`/`state`/`history`/`deadline`/`idempotencyKeys`/`rolePolicy`/`maxDeposit`/`requireVerifyEvidence` and an
+  top level allows only `v`/`id`/`state`/`history`/`deadline`/`idempotencyKeys`/`rolePolicy`/`maxDeposit`/`requireVerifyEvidence`/`requireActor` and an
   entry only `seq`/`event`/`from`/`to`/`at`/`actor`/`note`/`amount`/`evidence`/
   `settlementRef`/`prevHash`/`hash` — so a typo like `deadlline` or `amout` throws
   `invalid snapshot: unknown field "…"` instead of silently losing a
@@ -611,16 +616,17 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   without it load exactly as before, but a snapshot *carrying* it is
   rejected as an unknown field by older parsers that predate it (an old
   binary must not silently drop replay protection). The deposit cap
-  (`maxDeposit`, only when set) and the verify-evidence gate
-  (`requireVerifyEvidence`, only when true) are likewise part of the
-  snapshot — a restored escrow keeps enforcing both, a legacy snapshot
-  without them restores uncapped with the gate off, and an explicit
-  `fromJSON` opt overrides either value entirely; a tampered cap or
+  (`maxDeposit`, only when set), the verify-evidence gate
+  (`requireVerifyEvidence`, only when true), and the audit-attribution
+  gate (`requireActor`, only when true) are likewise part of the
+  snapshot — a restored escrow keeps enforcing all three, a legacy snapshot
+  without them restores uncapped with the gates off, and an explicit
+  `fromJSON` opt overrides any of them entirely; a tampered cap or
   gate in a stored snapshot is rejected. The audit key is never in a
   snapshot. Signed snapshots close the remaining gap: the hash chain
   covers history entries only, so the snapshot-level fields
   (`state`, `deadline`, `rolePolicy`, `idempotencyKeys`,
-  `maxDeposit`, `requireVerifyEvidence`) sit outside it — a
+  `maxDeposit`, `requireVerifyEvidence`, `requireActor`) sit outside it — a
   rewritten persisted file could push a deadline back, loosen a
   policy, clear consumed keys, or lift a cap without breaking any
   history link. `escrow.exportSignedSnapshot(secret)` wraps the
@@ -643,7 +649,7 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   `diffEscrowSnapshots(before, after)` reports only what changed
   (`stateChanged` / `deadlineChanged` / `historyAppended` /
   `rolePolicyChanged` / `depositCapChanged` / `evidenceGateChanged` /
-  `idempotencyKeysChanged` — the consumed-key set, compared as a set,
+  `actorGateChanged` / `idempotencyKeysChanged` — the consumed-key set, compared as a set,
   so a key consumed or dropped between two stored snapshots shows up
   instead of silently vanishing); a later history that is not an append-only
   extension of the earlier one throws instead of reporting progress.
@@ -661,9 +667,9 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   rehydration exactly as in `fromJSON`, and a rebuilt escrow keeps
   dispatching with no seq gap. Options re-attach as in
   `fromJSON(snapshot, opts)` (`requireVerifyEvidence`/`maxDeposit`/
-  `auditKey`/`rolePolicy`/`idempotencyKeys`) — with one honest difference: a snapshot
-  *carries* its `rolePolicy`, `maxDeposit`, and
-  `requireVerifyEvidence`, so there the option overrides stored
+  `requireActor`/`auditKey`/`rolePolicy`/`idempotencyKeys`) — with one honest difference: a snapshot
+  *carries* its `rolePolicy`, `maxDeposit`,
+  `requireVerifyEvidence`, and `requireActor`, so there the option overrides stored
   state, while a bare history carries none of them, so here the
   option is the only source. What a bare history cannot restore at all: the
   deadline and subscriptions live only in the envelope / in memory, so a
@@ -1525,7 +1531,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1813 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1825 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

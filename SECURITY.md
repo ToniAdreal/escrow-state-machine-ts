@@ -129,10 +129,14 @@ quorum approvals (`approveSigned()`).
   history is appended and no idempotency key is consumed. A listed
   event without an actor reports the RBAC error first (that check
   runs earlier), so this gate only speaks for events the policy
-  does not list. The switch is configuration, not audit data: it is
-  never written into snapshots and must be re-enabled on restore.
-  Like the policy, it does not authenticate the actor — it only
-  guarantees the audit trail names one.
+  does not list. The switch IS part of `toJSON()`/`fromJSON()`
+  snapshots (`requireActor`, written only when true): a restored
+  escrow keeps enforcing it unless
+  `Escrow.fromJSON(snapshot, { requireActor: false })` explicitly
+  overrides it, and a tampered gate in a stored snapshot is
+  rejected. A bare history carries no gate, so `fromHistory` still
+  needs the option re-supplied. Like the policy, it does not
+  authenticate the actor — it only guarantees the audit trail names one.
 - **Settlement-reference gate (when `requireSettlementRef: true`).**
   `Escrow` constructed with `requireSettlementRef` rejects a RELEASE
   without a `settlementRef` with `settlement reference required: …`,
