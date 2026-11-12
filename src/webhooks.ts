@@ -1348,6 +1348,19 @@ export interface SettlementWebhookOutboxOptions {
    */
   maxAttempts?: number;
   /**
+   * Maximum number of `(endpoint, eventId)` pairs the outbox tracks.
+   * Defaults to 10_000, mirroring {@link SettlementEventDedupe}'s
+   * `maxEntries`. Must be a positive integer (>= 1). When a new pair
+   * would push the ledger past the cap, `recordAttempt()` evicts
+   * dead-lettered pairs first (oldest `lastAt` first) and only then
+   * the oldest pending pair, so a burst of fresh failures never
+   * silently discards a pair that still has retries left while a
+   * dead letter is available to drop; `restore()` instead trims an
+   * over-capacity snapshot to the newest `maxEntries` pairs by
+   * `lastAt`, mirroring `SettlementEventDedupe.restore`.
+   */
+  maxEntries?: number;
+  /**
    * Clock source (milliseconds since the epoch). Defaults to
    * `Date.now`. Inject a fake clock for deterministic tests; it is
    * also the default timestamp for attempts recorded without an
@@ -1623,6 +1636,12 @@ function computeOutboxSnapshotMac(
  *   without bound); the refreshed `lastError` is truncated to
  *   {@link MAX_OUTBOX_ERROR_LENGTH} characters at record time, so
  *   the ledger itself stays bounded too;
+ * - the ledger holds at most `maxEntries` pairs (default 10_000):
+ *   recording a failure for a new pair evicts dead-lettered pairs
+ *   first (oldest `lastAt` first) and only then the oldest pending
+ *   pair, so a burst of fresh failures never pushes the ledger past
+ *   the cap; restoring an over-capacity snapshot keeps the newest
+ *   pairs by `lastAt` instead;
  * - a successful attempt (`ok: true`, or `acknowledge()`) removes the
  *   pair entirely, so a later failure starts counting from 1 again;
  * - `pending()` lists pairs with `attempts < maxAttempts`,
@@ -1631,6 +1650,7 @@ function computeOutboxSnapshotMac(
  */
 export class SettlementWebhookOutbox {
   private readonly maxAttempts: number;
+  private readonly maxEntries: number;
   private readonly clock: () => number;
   /**
    * endpoint -> eventId -> accumulated record. Nested maps (not a
@@ -1649,10 +1669,17 @@ export class SettlementWebhookOutbox {
         "SettlementWebhookOutbox: maxAttempts must be a positive integer",
       );
     }
+    const maxEntries = opts.maxEntries ?? 10_000;
+    if (!Number.isInteger(maxEntries) || maxEntries < 1) {
+      throw new Error(
+        "SettlementWebhookOutbox: maxEntries must be a positive integer",
+      );
+    }
     if (opts.now !== undefined && typeof opts.now !== "function") {
       throw new Error("SettlementWebhookOutbox: now must be a function");
     }
     this.maxAttempts = maxAttempts;
+    this.maxEntries = maxEntries;
     this.clock = opts.now ?? Date.now;
   }
 
@@ -1660,10 +1687,16 @@ export class SettlementWebhookOutbox {
    * Record one delivery attempt. A failed attempt increments the
    * pair's consecutive-failure count (capped at `maxAttempts`) and
    * refreshes `lastError`/`lastAt`; a successful attempt removes the
-   * pair, exactly like `acknowledge()`. A supplied `error` longer
-   * than {@link MAX_OUTBOX_ERROR_LENGTH} characters is truncated
-   * at record time (see {@link truncateOutboxError}), so the stored
-   * `lastError` — and any snapshot exported from it — stays bounded.
+   * pair, exactly like `acknowledge()`. Recording a failure for a
+   * pair the ledger does not track yet makes room first when the
+   * ledger is at `maxEntries` (see `evictForInsert`): dead-lettered
+   * pairs go first, oldest `lastAt` first, and only then the oldest
+   * pending pair — re-failing a pair already tracked never evicts
+   * anything, because the ledger does not grow. A supplied `error`
+   * longer than {@link MAX_OUTBOX_ERROR_LENGTH} characters is
+   * truncated at record time (see {@link truncateOutboxError}), so
+   * the stored `lastError` — and any snapshot exported from it —
+   * stays bounded.
    *
    * Caller bugs fail fast: an empty/non-string `endpoint` or
    * `eventId`, an `eventId` longer than
@@ -1718,12 +1751,20 @@ export class SettlementWebhookOutbox {
       }
       return;
     }
+    // Look the pair up before fetching the bucket: eviction below
+    // may drop the endpoint's last pair and with it the bucket
+    // itself, so the bucket reference must be taken after eviction,
+    // not before.
+    const prev = this.records.get(endpoint)?.get(eventId);
+    // A re-recorded pair only refreshes its own record, so the ledger
+    // cannot grow past the cap by re-failing a pair it already tracks.
+    // A genuinely new pair makes room first (see `evictForInsert`).
+    if (prev === undefined) this.evictForInsert();
     let byEvent = this.records.get(endpoint);
     if (byEvent === undefined) {
       byEvent = new Map<string, SettlementWebhookOutboxEntry>();
       this.records.set(endpoint, byEvent);
     }
-    const prev = byEvent.get(eventId);
     const entry: SettlementWebhookOutboxEntry = {
       endpoint,
       eventId,
@@ -1733,6 +1774,55 @@ export class SettlementWebhookOutbox {
     if (attempt.error !== undefined)
       entry.lastError = truncateOutboxError(attempt.error);
     byEvent.set(eventId, entry);
+  }
+
+  /**
+   * Drop one tracked `(endpoint, eventId)` pair (and its endpoint
+   * bucket when it empties). Shared by eviction and the public
+   * removal paths so the nested-map shape stays consistent.
+   */
+  private removePair(endpoint: string, eventId: string): void {
+    const byEvent = this.records.get(endpoint);
+    if (byEvent === undefined) return;
+    byEvent.delete(eventId);
+    if (byEvent.size === 0) this.records.delete(endpoint);
+  }
+
+  /**
+   * Make room for one new pair before `recordAttempt()` inserts it.
+   * Eviction prefers dead-lettered pairs — they have exhausted their
+   * retries, so dropping one loses the least actionable record —
+   * oldest `lastAt` first within that class; only when no
+   * dead-lettered pair remains is the oldest pending pair evicted.
+   * Ties in `lastAt` keep insertion order (the first-recorded of the
+   * tied pairs goes first), because `Map` iteration is insertion
+   * order and a candidate only replaces the current victim when it
+   * is strictly better. The loop runs until the ledger is under the
+   * cap, so a single insert can never leave `size` above
+   * `maxEntries`; it is a no-op while the ledger still fits.
+   */
+  private evictForInsert(): void {
+    while (this.size >= this.maxEntries) {
+      let victim: SettlementWebhookOutboxEntry | undefined;
+      for (const byEvent of this.records.values()) {
+        for (const entry of byEvent.values()) {
+          if (victim === undefined) {
+            victim = entry;
+            continue;
+          }
+          const entryDead = entry.attempts >= this.maxAttempts;
+          const victimDead = victim.attempts >= this.maxAttempts;
+          if (entryDead && !victimDead) victim = entry;
+          else if (
+            entryDead === victimDead &&
+            entry.lastAt < victim.lastAt
+          )
+            victim = entry;
+        }
+      }
+      if (victim === undefined) break;
+      this.removePair(victim.endpoint, victim.eventId);
+    }
   }
 
   /**
@@ -1855,8 +1945,8 @@ export class SettlementWebhookOutbox {
   /**
    * Rebuild an outbox from a snapshot produced by `exportSnapshot()`
    * (typically after a `JSON.parse` of the persisted form). `opts`
-   * configures the *new* outbox (`maxAttempts`/`now`) and is
-   * validated exactly like the constructor's.
+   * configures the *new* outbox (`maxAttempts`/`maxEntries`/`now`)
+   * and is validated exactly like the constructor's.
    *
    * The input is untrusted data and is validated strictly: a
    * non-object snapshot, an unknown top-level field, a `v` other than
@@ -1868,6 +1958,11 @@ export class SettlementWebhookOutbox {
    * throws — a corrupt snapshot fails loudly at startup rather than
    * silently clearing a dead letter. Duplicate `(endpoint, eventId)`
    * pairs collapse to their last occurrence.
+   *
+   * An over-capacity snapshot is trimmed to the newest `maxEntries`
+   * pairs by `lastAt` (ties break by snapshot order, earliest first),
+   * mirroring `SettlementEventDedupe.restore` — a persisted snapshot
+   * can never resurrect a ledger past the cap.
    *
    * Whether a restored entry reads as pending or dead-lettered is
    * derived from its `attempts` against the new outbox's
@@ -1967,6 +2062,26 @@ export class SettlementWebhookOutbox {
       byEvent.delete(entry.eventId);
       byEvent.set(entry.eventId, { ...entry });
     }
+    // Trim an over-capacity snapshot to the newest pairs by `lastAt`
+    // (ties break by snapshot order, earliest first), mirroring
+    // `SettlementEventDedupe.restore`. `restoreSignedSnapshot` funnels
+    // through here, so signed restores trim the same way.
+    if (outbox.size > outbox.maxEntries) {
+      const excess = outbox.size - outbox.maxEntries;
+      const all: SettlementWebhookOutboxEntry[] = [];
+      for (const byEvent of outbox.records.values()) {
+        for (const entry of byEvent.values()) all.push(entry);
+      }
+      const drop = new Set(
+        all
+          .map((_, i) => i)
+          .sort((a, b) => all[a].lastAt - all[b].lastAt || a - b)
+          .slice(0, excess),
+      );
+      for (let i = 0; i < all.length; i++) {
+        if (drop.has(i)) outbox.removePair(all[i].endpoint, all[i].eventId);
+      }
+    }
     return outbox;
   }
 
@@ -2005,9 +2120,10 @@ export class SettlementWebhookOutbox {
    *
    * On success the semantics are exactly
    * {@link SettlementWebhookOutbox.restore}'s: duplicate pairs
-   * collapse to their last occurrence, and whether a restored entry
-   * reads as pending or dead-lettered is derived from its
-   * `attempts` against the new outbox's `maxAttempts`.
+   * collapse to their last occurrence, an over-capacity snapshot is
+   * trimmed to the newest `maxEntries` pairs by `lastAt`, and whether
+   * a restored entry reads as pending or dead-lettered is derived
+   * from its `attempts` against the new outbox's `maxAttempts`.
    *
    * The unsigned `restore()` and this signed restore do not accept
    * each other's input: an unsigned snapshot has no `mac` (and an

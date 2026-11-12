@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1900 tests, all local
+npm test   # 1916 tests, all local
 ```
 
 ## Quickstart
@@ -1083,7 +1083,16 @@ keyed by `(endpoint, eventId)`, so one endpoint's failures never
 pollute another's retry count, and an `eventId` longer than
 `MAX_EVENT_ID_LENGTH` (256 characters) is rejected at `recordAttempt()`
 and at snapshot restore, never truncated — truncation would change
-the pair's key. `exportSnapshot()` /
+the pair's key. The ledger is capped at `maxEntries` pairs (default
+10_000, mirroring `SettlementEventDedupe`): recording a failure for a
+new pair past the cap evicts dead-lettered pairs first (oldest
+`lastAt` first) and only then the oldest pending pair, so a burst of
+fresh failures never discards a pair that still has retries left
+while a dead letter is available; re-failing a pair the ledger
+already tracks never evicts anything, because the ledger does not
+grow. `restore()` trims an over-capacity snapshot to the newest
+`maxEntries` pairs by `lastAt` instead, so a persisted snapshot can
+never resurrect a ledger past the cap. `exportSnapshot()` /
 `SettlementWebhookOutbox.restore()` carry the ledger across a restart
 of the same process (unsigned, trusted-configuration snapshot — the
 same posture as the dedupe's unsigned snapshot above). When the
@@ -1622,7 +1631,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1900 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1916 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

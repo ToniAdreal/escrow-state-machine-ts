@@ -18,6 +18,18 @@ version changes.
 
 ### Added
 
+- `SettlementWebhookOutbox` capacity limit `maxEntries` (2026-11-12,
+  backlog #1093): the failure ledger holds at most `maxEntries`
+  pairs (default 10_000, mirroring `SettlementEventDedupe`);
+  recording a failure for a new pair past the cap evicts
+  dead-lettered pairs first (oldest `lastAt` first) and only then
+  the oldest pending pair, while re-failing a tracked pair never
+  evicts; `restore()` (and the signed restore through it) trims an
+  over-capacity snapshot to the newest `maxEntries` pairs by
+  `lastAt`. Non-positive-integer `maxEntries` is rejected in the
+  constructor and at restore. 16 tests in
+  `test/settlementWebhookOutboxMaxEntries.test.ts`.
+
 - `diffSettlementReports` compares two settlement reports of the same
   escrow field by field (2026-11-12, backlog #1092): returns a
   `SettlementReportDiff` carrying only the moved fields (identical
