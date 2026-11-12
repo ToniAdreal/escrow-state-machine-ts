@@ -45,6 +45,19 @@ version changes.
   re-verification of the audit histories. 17 tests in
   `test/settlementReportsSummaryCsvJson.test.ts`.
 
+- Dry-run rehearsal port for the settlement webhook outbox retry
+  runner (2026-11-12, backlog #1088): `retrySettlementWebhookOutbox(
+  outbox, deliverOne, { dryRun: true })` takes one pass over
+  `outbox.pending()` and reports one `{ endpoint, eventId, wouldRetry:
+  true }` entry per pending pair on the summary's new `wouldRetry`
+  field, in `pending()` order — without calling `deliverOne`,
+  recording anything, acknowledging anything, or sleeping. `wouldRetry`
+  answers only "in the pending selection", never "would succeed". A
+  pre-aborted signal reports `aborted: true` with an empty list, and
+  invalid options (including a non-boolean `dryRun`) still fail fast
+  before any delivery. Live summaries never carry `wouldRetry`. 11
+  tests in `test/settlementWebhookOutboxRetryDryRun.test.ts`.
+
 - Dry-run rehearsal port for `actOnStaleEscrows` (2026-11-12, backlog
   #1083): a trailing `ActOnStaleEscrowsOptions` (`{ dryRun?: boolean }`)
   lets an operator preview a stale-escrow sweep before running a real

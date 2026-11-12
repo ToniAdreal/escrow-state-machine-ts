@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1860 tests, all local
+npm test   # 1871 tests, all local
 ```
 
 ## Quickstart
@@ -1153,7 +1153,18 @@ revisited. `maxRounds` (default 1) bounds the loop; `backoffMs`
 in-flight re-deliveries the same way `deliverSettlementWebhookToMany`
 bounds its fan-out; `signal` aborts at round boundaries with
 already-made attempts kept. A `deliverOne` that throws is recorded
-as a failed attempt with its message, never a runner crash. Honest
+as a failed attempt with its message, never a runner crash. Pass
+`dryRun: true` to rehearse instead of retrying: the runner takes
+one pass over `outbox.pending()` and reports each pair as
+`{ endpoint, eventId, wouldRetry: true }` on the summary's
+`wouldRetry` field — no delivery, no ledger writes, no sleep — so a
+retry storm over dozens of pending pairs can be previewed before it
+is really sent. A dry run never changes the ledger, so rehearsing
+and then running the live retry still delivers every pair; an
+already-aborted signal reports `aborted: true` with an empty
+`wouldRetry` list. `wouldRetry` answers only "in the pending
+selection", never "would succeed": a pair whose delivery would fail
+is still listed, because the dry run never calls `deliverOne`. Honest
 limit: the runner is in-process only and persists nothing — a dead
 process loses the ledger unless it exported a snapshot first (see
 Limitations).
@@ -1590,7 +1601,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1860 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1871 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

@@ -52,6 +52,7 @@ export type {
   SettlementWebhookOutboxDeliverOne,
   SettlementWebhookOutboxEntry,
   SettlementWebhookOutboxOptions,
+  SettlementWebhookOutboxRetryDryRunEntry,
   SettlementWebhookOutboxRetryOptions,
   SettlementWebhookOutboxRetrySummary,
   SettlementWebhookOutboxSignedSnapshotEnvelope,

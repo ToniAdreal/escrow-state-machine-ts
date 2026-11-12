@@ -2168,6 +2168,39 @@ export interface SettlementWebhookOutboxRetryOptions {
    * with for attempts recorded without an explicit `at`.
    */
   now?: () => number;
+  /**
+   * Dry-run rehearsal: when `true`, the runner takes one pass over
+   * `outbox.pending()` and reports what it would retry — one
+   * `{ endpoint, eventId, wouldRetry: true }` entry per pending
+   * pair, in `pending()` order, on the summary's `wouldRetry`
+   * field — without calling `deliverOne`, recording anything,
+   * acknowledging anything, or sleeping. `maxRounds`/`backoffMs`
+   * are still validated but unused: with no state change every
+   * round would see the same pending list, so a dry run is always
+   * a single pass. An already-aborted `signal` reports
+   * `aborted: true` with an empty `wouldRetry` list: the abort
+   * stops the run before any pair is selected, so nothing would
+   * have been retried. Default `false`. Must be a boolean when
+   * present.
+   */
+  dryRun?: boolean;
+}
+
+/**
+ * One pair a dry run of {@link retrySettlementWebhookOutbox} would
+ * have retried. `wouldRetry` answers only "in the pending
+ * selection", never "would succeed": the runner never calls
+ * `deliverOne` in a dry run, so a pair whose delivery would fail is
+ * still listed — exactly like the `wouldAct` results of
+ * `actOnStaleEscrows`' dry run.
+ */
+export interface SettlementWebhookOutboxRetryDryRunEntry {
+  /** The endpoint the pair would have been re-delivered to. */
+  endpoint: string;
+  /** The event the pair would have been re-delivered for. */
+  eventId: string;
+  /** Always `true`: this pair is in the set the dry run selected. */
+  wouldRetry: true;
 }
 
 /**
@@ -2179,7 +2212,9 @@ export interface SettlementWebhookOutboxRetryOptions {
  * `attempted` always equals the number of re-delivery attempts, and
  * `acknowledged + stillPending + deadLettered` is the number of
  * pairs the run started with, minus any pair that was already
- * dead-lettered (those were never attempted).
+ * dead-lettered (those were never attempted). On a dry run
+ * (`opts.dryRun: true`) `attempted` and `acknowledged` are 0 and
+ * `wouldRetry` lists the pairs that would have been retried.
  */
 export interface SettlementWebhookOutboxRetrySummary {
   /** Number of `deliverOne` calls made. */
@@ -2192,6 +2227,17 @@ export interface SettlementWebhookOutboxRetrySummary {
   deadLettered: number;
   /** `true` only when the run stopped early because `signal` aborted. */
   aborted: boolean;
+  /**
+   * Dry-run only: the pairs a dry run would have retried, in
+   * `pending()` order — one `{ endpoint, eventId, wouldRetry: true }`
+   * entry per pair pending when the call started. Absent on live
+   * runs (a live summary never carries it, so `attempted` stays the
+   * exact count of `deliverOne` calls made). An aborted dry run
+   * reports an empty list: the abort stops the run before any pair
+   * is selected. Each entry is a fresh object — mutating it does
+   * not affect the ledger.
+   */
+  wouldRetry?: SettlementWebhookOutboxRetryDryRunEntry[];
 }
 
 /**
@@ -2223,6 +2269,12 @@ export interface SettlementWebhookOutboxRetrySummary {
  *   {@link SettlementWebhookOutboxRetryOptions.signal}): already-made
  *   attempts keep their results, and the summary reports
  *   `aborted: true`.
+ * - Dry run (`opts.dryRun: true`): the safe rehearsal port — one
+ *   pass over `outbox.pending()` is reported as `wouldRetry`
+ *   entries on the summary, and nothing is delivered, recorded,
+ *   acknowledged, or slept. A dry run never changes the ledger,
+ *   so rehearsing and then running the live retry still delivers
+ *   every pair.
  *
  * Honest limits: the runner is in-process only — it retries the
  * pairs this process's outbox holds, and a process that dies loses
@@ -2298,9 +2350,46 @@ export async function retrySettlementWebhookOutbox(
       "retrySettlementWebhookOutbox: now must be a function",
     );
   }
+  if (opts.dryRun !== undefined && typeof opts.dryRun !== "boolean") {
+    throw new Error(
+      `retrySettlementWebhookOutbox: dryRun must be a boolean, got ${String(
+        opts.dryRun,
+      )}`,
+    );
+  }
   const signal = opts.signal;
   const clock = opts.now ?? Date.now;
   const sleep = opts.sleepImpl ?? sleepAbortable;
+
+  if (opts.dryRun === true) {
+    // Rehearsal only: report what one pass over the current pending
+    // list would retry. No deliverOne call, no ledger write, no
+    // sleep — and no rounds, since with no state change every round
+    // would see the same list. An already-aborted signal stops the
+    // run before any pair is selected, so nothing would be retried.
+    if (signal?.aborted) {
+      return {
+        attempted: 0,
+        acknowledged: 0,
+        stillPending: outbox.pending().length,
+        deadLettered: outbox.deadLetter().length,
+        aborted: true,
+        wouldRetry: [],
+      };
+    }
+    return {
+      attempted: 0,
+      acknowledged: 0,
+      stillPending: outbox.pending().length,
+      deadLettered: outbox.deadLetter().length,
+      aborted: false,
+      wouldRetry: outbox.pending().map((entry) => ({
+        endpoint: entry.endpoint,
+        eventId: entry.eventId,
+        wouldRetry: true as const,
+      })),
+    };
+  }
 
   let attempted = 0;
   let acknowledged = 0;
