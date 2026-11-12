@@ -18,6 +18,33 @@ version changes.
 
 ### Added
 
+- CSV/JSON wire forms for `SettlementReportsSummary` (2026-11-12,
+  backlog #1085): `renderSettlementReportsSummaryCsv` /
+  `parseSettlementReportsSummaryCsv` /
+  `renderSettlementReportsSummaryJson` /
+  `parseSettlementReportsSummaryJson` (all exported from the package
+  entry). The CSV is a table with one `summary` row (batch totals),
+  four `outcome` rows in fixed order, four `party` rows in canonical
+  role order, and one `currency` row per `byCurrency` bucket in
+  alphabetical order (the `UNSPECIFIED` bucket sorts as the literal
+  string it is); money is the same cent value the JSON form carries
+  as a number, spelled with exactly two decimals. The JSON writes the
+  same eleven fields in canonical key order. Unlike the single-report
+  CSV, which drops the deposit breakdown, the summary CSV carries the
+  whole summary, so a parsed value is the full summary and re-renders
+  byte-identically. Both parsers are strict and fail closed (exact
+  header, canonical row order, canonical integers and two-decimal
+  money, empty cells where a row owns nothing, and the full
+  self-consistency identities: `total` is `reports + errors`,
+  outcome counts sum to `reports`, party ledgers and currency
+  buckets sum to the top-level totals including `totalRemaining`,
+  and a `balanced: true` over disagreeing totals is rejected), and
+  both renderers apply the same check before emitting text. BOM,
+  CRLF, trailing blank lines, and RFC 4180 quoted fields parse as
+  transport. Import is structural validation only, not a
+  re-verification of the audit histories. 17 tests in
+  `test/settlementReportsSummaryCsvJson.test.ts`.
+
 - Dry-run rehearsal port for `actOnStaleEscrows` (2026-11-12, backlog
   #1083): a trailing `ActOnStaleEscrowsOptions` (`{ dryRun?: boolean }`)
   lets an operator preview a stale-escrow sweep before running a real

@@ -1257,7 +1257,10 @@ export interface SettlementReportCsv {
  * contain a line break, so records are parsed from the whole text, not
  * by splitting on newlines first.
  */
-function parseCsvRecords(text: string): string[][] {
+function parseCsvRecords(
+  text: string,
+  prefix = "cannot parse settlement report CSV",
+): string[][] {
   const records: string[][] = [];
   let record: string[] = [];
   let field = "";
@@ -1307,7 +1310,7 @@ function parseCsvRecords(text: string): string[][] {
         i += 1;
       } else {
         throw new Error(
-          `cannot parse settlement report CSV: unexpected character after a closing quote: ${JSON.stringify(c)}`,
+          `${prefix}: unexpected character after a closing quote: ${JSON.stringify(c)}`,
         );
       }
       continue;
@@ -1331,7 +1334,7 @@ function parseCsvRecords(text: string): string[][] {
     }
   }
   if (inQuotes) {
-    throw new Error("cannot parse settlement report CSV: unterminated quoted field");
+    throw new Error(`${prefix}: unterminated quoted field`);
   }
   // A trailing newline already closed the last record; only push a final
   // record when the text ends mid-field or mid-record.
@@ -1344,16 +1347,20 @@ function parseCsvRecords(text: string): string[][] {
 /** Two-decimal money figure, exactly as `renderReportCsv` emits it. */
 const CSV_MONEY = /^-?\d+\.\d{2}$/;
 
-function parseCsvMoney(value: string, where: string): number {
+function parseCsvMoney(
+  value: string,
+  where: string,
+  prefix = "cannot parse settlement report CSV",
+): number {
   if (!CSV_MONEY.test(value)) {
     throw new Error(
-      `cannot parse settlement report CSV: ${where} must be a two-decimal money figure, got ${JSON.stringify(value)}`,
+      `${prefix}: ${where} must be a two-decimal money figure, got ${JSON.stringify(value)}`,
     );
   }
   const n = Number(value);
   if (!Number.isFinite(n)) {
     throw new Error(
-      `cannot parse settlement report CSV: ${where} must be a finite number, got ${JSON.stringify(value)}`,
+      `${prefix}: ${where} must be a finite number, got ${JSON.stringify(value)}`,
     );
   }
   return n;
@@ -1781,4 +1788,859 @@ export function renderReport(report: SettlementReport): string {
     );
   }
   return lines.join("\n");
+}
+
+/**
+ * The settlement-reports summary as carried by
+ * {@link renderSettlementReportsSummaryCsv} — the whole
+ * {@link SettlementReportsSummary}, nothing less. Unlike
+ * {@link SettlementReportCsv}, which is a subset of its report (the CSV
+ * drops the deposit breakdown, settlement parameters, and audit
+ * window), the summary CSV carries every field, so a parsed value is
+ * the full summary and re-renders byte-identically; no field is ever
+ * invented on import.
+ */
+export type SettlementReportsSummaryCsv = SettlementReportsSummary;
+
+/**
+ * Canonical field order for the summary CSV: the header names every
+ * column, and every row carries the columns its section owns, leaving
+ * the rest empty — so a hand-built file cannot smuggle a value into a
+ * column its row does not own. Column meanings are uniform across
+ * rows: `count` is the row's own entry count (an outcome's report
+ * count, a currency bucket's report count); `total` / `reports` /
+ * `errors` are the batch totals and appear only on the `summary` row;
+ * the four money columns are cent sums for the row's scope (the batch
+ * on the `summary` row, one currency's reports on a `currency` row,
+ * one party's summed ledger on a `party` row); `net` is
+ * `inflow − outflow` on a `party` row; `balanced` is `true`/`false`
+ * on the `summary` row only.
+ */
+const SUMMARY_CSV_HEADER =
+  "section,key,count,total,reports,errors,totalDeposit,totalInflow,totalOutflow,totalRemaining,net,balanced";
+
+/** Outcome counts appear in this fixed order in the summary CSV. */
+const SUMMARY_OUTCOME_ORDER: SettlementOutcome[] = [
+  "released",
+  "refunded",
+  "expired",
+  "partially-released",
+];
+
+/** Party rows appear in this canonical role order in the summary CSV. */
+const SUMMARY_PARTY_ORDER: PartyRole[] = [
+  "sponsor",
+  "creator",
+  "platform",
+  "referrer",
+];
+
+/**
+ * Canonical integer text for the summary CSV's counts: `0`, or a
+ * positive integer with no leading zeros. Anything else — `5.0`,
+ * `1e3`, `007`, `-0`, `+5`, ` 5`, a negative count — is rejected, so
+ * a parsed summary re-renders byte-identically instead of silently
+ * normalizing the spelling a caller wrote.
+ */
+const SUMMARY_CSV_INTEGER = /^(0|[1-9]\d*)$/;
+
+function parseSummaryCsvInteger(value: string, where: string): number {
+  if (!SUMMARY_CSV_INTEGER.test(value)) {
+    throw new Error(
+      `cannot parse settlement reports summary CSV: ${where} must be a canonical non-negative integer, got ${JSON.stringify(value)}`,
+    );
+  }
+  const n = Number(value);
+  if (!Number.isSafeInteger(n)) {
+    throw new Error(
+      `cannot parse settlement reports summary CSV: ${where} must be a safe integer, got ${JSON.stringify(value)}`,
+    );
+  }
+  return n;
+}
+
+/**
+ * Validate the structural shape of a settlement-reports summary
+ * before it is serialized (or after it is parsed back). This is a
+ * shape check, not a re-derivation of the accounting: the figures are
+ * trusted as the caller's (normally {@link summarizeSettlementReports}'s
+ * output), but a value that is not a summary at all — or a money
+ * figure that is not a finite cent-exact number — must fail loudly
+ * here rather than silently degrading in transit. `JSON.stringify`
+ * turns `Infinity`/`NaN` into `null` without complaint, so a
+ * non-finite figure would otherwise leave this function as a
+ * plausible-looking `null` and corrupt a downstream import. Counts
+ * must be safe integers — `JSON.stringify` and `Number` both lose
+ * precision past `Number.MAX_SAFE_INTEGER`, so an unsafe count would
+ * round-trip to a different number and break the `parse(render(s)) ===
+ * s` identity the renderers promise. Unknown or missing fields fail
+ * closed: a summary with a field the renderers never write is not a
+ * summary this library can carry, and a missing field would render as
+ * an empty column. Every failure throws `<prefix>: …`, where the
+ * prefix names the direction, so a failure's origin is unambiguous.
+ */
+function assertSettlementReportsSummaryShape(
+  summary: unknown,
+  prefix: string,
+): asserts summary is SettlementReportsSummary {
+  const fail = (reason: string): never => {
+    throw new Error(`${prefix}: ${reason}`);
+  };
+  if (
+    typeof summary !== "object" ||
+    summary === null ||
+    Array.isArray(summary)
+  )
+    fail("summary must be a SettlementReportsSummary object");
+  const s = summary as Record<string, unknown>;
+  const topLevelFields = [
+    "total",
+    "reports",
+    "errors",
+    "outcomes",
+    "totalDeposit",
+    "totalInflow",
+    "totalOutflow",
+    "totalRemaining",
+    "parties",
+    "byCurrency",
+    "balanced",
+  ] as const;
+  for (const field of topLevelFields) {
+    if (!(field in s)) fail(`missing field ${JSON.stringify(field)}`);
+  }
+  for (const key of Object.keys(s)) {
+    if (!(topLevelFields as readonly string[]).includes(key))
+      fail(`unknown field ${JSON.stringify(key)}`);
+  }
+  const show = (value: unknown): string =>
+    typeof value === "number" ? String(value) : JSON.stringify(value);
+  for (const field of ["total", "reports", "errors"] as const) {
+    const value = s[field];
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)
+      fail(
+        `${field} must be a non-negative safe integer, got ${show(value)}`,
+      );
+  }
+  if (
+    typeof s.outcomes !== "object" ||
+    s.outcomes === null ||
+    Array.isArray(s.outcomes)
+  )
+    fail("outcomes must be an object");
+  const outcomes = s.outcomes as Record<string, unknown>;
+  for (const outcome of SUMMARY_OUTCOME_ORDER) {
+    if (!(outcome in outcomes))
+      fail(`missing outcomes field ${JSON.stringify(outcome)}`);
+  }
+  for (const key of Object.keys(outcomes)) {
+    if (!(SUMMARY_OUTCOME_ORDER as readonly string[]).includes(key))
+      fail(`unknown outcomes field ${JSON.stringify(key)}`);
+    const value = outcomes[key];
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)
+      fail(
+        `outcomes.${key} must be a non-negative safe integer, got ${show(value)}`,
+      );
+  }
+  const assertMoney = (
+    value: unknown,
+    where: string,
+    allowNegative: boolean,
+  ): void => {
+    if (typeof value !== "number" || !Number.isFinite(value))
+      fail(`${where} must be a finite number, got ${show(value)}`);
+    // The check above established the type; the cast only tells
+    // TypeScript what the runtime check established (a never-returning
+    // helper call does not narrow here).
+    const n = value as number;
+    if (round2(n) !== n)
+      fail(`${where} must be a cent-exact number, got ${show(n)}`);
+    if (!allowNegative && n < 0)
+      fail(`${where} must not be negative, got ${n}`);
+  };
+  for (const field of [
+    "totalDeposit",
+    "totalInflow",
+    "totalOutflow",
+    "totalRemaining",
+  ] as const) {
+    assertMoney(s[field], field, false);
+  }
+  if (!Array.isArray(s.parties) || s.parties.length !== 4)
+    fail("parties must be an array of exactly 4 PartyLedger entries");
+  const seenRoles = new Set<string>();
+  for (const party of s.parties as unknown[]) {
+    if (typeof party !== "object" || party === null || Array.isArray(party))
+      fail("each party must be a PartyLedger object");
+    const p = party as Record<string, unknown>;
+    if (
+      p.party !== "sponsor" &&
+      p.party !== "creator" &&
+      p.party !== "platform" &&
+      p.party !== "referrer"
+    )
+      fail("each party.party must be a PartyRole");
+    if (seenRoles.has(p.party as string))
+      fail(`party role ${JSON.stringify(p.party)} appears more than once`);
+    seenRoles.add(p.party as string);
+    if (typeof p.label !== "string") fail("each party.label must be a string");
+    assertMoney(p.inflow, `parties.${p.party as string}.inflow`, false);
+    assertMoney(p.outflow, `parties.${p.party as string}.outflow`, false);
+    assertMoney(p.net, `parties.${p.party as string}.net`, true);
+  }
+  for (const role of SUMMARY_PARTY_ORDER) {
+    if (!seenRoles.has(role))
+      fail(`missing party entry for role ${JSON.stringify(role)}`);
+  }
+  if (
+    typeof s.byCurrency !== "object" ||
+    s.byCurrency === null ||
+    Array.isArray(s.byCurrency)
+  )
+    fail("byCurrency must be an object");
+  for (const [code, bucket] of Object.entries(
+    s.byCurrency as Record<string, unknown>,
+  )) {
+    if (
+      code !== UNSPECIFIED_SETTLEMENT_CURRENCY &&
+      !ISO_4217_ALPHA3.test(code)
+    )
+      fail(
+        `byCurrency key ${JSON.stringify(code)} must be a 3-letter uppercase ISO 4217 code or ${JSON.stringify(UNSPECIFIED_SETTLEMENT_CURRENCY)}`,
+      );
+    if (typeof bucket !== "object" || bucket === null || Array.isArray(bucket))
+      fail(`byCurrency.${code} must be a SettlementCurrencySummary object`);
+    const b = bucket as Record<string, unknown>;
+    const bucketFields = [
+      "reports",
+      "totalDeposit",
+      "totalInflow",
+      "totalOutflow",
+      "totalRemaining",
+    ] as const;
+    for (const field of bucketFields) {
+      if (!(field in b))
+        fail(`missing field byCurrency.${code}.${field}`);
+    }
+    for (const key of Object.keys(b)) {
+      if (!(bucketFields as readonly string[]).includes(key))
+        fail(`unknown field byCurrency.${code}.${key}`);
+    }
+    if (
+      typeof b.reports !== "number" ||
+      !Number.isSafeInteger(b.reports) ||
+      b.reports < 0
+    )
+      fail(
+        `byCurrency.${code}.reports must be a non-negative safe integer, got ${show(b.reports)}`,
+      );
+    for (const field of [
+      "totalDeposit",
+      "totalInflow",
+      "totalOutflow",
+      "totalRemaining",
+    ] as const) {
+      assertMoney(b[field], `byCurrency.${code}.${field}`, false);
+    }
+  }
+  if (typeof s.balanced !== "boolean") fail("balanced must be a boolean");
+}
+
+/**
+ * Validate the self-consistency identities a settlement-reports
+ * summary carries — the check that turns a structurally valid object
+ * into one the renderers can stand behind. The identities are the
+ * ones {@link summarizeSettlementReports} guarantees by construction:
+ * `total` is `reports + errors`; the four outcome counts sum to
+ * `reports`; the party ledgers sum to the top-level inflow/outflow
+ * and each party's `net` is its `inflow − outflow` at cent precision;
+ * the currency buckets sum to the top-level totals (report count and
+ * all four money figures, `totalRemaining` included). `balanced` is
+ * checked only in the direction the summary can prove: a summary
+ * claiming `balanced: true` over disagreeing totals is impossible —
+ * every successful report being balanced means each report's inflow
+ * equals its outflow, so the batch totals must agree — and is
+ * rejected; a `balanced: false` over agreeing totals is accepted,
+ * because two unbalanced reports could cancel and the summary alone
+ * cannot tell. Every failure throws `<prefix>: …`.
+ */
+function assertSettlementReportsSummaryConsistency(
+  summary: SettlementReportsSummary,
+  prefix: string,
+): void {
+  const fail = (reason: string): never => {
+    throw new Error(`${prefix}: ${reason}`);
+  };
+  if (summary.total !== summary.reports + summary.errors) {
+    fail(
+      `total ${summary.total} does not equal reports ${summary.reports} plus errors ${summary.errors}`,
+    );
+  }
+  const outcomeSum = SUMMARY_OUTCOME_ORDER.reduce(
+    (sum, outcome) => sum + summary.outcomes[outcome],
+    0,
+  );
+  if (outcomeSum !== summary.reports) {
+    fail(
+      `outcome counts sum to ${outcomeSum} but reports is ${summary.reports}`,
+    );
+  }
+  let partyInflow = 0;
+  let partyOutflow = 0;
+  for (const party of summary.parties) {
+    if (party.net !== round2(party.inflow - party.outflow)) {
+      fail(
+        `party ${party.party} net ${party.net} does not equal inflow ${party.inflow} minus outflow ${party.outflow}`,
+      );
+    }
+    partyInflow = round2(partyInflow + party.inflow);
+    partyOutflow = round2(partyOutflow + party.outflow);
+  }
+  if (partyInflow !== summary.totalInflow) {
+    fail(
+      `party inflows sum to ${partyInflow} but totalInflow is ${summary.totalInflow}`,
+    );
+  }
+  if (partyOutflow !== summary.totalOutflow) {
+    fail(
+      `party outflows sum to ${partyOutflow} but totalOutflow is ${summary.totalOutflow}`,
+    );
+  }
+  let bucketReports = 0;
+  let bucketDeposit = 0;
+  let bucketInflow = 0;
+  let bucketOutflow = 0;
+  let bucketRemaining = 0;
+  for (const bucket of Object.values(summary.byCurrency)) {
+    bucketReports += bucket.reports;
+    bucketDeposit = round2(bucketDeposit + bucket.totalDeposit);
+    bucketInflow = round2(bucketInflow + bucket.totalInflow);
+    bucketOutflow = round2(bucketOutflow + bucket.totalOutflow);
+    bucketRemaining = round2(bucketRemaining + bucket.totalRemaining);
+  }
+  if (bucketReports !== summary.reports) {
+    fail(
+      `currency buckets sum to ${bucketReports} reports but reports is ${summary.reports}`,
+    );
+  }
+  if (bucketDeposit !== summary.totalDeposit) {
+    fail(
+      `currency buckets sum to totalDeposit ${bucketDeposit} but totalDeposit is ${summary.totalDeposit}`,
+    );
+  }
+  if (bucketInflow !== summary.totalInflow) {
+    fail(
+      `currency buckets sum to totalInflow ${bucketInflow} but totalInflow is ${summary.totalInflow}`,
+    );
+  }
+  if (bucketOutflow !== summary.totalOutflow) {
+    fail(
+      `currency buckets sum to totalOutflow ${bucketOutflow} but totalOutflow is ${summary.totalOutflow}`,
+    );
+  }
+  if (bucketRemaining !== summary.totalRemaining) {
+    fail(
+      `currency buckets sum to totalRemaining ${bucketRemaining} but totalRemaining is ${summary.totalRemaining}`,
+    );
+  }
+  if (summary.balanced && summary.totalInflow !== summary.totalOutflow) {
+    fail(
+      `balanced is true but totalInflow ${summary.totalInflow} does not equal totalOutflow ${summary.totalOutflow}: at least one successful report is unbalanced`,
+    );
+  }
+}
+
+/**
+ * Shape plus self-consistency for a settlement-reports summary, in
+ * either direction: the renderers apply it before emitting text, the
+ * parsers apply it after reading text back, each under its own
+ * direction prefix.
+ */
+function assertSettlementReportsSummary(
+  summary: unknown,
+  prefix: string,
+): asserts summary is SettlementReportsSummary {
+  assertSettlementReportsSummaryShape(summary, prefix);
+  assertSettlementReportsSummaryConsistency(summary, prefix);
+}
+
+/**
+ * Rebuild a summary in canonical key order: top-level fields in
+ * declaration order, outcomes in fixed order, currency buckets
+ * alphabetically by code. Party ledgers keep the caller's order (an
+ * array's order is content, and the renderers never reorder it), and
+ * every party is rebuilt as a fresh object so a rendered summary
+ * never shares references with its input. A caller-built object may
+ * list the keys in any order, but the rendered document is always the
+ * same bytes for the same summary.
+ */
+function canonicalSettlementReportsSummary(
+  summary: SettlementReportsSummary,
+): SettlementReportsSummary {
+  return {
+    total: summary.total,
+    reports: summary.reports,
+    errors: summary.errors,
+    outcomes: {
+      released: summary.outcomes.released,
+      refunded: summary.outcomes.refunded,
+      expired: summary.outcomes.expired,
+      "partially-released": summary.outcomes["partially-released"],
+    },
+    totalDeposit: summary.totalDeposit,
+    totalInflow: summary.totalInflow,
+    totalOutflow: summary.totalOutflow,
+    totalRemaining: summary.totalRemaining,
+    parties: summary.parties.map((party) => ({
+      party: party.party,
+      label: party.label,
+      inflow: party.inflow,
+      outflow: party.outflow,
+      net: party.net,
+    })),
+    byCurrency: Object.fromEntries(
+      Object.keys(summary.byCurrency)
+        .sort()
+        .map((code) => {
+          const bucket = summary.byCurrency[code];
+          return [
+            code,
+            {
+              reports: bucket.reports,
+              totalDeposit: bucket.totalDeposit,
+              totalInflow: bucket.totalInflow,
+              totalOutflow: bucket.totalOutflow,
+              totalRemaining: bucket.totalRemaining,
+            },
+          ];
+        }),
+    ),
+    balanced: summary.balanced,
+  };
+}
+
+/**
+ * Render a settlement-reports summary as CSV — the text form of the
+ * batch position {@link summarizeSettlementReports} returns, for the
+ * bookkeeping hop: a caller that exported a summary with this
+ * function gets a table that pastes straight into a reconciliation
+ * spreadsheet or a settlement statement, and that an auditor can file
+ * next to the per-report CSVs without re-deriving a figure.
+ *
+ * Shape (lines joined by `\n`, no trailing newline):
+ * - Header: `section,key,count,total,reports,errors,totalDeposit,totalInflow,totalOutflow,totalRemaining,net,balanced`.
+ * - One `summary` row carrying the batch totals (`total`, `reports`,
+ *   `errors`, the four money totals, `balanced`).
+ * - Four `outcome` rows, one per outcome in fixed order
+ *   (`released`, `refunded`, `expired`, `partially-released`), each
+ *   carrying that outcome's report count.
+ * - Four `party` rows in canonical role order (`sponsor`, `creator`,
+ *   `platform`, `referrer`), each carrying that party's summed
+ *   inflow/outflow/net over the batch.
+ * - One `currency` row per `byCurrency` bucket, keys in alphabetical
+ *   order (the `UNSPECIFIED` bucket sorts as the literal string it
+ *   is, among the real codes), each carrying the bucket's report
+ *   count and four money totals. A batch with no currency buckets
+ *   (empty, or all-error) has no `currency` rows.
+ *
+ * Money is the same cent value the JSON form carries as a number,
+ * spelled with exactly two decimals (`csvMoney`, the same spelling
+ * `renderReportCsv` uses); counts are canonical integers; `balanced`
+ * is `true` or `false`. Cells a row does not own are empty, so a
+ * `party` row never carries a `totalDeposit` and an `outcome` row
+ * never carries money.
+ *
+ * Before rendering, the summary is shape-checked and
+ * self-consistency-checked with the shared check (see
+ * {@link assertSettlementReportsSummary}): a non-object summary, a
+ * missing or unknown field, a non-integer or unsafe-integer count, a
+ * non-cent-exact money figure, a `total` that does not equal
+ * `reports + errors`, outcome counts that do not sum to `reports`,
+ * party ledgers whose inflow/outflow do not sum to the totals, a
+ * party `net` that does not equal `inflow − outflow`, currency
+ * buckets whose sums do not equal the top-level totals, or a
+ * `balanced: true` over disagreeing totals all throw
+ * `cannot render settlement reports summary as CSV: …` instead of
+ * emitting a table that reads consistent but is not.
+ *
+ * Pure: the summary is only read, never mutated.
+ */
+export function renderSettlementReportsSummaryCsv(
+  summary: SettlementReportsSummary,
+): string {
+  assertSettlementReportsSummary(
+    summary,
+    "cannot render settlement reports summary as CSV",
+  );
+  const lines: string[] = [SUMMARY_CSV_HEADER];
+  lines.push(
+    [
+      csvField("summary"),
+      csvField(""),
+      "",
+      String(summary.total),
+      String(summary.reports),
+      String(summary.errors),
+      csvMoney(summary.totalDeposit),
+      csvMoney(summary.totalInflow),
+      csvMoney(summary.totalOutflow),
+      csvMoney(summary.totalRemaining),
+      "",
+      summary.balanced ? "true" : "false",
+    ].join(","),
+  );
+  for (const outcome of SUMMARY_OUTCOME_ORDER) {
+    lines.push(
+      [
+        csvField("outcome"),
+        csvField(outcome),
+        String(summary.outcomes[outcome]),
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+      ].join(","),
+    );
+  }
+  const partyByRole = new Map(summary.parties.map((p) => [p.party, p]));
+  for (const role of SUMMARY_PARTY_ORDER) {
+    const party = partyByRole.get(role)!;
+    lines.push(
+      [
+        csvField("party"),
+        csvField(role),
+        "",
+        "",
+        "",
+        "",
+        "",
+        csvMoney(party.inflow),
+        csvMoney(party.outflow),
+        "",
+        csvMoney(party.net),
+        "",
+      ].join(","),
+    );
+  }
+  for (const code of Object.keys(summary.byCurrency).sort()) {
+    const bucket = summary.byCurrency[code];
+    lines.push(
+      [
+        csvField("currency"),
+        csvField(code),
+        String(bucket.reports),
+        "",
+        "",
+        "",
+        csvMoney(bucket.totalDeposit),
+        csvMoney(bucket.totalInflow),
+        csvMoney(bucket.totalOutflow),
+        csvMoney(bucket.totalRemaining),
+        "",
+        "",
+      ].join(","),
+    );
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Parse a settlement-reports summary back from CSV — the inverse of
+ * {@link renderSettlementReportsSummaryCsv}, for the receiving end of
+ * the bookkeeping hop: a caller that exported a summary with
+ * `renderSettlementReportsSummaryCsv` gets the summary back without
+ * hand-writing a parser for each row.
+ *
+ * The check is strict: the header must match exactly; there must be
+ * exactly one `summary` row, four `outcome` rows in fixed order, four
+ * `party` rows in canonical role order, then zero or more `currency`
+ * rows in strictly alphabetical key order; every row must have exactly
+ * 12 columns; cells a row does not own must be empty; every count
+ * must be a canonical non-negative integer and every money figure a
+ * two-decimal figure; every party's `net` must equal its
+ * `inflow − outflow` at cent precision; and the whole table must
+ * satisfy the shared self-consistency identities — `total` is
+ * `reports + errors`, outcome counts sum to `reports`, party ledgers
+ * sum to the top-level totals, currency buckets sum to the top-level
+ * totals (`totalRemaining` included), and a `balanced: true` over
+ * disagreeing totals is rejected. Any violation throws
+ * `cannot parse settlement reports summary CSV: …` instead of
+ * returning a plausible-looking half-summary. A UTF-8 byte-order mark
+ * is a transport artifact, not a column, and is stripped; trailing
+ * blank lines are line-ending noise, not extra rows; CRLF endings and
+ * RFC 4180 quoted fields parse.
+ *
+ * Honest limit, shared with `renderSettlementReportsSummaryCsv`:
+ * this is structural validation only. Importing a summary does not
+ * re-verify the audit histories it claims to summarize — a hand-built
+ * table with internally consistent rows parses, just as it would
+ * render, and chain verification still belongs to
+ * `verifyHistoryChain` over the escrows' own histories. The
+ * `balanced` check is one-directional for the same reason: the table
+ * can prove a `balanced: true` claim false (disagreeing totals), but
+ * it cannot prove a `balanced: false` claim wrong (two unbalanced
+ * reports could cancel), so only the first direction is enforced.
+ *
+ * Pure: the input string is only read, never mutated, and the
+ * returned value is a fresh object graph (a second parse of the same
+ * text yields an independent copy).
+ */
+export function parseSettlementReportsSummaryCsv(
+  text: string,
+): SettlementReportsSummary {
+  if (typeof text !== "string") {
+    throw new Error(
+      "cannot parse settlement reports summary CSV: input must be a CSV string",
+    );
+  }
+  const prefix = "cannot parse settlement reports summary CSV";
+  // Column indices: 0 section, 1 key, 2 count, 3 total, 4 reports,
+  // 5 errors, 6 totalDeposit, 7 totalInflow, 8 totalOutflow,
+  // 9 totalRemaining, 10 net, 11 balanced.
+  const records = parseCsvRecords(text.replace(/^\uFEFF/, ""), prefix);
+  // Trailing blank lines are line-ending noise, not extra rows; a blank
+  // record anywhere else changes the record count and fails below.
+  while (records.length > 0) {
+    const last = records[records.length - 1];
+    if (last.length === 1 && last[0] === "") records.pop();
+    else break;
+  }
+  const fail = (reason: string): never => {
+    throw new Error(`${prefix}: ${reason}`);
+  };
+  const mustBeEmpty = (value: string, where: string): void => {
+    if (value !== "")
+      fail(`${where} must be empty, got ${JSON.stringify(value)}`);
+  };
+  if (records.length < 10) {
+    fail(
+      `expected at least 10 records (header + summary + 4 outcome rows + 4 party rows), got ${records.length}`,
+    );
+  }
+  const header = records[0];
+  if (header.join(",") !== SUMMARY_CSV_HEADER) {
+    fail(`header must be exactly ${JSON.stringify(SUMMARY_CSV_HEADER)}`);
+  }
+  for (let i = 0; i < records.length; i += 1) {
+    if (records[i].length !== 12)
+      fail(`record ${i + 1} must have 12 columns, got ${records[i].length}`);
+  }
+  const summaryRow = records[1];
+  if (summaryRow[0] !== "summary")
+    fail(`record 2 section must be "summary", got ${JSON.stringify(summaryRow[0])}`);
+  if (summaryRow[1] !== "")
+    fail(`summary row key must be empty, got ${JSON.stringify(summaryRow[1])}`);
+  mustBeEmpty(summaryRow[2], "summary row count");
+  const total = parseSummaryCsvInteger(summaryRow[3], "summary row total");
+  const reports = parseSummaryCsvInteger(summaryRow[4], "summary row reports");
+  const errors = parseSummaryCsvInteger(summaryRow[5], "summary row errors");
+  const totalDeposit = parseCsvMoney(summaryRow[6], "summary row totalDeposit", prefix);
+  const totalInflow = parseCsvMoney(summaryRow[7], "summary row totalInflow", prefix);
+  const totalOutflow = parseCsvMoney(summaryRow[8], "summary row totalOutflow", prefix);
+  const totalRemaining = parseCsvMoney(summaryRow[9], "summary row totalRemaining", prefix);
+  mustBeEmpty(summaryRow[10], "summary row net");
+  if (summaryRow[11] !== "true" && summaryRow[11] !== "false")
+    fail(`summary row balanced must be "true" or "false", got ${JSON.stringify(summaryRow[11])}`);
+  const balanced = summaryRow[11] === "true";
+  for (const [value, where] of [
+    [totalDeposit, "summary row totalDeposit"],
+    [totalInflow, "summary row totalInflow"],
+    [totalOutflow, "summary row totalOutflow"],
+    [totalRemaining, "summary row totalRemaining"],
+  ] as const) {
+    if (value < 0) fail(`${where} must not be negative, got ${value}`);
+  }
+  const outcomes = {} as Record<SettlementOutcome, number>;
+  for (let r = 0; r < 4; r += 1) {
+    const row = records[2 + r];
+    const where = `outcome row ${r + 1}`;
+    if (row[0] !== "outcome")
+      fail(`${where} section must be "outcome", got ${JSON.stringify(row[0])}`);
+    const outcome = SUMMARY_OUTCOME_ORDER[r];
+    if (row[1] !== outcome)
+      fail(`${where} key must be ${JSON.stringify(outcome)}, got ${JSON.stringify(row[1])}`);
+    outcomes[outcome] = parseSummaryCsvInteger(row[2], `${where} count`);
+    for (let c = 3; c < 12; c += 1)
+      mustBeEmpty(row[c], `${where} column ${c + 1}`);
+  }
+  const parties: PartyLedger[] = [];
+  for (let r = 0; r < 4; r += 1) {
+    const row = records[6 + r];
+    const where = `party row ${r + 1}`;
+    if (row[0] !== "party")
+      fail(`${where} section must be "party", got ${JSON.stringify(row[0])}`);
+    const role = SUMMARY_PARTY_ORDER[r];
+    if (row[1] !== role)
+      fail(`${where} key must be ${JSON.stringify(role)}, got ${JSON.stringify(row[1])}`);
+    for (const c of [2, 3, 4, 5, 6]) mustBeEmpty(row[c], `${where} column ${c + 1}`);
+    const inflow = parseCsvMoney(row[7], `${where} totalInflow`, prefix);
+    const outflow = parseCsvMoney(row[8], `${where} totalOutflow`, prefix);
+    if (inflow < 0) fail(`${where} totalInflow must not be negative, got ${inflow}`);
+    if (outflow < 0) fail(`${where} totalOutflow must not be negative, got ${outflow}`);
+    mustBeEmpty(row[9], `${where} column 10`);
+    const net = parseCsvMoney(row[10], `${where} net`, prefix);
+    mustBeEmpty(row[11], `${where} column 12`);
+    if (net !== round2(inflow - outflow)) {
+      fail(
+        `${where} net ${net} does not equal inflow ${inflow} minus outflow ${outflow}`,
+      );
+    }
+    parties.push({ party: role, label: PARTY_LABELS[role], inflow, outflow, net });
+  }
+  const byCurrency: Record<string, SettlementCurrencySummary> = {};
+  let prevCode: string | undefined;
+  for (let r = 10; r < records.length; r += 1) {
+    const row = records[r];
+    const where = `currency row ${r - 9}`;
+    if (row[0] !== "currency")
+      fail(`${where} section must be "currency", got ${JSON.stringify(row[0])}`);
+    const code = row[1];
+    if (
+      code !== UNSPECIFIED_SETTLEMENT_CURRENCY &&
+      !ISO_4217_ALPHA3.test(code)
+    )
+      fail(
+        `${where} key must be a 3-letter uppercase ISO 4217 code or ${JSON.stringify(UNSPECIFIED_SETTLEMENT_CURRENCY)}, got ${JSON.stringify(code)}`,
+      );
+    if (prevCode !== undefined && !(prevCode < code))
+      fail(
+        `${where} currency ${JSON.stringify(code)} must come after ${JSON.stringify(prevCode)} in alphabetical order`,
+      );
+    prevCode = code;
+    const bucketReports = parseSummaryCsvInteger(row[2], `${where} count`);
+    for (const c of [3, 4, 5]) mustBeEmpty(row[c], `${where} column ${c + 1}`);
+    const bucketDeposit = parseCsvMoney(row[6], `${where} totalDeposit`, prefix);
+    const bucketInflow = parseCsvMoney(row[7], `${where} totalInflow`, prefix);
+    const bucketOutflow = parseCsvMoney(row[8], `${where} totalOutflow`, prefix);
+    const bucketRemaining = parseCsvMoney(row[9], `${where} totalRemaining`, prefix);
+    for (const [value, field] of [
+      [bucketDeposit, "totalDeposit"],
+      [bucketInflow, "totalInflow"],
+      [bucketOutflow, "totalOutflow"],
+      [bucketRemaining, "totalRemaining"],
+    ] as const) {
+      if (value < 0)
+        fail(`${where} ${field} must not be negative, got ${value}`);
+    }
+    for (const c of [10, 11]) mustBeEmpty(row[c], `${where} column ${c + 1}`);
+    byCurrency[code] = {
+      reports: bucketReports,
+      totalDeposit: bucketDeposit,
+      totalInflow: bucketInflow,
+      totalOutflow: bucketOutflow,
+      totalRemaining: bucketRemaining,
+    };
+  }
+  const summary: SettlementReportsSummary = {
+    total,
+    reports,
+    errors,
+    outcomes: {
+      released: outcomes.released,
+      refunded: outcomes.refunded,
+      expired: outcomes.expired,
+      "partially-released": outcomes["partially-released"],
+    },
+    totalDeposit,
+    totalInflow,
+    totalOutflow,
+    totalRemaining,
+    parties,
+    byCurrency,
+    balanced,
+  };
+  assertSettlementReportsSummary(summary, prefix);
+  return summary;
+}
+
+/**
+ * Render a settlement-reports summary as JSON — the text form for the
+ * API/storage hop: a caller that stored a summary with this function
+ * gets a document whose fields are numbers, not strings, so a
+ * consumer parsing it gets `31890`, not `"31890.00"` — the one
+ * deliberate difference from CSV, where the same cent value is
+ * spelled with exactly two decimals. The fields are written in
+ * canonical key order (top-level fields in declaration order,
+ * outcomes in fixed order, currency buckets alphabetically), so
+ * rendering the same summary twice is byte-identical.
+ *
+ * Before rendering, the summary is shape-checked and
+ * self-consistency-checked with the shared check (see
+ * {@link assertSettlementReportsSummary}): a malformed object never
+ * becomes a plausible-looking JSON document — `JSON.stringify` turns
+ * `Infinity`/`NaN` into `null` without complaint, so a non-finite
+ * figure would otherwise leave this function as a plausible-looking
+ * `null` and corrupt a downstream import.
+ *
+ * Pure: the summary is only read, never mutated.
+ */
+export function renderSettlementReportsSummaryJson(
+  summary: SettlementReportsSummary,
+): string {
+  assertSettlementReportsSummary(
+    summary,
+    "cannot render settlement reports summary as JSON",
+  );
+  return JSON.stringify(canonicalSettlementReportsSummary(summary));
+}
+
+/**
+ * Parse a settlement-reports summary back from JSON — the inverse of
+ * {@link renderSettlementReportsSummaryJson}, for the receiving end of
+ * the API/storage hop: a caller that stored a summary with
+ * `renderSettlementReportsSummaryJson` gets a typed summary back
+ * without hand-writing a parser for each field.
+ *
+ * The check is exactly the shape check
+ * `renderSettlementReportsSummaryJson` applies, in the other
+ * direction: unparseable text, a JSON value that is not a summary
+ * object, a missing or unknown field, a non-integer or unsafe-integer
+ * count (including `null`, which is what a non-finite figure becomes
+ * after a plain `JSON.stringify`, and `1e999`, which `JSON.parse`
+ * reads as `Infinity`), a non-cent-exact money figure, a `total`
+ * that does not equal `reports + errors`, outcome counts that do not
+ * sum to `reports`, party ledgers whose sums disagree with the
+ * totals, currency buckets whose sums disagree with the top-level
+ * totals, or a `balanced: true` over disagreeing totals all throw
+ * `cannot parse settlement reports summary JSON: …` instead of
+ * returning a plausible-looking half-summary. A parsed summary
+ * re-renders byte-identically through
+ * `renderSettlementReportsSummaryJson`.
+ *
+ * Honest limit, shared with `renderSettlementReportsSummaryJson`:
+ * this is structural validation only. Importing a summary does not
+ * re-verify the audit histories it claims to summarize — a hand-built
+ * document with internally consistent fields passes, just as it would
+ * serialize. Chain verification still belongs to `verifyHistoryChain`
+ * over the escrows' own histories, not to this import.
+ *
+ * Pure: the input string is only read, never mutated, and the
+ * returned summary is a fresh object graph (a second parse of the
+ * same text yields an independent copy).
+ */
+export function parseSettlementReportsSummaryJson(
+  text: string,
+): SettlementReportsSummary {
+  if (typeof text !== "string")
+    throw new Error(
+      "cannot parse settlement reports summary JSON: input must be a JSON string",
+    );
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    throw new Error(
+      `cannot parse settlement reports summary JSON: invalid JSON: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  assertSettlementReportsSummary(
+    parsed,
+    "cannot parse settlement reports summary JSON",
+  );
+  return canonicalSettlementReportsSummary(parsed);
 }

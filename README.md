@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1843 tests, all local
+npm test   # 1860 tests, all local
 ```
 
 ## Quickstart
@@ -1372,6 +1372,59 @@ for backward compatibility and still sum raw figures across currencies
 — read `byCurrency`, not the top-level totals, when the batch may mix
 currencies.
 
+The summary also has canonical text forms, so a caller doing batch
+reconciliation no longer has to hand-write the export — the same
+strict render/parse paradigm as the single-report CSV/JSON pair, for
+the whole summary:
+
+```ts
+import {
+  parseSettlementReportsSummaryCsv,
+  parseSettlementReportsSummaryJson,
+  renderSettlementReportsSummaryCsv,
+  renderSettlementReportsSummaryJson,
+  summarizeSettlementReports,
+} from "@toniadreal/escrow-state-machine-ts";
+
+const summary = summarizeSettlementReports(results);
+renderSettlementReportsSummaryCsv(summary);
+// => "section,key,count,total,reports,errors,totalDeposit,totalInflow,totalOutflow,totalRemaining,net,balanced\nsummary,,,4,3,1,31890.00,31890.00,31890.00,6378.00,,true\noutcome,released,1,..."
+renderSettlementReportsSummaryJson(summary);
+// => '{"total":4,"reports":3,"errors":1,"outcomes":{"released":1,...},"totalDeposit":31890,...}'
+parseSettlementReportsSummaryCsv(renderSettlementReportsSummaryCsv(summary)); // => the same summary
+parseSettlementReportsSummaryJson(renderSettlementReportsSummaryJson(summary)); // => the same summary
+```
+
+The CSV is a table with one `summary` row (the batch totals), four
+`outcome` rows in fixed order, four `party` rows in canonical role
+order, and one `currency` row per `byCurrency` bucket in alphabetical
+order (the `UNSPECIFIED` bucket sorts as the literal string it is) —
+a row that pastes straight into a reconciliation spreadsheet or a
+settlement statement. Money is the same cent value the JSON form
+carries as a number, spelled with exactly two decimals; counts are
+canonical integers. The JSON writes the same eleven fields as
+numbers, in canonical key order, for the API/storage hop. Unlike the
+single-report CSV, which drops the deposit breakdown and audit
+window, the summary CSV carries the whole summary: a parsed value is
+the full summary and re-renders byte-identically. Both parsers are
+strict and fail closed — a bad header, a wrong column count, rows out
+of canonical order, a non-canonical amount (`31890.0`, `1e3`,
+`007`), a negative count or total, a `total` that does not equal
+`reports + errors`, outcome counts that do not sum to `reports`,
+party ledgers whose sums disagree with the totals, currency buckets
+whose sums disagree with the top-level totals (including
+`totalRemaining`), a `balanced: true` over disagreeing totals, a
+missing or unknown field, or string amounts in JSON all throw with
+the direction's prefix instead of returning a half-summary — and both
+renderers apply the same shape check before emitting text, so a
+malformed object never becomes a plausible-looking document. CRLF
+endings, a trailing newline, trailing blank lines, a UTF-8 BOM, and
+RFC 4180 quoted fields are transport artifacts and parse. Top-level
+totals still sum raw figures across currencies — read `byCurrency`,
+not the top-level totals, when the batch may mix currencies — and
+import is structural validation only, not a re-verification of the
+audit histories the summary claims to summarize.
+
 Against an external payment ledger, `reconcileSettlements(reports, ledger)`
 pairs reports with ledger rows by `escrowId` and returns five groups —
 `matched`, `reportOnly`, `ledgerOnly`, `amountMismatch`, and
@@ -1537,7 +1590,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1843 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1860 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
