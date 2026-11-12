@@ -18,6 +18,25 @@ version changes.
 
 ### Added
 
+- Dry-run rehearsal port for `actOnStaleEscrows` (2026-11-12, backlog
+  #1083): a trailing `ActOnStaleEscrowsOptions` (`{ dryRun?: boolean }`)
+  lets an operator preview a stale-escrow sweep before running a real
+  action over it. With `dryRun: true` the executor screens the same
+  stale set, in the same order, but calls the action for none of them
+  — no state change, no history append, no subscription notification —
+  and returns one `{ escrow, acted: false, wouldAct: true }` result
+  per selected escrow. `wouldAct` answers only "in the stale
+  selection", never "would succeed": unlike `expireOverdueEscrows`,
+  whose fixed EXPIRE action lets the dry run predict the outcome, the
+  stale executor takes an arbitrary caller-supplied action, so an
+  action that would throw (or dispatch an illegal edge) is simply
+  never invoked and never reported as an error. The live run leaves
+  `wouldAct` absent and keeps reporting via `acted`. Illegal `opts`
+  (non-object, non-boolean `dryRun`) throw fail-fast before any
+  screening or action, in the same wording as
+  `expireOverdueEscrows`. 10 tests in
+  `test/actOnStaleDryRun.test.ts`.
+
 - `requireActor` gate now survives snapshots (2026-11-12, backlog
   #1078): `EscrowSnapshot` gains the optional `requireActor`
   field, written by `toJSON()` only when the gate is on, so a

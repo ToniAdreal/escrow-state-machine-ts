@@ -17,6 +17,7 @@ export type {
   NextEscrowDeadline,
   StaleEscrowAction,
   StaleEscrowActionResult,
+  ActOnStaleEscrowsOptions,
   ListenerErrorContext,
   RolePolicy,
   SettlementAgingEntry,

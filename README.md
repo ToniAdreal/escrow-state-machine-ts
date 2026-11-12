@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1833 tests, all local
+npm test   # 1843 tests, all local
 ```
 
 ## Quickstart
@@ -557,10 +557,16 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   FUNDED escrow whose milestone nobody submits for 30 days is picked
   up here even when its deadline is months away. It is a pure filter;
   its executor companion is `actOnStaleEscrows(escrows, action,
-  maxAgeByState, now?)`, which runs a caller-supplied action for each
+  maxAgeByState, now?, opts?)`, which runs a caller-supplied action for each
   stale escrow and returns per-escrow `{ escrow, acted, error?, entry? }`
   outcomes, isolating failures so one unactionable escrow never
-  aborts the batch. A successful outcome also carries `entry`, a
+  aborts the batch. Pass `{ dryRun: true }` to rehearse instead: the
+  executor screens the same stale set, in the same order, but calls
+  the action for none of them, returning `{ escrow, acted: false,
+  wouldAct: true }` per selected escrow — `wouldAct` answers only
+  "selected", never "would succeed", because an arbitrary
+  caller-supplied action can still be illegal from the escrow's
+  state. A successful outcome also carries `entry`, a
   frozen detached copy of the audit entry the action appended, when
   the action appended one (a notify-only action leaves it absent;
   failed actions leave it absent too). There is deliberately *no default* action: expiry
@@ -1531,7 +1537,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1833 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1843 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

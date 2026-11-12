@@ -4314,6 +4314,20 @@ export interface StaleEscrowActionResult {
   /** Set when the action threw; the message of the caught error. */
   error?: string;
   /**
+   * Dry-run only (`actOnStaleEscrows(..., { dryRun: true })`):
+   * whether the live run would attempt this escrow — true exactly
+   * when the escrow is in the `staleEscrows()` selection. The
+   * executor cannot predict whether an arbitrary caller-supplied
+   * action would succeed (it might dispatch an illegal edge or
+   * throw for its own reasons), so `wouldAct` answers only
+   * "selected", never "would succeed" — unlike
+   * `expireOverdueEscrows`, whose fixed EXPIRE action lets the dry
+   * run predict the outcome. Present only on dry-run results; the
+   * live run reports the actual outcome via `acted` instead, and
+   * leaves this absent.
+   */
+  wouldAct?: boolean;
+  /**
    * The audit entry the successful action appended — a frozen,
    * detached copy of the escrow's last history entry, so a stale-patrol
    * report can cite it (escrow id, from/to state, timestamp) without
@@ -4364,19 +4378,60 @@ export interface StaleEscrowActionResult {
  * non-function `action`, an invalid `maxAgeByState`, or an invalid
  * `now` (the latter two via `staleEscrows()`) throws and no escrow is
  * touched. The `now` default is the real clock, so unit tests pin it.
+ *
+ * Dry run (`opts.dryRun: true`): the safe rehearsal port for an
+ * operator about to run a stale-escrow sweep — the executor screens
+ * the same set, in the same order, but calls nothing: no state
+ * change, no history append, no subscription notification. Each
+ * result carries `wouldAct: true` (the escrow is in the stale
+ * selection) with `acted: false` and no `error`/`entry`; an action
+ * that would have thrown is never invoked, so a dry run never
+ * throws for an action's sake. The same batch can immediately be
+ * acted on for real. Illegal `opts` throw fail-fast, before any
+ * screening or action.
  */
+export interface ActOnStaleEscrowsOptions {
+  /**
+   * Dry run: predict instead of acting. When true, the executor
+   * selects the same stale escrows but calls the action for none
+   * of them, and returns one `{ escrow, acted: false, wouldAct:
+   * true }` result per selected escrow. `acted` is false
+   * throughout a dry run and `error`/`entry` are never present.
+   * Illegal values fail fast (`opts` must be an object, `dryRun`
+   * must be a boolean).
+   */
+  dryRun?: boolean;
+}
+
 export function actOnStaleEscrows(
   escrows: readonly Escrow[],
   action: StaleEscrowAction,
   maxAgeByState: Partial<Record<EscrowState, number>>,
-  now: Date = new Date()
+  now: Date = new Date(),
+  opts?: ActOnStaleEscrowsOptions
 ): StaleEscrowActionResult[] {
+  if (opts !== undefined) {
+    if (typeof opts !== "object" || opts === null || Array.isArray(opts)) {
+      throw new Error(
+        "invalid actOnStaleEscrows options: opts must be an object"
+      );
+    }
+    if (opts.dryRun !== undefined && typeof opts.dryRun !== "boolean") {
+      throw new Error(
+        `invalid actOnStaleEscrows options: dryRun must be a boolean, got ${JSON.stringify(opts.dryRun)}`
+      );
+    }
+  }
   if (typeof action !== "function") {
     throw new Error("invalid action: expected a function (escrow) => void");
   }
   // staleEscrows() validates maxAgeByState and now fail-fast, before
   // any action runs.
-  return staleEscrows(escrows, maxAgeByState, now).map((escrow) => {
+  const selected = staleEscrows(escrows, maxAgeByState, now);
+  if (opts?.dryRun === true) {
+    return selected.map((escrow) => ({ escrow, acted: false, wouldAct: true }));
+  }
+  return selected.map((escrow) => {
     // History is append-only, so growth across the action is exactly
     // "the action appended an audit entry". The history getter returns
     // frozen detached copies, so the last entry is already the
