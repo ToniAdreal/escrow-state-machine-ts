@@ -28,6 +28,7 @@
  */
 
 import {
+  MAX_ESCROW_ID_LENGTH,
   type AuditKey,
   type EscrowEvent,
   type EscrowHistoryEntry,
@@ -938,16 +939,20 @@ export interface ReconcileSettlementsResult {
  * carries an empty or non-string `escrowId` or a non-finite
  * `totalOutflow`, throws; a ledger row that is not an object, carries
  * an empty or non-string `escrowId`, or carries a non-finite or
- * negative `amount` throws; an illegal currency code on either side
- * (anything but three uppercase letters) throws
- * `invalid settlement currency: …` via the same shape check the
- * report builder uses; an id appearing twice in the reports throws
- * `duplicate report escrowId` — a duplicated report would otherwise be
- * counted once per copy in `matched` (the same settlement tallied
- * twice); and an id appearing twice in the ledger
- * throws `duplicate ledger escrowId` — a duplicated ledger row would
- * otherwise make "matched" ambiguous (which row did the report pair
- * with?).
+ * negative `amount` throws; an `escrowId` longer than
+ * {@link MAX_ESCROW_ID_LENGTH} characters on either side throws — the
+ * library can never mint an escrow id that long (the constructor caps
+ * it at 256), so an overlong id at the reconcile entry is a malformed
+ * input, not a pairing to attempt, and the throw happens before either
+ * lookup map is consulted, so no partial pairing survives it; an
+ * illegal currency code on either side (anything but three uppercase
+ * letters) throws `invalid settlement currency: …` via the same shape
+ * check the report builder uses; an id appearing twice in the reports
+ * throws `duplicate report escrowId` — a duplicated report would
+ * otherwise be counted once per copy in `matched` (the same settlement
+ * tallied twice); and an id appearing twice in the ledger throws
+ * `duplicate ledger escrowId` — a duplicated ledger row would otherwise
+ * make "matched" ambiguous (which row did the report pair with?).
  *
  * Pure: reads the reports and the ledger rows, never mutates or
  * dispatches anything. An empty report batch and an empty ledger
@@ -967,6 +972,11 @@ export function reconcileSettlements(
     if (typeof report.escrowId !== "string" || report.escrowId.length === 0) {
       throw new Error(
         `invalid reconcileSettlements: report escrowId must be a non-empty string, got ${JSON.stringify(report.escrowId)}`,
+      );
+    }
+    if (report.escrowId.length > MAX_ESCROW_ID_LENGTH) {
+      throw new Error(
+        `invalid reconcileSettlements: report escrowId must be at most ${MAX_ESCROW_ID_LENGTH} characters, got ${report.escrowId.length}`,
       );
     }
     if (typeof report.totalOutflow !== "number" || !Number.isFinite(report.totalOutflow)) {
@@ -992,6 +1002,11 @@ export function reconcileSettlements(
     if (typeof row.escrowId !== "string" || row.escrowId.length === 0) {
       throw new Error(
         `invalid reconcileSettlements: ledger escrowId must be a non-empty string, got ${JSON.stringify(row.escrowId)}`,
+      );
+    }
+    if (row.escrowId.length > MAX_ESCROW_ID_LENGTH) {
+      throw new Error(
+        `invalid reconcileSettlements: ledger escrowId must be at most ${MAX_ESCROW_ID_LENGTH} characters, got ${row.escrowId.length}`,
       );
     }
     if (
@@ -1354,13 +1369,15 @@ function parseCsvMoney(value: string, where: string): number {
  * from rendering: the header must be exactly
  * `escrowId,outcome,currency,role,inflow,outflow,net`; there must be exactly four
  * party rows (one per role, each once, in any order) plus a final `TOTAL`
- * row; every row must carry the same `escrowId`, `outcome`, and
- * `currency` (empty when the report was built without one; a non-empty
- * code must be a 3-letter uppercase ISO 4217 code); every
- * amount must be a finite two-decimal figure; every party's `net` must
- * equal its `inflow − outflow` at cent precision; and the `TOTAL` row
- * must equal the sums over the party rows. Any violation throws
- * `cannot parse settlement report CSV: …` instead of returning a
+ * row; every row must carry the same `escrowId` (non-empty and at most
+ * {@link MAX_ESCROW_ID_LENGTH} characters, the same cap the escrow
+ * constructor enforces — a longer id could never have been minted by
+ * this library), `outcome`, and `currency` (empty when the report was
+ * built without one; a non-empty code must be a 3-letter uppercase ISO
+ * 4217 code); every amount must be a finite two-decimal figure; every
+ * party's `net` must equal its `inflow − outflow` at cent precision; and
+ * the `TOTAL` row must equal the sums over the party rows. Any violation
+ * throws `cannot parse settlement report CSV: …` instead of returning a
  * plausible-looking half-report.
  *
  * Honest limit, stated plainly because it is the whole point of the
@@ -1418,6 +1435,11 @@ export function parseSettlementReportCsv(text: string): SettlementReportCsv {
   const currency = records[1][2];
   if (escrowId === undefined || escrowId === "") {
     fail("escrowId must be a non-empty string");
+  }
+  if (escrowId.length > MAX_ESCROW_ID_LENGTH) {
+    fail(
+      `escrowId must be at most ${MAX_ESCROW_ID_LENGTH} characters, got ${escrowId.length}`,
+    );
   }
   if (outcome !== "released" && outcome !== "refunded" && outcome !== "expired" && outcome !== "partially-released") {
     fail('outcome must be "released", "refunded", "expired", or "partially-released"');
@@ -1526,7 +1548,11 @@ export function parseSettlementReportCsv(text: string): SettlementReportCsv {
  * full-report fields. `currency`, totals, and `balanced` are carried by
  * both shapes, so when present they must be sane; a bare carried-fields
  * value without them still passes here, and the full-report check below
- * requires the totals and the balanced flag.
+ * requires the totals and the balanced flag. The `escrowId` is capped at
+ * {@link MAX_ESCROW_ID_LENGTH} characters, the same cap the escrow
+ * constructor enforces: a report shape carrying a longer id could never
+ * have been minted by this library, so it is malformed here, not only
+ * at the reconcile entry.
  * Every failure throws `<prefix>: …`. No assertion signature: callers
  * keep their own (narrower) parameter types.
  */
@@ -1539,6 +1565,13 @@ function assertReportCsvFields(report: unknown, prefix: string): void {
   const r = report as Record<string, unknown>;
   if (typeof r.escrowId !== "string" || r.escrowId.length === 0)
     fail("escrowId must be a non-empty string");
+  if (
+    typeof r.escrowId === "string" &&
+    r.escrowId.length > MAX_ESCROW_ID_LENGTH
+  )
+    fail(
+      `escrowId must be at most ${MAX_ESCROW_ID_LENGTH} characters, got ${r.escrowId.length}`,
+    );
   if (r.outcome !== "released" && r.outcome !== "refunded" && r.outcome !== "expired" && r.outcome !== "partially-released")
     fail('outcome must be "released", "refunded", "expired", or "partially-released"');
   if (

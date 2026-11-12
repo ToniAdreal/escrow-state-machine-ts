@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1772 tests, all local
+npm test   # 1780 tests, all local
 ```
 
 ## Quickstart
@@ -1331,7 +1331,14 @@ slice with a `reason` naming the partial-release basis, so a ledger
 carrying the honest slice (4,252 of a 10,630 deposit) matches instead
 of being misread as a 6,378 shortfall. A ledger row with no recorded amount matches on the
 reference alone, and a duplicated report or ledger id or a malformed row fails
-fast instead of pairing ambiguously. When both sides carry a currency
+fast instead of pairing ambiguously. An `escrowId` longer than 256 characters
+on either side is rejected outright (`invalid reconcileSettlements: … must be
+at most 256 characters, got N`): the library can never mint an id that long
+(the escrow constructor caps it at `MAX_ESCROW_ID_LENGTH`), so an overlong id
+at the reconcile entry is a malformed input, not a pairing to attempt. The
+same cap applies where a report is restored from CSV or JSON, so a
+hand-built document carrying an overlong id is refused at the shape check
+instead of only at reconciliation. When both sides carry a currency
 code and the codes differ, the pair lands in `currencyMismatch` and in
 no other group, even when the amounts also disagree; when either side
 omits the code, the previous rules apply unchanged. The function is
@@ -1476,7 +1483,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1772 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1780 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

@@ -238,6 +238,26 @@ version changes.
 
 ### Fixed
 
+- `reconcileSettlements` escrowId length aligned with `MAX_ESCROW_ID_LENGTH`
+  (2026-11-12, backlog #1067): the reconcile entry rejected only empty or
+  non-string ids, so an id longer than the 256 characters the library can
+  ever mint (#1061 caps escrow ids at `MAX_ESCROW_ID_LENGTH`) sailed
+  through pairing even though no `Escrow` can carry it. Report and ledger
+  ids are now both refused at the same value (`invalid reconcileSettlements:
+  report/ledger escrowId must be at most 256 characters, got N`), thrown
+  before either lookup map is consulted, so no partial pairing survives.
+  The same cap now applies to the report-shape faces that feed
+  reconciliation — the CSV parser (`cannot parse settlement report CSV:
+  escrowId must be at most 256 characters, got N`) and the shared shape
+  check behind `renderReportJson` / `parseSettlementReportJson` — so a
+  hand-built document carrying an overlong id is refused at import, not
+  only at reconciliation. Deliberately unchanged: `depositAmountFromHistory`
+  and `buildSettlementReport` take `escrowId` only as an error-message
+  label / caller-supplied report identity and perform no identity
+  validation at all (not even non-empty), so capping length there without
+  the shape check would be an inconsistent half-measure; that belongs in
+  its own item. 8 tests in `test/reconcileEscrowIdLength.test.ts`.
+
 - Note-less dispatches broke signed-snapshot export (2026-11-11,
   found while benchmarking backlog #1040): `dispatch` wrote an
   explicit `note: undefined` key on every history entry without a
