@@ -372,6 +372,23 @@ version changes.
 
 ### Fixed
 
+- `buildSettlementReport` now validates the report identity
+  (2026-11-12, backlog #1091): the build path accepted any `escrowId`
+  — empty or longer than the 256 characters the escrow constructor
+  (#1061), the CSV/JSON parsers, and `reconcileSettlements` (#1067) all
+  enforce — so the library could mint a report it could not itself
+  parse or reconcile. An empty or overlong id now throws `cannot build
+  settlement report: escrowId must be a non-empty string` /
+  `… must be at most 256 characters, got N` before the currency check,
+  the chain check, or any money math runs; the batch wrapper records
+  that failure per escrow instead of aborting the batch. The history
+  helpers `depositAmountFromHistory` / `releasedAmountFromHistory`
+  validate an explicitly passed label the same way (`cannot read
+  settlement amount: …`); the default `"escrow"` label is unchanged —
+  it is only an error-message label, not a report identity. 11 tests in
+  `test/settlementReportEscrowId.test.ts`; mutation check (cap +1000)
+  turned the three rejection tests red, then reverted.
+
 - `dispatchArbitration` now names the quorum suffix when the merged note
   overflows (2026-11-12, backlog #1081): the arbitration entry appends
   ` [quorum n/m [signers]]` to the caller's note before dispatching, so a

@@ -92,7 +92,43 @@ function assertSettlementCurrency(
   }
 }
 
+/**
+ * Validate a settlement-report escrow identity: a non-empty string of at
+ * most {@link MAX_ESCROW_ID_LENGTH} characters — the same cap the escrow
+ * constructor (#1061), the CSV/JSON parsers, and `reconcileSettlements`
+ * (#1067) enforce. A report the library builds must always be parseable
+ * and reconcilable by the library itself, so the build path checks the
+ * identity before any money math runs, and the history-amount helpers
+ * check an explicitly passed label the same way. `prefix` is the
+ * caller's error family (`cannot build settlement report` for the build
+ * path, `cannot read settlement amount` for the helpers).
+ */
+function assertSettlementEscrowId(
+  escrowId: unknown,
+  prefix: string,
+): asserts escrowId is string {
+  if (typeof escrowId !== "string" || escrowId.length === 0) {
+    throw new Error(`${prefix}: escrowId must be a non-empty string`);
+  }
+  if (escrowId.length > MAX_ESCROW_ID_LENGTH) {
+    throw new Error(
+      `${prefix}: escrowId must be at most ${MAX_ESCROW_ID_LENGTH} characters, got ${escrowId.length}`,
+    );
+  }
+}
+
 export interface SettlementReportInputs {
+  /**
+   * Identity of the escrow this report is about. Must be a non-empty
+   * string of at most `MAX_ESCROW_ID_LENGTH` (256) characters — the
+   * same cap the escrow constructor enforces, so a report built here
+   * can always be parsed (`parseSettlementReportCsv` /
+   * `parseSettlementReportJson`) and reconciled
+   * (`reconcileSettlements`) by this library. An empty or overlong id
+   * throws `cannot build settlement report: …` before any money math
+   * runs, and the batch wrapper records that failure per escrow
+   * instead of aborting the batch.
+   */
   escrowId: string;
   /** Append-only audit history, in seq order. */
   history: readonly EscrowHistoryEntry[];
@@ -221,18 +257,29 @@ function totalFundedAmount(
  * recorded without an amount (FUND accepts an optional amount), this throws
  * `settlement requires a FUND amount` instead of letting undefined/NaN
  * silently poison the accounting.
+ *
+ * `escrowId` is only the label on those error messages. Omit it and the
+ * default label `"escrow"` is used — that is a label for a call with no
+ * report identity, not a report identity, so it is never validated. Pass
+ * one explicitly and it is validated like a report identity (non-empty,
+ * at most `MAX_ESCROW_ID_LENGTH` characters); an invalid label throws
+ * `cannot read settlement amount: …` before the history is read.
  */
 export function depositAmountFromHistory(
   history: readonly EscrowHistoryEntry[],
-  escrowId = "escrow",
+  escrowId?: string,
 ): number {
+  const label = escrowId ?? "escrow";
+  if (escrowId !== undefined) {
+    assertSettlementEscrowId(escrowId, "cannot read settlement amount");
+  }
   const total = totalFundedAmount(history);
   if (total === undefined) {
     const hasFund = history.some((entry) => entry.event === "FUND");
     throw new Error(
       hasFund
-        ? `settlement requires a FUND amount for ${escrowId}: a FUND event was recorded without an amount`
-        : `settlement requires a FUND amount for ${escrowId}: no FUND event in the audit history`,
+        ? `settlement requires a FUND amount for ${label}: a FUND event was recorded without an amount`
+        : `settlement requires a FUND amount for ${label}: no FUND event in the audit history`,
     );
   }
   return total;
@@ -254,11 +301,22 @@ export function depositAmountFromHistory(
  * escrow never hits that throw — it guards hand-built or legacy
  * histories. Use it wherever a report or webhook payload needs the
  * paid-out tranche total alongside the locked deposit.
+ *
+ * `escrowId` is only the label on those error messages. Omit it and the
+ * default label `"escrow"` is used — that is a label for a call with no
+ * report identity, not a report identity, so it is never validated. Pass
+ * one explicitly and it is validated like a report identity (non-empty,
+ * at most `MAX_ESCROW_ID_LENGTH` characters); an invalid label throws
+ * `cannot read settlement amount: …` before the history is read.
  */
 export function releasedAmountFromHistory(
   history: readonly EscrowHistoryEntry[],
-  escrowId = "escrow",
+  escrowId?: string,
 ): number {
+  const label = escrowId ?? "escrow";
+  if (escrowId !== undefined) {
+    assertSettlementEscrowId(escrowId, "cannot read settlement amount");
+  }
   let total = 0;
   let hasRelease = false;
   for (const entry of history) {
@@ -266,7 +324,7 @@ export function releasedAmountFromHistory(
     hasRelease = true;
     if (entry.amount === undefined) {
       throw new Error(
-        `settlement requires a PARTIAL_RELEASE amount for ${escrowId}: a PARTIAL_RELEASE event was recorded without an amount`,
+        `settlement requires a PARTIAL_RELEASE amount for ${label}: a PARTIAL_RELEASE event was recorded without an amount`,
       );
     }
     total += entry.amount;
@@ -302,6 +360,13 @@ function ledger(
  * a keyed escrow previously could not be reported at all, because the
  * report path had no way to pass the key through.
  *
+ * The report identity is checked first of all: an empty or overlong
+ * `escrowId` (over `MAX_ESCROW_ID_LENGTH`, 256) throws `cannot build
+ * settlement report: …` before the currency check, the chain check, or
+ * any money math runs — a report the library builds must always pass
+ * the library's own parsers and `reconcileSettlements`, so the build
+ * path enforces the same identity cap those paths enforce.
+ *
  * The one non-terminal report is the partial release: a FUNDED escrow
  * plus `partialRelease` inputs yields outcome `"partially-released"`,
  * with the released slice settled per `settlePartialRelease` and the
@@ -315,6 +380,12 @@ export function buildSettlementReport(
 ): SettlementReport {
   const { escrowId, history, finalState, deposit, auditKey, currency } = inputs;
   const depositAmount = deposit.deposit;
+
+  // Report identity first: an empty or overlong escrowId is the caller's
+  // bug and must fail fast before the currency check, the chain check,
+  // or any money math runs, so a report that could never be parsed or
+  // reconciled by this library is never minted.
+  assertSettlementEscrowId(escrowId, "cannot build settlement report");
 
   // Caller configuration first: an illegal currency is the caller's bug
   // and must fail fast even before the history chain is inspected, so
@@ -547,7 +618,10 @@ export type SettlementReportResult =
  * Pure: building a report never mutates any escrow state or history, and
  * this batch wrapper adds no mutation of its own — the input list and its
  * entries are only read. The result has one entry per input, in input
- * order, each carrying the input's `escrowId`. A per-escrow `auditKey`
+ * order, each carrying the input's `escrowId`. An empty or overlong
+ * `escrowId` is a per-entry failure like any other (the single-escrow
+ * builder throws it, the wrapper records it) — it never aborts the
+ * batch; only a repeated `escrowId` does, per the exception below. A per-escrow `auditKey`
  * rides along in the same inputs shape (the wrapper delegates to
  * {@link buildSettlementReport} unchanged), so a batch mixing keyed and
  * unkeyed escrows reports each under its own key.

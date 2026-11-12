@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1871 tests, all local
+npm test   # 1882 tests, all local
 ```
 
 ## Quickstart
@@ -1456,7 +1456,15 @@ at most 256 characters, got N`): the library can never mint an id that long
 at the reconcile entry is a malformed input, not a pairing to attempt. The
 same cap applies where a report is restored from CSV or JSON, so a
 hand-built document carrying an overlong id is refused at the shape check
-instead of only at reconciliation. When both sides carry a currency
+instead of only at reconciliation. The build path enforces it too:
+`buildSettlementReport` throws `cannot build settlement report: …` on an
+empty or overlong `escrowId` before the currency check, the chain check,
+or any money math runs, so a report the library builds can always be
+parsed and reconciled by the library itself; in the batch wrapper that
+failure is recorded per escrow, never aborting the batch. The history
+helpers `depositAmountFromHistory` / `releasedAmountFromHistory` validate
+an explicitly passed label the same way; omit the label and the default
+`"escrow"` is only an error-message label, not a report identity. When both sides carry a currency
 code and the codes differ, the pair lands in `currencyMismatch` and in
 no other group, even when the amounts also disagree; when either side
 omits the code, the previous rules apply unchanged. The function is
@@ -1601,7 +1609,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1871 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1882 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
