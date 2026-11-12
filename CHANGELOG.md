@@ -18,6 +18,22 @@ version changes.
 
 ### Added
 
+- CLI demo caller-string-length-limits segment (2026-11-12, backlog
+  #1069): `npm run demo` now closes with the five caller-supplied
+  short-identifier caps the library enforces — dispatch `actor` (256),
+  webhook `eventId` (256), escrow id (256), quorum approval `evidence`
+  (32,768), dispatch `idempotencyKey` (256) — each shown refusing a
+  one-over-the-cap value with its pinned error and zero residue, then
+  accepting the exact at-cap value: the at-cap FUND (at-cap actor +
+  at-cap key) lands and a replay with the same key is a no-op, the
+  at-cap `eventId` builds a webhook over the main report that still
+  verifies, and the at-cap evidence records exactly one approval. All
+  five guards were already landed (#1056 actor, #1059 eventId, #1061
+  escrow id, #1063 evidence, #1064 idempotencyKey); this item only
+  makes them visible in the demo, with `DemoResult` fields and fixed
+  fixtures (`DEMO_LIMITS_*`) so a guard wording drift fails the demo
+  itself. 2 tests in `test/demo.test.ts`.
+
 - `MAX_IDEMPOTENCY_KEY_LENGTH` cap on dispatch idempotency keys
   (2026-11-11, backlog #1064): `dispatch()`'s `opts.idempotencyKey`,
   constructor seeding (`idempotencyKeys`), and the snapshot parser

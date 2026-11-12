@@ -197,6 +197,25 @@ import {
   DEMO_OUTBOX_NOW,
   DEMO_OUTBOX_RECOVERED_AT,
   DEMO_OUTBOX_RECOVERED_EVENT_ID,
+  DEMO_LIMITS_ACTOR_ERROR,
+  DEMO_LIMITS_AT_LIMIT_ACTOR,
+  DEMO_LIMITS_AT_LIMIT_ESCROW_ID,
+  DEMO_LIMITS_AT_LIMIT_EVENT_ID,
+  DEMO_LIMITS_AT_LIMIT_EVIDENCE,
+  DEMO_LIMITS_AT_LIMIT_IDEMPOTENCY_KEY,
+  DEMO_LIMITS_ESCROW_ID,
+  DEMO_LIMITS_ESCROW_ID_ERROR,
+  DEMO_LIMITS_EVENT_ID_ERROR,
+  DEMO_LIMITS_EVIDENCE_ERROR,
+  DEMO_LIMITS_FUND_AMOUNT,
+  DEMO_LIMITS_FUND_AT,
+  DEMO_LIMITS_IDEMPOTENCY_KEY_ERROR,
+  DEMO_LIMITS_OVERLONG_ACTOR,
+  DEMO_LIMITS_OVERLONG_ESCROW_ID,
+  DEMO_LIMITS_OVERLONG_EVENT_ID,
+  DEMO_LIMITS_OVERLONG_EVIDENCE,
+  DEMO_LIMITS_OVERLONG_IDEMPOTENCY_KEY,
+  DEMO_LIMITS_QUORUM_AT,
   DEMO_RETRY_AFTER_DELIVERY_HINT,
   DEMO_RETRY_AFTER_DELIVERY_HINT_MS,
   DEMO_RETRY_AFTER_DELIVERY_SCRIPTED_STATUSES,
@@ -3340,10 +3359,10 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
       `  cross-escrow diff rejected: snapshot diff failed: cannot diff snapshots of different escrows ("DEMO-ESC-033" vs "DEMO-ESC-034")`,
     ),
   );
-  // Webhook-outbox tail: the closing segment records three
-  // scripted 500s into the outbox (pending, then dead-letter)
-  // and clears the recovered pair with its 200, and the demo
-  // ends on the recovered-event line.
+  // Webhook-outbox tail: the segment records three scripted
+  // 500s into the outbox (pending, then dead-letter) and clears
+  // the recovered pair with its 200; it is followed by the
+  // caller-string-length-limits segment that now closes the demo.
   assert.match(
     out,
     /Webhook outbox \(SettlementWebhookOutbox: failed deliveries stay pending, then dead-letter\):/,
@@ -3364,10 +3383,43 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
     ),
   );
   assert.ok(
+    out.includes(
+      `  recovered event ${DEMO_OUTBOX_RECOVERED_EVENT_ID}: 1 failure (pending, attempts 1), then 200 — the success cleared the pair; ledger ends pending 0, dead letter 1`,
+    ),
+  );
+  // Caller-string-length-limits tail: the closing segment refuses
+  // one-over-the-cap values for all five caller-supplied short
+  // identifiers and accepts the exact at-cap values, and the demo
+  // ends on the idempotencyKey line.
+  assert.match(
+    out,
+    /Caller string length limits \(caller-supplied identifiers are capped, never truncated\):/,
+  );
+  assert.ok(
+    out.includes(
+      `  actor: 257 chars rejected — "${DEMO_LIMITS_ACTOR_ERROR}" — state/history unchanged; 256 chars accepted`,
+    ),
+  );
+  assert.ok(
+    out.includes(
+      `  eventId: 257 chars rejected — "${DEMO_LIMITS_EVENT_ID_ERROR}" — no webhook built; 256 chars accepted and verifies`,
+    ),
+  );
+  assert.ok(
+    out.includes(
+      `  escrow id: 257 chars rejected — "${DEMO_LIMITS_ESCROW_ID_ERROR}" — nothing constructed; 256 chars accepted`,
+    ),
+  );
+  assert.ok(
+    out.includes(
+      `  quorum evidence: 32769 chars rejected — "${DEMO_LIMITS_EVIDENCE_ERROR}" — approval log unchanged; 32768 chars accepted (approvalCount 1)`,
+    ),
+  );
+  assert.ok(
     out
       .trimEnd()
       .endsWith(
-        `  recovered event ${DEMO_OUTBOX_RECOVERED_EVENT_ID}: 1 failure (pending, attempts 1), then 200 — the success cleared the pair; ledger ends pending 0, dead letter 1`,
+        `  idempotencyKey: 257 chars rejected — "${DEMO_LIMITS_IDEMPOTENCY_KEY_ERROR}" — key not consumed, history unchanged; 256 chars accepted and a replay with the same key is a no-op`,
       ),
   );
 });
@@ -8677,8 +8729,7 @@ test("demo shows snapshot comparison: diffEscrowSnapshots reports the state chan
   );
 
   // The printed section follows the settlement-reconciliation
-  // segment and precedes the webhook-outbox segment that now
-  // closes the demo.
+  // segment and precedes the webhook-outbox segment.
   const header =
     "Snapshot comparison (diffEscrowSnapshots between two snapshots of one escrow):";
   assert.ok(
@@ -8708,9 +8759,9 @@ test("demo snapshot-comparison segment is deterministic: two runs print byte-ide
     "Snapshot comparison (diffEscrowSnapshots between two snapshots of one escrow):";
   const outboxHeader =
     "Webhook outbox (SettlementWebhookOutbox: failed deliveries stay pending, then dead-letter):";
-  // The snapshot section is followed by the webhook-outbox section
-  // that now closes the demo, so it runs from the blank line before
-  // its header to the blank line before the outbox header.
+  // The snapshot section is followed by the webhook-outbox section,
+  // so it runs from the blank line before its header to the blank
+  // line before the outbox header.
   const segment = (ls: string[]) =>
     ls.slice(ls.indexOf(header) - 1, ls.indexOf(outboxHeader) - 1);
   const a = await runDemo();
@@ -8804,8 +8855,9 @@ test("demo shows webhook outbox: three 500s dead-letter the pair, one failure th
   assert.deepEqual(outbox.pending(), outboxPendingFinal);
   assert.deepEqual(outbox.deadLetter(), outboxDeadFinal);
 
-  // The printed section is the demo's closing section, after the
-  // snapshot-comparison segment.
+  // The printed section follows the snapshot-comparison segment
+  // and precedes the caller-string-length-limits segment that
+  // now closes the demo.
   const header =
     "Webhook outbox (SettlementWebhookOutbox: failed deliveries stay pending, then dead-letter):";
   assert.ok(
@@ -8840,9 +8892,13 @@ test("demo shows webhook outbox: three 500s dead-letter the pair, one failure th
 test("demo webhook-outbox segment is deterministic: two runs print byte-identical outbox lines", async () => {
   const header =
     "Webhook outbox (SettlementWebhookOutbox: failed deliveries stay pending, then dead-letter):";
-  // The outbox section is the demo's last section, so it runs
-  // from the blank line before its header to the end.
-  const segment = (ls: string[]) => ls.slice(ls.indexOf(header) - 1);
+  const limitsHeader =
+    "Caller string length limits (caller-supplied identifiers are capped, never truncated):";
+  // The outbox section is followed by the caller-string-length-limits
+  // section that now closes the demo, so it runs from the blank line
+  // before its header to the blank line before the limits header.
+  const segment = (ls: string[]) =>
+    ls.slice(ls.indexOf(header) - 1, ls.indexOf(limitsHeader) - 1);
   const a = await runDemo();
   const b = await runDemo();
   // Blank + header + endpoint line + after-2 line + after-3 line
@@ -8858,4 +8914,144 @@ test("demo webhook-outbox segment is deterministic: two runs print byte-identica
   assert.deepEqual(a.outboxRecoveredDelivery, b.outboxRecoveredDelivery);
   assert.deepEqual(a.outboxPendingFinal, b.outboxPendingFinal);
   assert.deepEqual(a.outboxDeadFinal, b.outboxDeadFinal);
+});
+
+test("demo shows caller string length limits: five caps refuse one-over and accept exactly-at-cap", async () => {
+  const {
+    limitsEscrow,
+    limitsActorError,
+    limitsEventIdError,
+    limitsEscrowIdError,
+    limitsEvidenceError,
+    limitsIdempotencyKeyError,
+    limitsAtLimitWebhookVerified,
+    limitsQuorumApprovalCount,
+    lines,
+  } = await runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned fixtures: one branch escrow, one fixed FUND
+  // instant, one fixed quorum clock.
+  assert.equal(DEMO_LIMITS_ESCROW_ID, "demo-limits");
+  assert.equal(DEMO_LIMITS_FUND_AT, "2026-03-10T10:00:00.000Z");
+  assert.equal(DEMO_LIMITS_FUND_AMOUNT, 100);
+  assert.equal(DEMO_LIMITS_QUORUM_AT, "2026-03-10T10:00:00.000Z");
+  assert.equal(DEMO_LIMITS_OVERLONG_ACTOR.length, 257);
+  assert.equal(DEMO_LIMITS_AT_LIMIT_ACTOR.length, 256);
+  assert.equal(DEMO_LIMITS_OVERLONG_EVENT_ID.length, 257);
+  assert.equal(DEMO_LIMITS_AT_LIMIT_EVENT_ID.length, 256);
+  assert.equal(DEMO_LIMITS_OVERLONG_ESCROW_ID.length, 257);
+  assert.equal(DEMO_LIMITS_AT_LIMIT_ESCROW_ID.length, 256);
+  assert.equal(DEMO_LIMITS_OVERLONG_EVIDENCE.length, 32769);
+  assert.equal(DEMO_LIMITS_AT_LIMIT_EVIDENCE.length, 32768);
+  assert.equal(DEMO_LIMITS_OVERLONG_IDEMPOTENCY_KEY.length, 257);
+  assert.equal(DEMO_LIMITS_AT_LIMIT_IDEMPOTENCY_KEY.length, 256);
+
+  // The five rejections, pinned verbatim against the guard
+  // wording (and against the guard unit tests, which pin the
+  // same strings from the library side).
+  assert.equal(limitsActorError, DEMO_LIMITS_ACTOR_ERROR);
+  assert.equal(
+    limitsActorError,
+    "invalid dispatch options: actor must be at most 256 characters, got 257",
+  );
+  assert.equal(limitsEventIdError, DEMO_LIMITS_EVENT_ID_ERROR);
+  assert.equal(
+    limitsEventIdError,
+    "cannot build settlement webhook: 'eventId' must be at most 256 characters, got 257 for DEMO-ESC-001",
+  );
+  assert.equal(limitsEscrowIdError, DEMO_LIMITS_ESCROW_ID_ERROR);
+  assert.equal(
+    limitsEscrowIdError,
+    "invalid escrow: id must be at most 256 characters, got 257",
+  );
+  assert.equal(limitsEvidenceError, DEMO_LIMITS_EVIDENCE_ERROR);
+  assert.equal(
+    limitsEvidenceError,
+    "quorum approval evidence must be at most 32768 characters, got 32769",
+  );
+  assert.equal(limitsIdempotencyKeyError, DEMO_LIMITS_IDEMPOTENCY_KEY_ERROR);
+  assert.equal(
+    limitsIdempotencyKeyError,
+    "invalid dispatch options: idempotencyKey must be at most 256 characters, got 257",
+  );
+
+  // The branch escrow: one successful FUND (at-cap actor + at-cap
+  // key) and a no-op replay of that same FUND — FUNDED with exactly
+  // 1 history entry, so every over-cap attempt left zero residue.
+  assert.equal(limitsEscrow.id, DEMO_LIMITS_ESCROW_ID);
+  assert.equal(limitsEscrow.state, "FUNDED");
+  assert.equal(limitsEscrow.history.length, 1);
+  assert.equal(limitsEscrow.history[0]?.event, "FUND");
+  assert.equal(limitsEscrow.history[0]?.actor, DEMO_LIMITS_AT_LIMIT_ACTOR);
+  assert.equal(limitsEscrow.history[0]?.at, DEMO_LIMITS_FUND_AT);
+
+  // The at-cap eventId builds a webhook that still verifies, and
+  // the at-cap evidence was recorded once.
+  assert.equal(limitsAtLimitWebhookVerified, true);
+  assert.equal(limitsQuorumApprovalCount, 1);
+
+  // The printed section is the demo's closing section, after the
+  // webhook-outbox segment.
+  const header =
+    "Caller string length limits (caller-supplied identifiers are capped, never truncated):";
+  assert.ok(
+    text.indexOf(header) >
+      text.indexOf(
+        "Webhook outbox (SettlementWebhookOutbox: failed deliveries stay pending, then dead-letter):",
+      ),
+    "caller-string-length-limits segment must follow the webhook-outbox segment",
+  );
+  assert.ok(
+    text.includes(
+      `  actor: 257 chars rejected — "${DEMO_LIMITS_ACTOR_ERROR}" — state/history unchanged; 256 chars accepted`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  eventId: 257 chars rejected — "${DEMO_LIMITS_EVENT_ID_ERROR}" — no webhook built; 256 chars accepted and verifies`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  escrow id: 257 chars rejected — "${DEMO_LIMITS_ESCROW_ID_ERROR}" — nothing constructed; 256 chars accepted`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  quorum evidence: 32769 chars rejected — "${DEMO_LIMITS_EVIDENCE_ERROR}" — approval log unchanged; 32768 chars accepted (approvalCount 1)`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  idempotencyKey: 257 chars rejected — "${DEMO_LIMITS_IDEMPOTENCY_KEY_ERROR}" — key not consumed, history unchanged; 256 chars accepted and a replay with the same key is a no-op`,
+    ),
+  );
+});
+
+test("demo caller-string-length-limits segment is deterministic: two runs print byte-identical limits lines", async () => {
+  const header =
+    "Caller string length limits (caller-supplied identifiers are capped, never truncated):";
+  // The limits section is the demo's last section, so it runs
+  // from the blank line before its header to the end.
+  const segment = (ls: string[]) => ls.slice(ls.indexOf(header) - 1);
+  const a = await runDemo();
+  const b = await runDemo();
+  // Blank + header + actor + eventId + escrow-id + evidence +
+  // idempotencyKey lines; every printed value derives from the
+  // pinned fixtures alone, so no normalization is needed.
+  const segA = segment(a.lines);
+  assert.equal(segA.length, 7);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(a.limitsEscrow.history, b.limitsEscrow.history);
+  assert.equal(a.limitsActorError, b.limitsActorError);
+  assert.equal(a.limitsEventIdError, b.limitsEventIdError);
+  assert.equal(a.limitsEscrowIdError, b.limitsEscrowIdError);
+  assert.equal(a.limitsEvidenceError, b.limitsEvidenceError);
+  assert.equal(a.limitsIdempotencyKeyError, b.limitsIdempotencyKeyError);
+  assert.equal(
+    a.limitsAtLimitWebhookVerified,
+    b.limitsAtLimitWebhookVerified,
+  );
+  assert.equal(a.limitsQuorumApprovalCount, b.limitsQuorumApprovalCount);
 });

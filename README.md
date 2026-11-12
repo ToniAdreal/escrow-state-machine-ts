@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1780 tests, all local
+npm test   # 1782 tests, all local
 ```
 
 ## Quickstart
@@ -166,7 +166,7 @@ DEMO-FILTER-02 and DEMO-FILTER-04 (DEMO-FILTER-04 matching once
 despite two sponsor entries), and the SUBMIT_MILESTONE slice is
 DEMO-FILTER-02 and DEMO-FILTER-04, while the anonymous DEMO-FILTER-03
 appears in no actor's slice — the state lens, the actor lens, and the
-event lens are orthogonal, and all three calls are pure. The demo then shows a combined-filter segment: `escrowsByFilters` takes the one escrow that is DISPUTED, sponsor-touched, and ever disputed out of a four-escrow batch — "FUNDED and ever disputed" would be empty by construction, since DISPUTE moves an escrow out of FUNDED — and `settlementAging` buckets the same batch at the fixed 2026-03-09T09:00:00.000Z now (DEMO-AGING-03 at 4 days under 7 days, DEMO-AGING-02 at 12 days in 7–30 days, DEMO-AGING-01 at 36 days over 30 days, DEMO-AGING-04 unknown as never funded), printing the oldest unsettled funds, DEMO-AGING-01 at 36 days, so finance ops chase the over-30-day bucket first. The demo then shows a snapshot-comparison segment: `diffEscrowSnapshots` diffs one escrow's before/after snapshots across a single SUBMIT_MILESTONE step — stateChanged FUNDED -> MILESTONE_SUBMITTED with history appended seq 2..2 — alongside an identical pair reporting {} and a cross-escrow diff rejected with the pinned error. The demo finally closes with a webhook-outbox segment: the main escrow's signed webhook is delivered to the billing endpoint through a scripted fetch that answers 500 three times — each failure recorded in a `SettlementWebhookOutbox` on a fixed clock — so after two failures the pair is still pending (attempts 2) and after the third it dead-letters at the maxAttempts cap of 3, the one that needs a human; a second event fails once and then delivers 200, so its success clears its own pair and the ledger ends pending 0, dead letter 1.
+event lens are orthogonal, and all three calls are pure. The demo then shows a combined-filter segment: `escrowsByFilters` takes the one escrow that is DISPUTED, sponsor-touched, and ever disputed out of a four-escrow batch — "FUNDED and ever disputed" would be empty by construction, since DISPUTE moves an escrow out of FUNDED — and `settlementAging` buckets the same batch at the fixed 2026-03-09T09:00:00.000Z now (DEMO-AGING-03 at 4 days under 7 days, DEMO-AGING-02 at 12 days in 7–30 days, DEMO-AGING-01 at 36 days over 30 days, DEMO-AGING-04 unknown as never funded), printing the oldest unsettled funds, DEMO-AGING-01 at 36 days, so finance ops chase the over-30-day bucket first. The demo then shows a snapshot-comparison segment: `diffEscrowSnapshots` diffs one escrow's before/after snapshots across a single SUBMIT_MILESTONE step — stateChanged FUNDED -> MILESTONE_SUBMITTED with history appended seq 2..2 — alongside an identical pair reporting {} and a cross-escrow diff rejected with the pinned error. The demo then shows a webhook-outbox segment: the main escrow's signed webhook is delivered to the billing endpoint through a scripted fetch that answers 500 three times — each failure recorded in a `SettlementWebhookOutbox` on a fixed clock — so after two failures the pair is still pending (attempts 2) and after the third it dead-letters at the maxAttempts cap of 3, the one that needs a human; a second event fails once and then delivers 200, so its success clears its own pair and the ledger ends pending 0, dead letter 1. The demo finally closes with a caller-string-length-limits segment: the five caller-supplied short-identifier caps (dispatch `actor`, webhook `eventId`, escrow id, quorum approval `evidence`, dispatch `idempotencyKey`) each refuse a one-over-the-cap value with the pinned error and zero residue, then accept the exact at-cap value — the at-cap FUND replay is a no-op and the at-cap `eventId` webhook still verifies.
 
 ```bash
 npm run demo
@@ -1483,7 +1483,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1780 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1782 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

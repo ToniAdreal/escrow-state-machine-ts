@@ -393,7 +393,7 @@
  * the report layer, so this is the first segment that shows
  * the refund arithmetic itself. All sides are asserted
  * outside the printing against hand-pinned expectations.
- * The demo finally closes with a webhook-outbox
+ * The demo then shows a webhook-outbox
  * segment: the main escrow's signed webhook is delivered to
  * the billing endpoint through a scripted fetch that answers
  * 500 three times — each failure recorded in a
@@ -405,6 +405,16 @@
  * ledger ends pending 0, dead letter 1. All sides are
  * asserted outside the printing against hand-pinned
  * expectations.
+ * The demo finally closes with a caller-string-length-limits
+ * segment: the five caller-supplied short-identifier caps the
+ * library enforces (dispatch `actor`, webhook `eventId`,
+ * escrow id, quorum approval `evidence`, dispatch
+ * `idempotencyKey`) are each shown refusing a one-over-the-cap
+ * value with its pinned error and zero residue, then accepting
+ * the exact at-cap value — the at-cap FUND also proves an
+ * idempotency replay is a no-op, and the at-cap eventId builds
+ * a webhook that still verifies. All sides are asserted
+ * outside the printing against hand-pinned expectations.
  *
  * Usage: `npm run demo` (builds with tsc, then runs node on the compiled
  * output). Zero runtime dependencies: this file only imports the library
@@ -448,6 +458,11 @@ import {
   historyFromNdjson,
   historyToNdjson,
   isOverdue,
+  MAX_ACTOR_LENGTH,
+  MAX_ESCROW_ID_LENGTH,
+  MAX_EVENT_ID_LENGTH,
+  MAX_EVIDENCE_LENGTH,
+  MAX_IDEMPOTENCY_KEY_LENGTH,
   nextEscrowDeadline,
   parseEscrowHistory,
   parseRetryAfter,
@@ -2408,6 +2423,59 @@ export const DEMO_OUTBOX_DEAD_LAST_ERROR =
 export const DEMO_OUTBOX_RECOVERED_EVENT_ID = "evt_demo_outbox_002";
 export const DEMO_OUTBOX_RECOVERED_AT = "2026-03-08T13:00:00.000Z";
 
+/**
+ * Caller-string-length-limits fixtures (backlog #1069): the five
+ * caller-supplied short identifiers the library caps, each shown
+ * once over the cap (rejected) and once exactly at the cap
+ * (accepted verbatim). The overlong values are one character past
+ * their cap — `actor` / escrow id / `eventId` / `idempotencyKey`
+ * cap at 256, quorum `evidence` at 32,768 — built by repeating one
+ * character, so the strings are deterministic and the printed
+ * output never carries them in full (only their lengths and the
+ * pinned errors). The pinned errors are hand-written from the
+ * guard wording in `src/stateMachine.ts`, `src/webhooks.ts`, and
+ * `src/quorum.ts` and cross-checked against
+ * `test/maxActorLength.test.ts`, `test/maxEscrowIdLength.test.ts`,
+ * `test/maxEventIdLength.test.ts`,
+ * `test/idempotencyKeyLength.test.ts`, and
+ * `test/maxQuorumEvidenceLength.test.ts`; the segment asserts
+ * each one verbatim, so a wording drift fails the demo itself.
+ * The `eventId` error names the main report's escrow
+ * ({@link DEMO_ESCROW_ID}), because the segment builds its
+ * webhooks over that report.
+ */
+export const DEMO_LIMITS_ESCROW_ID = "demo-limits";
+export const DEMO_LIMITS_FUND_AT = "2026-03-10T10:00:00.000Z";
+export const DEMO_LIMITS_FUND_AMOUNT = 100;
+export const DEMO_LIMITS_QUORUM_AT = "2026-03-10T10:00:00.000Z";
+export const DEMO_LIMITS_OVERLONG_ACTOR = "a".repeat(MAX_ACTOR_LENGTH + 1);
+export const DEMO_LIMITS_AT_LIMIT_ACTOR = "a".repeat(MAX_ACTOR_LENGTH);
+export const DEMO_LIMITS_OVERLONG_EVENT_ID = "e".repeat(
+  MAX_EVENT_ID_LENGTH + 1,
+);
+export const DEMO_LIMITS_AT_LIMIT_EVENT_ID = "e".repeat(MAX_EVENT_ID_LENGTH);
+export const DEMO_LIMITS_OVERLONG_ESCROW_ID = "x".repeat(
+  MAX_ESCROW_ID_LENGTH + 1,
+);
+export const DEMO_LIMITS_AT_LIMIT_ESCROW_ID = "x".repeat(
+  MAX_ESCROW_ID_LENGTH,
+);
+export const DEMO_LIMITS_OVERLONG_EVIDENCE = "e".repeat(
+  MAX_EVIDENCE_LENGTH + 1,
+);
+export const DEMO_LIMITS_AT_LIMIT_EVIDENCE = "e".repeat(MAX_EVIDENCE_LENGTH);
+export const DEMO_LIMITS_OVERLONG_IDEMPOTENCY_KEY = "k".repeat(
+  MAX_IDEMPOTENCY_KEY_LENGTH + 1,
+);
+export const DEMO_LIMITS_AT_LIMIT_IDEMPOTENCY_KEY = "k".repeat(
+  MAX_IDEMPOTENCY_KEY_LENGTH,
+);
+export const DEMO_LIMITS_ACTOR_ERROR = `invalid dispatch options: actor must be at most ${MAX_ACTOR_LENGTH} characters, got ${MAX_ACTOR_LENGTH + 1}`;
+export const DEMO_LIMITS_EVENT_ID_ERROR = `cannot build settlement webhook: 'eventId' must be at most ${MAX_EVENT_ID_LENGTH} characters, got ${MAX_EVENT_ID_LENGTH + 1} for ${DEMO_ESCROW_ID}`;
+export const DEMO_LIMITS_ESCROW_ID_ERROR = `invalid escrow: id must be at most ${MAX_ESCROW_ID_LENGTH} characters, got ${MAX_ESCROW_ID_LENGTH + 1}`;
+export const DEMO_LIMITS_EVIDENCE_ERROR = `quorum approval evidence must be at most ${MAX_EVIDENCE_LENGTH} characters, got ${MAX_EVIDENCE_LENGTH + 1}`;
+export const DEMO_LIMITS_IDEMPOTENCY_KEY_ERROR = `invalid dispatch options: idempotencyKey must be at most ${MAX_IDEMPOTENCY_KEY_LENGTH} characters, got ${MAX_IDEMPOTENCY_KEY_LENGTH + 1}`;
+
 export interface DemoResult {
   escrow: Escrow;
   report: SettlementReport;
@@ -4106,6 +4174,63 @@ export interface DemoResult {
    * only its own pair, never the dead letter.
    */
   outboxDeadFinal: SettlementWebhookOutboxEntry[];
+  /**
+   * The caller-string-length-limits segment's branch escrow
+   * ({@link DEMO_LIMITS_ESCROW_ID}), after its single
+   * successful FUND (at-cap actor + at-cap idempotency key)
+   * and the no-op replay of that same FUND: FUNDED with 1
+   * history entry — every over-cap attempt left no residue.
+   */
+  limitsEscrow: Escrow;
+  /**
+   * The exact error the overlong-actor FUND threw
+   * ({@link DEMO_LIMITS_ACTOR_ERROR}), hand-pinned from the
+   * dispatch guard wording and cross-checked against
+   * `test/maxActorLength.test.ts`.
+   */
+  limitsActorError: string;
+  /**
+   * The exact error the overlong-`eventId` webhook build
+   * threw ({@link DEMO_LIMITS_EVENT_ID_ERROR}), hand-pinned
+   * from the webhook guard wording and cross-checked against
+   * `test/maxEventIdLength.test.ts`.
+   */
+  limitsEventIdError: string;
+  /**
+   * The exact error the overlong-id construction threw
+   * ({@link DEMO_LIMITS_ESCROW_ID_ERROR}), hand-pinned from
+   * the constructor guard wording and cross-checked against
+   * `test/maxEscrowIdLength.test.ts`.
+   */
+  limitsEscrowIdError: string;
+  /**
+   * The exact error the overlong-evidence `approve()` threw
+   * ({@link DEMO_LIMITS_EVIDENCE_ERROR}), hand-pinned from
+   * the quorum guard wording and cross-checked against
+   * `test/maxQuorumEvidenceLength.test.ts`.
+   */
+  limitsEvidenceError: string;
+  /**
+   * The exact error the overlong-key FUND threw
+   * ({@link DEMO_LIMITS_IDEMPOTENCY_KEY_ERROR}), hand-pinned
+   * from the dispatch guard wording and cross-checked against
+   * `test/idempotencyKeyLength.test.ts`.
+   */
+  limitsIdempotencyKeyError: string;
+  /**
+   * `verifySettlementWebhook` verdict on the webhook built
+   * with the exact at-cap `eventId`
+   * ({@link DEMO_LIMITS_AT_LIMIT_EVENT_ID}): `true` — the
+   * cap accepts the boundary value and the signature still
+   * verifies.
+   */
+  limitsAtLimitWebhookVerified: boolean;
+  /**
+   * `approvalCount()` of the limits segment's quorum after
+   * the single at-cap-evidence approval: 1 — the overlong
+   * evidence was refused before anything was recorded.
+   */
+  limitsQuorumApprovalCount: number;
   lines: string[];
 }
 
@@ -10091,6 +10216,272 @@ export async function runDemo(): Promise<DemoResult> {
     `  recovered event ${DEMO_OUTBOX_RECOVERED_EVENT_ID}: 1 failure (pending, attempts 1), then 200 — the success cleared the pair; ledger ends pending 0, dead letter 1`,
   );
 
+  // --- Caller string length limits: caller-supplied short identifiers (final closing) ---
+  // The five caps the library enforces on caller-supplied short
+  // identifiers — dispatch `actor` (256), webhook `eventId`
+  // (256), escrow id (256), quorum approval `evidence` (32,768),
+  // dispatch `idempotencyKey` (256) — are each shown twice on a
+  // branch escrow / the main report / a fresh quorum: once one
+  // character over the cap (rejected with the pinned error and
+  // zero residue) and once exactly at the cap (accepted
+  // verbatim, never truncated). The overlong `idempotencyKey`
+  // is retried to prove it was never consumed, and the at-cap
+  // FUND is replayed with the same key to prove the replay is
+  // a no-op. The at-cap `eventId` builds a second signed
+  // webhook over the main report that still verifies. All
+  // expectations are asserted HERE, outside the printing,
+  // against the hand-pinned fixtures above: a guard that
+  // silently passed an overlong value, or whose error wording
+  // drifted, would fail the demo itself, not just a test.
+  // Zero network, zero randomness, fixed timestamps throughout
+  // (the quorum's clock is pinned; the overlong strings are
+  // never printed in full, only their lengths).
+  const limitsEscrow = new Escrow(DEMO_LIMITS_ESCROW_ID);
+  // Overlong actor: rejected before any state moves.
+  let limitsActorError: string | undefined;
+  try {
+    limitsEscrow.dispatch(
+      "FUND",
+      "Deposit locked (wire received)",
+      DEMO_LIMITS_FUND_AMOUNT,
+      { actor: DEMO_LIMITS_OVERLONG_ACTOR, at: DEMO_LIMITS_FUND_AT },
+    );
+  } catch (err) {
+    limitsActorError = err instanceof Error ? err.message : String(err);
+  }
+  if (limitsActorError !== DEMO_LIMITS_ACTOR_ERROR) {
+    throw new Error(
+      `demo fixture broken: overlong actor FUND did not throw the pinned actor length error (got ${JSON.stringify(
+        limitsActorError,
+      )})`,
+    );
+  }
+  // TypeScript narrows the `state` / `history` getters across
+  // checks, so each assertion reads its own snapshot into a local.
+  const limitsAfterActorRejectState = limitsEscrow.state;
+  const limitsAfterActorRejectLen = limitsEscrow.history.length;
+  if (
+    limitsAfterActorRejectState !== "CREATED" ||
+    limitsAfterActorRejectLen !== 0
+  ) {
+    throw new Error(
+      "demo fixture broken: rejected overlong-actor FUND left state/history residue",
+    );
+  }
+  // Overlong idempotency key: rejected, and the key is not consumed.
+  let limitsIdempotencyKeyError: string | undefined;
+  try {
+    limitsEscrow.dispatch(
+      "FUND",
+      "Deposit locked (wire received)",
+      DEMO_LIMITS_FUND_AMOUNT,
+      {
+        actor: "sponsor",
+        at: DEMO_LIMITS_FUND_AT,
+        idempotencyKey: DEMO_LIMITS_OVERLONG_IDEMPOTENCY_KEY,
+      },
+    );
+  } catch (err) {
+    limitsIdempotencyKeyError =
+      err instanceof Error ? err.message : String(err);
+  }
+  if (limitsIdempotencyKeyError !== DEMO_LIMITS_IDEMPOTENCY_KEY_ERROR) {
+    throw new Error(
+      `demo fixture broken: overlong idempotencyKey FUND did not throw the pinned key length error (got ${JSON.stringify(
+        limitsIdempotencyKeyError,
+      )})`,
+    );
+  }
+  const limitsAfterKeyRejectState = limitsEscrow.state;
+  const limitsAfterKeyRejectLen = limitsEscrow.history.length;
+  if (
+    limitsAfterKeyRejectState !== "CREATED" ||
+    limitsAfterKeyRejectLen !== 0
+  ) {
+    throw new Error(
+      "demo fixture broken: rejected overlong-key FUND left state/history residue",
+    );
+  }
+  // The rejected key was never recorded: retrying it still reports
+  // the length error, never a replay no-op.
+  let limitsIdempotencyKeyRetryError: string | undefined;
+  try {
+    limitsEscrow.dispatch(
+      "FUND",
+      "Deposit locked (wire received)",
+      DEMO_LIMITS_FUND_AMOUNT,
+      {
+        actor: "sponsor",
+        at: DEMO_LIMITS_FUND_AT,
+        idempotencyKey: DEMO_LIMITS_OVERLONG_IDEMPOTENCY_KEY,
+      },
+    );
+  } catch (err) {
+    limitsIdempotencyKeyRetryError =
+      err instanceof Error ? err.message : String(err);
+  }
+  if (limitsIdempotencyKeyRetryError !== DEMO_LIMITS_IDEMPOTENCY_KEY_ERROR) {
+    throw new Error(
+      `demo fixture broken: retrying the rejected overlong idempotencyKey did not throw the pinned key length error (got ${JSON.stringify(
+        limitsIdempotencyKeyRetryError,
+      )})`,
+    );
+  }
+  // At-cap actor + at-cap key: the FUND lands, and replaying the
+  // same FUND with the same key is a no-op (history stays 1).
+  const limitsFundState = limitsEscrow.dispatch(
+    "FUND",
+    "Deposit locked (wire received)",
+    DEMO_LIMITS_FUND_AMOUNT,
+    {
+      actor: DEMO_LIMITS_AT_LIMIT_ACTOR,
+      at: DEMO_LIMITS_FUND_AT,
+      idempotencyKey: DEMO_LIMITS_AT_LIMIT_IDEMPOTENCY_KEY,
+    },
+  );
+  const limitsAfterFundState = limitsEscrow.state;
+  const limitsAfterFundLen = limitsEscrow.history.length;
+  if (
+    limitsFundState !== "FUNDED" ||
+    limitsAfterFundState !== "FUNDED" ||
+    limitsAfterFundLen !== 1
+  ) {
+    throw new Error(
+      "demo fixture broken: at-cap actor/key FUND did not reach FUNDED with 1 history entry",
+    );
+  }
+  const limitsReplayState = limitsEscrow.dispatch(
+    "FUND",
+    "Deposit locked (wire received)",
+    DEMO_LIMITS_FUND_AMOUNT,
+    {
+      actor: DEMO_LIMITS_AT_LIMIT_ACTOR,
+      at: DEMO_LIMITS_FUND_AT,
+      idempotencyKey: DEMO_LIMITS_AT_LIMIT_IDEMPOTENCY_KEY,
+    },
+  );
+  const limitsAfterReplayLen = limitsEscrow.history.length;
+  if (limitsReplayState !== "FUNDED" || limitsAfterReplayLen !== 1) {
+    throw new Error(
+      "demo fixture broken: replaying the at-cap-key FUND was not a no-op (history moved)",
+    );
+  }
+  // Overlong eventId: the webhook is never built.
+  let limitsEventIdError: string | undefined;
+  try {
+    buildSettlementWebhook(report, {
+      secret: DEMO_WEBHOOK_SECRET,
+      now: DEMO_WEBHOOK_AT,
+      eventId: DEMO_LIMITS_OVERLONG_EVENT_ID,
+    });
+  } catch (err) {
+    limitsEventIdError = err instanceof Error ? err.message : String(err);
+  }
+  if (limitsEventIdError !== DEMO_LIMITS_EVENT_ID_ERROR) {
+    throw new Error(
+      `demo fixture broken: overlong eventId webhook build did not throw the pinned eventId length error (got ${JSON.stringify(
+        limitsEventIdError,
+      )})`,
+    );
+  }
+  // At-cap eventId: builds over the same report and still verifies.
+  const limitsAtLimitWebhook = buildSettlementWebhook(report, {
+    secret: DEMO_WEBHOOK_SECRET,
+    now: DEMO_WEBHOOK_AT,
+    eventId: DEMO_LIMITS_AT_LIMIT_EVENT_ID,
+  });
+  if (limitsAtLimitWebhook.payload.eventId !== DEMO_LIMITS_AT_LIMIT_EVENT_ID) {
+    throw new Error(
+      "demo fixture broken: at-cap eventId webhook did not carry the at-cap eventId verbatim",
+    );
+  }
+  const limitsAtLimitWebhookVerified = verifySettlementWebhook(
+    JSON.stringify(limitsAtLimitWebhook.payload),
+    limitsAtLimitWebhook.signature,
+    DEMO_WEBHOOK_SECRET,
+  );
+  if (!limitsAtLimitWebhookVerified) {
+    throw new Error(
+      "demo fixture broken: at-cap eventId webhook did not verify",
+    );
+  }
+  // Overlong escrow id: nothing is constructed.
+  let limitsEscrowIdError: string | undefined;
+  try {
+    new Escrow(DEMO_LIMITS_OVERLONG_ESCROW_ID);
+  } catch (err) {
+    limitsEscrowIdError = err instanceof Error ? err.message : String(err);
+  }
+  if (limitsEscrowIdError !== DEMO_LIMITS_ESCROW_ID_ERROR) {
+    throw new Error(
+      `demo fixture broken: overlong escrow id construction did not throw the pinned id length error (got ${JSON.stringify(
+        limitsEscrowIdError,
+      )})`,
+    );
+  }
+  const limitsAtLimitEscrow = new Escrow(DEMO_LIMITS_AT_LIMIT_ESCROW_ID);
+  if (limitsAtLimitEscrow.id !== DEMO_LIMITS_AT_LIMIT_ESCROW_ID) {
+    throw new Error(
+      "demo fixture broken: at-cap escrow id was not accepted verbatim",
+    );
+  }
+  // Overlong quorum evidence: refused before anything is recorded.
+  const limitsQuorum = createQuorum({
+    threshold: DEMO_QUORUM_THRESHOLD,
+    signers: [...DEMO_QUORUM_SIGNERS],
+    now: () => Date.parse(DEMO_LIMITS_QUORUM_AT),
+  });
+  let limitsEvidenceError: string | undefined;
+  try {
+    limitsQuorum.approve(
+      DEMO_QUORUM_SIGNERS[0],
+      DEMO_LIMITS_OVERLONG_EVIDENCE,
+    );
+  } catch (err) {
+    limitsEvidenceError = err instanceof Error ? err.message : String(err);
+  }
+  if (limitsEvidenceError !== DEMO_LIMITS_EVIDENCE_ERROR) {
+    throw new Error(
+      `demo fixture broken: overlong quorum evidence approve did not throw the pinned evidence length error (got ${JSON.stringify(
+        limitsEvidenceError,
+      )})`,
+    );
+  }
+  if (
+    limitsQuorum.approvalCount() !== 0 ||
+    limitsQuorum.approvalLog().length !== 0
+  ) {
+    throw new Error(
+      "demo fixture broken: rejected overlong-evidence approve left quorum residue",
+    );
+  }
+  // At-cap evidence: recorded verbatim, counted once.
+  limitsQuorum.approve(
+    DEMO_QUORUM_SIGNERS[0],
+    DEMO_LIMITS_AT_LIMIT_EVIDENCE,
+  );
+  const limitsQuorumApprovalCount = limitsQuorum.approvalCount();
+  const limitsQuorumLog = limitsQuorum.approvalLog();
+  if (
+    limitsQuorumApprovalCount !== 1 ||
+    limitsQuorumLog.length !== 1 ||
+    limitsQuorumLog[0]?.signerId !== DEMO_QUORUM_SIGNERS[0] ||
+    limitsQuorumLog[0]?.evidence?.length !== MAX_EVIDENCE_LENGTH
+  ) {
+    throw new Error(
+      "demo fixture broken: at-cap evidence approve did not record one approval carrying the full 32768-character evidence",
+    );
+  }
+  lines.push(
+    "",
+    "Caller string length limits (caller-supplied identifiers are capped, never truncated):",
+    `  actor: ${MAX_ACTOR_LENGTH + 1} chars rejected — "${limitsActorError}" — state/history unchanged; ${MAX_ACTOR_LENGTH} chars accepted`,
+    `  eventId: ${MAX_EVENT_ID_LENGTH + 1} chars rejected — "${limitsEventIdError}" — no webhook built; ${MAX_EVENT_ID_LENGTH} chars accepted and verifies`,
+    `  escrow id: ${MAX_ESCROW_ID_LENGTH + 1} chars rejected — "${limitsEscrowIdError}" — nothing constructed; ${MAX_ESCROW_ID_LENGTH} chars accepted`,
+    `  quorum evidence: ${MAX_EVIDENCE_LENGTH + 1} chars rejected — "${limitsEvidenceError}" — approval log unchanged; ${MAX_EVIDENCE_LENGTH} chars accepted (approvalCount ${limitsQuorumApprovalCount})`,
+    `  idempotencyKey: ${MAX_IDEMPOTENCY_KEY_LENGTH + 1} chars rejected — "${limitsIdempotencyKeyError}" — key not consumed, history unchanged; ${MAX_IDEMPOTENCY_KEY_LENGTH} chars accepted and a replay with the same key is a no-op`,
+  );
+
   return {
     escrow,
     report,
@@ -10360,6 +10751,14 @@ export async function runDemo(): Promise<DemoResult> {
     outboxRecoveredFetchCalls: outboxRecoveredCalls.length,
     outboxPendingFinal,
     outboxDeadFinal,
+    limitsEscrow,
+    limitsActorError,
+    limitsEventIdError,
+    limitsEscrowIdError,
+    limitsEvidenceError,
+    limitsIdempotencyKeyError,
+    limitsAtLimitWebhookVerified,
+    limitsQuorumApprovalCount,
     lines,
   };
 }
