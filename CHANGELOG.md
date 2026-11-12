@@ -313,6 +313,21 @@ version changes.
 
 ### Fixed
 
+- `dispatchArbitration` now names the quorum suffix when the merged note
+  overflows (2026-11-12, backlog #1081): the arbitration entry appends
+  ` [quorum n/m [signers]]` to the caller's note before dispatching, so a
+  note that fits `MAX_NOTE_LENGTH` (32,768) on its own could overflow
+  once the library-appended suffix was added — and the dispatch's generic
+  `invalid dispatch: note must be at most 32768 characters` error then
+  blamed the caller's note for the library's own suffix. The merged
+  length is now checked inside `dispatchArbitration` — after the quorum
+  gate, before any dispatch — and an overflow throws
+  `arbitration note too long: caller note N chars plus quorum suffix M
+  chars exceeds MAX_NOTE_LENGTH 32768`, leaving the escrow untouched so
+  the caller can shorten the note and retry. 8 tests in
+  `test/arbitrationNoteLength.test.ts`; the `test/maxNoteLength.test.ts`
+  arbitration case now asserts the new message.
+
 - `reconcileSettlements` escrowId length aligned with `MAX_ESCROW_ID_LENGTH`
   (2026-11-12, backlog #1067): the reconcile entry rejected only empty or
   non-string ids, so an id longer than the 256 characters the library can

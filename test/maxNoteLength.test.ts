@@ -169,8 +169,11 @@ test("dispatchArbitration rejects a caller note that overflows once the quorum s
     quorum.approve(signer);
   }
   // Exactly at the limit as given, but dispatchArbitration appends
-  // " [quorum 5/5 [dao-1, dao-2, dao-3, dao-4, dao-5]]" — the combined note must fail, not silently
-  // truncate or overflow the audit history.
+  // " [quorum 5/5 [dao-1, dao-2, dao-3, dao-4, dao-5]]" — the combined
+  // note must fail, not silently truncate or overflow the audit
+  // history. The pre-check in dispatchArbitration names the quorum
+  // suffix as the cause (backlog #1081) instead of the dispatch's
+  // generic note error.
   assert.throws(
     () =>
       dispatchArbitration(
@@ -179,7 +182,7 @@ test("dispatchArbitration rejects a caller note that overflows once the quorum s
         "release",
         "x".repeat(MAX_NOTE_LENGTH)
       ),
-    /invalid dispatch: note must be at most 32768 characters/
+    /arbitration note too long: caller note 32768 chars plus quorum suffix 49 chars exceeds MAX_NOTE_LENGTH 32768/
   );
   assert.equal(escrow.state, "DISPUTED");
   assert.equal(escrow.history.length, 2);

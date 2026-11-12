@@ -19,6 +19,7 @@
 
 import {
   Escrow,
+  MAX_NOTE_LENGTH,
   type DispatchOptions,
   type EscrowEvent,
   type EscrowState,
@@ -94,6 +95,16 @@ const OUTCOME_EVENTS: Record<ArbitrationOutcome, EscrowEvent> = {
  *   rejection never "uses up" the key and the caller can gather
  *   approvals and retry with the same key. Omitting `opts` keeps the
  *   exact historical behavior.
+ * - The quorum suffix is appended *before* the dispatch, so a caller
+ *   note that is legal on its own can still overflow the escrow's
+ *   {@link MAX_NOTE_LENGTH} ceiling once the ` [quorum n/m […]]`
+ *   suffix is added. The merged length is checked here — after the
+ *   quorum gate — and an overflow throws
+ *   `arbitration note too long: caller note <n> chars plus quorum
+ *   suffix <m> chars exceeds MAX_NOTE_LENGTH <limit>`, naming the
+ *   suffix as the cause instead of letting the dispatch blame the
+ *   caller's note with its generic message. The escrow is left
+ *   untouched, so the caller can shorten the note and retry.
  *
  * The escrow's own transition rules still apply: calling from a state
  * other than DISPUTED fails with the usual `invalid transition` error —
@@ -125,5 +136,16 @@ export function dispatchArbitration(
   const signers = quorum.approvals();
   const quorumNote = `quorum ${quorum.approvalCount()}/${quorum.threshold} [${signers.join(", ")}]`;
   const fullNote = note === undefined ? quorumNote : `${note} [${quorumNote}]`;
+  // The suffix is library-appended, so a caller note that fits on its
+  // own can overflow once the suffix is added. Check the merged length
+  // here — after the quorum gate, before any dispatch — and blame the
+  // suffix explicitly instead of the dispatch's generic note error.
+  const callerNoteLength = note === undefined ? 0 : note.length;
+  const suffixLength = fullNote.length - callerNoteLength;
+  if (fullNote.length > MAX_NOTE_LENGTH) {
+    throw new Error(
+      `arbitration note too long: caller note ${callerNoteLength} chars plus quorum suffix ${suffixLength} chars exceeds MAX_NOTE_LENGTH ${MAX_NOTE_LENGTH}`
+    );
+  }
   return escrow.dispatch(event, fullNote, undefined, opts);
 }
