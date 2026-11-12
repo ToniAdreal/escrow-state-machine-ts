@@ -214,6 +214,23 @@ export interface EscrowHistoryEntry {
    */
   evidence?: string;
   /**
+   * Reference to the external settlement behind a RELEASE — e.g. a
+   * chain transaction hash, a bank transfer reference, or a payout
+   * batch id. Only present on RELEASE entries (dispatch validates it
+   * as a non-empty string no longer than
+   * {@link MAX_SETTLEMENT_REF_LENGTH} characters, and rejects it on
+   * any other event). The library does NOT verify that the referenced
+   * settlement is real — it records the caller's claim so finance ops
+   * can reconcile the release against the ledger, mirroring the
+   * dataquest lifecycle's `payoutRef` on PAYOUT_COMPLETE entries.
+   * No uniqueness is enforced: `id` is already the escrow's unique
+   * key, so one ref may legitimately settle several escrows (one
+   * payout batch, one bank transfer). Recorded verbatim and covered
+   * by the hash chain, so a persisted entry whose ref is rewritten
+   * breaks {@link verifyHistoryChain}.
+   */
+  settlementRef?: string;
+  /**
    * Hash-chain fields (tamper evidence for persisted audit logs).
    *
    * `prevHash` links to the previous entry's `hash` (the genesis entry's
@@ -348,6 +365,26 @@ export const MAX_ESCROW_ID_LENGTH = 256;
  * identifiers that land in persisted artifacts.
  */
 export const MAX_IDEMPOTENCY_KEY_LENGTH = 256;
+
+/**
+ * Maximum length (in UTF-16 code units, i.e. `String.length`) of a
+ * RELEASE settlement reference. A ref is a short identifier — a
+ * chain transaction hash is 66 characters, a bank transfer reference
+ * shorter still — so 256 leaves orders of magnitude of headroom over
+ * any honest value while bounding what a caller can write verbatim
+ * into the append-only audit history and, through it, into every
+ * snapshot, NDJSON export, and settlement report that carries it.
+ * The cap is enforced at the same two points as the note/evidence
+ * caps (`dispatch()` and the snapshot/history parser), so an
+ * oversized ref can neither be written by the live path nor smuggled
+ * in through a rehydrated snapshot, and it is rejected outright,
+ * never silently truncated (truncation would change which transfer
+ * the reference names). Same value as the dataquest lifecycle's
+ * `MAX_PAYOUT_REF_LENGTH` (256), which this mirrors; read-only
+ * lookups (`escrowsBySettlementRef` / `escrowsByFilters`) deliberately
+ * impose no cap — they only read a ref, never persist it.
+ */
+export const MAX_SETTLEMENT_REF_LENGTH = 256;
 
 export interface EscrowSnapshot {
   /**
@@ -602,6 +639,7 @@ const HISTORY_ENTRY_FIELDS = new Set([
   "note",
   "amount",
   "evidence",
+  "settlementRef",
   "prevHash",
   "hash",
 ]);
@@ -728,6 +766,10 @@ function isCanonicalIso(s: unknown): s is string {
  *    than {@link MAX_EVIDENCE_LENGTH} characters and may only
  *    appear on VERIFY_PASS entries (oversized evidence in an
  *    untrusted log is malformed — the same bar dispatch() applies)
+ *  - `settlementRef`, when present, must be a non-empty string no
+ *    longer than {@link MAX_SETTLEMENT_REF_LENGTH} characters and
+ *    may only appear on RELEASE entries (oversized refs in an
+ *    untrusted log are malformed — the same bar dispatch() applies)
  *  - `prevHash`/`hash`, when present, must both be non-empty strings and
  *    appear on every entry (mixed chained/hashless histories are
  *    rejected); when every entry carries them, the hash chain is
@@ -769,7 +811,7 @@ function isCanonicalIso(s: unknown): s is string {
  *    `maxDeposit`/`requireVerifyEvidence`
  *    (`unknown field "<name>"`), and a history entry allows only
  *    `seq`/`event`/`from`/`to`/`at`/`actor`/`note`/`amount`/`evidence`/
- *    `prevHash`/`hash` (`history[i]: unknown field "<name>"`). A typo
+ *    `settlementRef`/`prevHash`/`hash` (`history[i]: unknown field "<name>"). A typo
  *    like `deadlline` or `amout` therefore fails loudly instead of
  *    quietly losing a deadline or a FUND amount.
  *
@@ -942,6 +984,30 @@ function parseEscrowSnapshot(
       }
       entry.evidence = raw.evidence;
     }
+    if (raw.settlementRef !== undefined) {
+      if (event !== "RELEASE") {
+        throw new Error(
+          `${tag}: settlementRef only allowed on RELEASE entries`
+        );
+      }
+      if (
+        typeof raw.settlementRef !== "string" ||
+        raw.settlementRef.length === 0
+      ) {
+        throw new Error(
+          `${tag}: settlementRef must be a non-empty string, got ${JSON.stringify(raw.settlementRef)}`
+        );
+      }
+      // Same bar as dispatch(): an oversized ref in an untrusted log
+      // is malformed, so a corrupted snapshot cannot blow up
+      // rehydration with a multi-megabyte ref string.
+      if (raw.settlementRef.length > MAX_SETTLEMENT_REF_LENGTH) {
+        throw new Error(
+          `${tag}: settlementRef must be at most ${MAX_SETTLEMENT_REF_LENGTH} characters, got ${raw.settlementRef.length}`
+        );
+      }
+      entry.settlementRef = raw.settlementRef;
+    }
     // Hash-chain fields are all-or-nothing: one without the other, or a
     // history that mixes chained and hashless entries, is rejected here.
     // Chain CONTENT verification happens after the structural checks.
@@ -1071,7 +1137,7 @@ function parseEscrowSnapshot(
  * (seq from 1 with no gaps, from/to chain continuous from CREATED,
  * every edge legal, canonical non-decreasing timestamps, `amount`
  * only on FUND and PARTIAL_RELEASE, `evidence` only on VERIFY_PASS,
- * unknown entry fields rejected, and a fully chained history's hash
+ * `settlementRef` only on RELEASE, unknown entry fields rejected, and a fully chained history's hash
  * chain re-verified —
  * with `auditKey` when the chain is keyed).
  *
@@ -1436,6 +1502,8 @@ function canonicalHistoryEntry(
   if (entry.note !== undefined) obj.note = entry.note;
   if (entry.amount !== undefined) obj.amount = entry.amount;
   if (entry.evidence !== undefined) obj.evidence = entry.evidence;
+  if (entry.settlementRef !== undefined)
+    obj.settlementRef = entry.settlementRef;
   if (entry.prevHash !== undefined) obj.prevHash = entry.prevHash;
   return JSON.stringify(obj);
 }
@@ -1640,6 +1708,25 @@ export interface DispatchOptions {
    * it is purely advisory.
    */
   evidence?: string;
+  /**
+   * Settlement reference for a RELEASE dispatch — e.g. a chain
+   * transaction hash, a bank transfer reference, or a payout batch
+   * id — so finance ops can reconcile the release against the
+   * ledger without a second lookup.
+   *
+   * Accepted ONLY on RELEASE (any other event throws). When present
+   * it must be a non-empty string no longer than
+   * {@link MAX_SETTLEMENT_REF_LENGTH} characters (longer references
+   * are rejected, never truncated — truncation would change which
+   * transfer the reference names) and is recorded verbatim on the
+   * audit history entry. The library does NOT verify the settlement
+   * — it records the caller's claim so downstream tooling can audit
+   * it. No uniqueness is enforced: one ref may settle several
+   * escrows (one payout batch, one bank transfer), mirroring the
+   * dataquest lifecycle's `payoutRef` semantics. A RELEASE without
+   * a ref stays legal — the ref is advisory, not a gate.
+   */
+  settlementRef?: string;
   /**
    * Audit timestamp for this dispatch — injectable so dispatch-level
    * tests and replay scenarios can pin the clock (quorum approvals have
@@ -2198,7 +2285,10 @@ export class Escrow {
    *               records an evidence reference on the audit entry; when the
    *               escrow was constructed with `requireVerifyEvidence: true`,
    *               VERIFY_PASS without evidence throws before any state
-   *               change. `opts.at` pins the audit entry's timestamp
+   *               change. `opts.settlementRef` (RELEASE only) records a
+   *               settlement reference (chain tx hash, bank transfer ref)
+   *               on the audit entry; a RELEASE without one stays legal.
+   *               `opts.at` pins the audit entry's timestamp
    *               (Date or canonical ISO-8601 string; see
    *               {@link DispatchOptions.at}) — invalid or backwards
    *               values throw before any state change.
@@ -2421,6 +2511,35 @@ export class Escrow {
         'verify evidence required: dispatch("VERIFY_PASS") requires a non-empty evidence reference when requireVerifyEvidence is enabled'
       );
     }
+    // Settlement references are only meaningful on RELEASE. A non-empty
+    // string is recorded verbatim on the audit entry; the library does
+    // not verify the referenced settlement (see DispatchOptions).
+    const settlementRef = opts?.settlementRef;
+    if (event !== "RELEASE" && settlementRef !== undefined) {
+      throw new Error(
+        `settlementRef is only accepted on RELEASE, not on ${event}`
+      );
+    }
+    if (settlementRef !== undefined) {
+      if (typeof settlementRef !== "string" || settlementRef.length === 0) {
+        throw new Error(
+          `invalid dispatch: settlementRef must be a non-empty string, got ${String(
+            settlementRef
+          )}`
+        );
+      }
+      // Same bar as the evidence cap: an oversized reference is
+      // rejected outright, never silently truncated (truncation would
+      // change which transfer the reference names). Like the other
+      // reference-shape checks this runs after the idempotency dedup:
+      // a duplicate delivery stays a pure no-op, and a failed dispatch
+      // consumes no key.
+      if (settlementRef.length > MAX_SETTLEMENT_REF_LENGTH) {
+        throw new Error(
+          `invalid dispatch: settlementRef must be at most ${MAX_SETTLEMENT_REF_LENGTH} characters, got ${settlementRef.length}`
+        );
+      }
+    }
     if (amount !== undefined && event !== "FUND" && event !== "PARTIAL_RELEASE") {
       throw new Error(
         `amount is only accepted on FUND and PARTIAL_RELEASE, not on ${event}`
@@ -2574,6 +2693,9 @@ export class Escrow {
         : {}),
       ...(event === "VERIFY_PASS" && evidence !== undefined
         ? { evidence }
+        : {}),
+      ...(event === "RELEASE" && settlementRef !== undefined
+        ? { settlementRef }
         : {}),
       prevHash,
     };
@@ -3034,7 +3156,7 @@ export class Escrow {
    * with no gaps, the from/to chain continuous from `CREATED`, every
    * edge a legal transition, canonical non-decreasing timestamps,
    * `amount` only on FUND and PARTIAL_RELEASE, `evidence` only on
-   * VERIFY_PASS, unknown
+   * VERIFY_PASS, `settlementRef` only on RELEASE, unknown
    * entry fields rejected, and a fully chained history's hash chain
    * re-verified. Malformed histories throw the parser's descriptive
    * error instead of yielding a corrupt escrow. A fully hashless
@@ -3549,6 +3671,59 @@ export function escrowsByEvent(
 }
 
 /**
+ * Batch filter: from a batch of escrows, return the ones whose
+ * settlement names the given external settlement reference, in
+ * input order.
+ *
+ * This is the settlement-reference counterpart to
+ * {@link escrowsByActor}: a caller that wants to list every escrow
+ * settled under one transfer id (one payout batch, one bank
+ * transfer) had to hand-write the same history scan — and a
+ * hand-written scan has no shared answer for an empty reference
+ * string (which dispatch itself rejects: `undefined` is the
+ * advisory form, an empty string is not a reference at all). This
+ * helper gives that listing one shared, pure entry point, mirroring
+ * the dataquest lifecycle's `tasksByPayoutRef`:
+ *
+ *   const settled = escrowsBySettlementRef(allEscrows, "0xabc123");
+ *
+ * Only a `RELEASE` entry counts. That is the same evidence rule
+ * the settlement report uses: a reference can only ever be written
+ * on a RELEASE (dispatch rejects it on any other event), so a
+ * RELEASED escrow whose release entry carries the reference matches
+ * exactly once, and an escrow released without a reference never
+ * matches, no matter what its earlier entries say. One ref may
+ * settle several escrows (one payout batch, one bank transfer), so
+ * a shared ref matches every escrow that carries it.
+ *
+ * Pure: reads the escrows' histories, never mutates, dispatches, or
+ * copies the escrows — the returned array holds the same escrow
+ * objects, in input order, so callers can act on them directly.
+ * Matching is exact and case-sensitive, like the stored reference
+ * itself. An empty or non-string reference fails fast instead of
+ * silently returning an empty list, so a typo or a missing variable
+ * cannot masquerade as "no escrow settled under this transfer".
+ * No length cap is imposed here: this only reads a ref, never
+ * persists one (see {@link MAX_SETTLEMENT_REF_LENGTH}).
+ */
+export function escrowsBySettlementRef(
+  escrows: readonly Escrow[],
+  settlementRef: string,
+): Escrow[] {
+  if (typeof settlementRef !== "string" || settlementRef.length === 0) {
+    throw new Error(
+      `invalid escrowsBySettlementRef: settlementRef must be a non-empty string, got ${JSON.stringify(settlementRef)}`,
+    );
+  }
+  return escrows.filter((escrow) =>
+    escrow.history.some(
+      (entry) =>
+        entry.event === "RELEASE" && entry.settlementRef === settlementRef,
+    ),
+  );
+}
+
+/**
  * Combined batch filter: from a batch of escrows, return the ones
  * matching every condition given, in input order.
  */
@@ -3559,6 +3734,8 @@ export interface EscrowsByFiltersOptions {
   actor?: string;
   /** Event that must appear at least once in the history (same rule as {@link escrowsByEvent}). */
   event?: EscrowEvent;
+  /** Settlement reference the `RELEASE` entry must carry (same rule as {@link escrowsBySettlementRef}). */
+  settlementRef?: string;
   /**
    * Overdue axis (same rule as {@link isOverdue}): `true` keeps only
    * escrows past their deadline, `false` keeps only escrows that are
@@ -3575,8 +3752,8 @@ export interface EscrowsByFiltersOptions {
  * condition given, in input order.
  *
  * This is the combined counterpart to the single-axis selectors
- * {@link escrowsByState}, {@link escrowsByActor}, and
- * {@link escrowsByEvent}: a patrol that wants "escrows alice touched
+ * {@link escrowsByState}, {@link escrowsByActor},
+ * {@link escrowsByEvent}, and {@link escrowsBySettlementRef}: a patrol that wants "escrows alice touched
  * that are currently DISPUTED after a dispute" had to chain the
  * single-axis filters and intersect the results — and each chained
  * filter re-scanned every escrow's history. This helper does the same
@@ -3602,7 +3779,10 @@ export interface EscrowsByFiltersOptions {
  * `event` rejects unknown events, and an empty or non-string
  * `actor` fails fast instead of silently returning an empty list —
  * a typo in any axis cannot masquerade as "no escrow matches this
- * combination". The `overdue` axis uses {@link isOverdue}'s rule
+ * combination". The `settlementRef` axis matches only a `RELEASE`
+ * entry carrying that exact ref (same rule as
+ * {@link escrowsBySettlementRef}), so an escrow released without a
+ * ref never matches it. The `overdue` axis uses {@link isOverdue}'s rule
  * (past deadline, non-terminal, boundary `now >= deadline`
  * inclusive); `false` selects the complement (no deadline,
  * terminal, or deadline still ahead). The `now` argument pins the
@@ -3610,14 +3790,14 @@ export interface EscrowsByFiltersOptions {
  * so unit tests pin it to a fixed date; an invalid `now` throws
  * fail-fast when the `overdue` axis is present. The same fail-closed
  * rule covers the filter keys themselves: only `state`, `actor`,
- * `event`, and `overdue` are accepted, so a misspelled axis name
+ * `event`, `settlementRef`, and `overdue` are accepted, so a misspelled axis name
  * such as `states` throws
  * `invalid escrowsByFilters: unknown filter "states"` instead of
  * being silently ignored and returning the unfiltered batch — and a
  * non-object `filters` argument throws instead of surfacing a
  * `TypeError` from the first property read. Mirrors the dataquest
- * lifecycle's `tasksByFilters` (which has one extra axis,
- * `payoutRef`, that this escrow has no counterpart for).
+ * lifecycle's `tasksByFilters`, whose `payoutRef` axis is this
+ * escrow's `settlementRef` counterpart.
  */
 export function escrowsByFilters(
   escrows: readonly Escrow[],
@@ -3638,6 +3818,7 @@ export function escrowsByFilters(
       key !== "state" &&
       key !== "actor" &&
       key !== "event" &&
+      key !== "settlementRef" &&
       key !== "overdue"
     ) {
       throw new Error(
@@ -3663,6 +3844,15 @@ export function escrowsByFilters(
       `invalid escrowsByFilters: unknown event "${String(filters.event)}"`,
     );
   }
+  if (
+    filters.settlementRef !== undefined &&
+    (typeof filters.settlementRef !== "string" ||
+      filters.settlementRef.length === 0)
+  ) {
+    throw new Error(
+      `invalid escrowsByFilters: settlementRef must be a non-empty string, got ${JSON.stringify(filters.settlementRef)}`,
+    );
+  }
   if (filters.overdue !== undefined && typeof filters.overdue !== "boolean") {
     throw new Error(
       `invalid escrowsByFilters: overdue must be a boolean, got ${JSON.stringify(filters.overdue)}`,
@@ -3684,6 +3874,16 @@ export function escrowsByFilters(
     if (
       filters.event !== undefined &&
       !escrow.history.some((entry) => entry.event === filters.event)
+    ) {
+      return false;
+    }
+    if (
+      filters.settlementRef !== undefined &&
+      !escrow.history.some(
+        (entry) =>
+          entry.event === "RELEASE" &&
+          entry.settlementRef === filters.settlementRef,
+      )
     ) {
       return false;
     }

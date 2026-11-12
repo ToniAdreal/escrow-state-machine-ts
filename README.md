@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1782 tests, all local
+npm test   # 1799 tests, all local
 ```
 
 ## Quickstart
@@ -283,6 +283,23 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   amount), so reports and webhook payloads can compute the still-locked
   balance as deposit minus released, and the `maxDeposit` cap is judged on
   that net locked balance.
+- `RELEASE` accepts an optional `settlementRef` in `opts` — a chain
+  transaction hash, bank transfer reference, or payout batch id —
+  recorded verbatim on the RELEASE audit entry so finance ops can
+  reconcile the release against the ledger without a second lookup.
+  It is accepted only on RELEASE (any other event throws), must be a
+  non-empty string no longer than `MAX_SETTLEMENT_REF_LENGTH` (256
+  characters, exported from the package entry), and is rejected
+  outright when oversized, never truncated. A RELEASE without a ref
+  stays legal; no uniqueness is enforced, so one ref may settle
+  several escrows (one payout batch, one bank transfer), mirroring
+  the dataquest lifecycle's `payoutRef`. The ref is covered by the
+  hash chain — rewriting it in a persisted snapshot breaks
+  `verifyHistoryChain` — and survives `toJSON()`/`fromJSON()`,
+  `fromHistory()`, and NDJSON round-trips.
+  `escrowsBySettlementRef(escrows, ref)` lists every escrow whose
+  RELEASE entry carries that exact ref (case-sensitive), and
+  `escrowsByFilters()` gains the same `settlementRef` axis.
 - `allowedEvents(state)` lists valid next events for UI gating.
 - `isTerminal(state)` is a standalone pure function for the same question
   without an instance — batch screening and transition-table checks can
@@ -470,22 +487,28 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   invalid `now` throws fail-fast instead of silently returning an
   empty list.
   The plain listing companions are `escrowsByState(escrows, state)`,
-  `escrowsByActor(escrows, actor)`, and `escrowsByEvent(escrows, event)`:
+  `escrowsByActor(escrows, actor)`, `escrowsByEvent(escrows, event)`, and
+  `escrowsBySettlementRef(escrows, settlementRef)`:
   the first returns every escrow currently in the given state (terminal
   states included), the second every escrow whose audit history carries
   at least one entry by that actor (note-only, actor-less entries never
-  match), and the third every escrow whose audit history carries at
+  match), the third every escrow whose audit history carries at
   least one entry for that event (a terminal escrow still answers
-  whether it was ever disputed). All three are pure, return the same
+  whether it was ever disputed), and the fourth every escrow whose
+  RELEASE entry carries that exact settlement reference (an escrow
+  released without a ref never matches; one ref may settle several
+  escrows). All four are pure, return the same
   escrow objects in input order, and fail fast on an unknown state,
-  an empty/non-string actor, or an unknown event instead of silently
-  returning an empty list. The three selectors above each filter on
+  an empty/non-string actor, an unknown event, or an empty/non-string
+  ref instead of silently returning an empty list. The four selectors above each filter on
   one axis. `escrowsByFilters()` combines them: give any subset of
-  `state`, `actor`, `event`, and `overdue`, and it returns the escrows
+  `state`, `actor`, `event`, `settlementRef`, and `overdue`, and it returns the escrows
   matching every condition given, in input order, in a single pass
   over the batch — the patrol query "escrows alice touched that are
   currently DISPUTED after a dispute" without chaining filters and
-  intersecting the results. The `overdue` axis follows `isOverdue`'s
+  intersecting the results. The `settlementRef` axis follows
+  `escrowsBySettlementRef`'s rule (only a RELEASE entry carrying that
+  exact ref counts). The `overdue` axis follows `isOverdue`'s
   rule (past deadline, non-terminal, boundary `now >= deadline`
   inclusive); `false` selects the complement, and omitting it leaves
   the deadline out of the match. Its screening instant is the
@@ -556,9 +579,11 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   escrow. Unknown fields are rejected fail-closed at both levels —
   top level allows only `v`/`id`/`state`/`history`/`deadline`/`idempotencyKeys`/`rolePolicy`/`maxDeposit`/`requireVerifyEvidence` and an
   entry only `seq`/`event`/`from`/`to`/`at`/`actor`/`note`/`amount`/`evidence`/
-  `prevHash`/`hash` — so a typo like `deadlline` or `amout` throws
+  `settlementRef`/`prevHash`/`hash` — so a typo like `deadlline` or `amout` throws
   `invalid snapshot: unknown field "…"` instead of silently losing a
-  deadline or a FUND amount. Snapshots carry a schema version (`v: 1`): a missing `v` is a
+  deadline or a FUND amount. A `settlementRef` is only legal on RELEASE
+  entries (and, like `evidence`, must be a non-empty string no longer
+  than `MAX_SETTLEMENT_REF_LENGTH` — 256 characters). Snapshots carry a schema version (`v: 1`): a missing `v` is a
   legacy pre-versioning snapshot and is still accepted, while any other
   `v` value throws `unsupported snapshot version` (checked before the
   history/hash-chain validation), so a future format change stays
@@ -1483,7 +1508,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1782 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1799 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

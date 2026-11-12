@@ -18,6 +18,25 @@ version changes.
 
 ### Added
 
+- RELEASE settlement references (2026-11-12, backlog #1072):
+  `DispatchOptions.settlementRef` records a chain transaction hash,
+  bank transfer reference, or payout batch id verbatim on the RELEASE
+  audit entry, so finance ops can reconcile the release against the
+  ledger without a second lookup. Accepted only on RELEASE (any other
+  event throws before anything is appended and consumes no idempotency
+  key); a ref must be a non-empty string no longer than
+  `MAX_SETTLEMENT_REF_LENGTH` (256 characters, exported from the
+  package entry) and is rejected outright when oversized, never
+  truncated. A RELEASE without a ref stays legal, and no uniqueness is
+  enforced — one ref may settle several escrows — mirroring the
+  dataquest lifecycle's `payoutRef`. The ref is covered by the hash
+  chain and survives `toJSON()`/`fromJSON()`, `fromHistory()`, and
+  NDJSON round-trips; the snapshot/history parsers enforce the same
+  bar. `escrowsBySettlementRef(escrows, ref)` lists every escrow
+  whose RELEASE entry carries that exact ref (case-sensitive), and
+  `escrowsByFilters()` gains the same `settlementRef` axis under its
+  fail-closed key rule. 17 tests in `test/settlementRef.test.ts`.
+
 - CLI demo caller-string-length-limits segment (2026-11-12, backlog
   #1069): `npm run demo` now closes with the five caller-supplied
   short-identifier caps the library enforces — dispatch `actor` (256),
