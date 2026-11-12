@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1882 tests, all local
+npm test   # 1900 tests, all local
 ```
 
 ## Quickstart
@@ -1471,6 +1471,19 @@ omits the code, the previous rules apply unchanged. The function is
 pure: it reads both inputs, dispatches nothing, and an empty batch
 against an empty ledger returns five empty groups.
 
+To answer what changed between two stored reports of the same escrow,
+`diffSettlementReports(a, b)` compares them field by field and returns
+a `SettlementReportDiff` carrying only the fields that moved — an
+identical pair diffs to `{}`. Money compares at integer-cent precision,
+never on raw floats, so sub-cent noise is not a change; parties align
+by role, with a role present on one side only reported as added or
+removed instead of silently dropped; and a `balanced` flip is its own
+entry, so a report that stopped balancing is visible even when no
+single amount looks wrong. Reports of different escrows throw
+`settlement report diff failed: cannot diff reports of different escrows …`,
+the same fail-fast identity rule `diffEscrowSnapshots` uses for
+snapshots. The function is pure and returns detached copies.
+
 Currency: `buildSettlementReport({ ..., currency: "USD" })` accepts an
 optional ISO 4217 alpha-3 code — exactly three uppercase letters, checked
 for shape only, not against the published registry. Anything else throws
@@ -1609,7 +1622,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1882 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1900 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

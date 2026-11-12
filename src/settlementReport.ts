@@ -1162,6 +1162,300 @@ export function reconcileSettlements(
   return result;
 }
 
+/**
+ * One party row whose ledger moved between two reports of the same escrow.
+ * `from` / `to` are detached copies: mutating them never touches the
+ * compared reports.
+ */
+export interface SettlementReportPartyDiff {
+  role: PartyRole;
+  from: PartyLedger;
+  to: PartyLedger;
+}
+
+/**
+ * How the party ledgers moved between two reports: roles that appear in
+ * only one report (`added` / `removed`, in that report's party order),
+ * and roles present in both whose inflow, outflow, net, or label moved
+ * (`changed`, in `a`'s party order). Amounts compare at integer-cent
+ * precision, like every other money comparison in this diff. A role
+ * listed twice compares by its first row — the build path never emits a
+ * duplicate role, and this is a comparison, not a validation (see
+ * {@link diffSettlementReports}).
+ */
+export interface SettlementReportPartiesDiff {
+  added: PartyRole[];
+  removed: PartyRole[];
+  changed: SettlementReportPartyDiff[];
+}
+
+/**
+ * Field-level difference between two settlement reports of the same
+ * escrow. Only fields that moved are present: two identical reports
+ * diff to `{}`. Every money comparison is at integer-cent precision
+ * precision (see `toCents`) — figures that differ only below a cent, the
+ * raw-float noise the rest of the library already rounds away, are the
+ * same amount. `balanced` flipping is its own entry, so a report that
+ * stopped balancing is visible even when no single amount looks wrong.
+ */
+export interface SettlementReportDiff {
+  currencyChanged?: { from: string | undefined; to: string | undefined };
+  outcomeChanged?: { from: SettlementOutcome; to: SettlementOutcome };
+  releasePathChanged?: { from: string | undefined; to: string | undefined };
+  depositChanged?: { from: FeeBreakdown; to: FeeBreakdown };
+  settlementChanged?: {
+    from: Settlement | undefined;
+    to: Settlement | undefined;
+  };
+  partialSettlementChanged?: {
+    from: PartialSettlement | undefined;
+    to: PartialSettlement | undefined;
+  };
+  remainingChanged?: { from: number | undefined; to: number | undefined };
+  partiesChanged?: SettlementReportPartiesDiff;
+  totalInflowChanged?: { from: number; to: number };
+  totalOutflowChanged?: { from: number; to: number };
+  balancedChanged?: { from: boolean; to: boolean };
+  eventCountChanged?: { from: number; to: number };
+  firstEventAtChanged?: { from: string | undefined; to: string | undefined };
+  lastEventAtChanged?: { from: string | undefined; to: string | undefined };
+}
+
+/**
+ * Money as whole cents: the library's money model rounds every amount to
+ * cents, so two figures that differ only below a cent (raw float
+ * addition noise — 0.1 + 0.2 sums to 0.30000000000000004 while the
+ * calculator produces exactly 0.3) are the same amount. This is the
+ * same rule the build path uses when it checks the deposit against the
+ * FUND total, and the same rule `reconcileSettlements` uses for
+ * `totalOutflow`.
+ */
+function toCents(n: number): number {
+  return Math.round(n * 100);
+}
+
+function sameMoney(a: number, b: number): boolean {
+  return toCents(a) === toCents(b);
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function sameFeeBreakdown(a: FeeBreakdown, b: FeeBreakdown): boolean {
+  return (
+    sameMoney(a.creatorPool, b.creatorPool) &&
+    sameMoney(a.baseFee, b.baseFee) &&
+    // The multiplier is a plain ratio, not money: exact compare.
+    a.complexityMultiplier === b.complexityMultiplier &&
+    sameMoney(a.loyaltyDiscount, b.loyaltyDiscount) &&
+    sameMoney(a.oracleFee, b.oracleFee) &&
+    sameMoney(a.adjustedBaseFee, b.adjustedBaseFee) &&
+    sameMoney(a.deposit, b.deposit)
+  );
+}
+
+function sameSettlement(a: Settlement, b: Settlement): boolean {
+  return (
+    sameMoney(a.gross, b.gross) &&
+    sameMoney(a.proFee, b.proFee) &&
+    sameMoney(a.referralCredits, b.referralCredits) &&
+    sameMoney(a.net, b.net)
+  );
+}
+
+function samePartialSettlement(
+  a: PartialSettlement,
+  b: PartialSettlement,
+): boolean {
+  return (
+    sameMoney(a.released, b.released) &&
+    sameMoney(a.proFee, b.proFee) &&
+    sameMoney(a.referralCredits, b.referralCredits) &&
+    sameMoney(a.net, b.net) &&
+    sameMoney(a.remaining, b.remaining)
+  );
+}
+
+function samePartyLedger(a: PartyLedger, b: PartyLedger): boolean {
+  return (
+    a.label === b.label &&
+    sameMoney(a.inflow, b.inflow) &&
+    sameMoney(a.outflow, b.outflow) &&
+    sameMoney(a.net, b.net)
+  );
+}
+
+/**
+ * Party rows indexed by role, first row wins on a duplicate role (the
+ * build path never emits one). The map is read-only for the diff; the
+ * rows it holds are the reports' own rows, so callers that need a
+ * detached copy must spread them (see `diffSettlementReports`).
+ */
+function indexParties(
+  parties: readonly PartyLedger[],
+): Map<PartyRole, PartyLedger> {
+  const byRole = new Map<PartyRole, PartyLedger>();
+  for (const row of parties) {
+    if (!byRole.has(row.party)) byRole.set(row.party, row);
+  }
+  return byRole;
+}
+
+/**
+ * Compare two settlement reports of the same escrow and report what
+ * changed between them — the reconciliation question ("what moved since
+ * the report I stored last night?") without hand-written field compares
+ * that disagree about float tolerance or party alignment.
+ *
+ * Dimensions compared, and only these: `currency` (an absent code and a
+ * present one are different states), `outcome`, `releasePath`, the
+ * `deposit` breakdown (every money field at integer-cent precision, the
+ * complexity multiplier exactly), the `settlement` / `partialSettlement`
+ * figures (same cent rule; present on one side only is a change),
+ * `remaining`, the party ledgers (aligned by role — a role present on
+ * one side only is reported as added/removed, never silently dropped),
+ * `totalInflow` / `totalOutflow` (cent rule), the `balanced` flag (a
+ * flip is its own entry), `eventCount`, and the audit window
+ * `firstEventAt` / `lastEventAt`. Only `escrowId` itself is not
+ * reported: it is the identity the two reports must share, and reports
+ * of different escrows throw
+ * `settlement report diff failed: cannot diff reports of different escrows …`
+ * — the same fail-fast identity rule `diffEscrowSnapshots` uses
+ * for snapshots, so diffing across escrows can never report nonsense
+ * as if it were one escrow's evolution.
+ *
+ * Pure: reads both reports, never mutates them, and every object the
+ * diff carries is a detached copy. This is a comparison, not a
+ * validation — it does not re-check that either report's figures are
+ * internally consistent, that its history chain holds, or that its
+ * totals sum; run a report through `buildSettlementReport` (or its
+ * history through `verifyHistoryChain`) when the input itself is
+ * untrusted.
+ *
+ *   const before = buildSettlementReport({ ... });
+ *   const after = buildSettlementReport({ ..., settlement: { proFeeBps: 600 } });
+ *   diffSettlementReports(before, after);
+ *   // { settlementChanged: { from: { gross: 10630, proFee: 531.5, … },
+ *   //                        to: { gross: 10630, proFee: 637.8, … } },
+ *   //   partiesChanged: { added: [], removed: [],
+ *   //                     changed: [{ role: "creator", … }, { role: "platform", … }] } }
+ *   // (The totals do not move here: the deposit is unchanged, so
+ *   // `totalInflow` / `totalOutflow` stay 10630 and `balanced` stays true.)
+ */
+export function diffSettlementReports(
+  a: SettlementReport,
+  b: SettlementReport,
+): SettlementReportDiff {
+  if (!isRecord(a) || !isRecord(b)) {
+    throw new Error(
+      "invalid settlement report diff: both reports must be objects",
+    );
+  }
+  if (a.escrowId !== b.escrowId) {
+    throw new Error(
+      `settlement report diff failed: cannot diff reports of different escrows (${JSON.stringify(a.escrowId)} vs ${JSON.stringify(b.escrowId)})`,
+    );
+  }
+  const diff: SettlementReportDiff = {};
+  if (a.currency !== b.currency) {
+    diff.currencyChanged = { from: a.currency, to: b.currency };
+  }
+  if (a.outcome !== b.outcome) {
+    diff.outcomeChanged = { from: a.outcome, to: b.outcome };
+  }
+  if (a.releasePath !== b.releasePath) {
+    diff.releasePathChanged = { from: a.releasePath, to: b.releasePath };
+  }
+  if (!sameFeeBreakdown(a.deposit, b.deposit)) {
+    diff.depositChanged = { from: { ...a.deposit }, to: { ...b.deposit } };
+  }
+  if (
+    (a.settlement === undefined) !== (b.settlement === undefined) ||
+    (a.settlement !== undefined &&
+      b.settlement !== undefined &&
+      !sameSettlement(a.settlement, b.settlement))
+  ) {
+    diff.settlementChanged = {
+      from: a.settlement === undefined ? undefined : { ...a.settlement },
+      to: b.settlement === undefined ? undefined : { ...b.settlement },
+    };
+  }
+  if (
+    (a.partialSettlement === undefined) !==
+      (b.partialSettlement === undefined) ||
+    (a.partialSettlement !== undefined &&
+      b.partialSettlement !== undefined &&
+      !samePartialSettlement(a.partialSettlement, b.partialSettlement))
+  ) {
+    diff.partialSettlementChanged = {
+      from:
+        a.partialSettlement === undefined
+          ? undefined
+          : { ...a.partialSettlement },
+      to:
+        b.partialSettlement === undefined
+          ? undefined
+          : { ...b.partialSettlement },
+    };
+  }
+  if (
+    (a.remaining === undefined) !== (b.remaining === undefined) ||
+    (a.remaining !== undefined &&
+      b.remaining !== undefined &&
+      !sameMoney(a.remaining, b.remaining))
+  ) {
+    diff.remainingChanged = { from: a.remaining, to: b.remaining };
+  }
+  const aParties = indexParties(a.parties);
+  const bParties = indexParties(b.parties);
+  const added: PartyRole[] = [];
+  const removed: PartyRole[] = [];
+  const changed: SettlementReportPartyDiff[] = [];
+  for (const row of b.parties) {
+    if (!aParties.has(row.party) && !added.includes(row.party)) {
+      added.push(row.party);
+    }
+  }
+  for (const row of a.parties) {
+    if (!bParties.has(row.party) && !removed.includes(row.party)) {
+      removed.push(row.party);
+    }
+  }
+  for (const row of a.parties) {
+    const other = bParties.get(row.party);
+    if (
+      other !== undefined &&
+      !samePartyLedger(row, other) &&
+      !changed.some((entry) => entry.role === row.party)
+    ) {
+      changed.push({ role: row.party, from: { ...row }, to: { ...other } });
+    }
+  }
+  if (added.length > 0 || removed.length > 0 || changed.length > 0) {
+    diff.partiesChanged = { added, removed, changed };
+  }
+  if (!sameMoney(a.totalInflow, b.totalInflow)) {
+    diff.totalInflowChanged = { from: a.totalInflow, to: b.totalInflow };
+  }
+  if (!sameMoney(a.totalOutflow, b.totalOutflow)) {
+    diff.totalOutflowChanged = { from: a.totalOutflow, to: b.totalOutflow };
+  }
+  if (a.balanced !== b.balanced) {
+    diff.balancedChanged = { from: a.balanced, to: b.balanced };
+  }
+  if (a.eventCount !== b.eventCount) {
+    diff.eventCountChanged = { from: a.eventCount, to: b.eventCount };
+  }
+  if (a.firstEventAt !== b.firstEventAt) {
+    diff.firstEventAtChanged = { from: a.firstEventAt, to: b.firstEventAt };
+  }
+  if (a.lastEventAt !== b.lastEventAt) {
+    diff.lastEventAtChanged = { from: a.lastEventAt, to: b.lastEventAt };
+  }
+  return diff;
+}
+
 function money(n: number): string {
   return (
     "$" +

@@ -18,6 +18,19 @@ version changes.
 
 ### Added
 
+- `diffSettlementReports` compares two settlement reports of the same
+  escrow field by field (2026-11-12, backlog #1092): returns a
+  `SettlementReportDiff` carrying only the moved fields (identical
+  reports diff to `{}`); money compares at integer-cent precision,
+  parties align by role with added/removed roles reported explicitly,
+  and a `balanced` flip is its own entry; reports of different escrows
+  throw, mirroring `diffEscrowSnapshots`. Exported from the package
+  entry with `SettlementReportDiff`, `SettlementReportPartiesDiff`, and
+  `SettlementReportPartyDiff`. 18 tests in
+  `test/diffSettlementReports.test.ts`; mutation check (identity guard
+  disabled in an isolated copy) turned the cross-escrow test red, then
+  reverted.
+
 - CSV/JSON wire forms for `SettlementReportsSummary` (2026-11-12,
   backlog #1085): `renderSettlementReportsSummaryCsv` /
   `parseSettlementReportsSummaryCsv` /

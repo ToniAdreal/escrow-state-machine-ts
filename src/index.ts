@@ -35,7 +35,7 @@ export type {
 } from "./feeCalculator.js";
 export { settleRelease, settlePartialRelease, settlePartialReleases, settleRefund } from "./settlement.js";
 export type { Settlement, SettlementInputs, PartialSettlement, PartialSettlementInputs, PartialReleases, PartialReleasesInputs, RefundSettlement, RefundSettlementInputs } from "./settlement.js";
-export { buildSettlementReport, buildSettlementReports, depositAmountFromHistory, releasedAmountFromHistory, parseSettlementReportCsv, parseSettlementReportJson, parseSettlementReportsSummaryCsv, parseSettlementReportsSummaryJson, reconcileSettlements, renderReport, renderReportCsv, renderReportJson, renderSettlementReportsSummaryCsv, renderSettlementReportsSummaryJson, summarizeSettlementReports, UNSPECIFIED_SETTLEMENT_CURRENCY } from "./settlementReport.js";
+export { buildSettlementReport, buildSettlementReports, depositAmountFromHistory, diffSettlementReports, releasedAmountFromHistory, parseSettlementReportCsv, parseSettlementReportJson, parseSettlementReportsSummaryCsv, parseSettlementReportsSummaryJson, reconcileSettlements, renderReport, renderReportCsv, renderReportJson, renderSettlementReportsSummaryCsv, renderSettlementReportsSummaryJson, summarizeSettlementReports, UNSPECIFIED_SETTLEMENT_CURRENCY } from "./settlementReport.js";
 export type { SettlementReportCsv, SettlementReportsSummaryCsv } from "./settlementReport.js";
 export { buildSettlementWebhook, buildSettlementWebhooks, deliverSettlementWebhook, deliverSettlementWebhookToMany, parseRetryAfter, retrySettlementWebhookOutbox, truncateOutboxError, verifySettlementWebhook, MAX_EVENT_ID_LENGTH, MAX_OUTBOX_ERROR_LENGTH, SettlementEventDedupe, SettlementWebhookOutbox } from "./webhooks.js";
 export type {
@@ -79,7 +79,10 @@ export type {
   SettlementCurrencyMismatch,
   SettlementOutcome,
   SettlementReport,
+  SettlementReportDiff,
   SettlementReportInputs,
+  SettlementReportPartiesDiff,
+  SettlementReportPartyDiff,
   SettlementReportResult,
   SettlementReportsSummary,
   SettlementCurrencySummary,
