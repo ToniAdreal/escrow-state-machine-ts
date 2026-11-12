@@ -133,6 +133,17 @@ quorum approvals (`approveSigned()`).
   never written into snapshots and must be re-enabled on restore.
   Like the policy, it does not authenticate the actor — it only
   guarantees the audit trail names one.
+- **Settlement-reference gate (when `requireSettlementRef: true`).**
+  `Escrow` constructed with `requireSettlementRef` rejects a RELEASE
+  without a `settlementRef` with `settlement reference required: …`,
+  after the transition/RBAC/amount-cap checks (after the
+  `requireActor` gate) and before any append — no history is
+  appended and no idempotency key is consumed. Other events are
+  unaffected, and the default (gate off) keeps a reference-free
+  RELEASE legal. The switch is configuration, not audit data: it is
+  never written into snapshots and must be re-enabled on restore.
+  Like the evidence gate, it does not verify the external settlement
+  — it only guarantees the audit trail names the transfer.
 - **Optimistic-concurrency guard (when `expectedSeq` is passed).**
   `dispatch` rejects a caller whose `expectedSeq` no longer equals the
   current history length with `dispatch conflict: …`, before any

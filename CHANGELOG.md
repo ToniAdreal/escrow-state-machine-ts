@@ -18,6 +18,25 @@ version changes.
 
 ### Added
 
+- Opt-in settlement-reference gate `EscrowOptions.requireSettlementRef`
+  (2026-11-12, backlog #1075): `new Escrow(id, { requireSettlementRef: true })`
+  makes `dispatch("RELEASE")` without a `settlementRef` throw
+  `settlement reference required: RELEASE must carry a non-empty settlementRef when requireSettlementRef is enabled`
+  and append nothing. The gate runs after the transition-legality, RBAC, and
+  deposit-cap checks (after the `requireActor` gate) and before anything is
+  appended, so a rejected RELEASE leaves no history residue and consumes no
+  idempotency key — a retry with a reference and the same key still executes.
+  It only constrains RELEASE; other events are unaffected, and the default
+  (gate off) keeps a reference-free RELEASE legal. Non-boolean values throw
+  `invalid option: requireSettlementRef …` at construction. Like `requireActor`,
+  the switch is configuration, not audit data: it is never written into
+  `toJSON()` snapshots, so a restored escrow re-enables it via
+  `Escrow.fromJSON(snapshot, { requireSettlementRef: true })` or
+  `Escrow.fromHistory(id, history, { requireSettlementRef: true })`. Requiring
+  a reference cannot verify the external settlement happened — it only
+  guarantees the audit trail names the transfer. 14 tests in
+  `test/requireSettlementRef.test.ts`.
+
 - RELEASE settlement references (2026-11-12, backlog #1072):
   `DispatchOptions.settlementRef` records a chain transaction hash,
   bank transfer reference, or payout batch id verbatim on the RELEASE

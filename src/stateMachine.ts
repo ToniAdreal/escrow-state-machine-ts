@@ -573,6 +573,7 @@ const ESCROW_OPTION_FIELDS = new Set([
   "auditKey",
   "rolePolicy",
   "requireActor",
+  "requireSettlementRef",
   "deadline",
   "idempotencyKeys",
 ]);
@@ -728,6 +729,26 @@ function assertRequireActor(value: unknown, tag: string): boolean {
   if (typeof value !== "boolean") {
     throw new Error(
       `${tag}: requireActor must be a boolean, got ${String(value)}`
+    );
+  }
+  return value;
+}
+
+/**
+ * Validate the `requireSettlementRef` constructor option.
+ *
+ * `undefined` means "advisory" (the default: a RELEASE without a
+ * settlement reference is legal). Otherwise the value must be a
+ * boolean — anything else throws
+ * `<tag>: requireSettlementRef must be a boolean, …`. Mirrors the
+ * dataquest lifecycle's `assertRequirePayoutRef` wording; callers
+ * pass the tag for their boundary (`invalid option` at construction).
+ */
+function assertRequireSettlementRef(value: unknown, tag: string): boolean {
+  if (value === undefined) return false;
+  if (typeof value !== "boolean") {
+    throw new Error(
+      `${tag}: requireSettlementRef must be a boolean, got ${String(value)}`
     );
   }
   return value;
@@ -1724,7 +1745,10 @@ export interface DispatchOptions {
    * it. No uniqueness is enforced: one ref may settle several
    * escrows (one payout batch, one bank transfer), mirroring the
    * dataquest lifecycle's `payoutRef` semantics. A RELEASE without
-   * a ref stays legal — the ref is advisory, not a gate.
+   * a ref stays legal by default — the ref is advisory, not a gate,
+   * unless the escrow was constructed with
+   * `requireSettlementRef: true` (see
+   * {@link EscrowOptions.requireSettlementRef}).
    */
   settlementRef?: string;
   /**
@@ -1949,6 +1973,35 @@ export interface EscrowOptions {
   requireActor?: boolean;
 
   /**
+   * Optional up-front enforcement of settlement-reference recording:
+   * when `true`, `dispatch("RELEASE")` without a `settlementRef`
+   * throws `settlement reference required: …` and appends nothing.
+   * This is the opt-in up-front counterpart to the advisory default,
+   * under which a RELEASE without a reference is legal and the entry
+   * simply omits it — for settlement flows where an external transfer
+   * reference (chain tx hash, bank transfer ref, payout batch id)
+   * always exists. The gate runs after the transition-legality,
+   * RBAC, and deposit-cap checks (after the `requireActor` gate)
+   * and before anything is appended or any idempotency key is
+   * consumed, so a rejected dispatch leaves no trace and a retry
+   * with a reference and the same key still executes. Like
+   * `requireActor` and `auditKey`, the switch is escrow
+   * configuration, not audit data: it is never written into the
+   * `toJSON()` snapshot envelope, so a restored escrow must
+   * re-enable it via
+   * `Escrow.fromJSON(snapshot, { requireSettlementRef: true })`
+   * or `Escrow.fromHistory(id, history, { requireSettlementRef: true })`.
+   * Invalid values throw `invalid option: …` at construction.
+   *
+   * Default: false (unchanged legacy behavior).
+   *
+   * Honest limit: requiring a reference cannot verify the external
+   * settlement happened — it only guarantees the audit trail says
+   * which transfer it was. See SECURITY.md.
+   */
+  requireSettlementRef?: boolean;
+
+  /**
    * Optional advisory deadline attached at construction — the
    * constructor-time equivalent of {@link Escrow.setDeadline}: a Date
    * or a parseable string, stored as canonical ISO-8601, with the
@@ -2104,6 +2157,13 @@ export class Escrow {
    * ({ requireActor: true }).
    */
   private readonly _requireActor: boolean;
+  /**
+   * Up-front enforcement for settlement-reference recording.
+   * Escrow configuration: never written into the JSON snapshot (see
+   * toJSON), so a restored escrow re-enables it via
+   * fromJSON/fromHistory opts ({ requireSettlementRef: true }).
+   */
+  private readonly _requireSettlementRef: boolean;
 
   constructor(id: string, opts?: EscrowOptions) {
     // fromJSON validates the same rule; a live Escrow must never hold an id
@@ -2163,6 +2223,13 @@ export class Escrow {
     // switch is configuration, not audit data, so it is validated here
     // and never written into the snapshot (see toJSON).
     this._requireActor = assertRequireActor(opts?.requireActor, "invalid option");
+    // assertRequireSettlementRef mirrors dataquest's requirePayoutRef
+    // gate: the switch is configuration, not audit data, so it is
+    // validated here and never written into the snapshot (see toJSON).
+    this._requireSettlementRef = assertRequireSettlementRef(
+      opts?.requireSettlementRef,
+      "invalid option"
+    );
     // assertIdempotencyKeys returns a fresh, deduped Set, so later
     // caller mutation of the options array cannot change the keys
     // this escrow treats as consumed. This is what lets fromHistory()
@@ -2287,7 +2354,10 @@ export class Escrow {
    *               VERIFY_PASS without evidence throws before any state
    *               change. `opts.settlementRef` (RELEASE only) records a
    *               settlement reference (chain tx hash, bank transfer ref)
-   *               on the audit entry; a RELEASE without one stays legal.
+   *               on the audit entry; a RELEASE without one stays legal
+   *               unless the escrow was constructed with
+   *               `requireSettlementRef: true` (see
+   *               {@link EscrowOptions.requireSettlementRef}).
    *               `opts.at` pins the audit entry's timestamp
    *               (Date or canonical ISO-8601 string; see
    *               {@link DispatchOptions.at}) — invalid or backwards
@@ -2335,7 +2405,12 @@ export class Escrow {
    *               append — a dispatch without an actor is rejected with
    *               `actor required: …`, leaves no trace, and consumes no
    *               key; a listed event without an actor never reaches it
-   *               (RBAC reports first).
+   *               (RBAC reports first);
+   *               (5) the opt-in `requireSettlementRef` gate runs after
+   *               the requireActor gate, just before the append — a
+   *               RELEASE without a settlementRef is rejected with
+   *               `settlement reference required: …`, leaves no trace,
+   *               and consumes no key; it only speaks for RELEASE.
    */
   dispatch(
     event: EscrowEvent,
@@ -2660,6 +2735,28 @@ export class Escrow {
     if (this._requireActor && actor === undefined) {
       throw new Error(
         "actor required: dispatch must carry a non-empty actor when requireActor is enabled"
+      );
+    }
+    // Up-front settlement-reference gate (opt-in, see EscrowOptions):
+    // when requireSettlementRef is on, a RELEASE without a
+    // settlementRef is rejected. Checked after the transition /
+    // RBAC / amount-cap checks and the requireActor gate, just before
+    // the append — a rejected dispatch leaves no trace and consumes
+    // no idempotency key, so a retry with a reference and the same
+    // key still executes. Only presence is checked here: a present
+    // reference already passed the dispatch shape validation above
+    // (non-empty string, at most MAX_SETTLEMENT_REF_LENGTH), so an
+    // empty or oversized reference never reaches this gate. RELEASE
+    // is the only event it constrains. Requiring a reference cannot
+    // verify the external settlement happened; it only guarantees
+    // the audit trail says which transfer it was.
+    if (
+      this._requireSettlementRef &&
+      event === "RELEASE" &&
+      settlementRef === undefined
+    ) {
+      throw new Error(
+        "settlement reference required: RELEASE must carry a non-empty settlementRef when requireSettlementRef is enabled"
       );
     }
     this._state = to;

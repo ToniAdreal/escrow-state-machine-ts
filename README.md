@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1799 tests, all local
+npm test   # 1813 tests, all local
 ```
 
 ## Quickstart
@@ -397,6 +397,23 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   `Escrow.fromHistory(id, history, { requireActor: true })`. Honest limit:
   requiring an actor cannot verify who the actor really is — it only
   guarantees the audit trail names one (see SECURITY.md).
+- Settlement reference (opt-in): `new Escrow(id, { requireSettlementRef: true })`
+  makes `dispatch("RELEASE")` without a `settlementRef` throw
+  `settlement reference required: RELEASE must carry a non-empty settlementRef when requireSettlementRef is enabled`.
+  The gate runs after the transition-legality, RBAC, and deposit-cap checks
+  (after the `requireActor` gate) and before anything is appended, so a
+  rejected dispatch leaves no history residue and does not consume an
+  idempotency key — a retry with a reference and the same key still
+  executes. It only constrains RELEASE; other events are unaffected, and
+  the default (gate off) keeps a reference-free RELEASE legal. Non-boolean
+  values throw `invalid option: requireSettlementRef …` at construction.
+  Like `requireActor`, the switch is configuration, not audit data: it is
+  never written into `toJSON()` snapshots, so a restored escrow must
+  re-enable it via `Escrow.fromJSON(snapshot, { requireSettlementRef: true })`
+  or `Escrow.fromHistory(id, history, { requireSettlementRef: true })`.
+  Honest limit: requiring a reference cannot verify the external settlement
+  happened — it only guarantees the audit trail says which transfer it was
+  (see SECURITY.md).
 - Optimistic concurrency (opt-in): `dispatch` opts accept `expectedSeq`
   — the history length (the last entry's `seq`; `0` for an empty
   history) the caller based its decision on. When set, the guard runs
@@ -1508,7 +1525,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1799 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1813 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
