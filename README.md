@@ -1815,6 +1815,16 @@ the FUNDED -> MILESTONE_SUBMITTED transition, and the appended seq
 range 22..23 checked on every iteration, and an identical pair
 reporting {} plus a rewritten history entry throwing the exact
 divergence error pinned once outside the timed loop),
+settlement-report comparison (`diffSettlementReports` over a fixed
+pair of reports of one escrow — the golden released report at
+500 bps, re-settled at 600 bps: proFee 531.5 -> 637.8, net
+10,098.5 -> 9,992.2, gross 10,630 unchanged, creator and platform
+nets moving while sponsor / referrer stay untouched — with the
+change-key set (exactly settlementChanged + partiesChanged), the
+settlement figures and the two moved party nets checked on every
+iteration, and an identical pair reporting {} plus a cross-escrow
+pair throwing the exact identity error pinned once outside the
+timed loop),
 `buildSettlementReport`,
 settlement report release path (`buildSettlementReport` over the
 fixed released history — outcome `released` and `releasePath`
@@ -2598,6 +2608,7 @@ One real run on 2026-11-04:
 | summarizeSettlementReports (batch 4 results) | ~463,346 ops/sec (2.16 µs/op) |
 | reconcileSettlements (3 reports, 3 ledger rows, 4 groups) | ~536,710 ops/sec (1.86 µs/op) |
 | diffEscrowSnapshots (23-entry history, 2 appended) | ~2,734 ops/sec (365.73 µs/op) |
+| diffSettlementReports (released report, 500 vs 600 bps) | ~91,197 ops/sec (10.97 µs/op) |
 | buildSettlementWebhooks (batch 4 results) | ~6,353 ops/sec (157.41 µs/op) |
 | buildSettlementReports x buildSettlementWebhooks x deliverSettlementWebhookToMany (batch 4, 3 settlements x 4 endpoints) | ~898.6 ops/sec (1112.82 µs/op) |
 | buildSettlementWebhook (sign) | ~32,649 ops/sec (30.63 µs/op) |
@@ -2685,7 +2696,7 @@ and the settlePartialRelease row above were measured on
 escrowsByEvent row above were measured on 2026-11-06 runs; the
 settlePartialReleases row above was measured on a 2026-11-08 run; the
 escrowsByFilters and settlementAging rows above were measured on a
-2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the signed-snapshot rows above were measured on a 2026-11-11 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
+2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the signed-snapshot rows above were measured on a 2026-11-11 run; the diffSettlementReports row above was measured on a 2026-11-13 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
 came in mixed under shared-host load, so refreshing the whole
 table would misreport changes in paths these additions never
 touched.

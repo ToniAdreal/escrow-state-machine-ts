@@ -18,6 +18,17 @@ version changes.
 
 ### Added
 
+- `diffSettlementReports` benchmark row (2026-11-13, backlog #1110):
+  one measured op diffs the fixed golden released report (500 bps)
+  against the same escrow re-settled at 600 bps — the change-key set
+  is exactly `settlementChanged` + `partiesChanged` (proFee 531.5 →
+  637.8, net 10,098.5 → 9,992.2, gross 10,630 unchanged; creator and
+  platform nets move, sponsor/referrer untouched) — checked on every
+  iteration, with an identical pair reporting `{}` and a cross-escrow
+  pair throwing the exact identity error pinned once outside the
+  timed loop. Measured at ~91,197 ops/sec (10.97 µs/op) on this
+  machine (Node v24.22.1, linux/x64, AMD EPYC 9D25); local numbers,
+  not guarantees.
 - CLI demo gains a single-report `diffSettlementReports` segment
   (2026-11-13, backlog #1109): the main escrow is re-settled at 600
   bps (up from 500) and diffed against its own 500 bps report — the

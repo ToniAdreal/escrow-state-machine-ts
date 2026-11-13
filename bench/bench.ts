@@ -1540,6 +1540,21 @@
  *      persistence — the canonical-JSON + HMAC overhead over the
  *      unsigned snapshot rows — and it previously had unit tests
  *      only, no throughput baseline.
+ *  86. settlement-report comparison — `diffSettlementReports(before, after)`
+ *      over a fixed pair of reports of one escrow (the golden
+ *      released report at 500 bps, re-settled at 600 bps: proFee
+ *      531.5 -> 637.8, net 10,098.5 -> 9,992.2, gross 10,630
+ *      unchanged; creator and platform nets move, sponsor /
+ *      referrer untouched): the #1092 helper's bench counterpart —
+ *      the field-by-field cent-exact comparison a day-end
+ *      reconciliation pays to answer "what changed between two
+ *      settlements of the same escrow" had no measured baseline.
+ *      Every timed iteration checks the change-key set (exactly
+ *      settlementChanged + partiesChanged), the settlement figures
+ *      and the two moved party nets; an identical pair reporting {}
+ *      and a cross-escrow pair throwing the exact identity error
+ *      are pinned once, outside the timed loop. Pure comparison, no
+ *      dispatch, no network.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -1572,6 +1587,7 @@ import {
   deliverSettlementWebhookToMany,
   depositAmountFromHistory,
   diffEscrowSnapshots,
+  diffSettlementReports,
   dispatchArbitration,
   Escrow,
   GENESIS_PREV_HASH,
@@ -11788,6 +11804,93 @@ function benchDiffEscrowSnapshots(): number {
   }, ITERATIONS);
 }
 
+// ---------------------------------------------------------------------
+// diffSettlementReports fixture: the module-scope golden released
+// `report` (500 bps) re-settled at 600 bps from the same history and
+// deposit — the same pair the demo's single-report diff segment pins
+// (backlog #1109). Both reports are built once outside the timed loop;
+// the diff itself is pure.
+const REPORT_AT_HIGHER_FEE = buildSettlementReport({
+  escrowId: releasedEscrow.id,
+  history: historyFixture,
+  finalState: "RELEASED",
+  deposit,
+  settlement: { proFeeBps: 600 },
+});
+
+function checkDiffSettlementReports(
+  diff: ReturnType<typeof diffSettlementReports>,
+): void {
+  const keys = Object.keys(diff).sort().join(",");
+  const changedParties =
+    diff.partiesChanged?.changed.map((entry) => entry.role) ?? [];
+  if (
+    keys !== "partiesChanged,settlementChanged" ||
+    diff.settlementChanged?.from?.gross !== 10630 ||
+    diff.settlementChanged?.to?.gross !== 10630 ||
+    diff.settlementChanged?.from?.proFee !== 531.5 ||
+    diff.settlementChanged?.to?.proFee !== 637.8 ||
+    diff.settlementChanged?.from?.net !== 10098.5 ||
+    diff.settlementChanged?.to?.net !== 9992.2 ||
+    diff.settlementChanged?.from?.referralCredits !== 0 ||
+    diff.settlementChanged?.to?.referralCredits !== 0 ||
+    diff.partiesChanged?.added.length !== 0 ||
+    diff.partiesChanged?.removed.length !== 0 ||
+    changedParties.join(",") !== "creator,platform" ||
+    diff.partiesChanged?.changed[0]?.from.net !== 10098.5 ||
+    diff.partiesChanged?.changed[0]?.to.net !== 9992.2 ||
+    diff.partiesChanged?.changed[1]?.from.net !== 531.5 ||
+    diff.partiesChanged?.changed[1]?.to.net !== 637.8 ||
+    diff.currencyChanged !== undefined ||
+    diff.outcomeChanged !== undefined ||
+    diff.totalInflowChanged !== undefined ||
+    diff.totalOutflowChanged !== undefined
+  ) {
+    throw new Error("benchmark self-check failed: diffSettlementReports");
+  }
+}
+
+// Pre-checks outside timing: the timed shape itself is correct, an
+// identical pair reports no change, and a cross-escrow pair fails fast
+// with the exact identity error (never timed).
+checkDiffSettlementReports(
+  diffSettlementReports(report, REPORT_AT_HIGHER_FEE),
+);
+if (Object.keys(diffSettlementReports(report, report)).length !== 0) {
+  throw new Error(
+    "benchmark self-check failed: diffSettlementReports identical pair",
+  );
+}
+const REPORT_OTHER_ESCROW = buildSettlementReport({
+  escrowId: "BENCH-001-OTHER",
+  history: historyFixture,
+  finalState: "RELEASED",
+  deposit,
+  settlement: { proFeeBps: 500 },
+});
+try {
+  diffSettlementReports(report, REPORT_OTHER_ESCROW);
+  throw new Error(
+    "benchmark self-check failed: diffSettlementReports cross-escrow pair",
+  );
+} catch (e) {
+  if (
+    !(e instanceof Error) ||
+    e.message !==
+      'settlement report diff failed: cannot diff reports of different escrows ("BENCH-001" vs "BENCH-001-OTHER")'
+  ) {
+    throw e;
+  }
+}
+
+function benchDiffSettlementReports(): number {
+  return measure(() => {
+    checkDiffSettlementReports(
+      diffSettlementReports(report, REPORT_AT_HIGHER_FEE),
+    );
+  }, ITERATIONS);
+}
+
 function benchExpiredEscrows(): number {
   return measure(() => {
     checkWatchdogIds(
@@ -13083,6 +13186,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "summarizeSettlementReports (batch 4 results)", ops: benchSummarizeSettlementReports() },
   { path: "reconcileSettlements (3 reports, 3 ledger rows, 4 groups)", ops: benchReconcileSettlements() },
   { path: "diffEscrowSnapshots (23-entry history, 2 appended)", ops: benchDiffEscrowSnapshots() },
+  { path: "diffSettlementReports (released report, 500 vs 600 bps)", ops: benchDiffSettlementReports() },
   { path: "buildSettlementWebhooks (batch 4 results)", ops: benchBuildSettlementWebhooks() },
   { path: "buildSettlementReports x buildSettlementWebhooks x deliverSettlementWebhookToMany (batch 4, 3 settlements x 4 endpoints)", ops: await benchBuildSettlementReportsWebhookFanout() },
   { path: "buildSettlementWebhook (sign)", ops: benchBuildSettlementWebhook() },
