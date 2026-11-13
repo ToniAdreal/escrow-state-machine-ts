@@ -18,6 +18,18 @@ version changes.
 
 ### Added
 
+- `summarizeSettlementReports` summary-overflow fail-fast (2026-11-13,
+  backlog #1098): every money accumulation in the summary (top-level
+  totals, per-currency buckets, per-party inflow/outflow) is checked
+  after each addition, and every rounded figure is checked on its way
+  out (including the party net, a subtraction that can overflow on
+  opposite-signed extremes); any non-finite total throws
+  `settlement reports summary computation overflowed: inputs too large`
+  instead of silently returning `Infinity` totals. Single reports are
+  never re-validated, only the sums are guarded, mirroring dataquest's
+  `summarizeTaskSettlements` contract. 9 tests in
+  `test/settlementReportsSummaryOverflow.test.ts`.
+
 - Watchdog executors' optional `at` audit-timestamp pin (2026-11-13,
   backlog #1097): `ExpireOverdueEscrowsOptions` and
   `ActOnStaleEscrowsOptions` each gain `at?: Date | string`, validated

@@ -771,10 +771,40 @@ export interface SettlementReportsSummary {
  * per-currency bucket instead.
  *
  * Pure: the results array and the reports inside it are only read.
+ *
+ * If any running total would leave the finite range — a hand-built or
+ * upstream report carrying astronomical figures, or a batch whose
+ * figures sum past `Number.MAX_VALUE` — the function throws
+ * `settlement reports summary computation overflowed: inputs too large`
+ * instead of returning `Infinity` totals that would only surface as
+ * render errors downstream. Single reports are never re-validated:
+ * only the sums are guarded, mirroring dataquest's
+ * `summarizeTaskSettlements` contract (backlog #838).
  */
 export function summarizeSettlementReports(
   results: readonly SettlementReportResult[],
 ): SettlementReportsSummary {
+  // Fail-closed overflow guard (backlog #1098): every money
+  // accumulation below goes through `addChecked`, and every rounded
+  // figure on its way out goes through `roundChecked`, so no
+  // `Infinity`/`NaN` can reach the returned summary.
+  const overflow = (): Error =>
+    new Error(
+      "settlement reports summary computation overflowed: inputs too large",
+    );
+  const addChecked = (running: number, amount: number): number => {
+    const next = running + amount;
+    if (!Number.isFinite(next)) throw overflow();
+    return next;
+  };
+  // `round2` multiplies by 100 before rounding, so a finite running
+  // total above ~1.8e306 would still come back `Infinity` from the
+  // rounding itself — the accumulation guard above cannot see that.
+  const roundChecked = (n: number): number => {
+    const rounded = round2(n);
+    if (!Number.isFinite(rounded)) throw overflow();
+    return rounded;
+  };
   const outcomes: Record<SettlementOutcome, number> = {
     released: 0,
     refunded: 0,
@@ -806,12 +836,12 @@ export function summarizeSettlementReports(
     const report = result.report;
     reports += 1;
     outcomes[report.outcome] += 1;
-    totalDeposit += report.deposit.deposit;
-    totalInflow += report.totalInflow;
-    totalOutflow += report.totalOutflow;
+    totalDeposit = addChecked(totalDeposit, report.deposit.deposit);
+    totalInflow = addChecked(totalInflow, report.totalInflow);
+    totalOutflow = addChecked(totalOutflow, report.totalOutflow);
     // Only partially-released reports carry `remaining`; every other
     // outcome contributes 0, so a fully settled batch reads 0 here.
-    totalRemaining += report.remaining ?? 0;
+    totalRemaining = addChecked(totalRemaining, report.remaining ?? 0);
     if (!report.balanced) balanced = false;
     const bucketKey = report.currency ?? UNSPECIFIED_SETTLEMENT_CURRENCY;
     let bucket = currencySums.get(bucketKey);
@@ -820,15 +850,15 @@ export function summarizeSettlementReports(
       currencySums.set(bucketKey, bucket);
     }
     bucket.reports += 1;
-    bucket.totalDeposit += report.deposit.deposit;
-    bucket.totalInflow += report.totalInflow;
-    bucket.totalOutflow += report.totalOutflow;
-    bucket.totalRemaining += report.remaining ?? 0;
+    bucket.totalDeposit = addChecked(bucket.totalDeposit, report.deposit.deposit);
+    bucket.totalInflow = addChecked(bucket.totalInflow, report.totalInflow);
+    bucket.totalOutflow = addChecked(bucket.totalOutflow, report.totalOutflow);
+    bucket.totalRemaining = addChecked(bucket.totalRemaining, report.remaining ?? 0);
     for (const party of report.parties) {
       const sum = partySums.get(party.party);
       if (sum) {
-        sum.inflow += party.inflow;
-        sum.outflow += party.outflow;
+        sum.inflow = addChecked(sum.inflow, party.inflow);
+        sum.outflow = addChecked(sum.outflow, party.outflow);
       }
     }
   }
@@ -837,10 +867,10 @@ export function summarizeSettlementReports(
   for (const [currency, bucket] of currencySums) {
     byCurrency[currency] = {
       reports: bucket.reports,
-      totalDeposit: round2(bucket.totalDeposit),
-      totalInflow: round2(bucket.totalInflow),
-      totalOutflow: round2(bucket.totalOutflow),
-      totalRemaining: round2(bucket.totalRemaining),
+      totalDeposit: roundChecked(bucket.totalDeposit),
+      totalInflow: roundChecked(bucket.totalInflow),
+      totalOutflow: roundChecked(bucket.totalOutflow),
+      totalRemaining: roundChecked(bucket.totalRemaining),
     };
   }
 
@@ -849,14 +879,27 @@ export function summarizeSettlementReports(
     reports,
     errors,
     outcomes,
-    totalDeposit: round2(totalDeposit),
-    totalInflow: round2(totalInflow),
-    totalOutflow: round2(totalOutflow),
-    totalRemaining: round2(totalRemaining),
+    totalDeposit: roundChecked(totalDeposit),
+    totalInflow: roundChecked(totalInflow),
+    totalOutflow: roundChecked(totalOutflow),
+    totalRemaining: roundChecked(totalRemaining),
     parties: (["sponsor", "creator", "platform", "referrer"] as PartyRole[]).map(
       (role) => {
         const sum = partySums.get(role)!;
-        return ledger(role, sum.inflow, sum.outflow);
+        // The net is a subtraction, not an accumulation: two finite
+        // opposite-signed extremes can still overflow it, so it gets
+        // its own check rather than relying on the inflow/outflow
+        // guards above.
+        if (!Number.isFinite(sum.inflow - sum.outflow)) throw overflow();
+        const row = ledger(role, sum.inflow, sum.outflow);
+        if (
+          !Number.isFinite(row.inflow) ||
+          !Number.isFinite(row.outflow) ||
+          !Number.isFinite(row.net)
+        ) {
+          throw overflow();
+        }
+        return row;
       },
     ),
     byCurrency,
