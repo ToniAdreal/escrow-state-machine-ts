@@ -26,7 +26,7 @@ export type {
   TransitionEdge,
   UnknownSettlementAgingEntry,
 } from "./stateMachine.js";
-export { calculateDeposit, calculateDepositCents } from "./feeCalculator.js";
+export { calculateDeposit, calculateDepositCents, formatMinorUnits, parseMinorUnits } from "./feeCalculator.js";
 export type {
   FeeBreakdown,
   FeeBreakdownCents,

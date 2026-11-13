@@ -18,6 +18,18 @@ version changes.
 
 ### Added
 
+- `formatMinorUnits` / `parseMinorUnits` exact amount-string helpers
+  (2026-11-13, backlog #1095): `formatMinorUnits` renders integer
+  cents as a bare two-decimal string (`1063000` → `"10630.00"`, no
+  thousands separator, no currency symbol, `-0` formats as `"0.00"`);
+  `parseMinorUnits` parses the strict grammar (optional minus, at
+  most 2 decimal places, no separators or scientific notation) with
+  `BigInt` arithmetic, so values past `Number.MAX_SAFE_INTEGER` throw
+  instead of rounding, and the pair round-trips
+  (`parseMinorUnits(formatMinorUnits(n)) === n`). Semantics mirror
+  the dataquest sibling's helpers. 16 tests in
+  `test/formatMinorUnits.test.ts` and `test/parseMinorUnits.test.ts`.
+
 - `SettlementWebhookOutbox` capacity limit `maxEntries` (2026-11-12,
   backlog #1093): the failure ledger holds at most `maxEntries`
   pairs (default 10_000, mirroring `SettlementEventDedupe`);

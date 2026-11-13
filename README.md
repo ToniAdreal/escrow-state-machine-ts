@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1916 tests, all local
+npm test   # 1932 tests, all local
 ```
 
 ## Quickstart
@@ -837,6 +837,16 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   Non-integer, negative, or non-finite cent inputs fail fast, as do a
   non-positive multiplier, a negative deposit, and an overflowing
   computation (same error messages as the dollar version).
+  Integer cents can be rendered exactly for statements and
+  reconciliation text with `formatMinorUnits` (`1,063,000` cents →
+  `"10630.00"`: exactly two decimals, no thousands separator, no
+  currency symbol, negative amounts keep a leading minus, `-0`
+  formats as `"0.00"`), and parsed back with the strict
+  `parseMinorUnits` (optional minus, at most 2 decimal places, no
+  separators or scientific notation; `BigInt` arithmetic, so values
+  past `Number.MAX_SAFE_INTEGER` throw instead of rounding, and
+  `parseMinorUnits(formatMinorUnits(n)) === n` round-trips, including
+  negatives). Both mirror the dataquest sibling's helpers.
   Finite-but-huge fee inputs that would overflow the deposit computation
   to `Infinity` are rejected: `calculateDeposit` throws
   `deposit computation overflowed: inputs too large` instead of returning
@@ -1631,7 +1641,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1916 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1932 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
