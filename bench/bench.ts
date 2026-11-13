@@ -1555,6 +1555,30 @@
  *      and a cross-escrow pair throwing the exact identity error
  *      are pinned once, outside the timed loop. Pure comparison, no
  *      dispatch, no network.
+ *  87. batch-summary rendering — `renderSettlementReportsSummary(summary)`
+ *      over the fixed batch-4 summary (3 reports + 1 error: released
+ *      2, refunded 1, totals 31,890, UNSPECIFIED currency bucket):
+ *      the #1102 plain-text renderer's bench counterpart — the
+ *      operator-paste text form of a day-end batch had no measured
+ *      baseline. Every timed iteration checks the rendered text
+ *      byte-for-byte (all 17 lines in order, figures and the
+ *      units line included); the render is pure, the same summary
+ *      is re-rendered on every iteration. No network.
+ *  88. batch-summary comparison — `diffSettlementReportsSummaries(before, after)`
+ *      over a fixed pair of summaries (the batch-4 summary against
+ *      the top-up batch-2 summary: total 4 -> 2, reports 3 -> 2,
+ *      errors 1 -> 0, refunded 1 -> 0, totals 31,890 -> 15,630,
+ *      sponsor / creator / platform ledgers move, referrer untouched,
+ *      UNSPECIFIED bucket 3 -> 2 reports, balanced stays true): the
+ *      #1101 helper's bench counterpart — the field-by-field
+ *      comparison a stored-summary reconciliation pays to answer
+ *      "what moved since last night's summary" had no measured
+ *      baseline. Every timed iteration checks the change-key set
+ *      (exactly the eight moved top-level fields plus partiesChanged
+ *      and byCurrencyChanged, with totalRemaining and balanced
+ *      absent), the moved figures, and the three moved party ledgers;
+ *      an identical pair reporting {} is pinned once, outside the
+ *      timed loop. Pure comparison, no dispatch, no network.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -1588,6 +1612,7 @@ import {
   depositAmountFromHistory,
   diffEscrowSnapshots,
   diffSettlementReports,
+  diffSettlementReportsSummaries,
   dispatchArbitration,
   Escrow,
   GENESIS_PREV_HASH,
@@ -1611,6 +1636,7 @@ import {
   renderReport,
   renderReportCsv,
   renderReportJson,
+  renderSettlementReportsSummary,
   restoreQuorum,
   settleRelease,
   settlePartialRelease,
@@ -2121,7 +2147,8 @@ function checkTopupBatchResults(
     throw new Error("benchmark top-up batch check failed: summary mismatch");
   }
 }
-checkTopupBatchResults(buildSettlementReports(topupBatchInputs));
+const topupBatchResults = buildSettlementReports(topupBatchInputs);
+checkTopupBatchResults(topupBatchResults);
 // Batch-webhook fixture: the pre-built batch results above are piped
 // straight into `buildSettlementWebhooks` — the reports -> webhooks
 // hand-off the batch API is designed for. Expectations are hand-derived
@@ -11891,6 +11918,170 @@ function benchDiffSettlementReports(): number {
   }, ITERATIONS);
 }
 
+// ---------------------------------------------------------------------
+// renderSettlementReportsSummary / diffSettlementReportsSummaries
+// fixtures: the module-scope batch-4 summary (built once from the
+// pre-built batchResults — the summarizer and both measured ops only
+// read it, so the same summaries are re-used on every iteration) and
+// the top-up batch-2 summary (built once from topupBatchResults).
+// Expected figures are hand-derived from the batch compositions — NOT
+// produced by the implementation — and cross-checked against the
+// batch checks above (checkBatchSummary pins the batch-4 figures,
+// checkTopupBatchResults pins the top-up figures):
+//   batch-4 summary: total 4, reports 3, errors 1; outcomes released
+//     2, refunded 1, expired 0, partially-released 0; totals 31,890
+//     (deposit = inflow = outflow; remaining 0 — two released and
+//     one refunded report, all fully settled); sponsor inflow 10,630
+//     (the refund only), outflow 31,890, net -21,260; creator inflow
+//     2 x 10,098.50 = 20,197; platform inflow 2 x 531.50 = 1,063;
+//     referrer 0; single UNSPECIFIED bucket (no input carries a
+//     currency), 3 reports, 31,890 in = 31,890 out, remaining 0;
+//     balanced true.
+//   top-up summary: total 2, reports 2, errors 0; outcomes released
+//     2; totals 15,630 (10,630 + 5,000); sponsor outflow 15,630,
+//     creator inflow 10,098.50 + 4,750 = 14,848.50, platform inflow
+//     531.50 + 250 = 781.50; UNSPECIFIED bucket, 2 reports, 15,630;
+//     balanced true.
+// The render pins the whole 17-line text verbatim and in order; the
+// diff pins the change-key set (exactly the eight moved top-level
+// fields plus partiesChanged and byCurrencyChanged — totalRemaining
+// stays 0 on both sides and balanced stays true, so neither appears)
+// and every moved figure.
+const batchSummary = summarizeSettlementReports(batchResults);
+const topupBatchSummary = summarizeSettlementReports(topupBatchResults);
+
+const RENDER_SUMMARY_EXPECTED_LINES: readonly string[] = [
+  "Settlement reports summary",
+  "Reports: 3 (errors: 1)",
+  "Released: 2",
+  "Refunded: 1",
+  "Expired: 0",
+  "Partially-released: 0",
+  "Total deposit: 31890.00",
+  "Total inflow: 31890.00",
+  "Total outflow: 31890.00",
+  "Total remaining: 0.00",
+  "Sponsor (depositor): inflow 10630.00, outflow 31890.00, net -21260.00",
+  "Creator (payee): inflow 20197.00, outflow 0.00, net 20197.00",
+  "Platform (pro fee): inflow 1063.00, outflow 0.00, net 1063.00",
+  "Referrer (referral credits): inflow 0.00, outflow 0.00, net 0.00",
+  "UNSPECIFIED: 3 reports, deposit 31890.00, inflow 31890.00, outflow 31890.00, remaining 0.00",
+  "Balanced: true",
+  "Amounts are in the reports' currency units, shown with two decimals; top-level totals sum figures across currencies — read the per-currency rows for single-currency money.",
+];
+
+function checkRenderSettlementReportsSummary(text: string): void {
+  if (text !== RENDER_SUMMARY_EXPECTED_LINES.join("\n")) {
+    throw new Error(
+      "benchmark self-check failed: renderSettlementReportsSummary",
+    );
+  }
+}
+
+function checkDiffSettlementReportsSummaries(
+  diff: ReturnType<typeof diffSettlementReportsSummaries>,
+): void {
+  const keys = Object.keys(diff).sort().join(",");
+  const changedParties =
+    diff.partiesChanged?.changed.map((entry) => entry.role) ?? [];
+  const changedCurrencies =
+    diff.byCurrencyChanged?.changed.map((entry) => entry.currency) ?? [];
+  if (
+    keys !==
+      "byCurrencyChanged,errorsChanged,outcomesChanged,partiesChanged,reportsChanged,totalChanged,totalDepositChanged,totalInflowChanged,totalOutflowChanged" ||
+    diff.totalChanged?.from !== 4 ||
+    diff.totalChanged?.to !== 2 ||
+    diff.reportsChanged?.from !== 3 ||
+    diff.reportsChanged?.to !== 2 ||
+    diff.errorsChanged?.from !== 1 ||
+    diff.errorsChanged?.to !== 0 ||
+    diff.outcomesChanged?.from.released !== 2 ||
+    diff.outcomesChanged?.from.refunded !== 1 ||
+    diff.outcomesChanged?.from.expired !== 0 ||
+    diff.outcomesChanged?.from["partially-released"] !== 0 ||
+    diff.outcomesChanged?.to.released !== 2 ||
+    diff.outcomesChanged?.to.refunded !== 0 ||
+    diff.outcomesChanged?.to.expired !== 0 ||
+    diff.outcomesChanged?.to["partially-released"] !== 0 ||
+    diff.totalDepositChanged?.from !== 31890 ||
+    diff.totalDepositChanged?.to !== 15630 ||
+    diff.totalInflowChanged?.from !== 31890 ||
+    diff.totalInflowChanged?.to !== 15630 ||
+    diff.totalOutflowChanged?.from !== 31890 ||
+    diff.totalOutflowChanged?.to !== 15630 ||
+    diff.totalRemainingChanged !== undefined ||
+    diff.balancedChanged !== undefined ||
+    diff.partiesChanged?.added.length !== 0 ||
+    diff.partiesChanged?.removed.length !== 0 ||
+    changedParties.join(",") !== "sponsor,creator,platform" ||
+    diff.partiesChanged?.changed[0]?.from.inflow !== 10630 ||
+    diff.partiesChanged?.changed[0]?.from.outflow !== 31890 ||
+    diff.partiesChanged?.changed[0]?.from.net !== -21260 ||
+    diff.partiesChanged?.changed[0]?.to.inflow !== 0 ||
+    diff.partiesChanged?.changed[0]?.to.outflow !== 15630 ||
+    diff.partiesChanged?.changed[0]?.to.net !== -15630 ||
+    diff.partiesChanged?.changed[1]?.from.inflow !== 20197 ||
+    diff.partiesChanged?.changed[1]?.to.inflow !== 14848.5 ||
+    diff.partiesChanged?.changed[1]?.from.net !== 20197 ||
+    diff.partiesChanged?.changed[1]?.to.net !== 14848.5 ||
+    diff.partiesChanged?.changed[2]?.from.inflow !== 1063 ||
+    diff.partiesChanged?.changed[2]?.to.inflow !== 781.5 ||
+    diff.partiesChanged?.changed[2]?.from.net !== 1063 ||
+    diff.partiesChanged?.changed[2]?.to.net !== 781.5 ||
+    diff.byCurrencyChanged?.added.length !== 0 ||
+    diff.byCurrencyChanged?.removed.length !== 0 ||
+    changedCurrencies.join(",") !== "UNSPECIFIED" ||
+    diff.byCurrencyChanged?.changed[0]?.from.reports !== 3 ||
+    diff.byCurrencyChanged?.changed[0]?.to.reports !== 2 ||
+    diff.byCurrencyChanged?.changed[0]?.from.totalDeposit !== 31890 ||
+    diff.byCurrencyChanged?.changed[0]?.to.totalDeposit !== 15630 ||
+    diff.byCurrencyChanged?.changed[0]?.from.totalInflow !== 31890 ||
+    diff.byCurrencyChanged?.changed[0]?.to.totalInflow !== 15630 ||
+    diff.byCurrencyChanged?.changed[0]?.from.totalOutflow !== 31890 ||
+    diff.byCurrencyChanged?.changed[0]?.to.totalOutflow !== 15630 ||
+    diff.byCurrencyChanged?.changed[0]?.from.totalRemaining !== 0 ||
+    diff.byCurrencyChanged?.changed[0]?.to.totalRemaining !== 0
+  ) {
+    throw new Error(
+      "benchmark self-check failed: diffSettlementReportsSummaries",
+    );
+  }
+}
+
+// Pre-checks outside timing: the rendered batch text is verbatim, the
+// summary diff pins the moved fields, and an identical pair reports
+// no change (never timed).
+checkRenderSettlementReportsSummary(
+  renderSettlementReportsSummary(batchSummary),
+);
+checkDiffSettlementReportsSummaries(
+  diffSettlementReportsSummaries(batchSummary, topupBatchSummary),
+);
+if (
+  Object.keys(diffSettlementReportsSummaries(batchSummary, batchSummary))
+    .length !== 0
+) {
+  throw new Error(
+    "benchmark self-check failed: diffSettlementReportsSummaries identical pair",
+  );
+}
+
+function benchRenderSettlementReportsSummary(): number {
+  return measure(() => {
+    checkRenderSettlementReportsSummary(
+      renderSettlementReportsSummary(batchSummary),
+    );
+  }, ITERATIONS);
+}
+
+function benchDiffSettlementReportsSummaries(): number {
+  return measure(() => {
+    checkDiffSettlementReportsSummaries(
+      diffSettlementReportsSummaries(batchSummary, topupBatchSummary),
+    );
+  }, ITERATIONS);
+}
+
 function benchExpiredEscrows(): number {
   return measure(() => {
     checkWatchdogIds(
@@ -13187,6 +13378,8 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "reconcileSettlements (3 reports, 3 ledger rows, 4 groups)", ops: benchReconcileSettlements() },
   { path: "diffEscrowSnapshots (23-entry history, 2 appended)", ops: benchDiffEscrowSnapshots() },
   { path: "diffSettlementReports (released report, 500 vs 600 bps)", ops: benchDiffSettlementReports() },
+  { path: "renderSettlementReportsSummary (batch 4 summary)", ops: benchRenderSettlementReportsSummary() },
+  { path: "diffSettlementReportsSummaries (batch 4 vs top-up batch 2)", ops: benchDiffSettlementReportsSummaries() },
   { path: "buildSettlementWebhooks (batch 4 results)", ops: benchBuildSettlementWebhooks() },
   { path: "buildSettlementReports x buildSettlementWebhooks x deliverSettlementWebhookToMany (batch 4, 3 settlements x 4 endpoints)", ops: await benchBuildSettlementReportsWebhookFanout() },
   { path: "buildSettlementWebhook (sign)", ops: benchBuildSettlementWebhook() },

@@ -1862,6 +1862,22 @@ settlement figures and the two moved party nets checked on every
 iteration, and an identical pair reporting {} plus a cross-escrow
 pair throwing the exact identity error pinned once outside the
 timed loop),
+batch-summary rendering (`renderSettlementReportsSummary` over the
+fixed batch-4 summary — 3 reports + 1 error: released 2, refunded
+1, totals 31,890, UNSPECIFIED currency bucket — with the rendered
+text checked byte-for-byte, all 17 lines in order, on every
+iteration),
+batch-summary comparison (`diffSettlementReportsSummaries` over a
+fixed pair of summaries — the batch-4 summary against the top-up
+batch-2 summary: total 4 -> 2, reports 3 -> 2, errors 1 -> 0,
+refunded 1 -> 0, totals 31,890 -> 15,630, sponsor / creator /
+platform ledgers moving while referrer stays untouched,
+UNSPECIFIED bucket 3 -> 2 reports, balanced staying true — with
+the change-key set (exactly the eight moved top-level fields plus
+partiesChanged and byCurrencyChanged, with totalRemaining and
+balanced absent), the moved figures, and the three moved party
+ledgers checked on every iteration, and an identical pair reporting
+{} pinned once outside the timed loop),
 `buildSettlementReport`,
 settlement report release path (`buildSettlementReport` over the
 fixed released history — outcome `released` and `releasePath`
@@ -2646,6 +2662,8 @@ One real run on 2026-11-04:
 | reconcileSettlements (3 reports, 3 ledger rows, 4 groups) | ~536,710 ops/sec (1.86 µs/op) |
 | diffEscrowSnapshots (23-entry history, 2 appended) | ~2,734 ops/sec (365.73 µs/op) |
 | diffSettlementReports (released report, 500 vs 600 bps) | ~91,197 ops/sec (10.97 µs/op) |
+| renderSettlementReportsSummary (batch 4 summary) | ~108,925 ops/sec (9.18 µs/op) |
+| diffSettlementReportsSummaries (batch 4 vs top-up batch 2) | ~208,967 ops/sec (4.79 µs/op) |
 | buildSettlementWebhooks (batch 4 results) | ~6,353 ops/sec (157.41 µs/op) |
 | buildSettlementReports x buildSettlementWebhooks x deliverSettlementWebhookToMany (batch 4, 3 settlements x 4 endpoints) | ~898.6 ops/sec (1112.82 µs/op) |
 | buildSettlementWebhook (sign) | ~32,649 ops/sec (30.63 µs/op) |
@@ -2733,7 +2751,7 @@ and the settlePartialRelease row above were measured on
 escrowsByEvent row above were measured on 2026-11-06 runs; the
 settlePartialReleases row above was measured on a 2026-11-08 run; the
 escrowsByFilters and settlementAging rows above were measured on a
-2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the signed-snapshot rows above were measured on a 2026-11-11 run; the diffSettlementReports row above was measured on a 2026-11-13 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
+2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the signed-snapshot rows above were measured on a 2026-11-11 run; the diffSettlementReports row above was measured on a 2026-11-13 run; the renderSettlementReportsSummary and diffSettlementReportsSummaries rows above were measured on a 2026-11-13 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
 came in mixed under shared-host load, so refreshing the whole
 table would misreport changes in paths these additions never
 touched.

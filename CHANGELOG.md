@@ -57,6 +57,21 @@ version changes.
   timed loop. Measured at ~91,197 ops/sec (10.97 µs/op) on this
   machine (Node v24.22.1, linux/x64, AMD EPYC 9D25); local numbers,
   not guarantees.
+- `renderSettlementReportsSummary` + `diffSettlementReportsSummaries`
+  benchmark rows (2026-11-13, backlog #1118): one measured op renders
+  the fixed batch-4 summary (3 reports + 1 error, released 2,
+  refunded 1, totals 31,890, UNSPECIFIED bucket) with the whole
+  17-line text checked byte-for-byte in order on every iteration; a
+  second op diffs that summary against the top-up batch-2 summary
+  (total 4 → 2, reports 3 → 2, errors 1 → 0, refunded 1 → 0, totals
+  31,890 → 15,630, sponsor/creator/platform ledgers move, referrer
+  untouched, UNSPECIFIED bucket 3 → 2 reports, balanced stays true)
+  with the change-key set, the moved figures, and the three moved
+  party ledgers checked on every iteration, and an identical pair
+  reporting `{}` pinned once outside the timed loop. Measured at
+  ~108,925 ops/sec (9.18 µs/op) and ~208,967 ops/sec
+  (4.79 µs/op) on this machine (Node v24.22.1, linux/x64, AMD EPYC 9D25);
+  local numbers, not guarantees.
 - CLI demo gains a single-report `diffSettlementReports` segment
   (2026-11-13, backlog #1109): the main escrow is re-settled at 600
   bps (up from 500) and diffed against its own 500 bps report — the
