@@ -18,6 +18,21 @@ version changes.
 
 ### Added
 
+- `diffSettlementReportsSummaries` batch-summary diff (2026-11-13,
+  backlog #1101): compares two `SettlementReportsSummary` values field
+  by field and returns a `SettlementReportsSummaryDiff` carrying only
+  the fields that moved (`{}` when identical), mirroring dataquest's
+  `diffTaskSettlementsSummaries` (#1094) with the same `{ <field>Changed:
+  { from, to } }` shape — counts exact, money at integer-cent
+  precision, `outcomes` as one whole-record entry, parties aligned by
+  role and currency buckets by code (a role or code on one side only is
+  added/removed, never dropped). No identity guard: a summary carries
+  no batch id, so diffing summaries of different batches is the
+  caller's responsibility. Comparison, not validation — it never
+  re-checks `totalRemaining`, bucket sums, or `balanced` against the
+  totals. Pure, detached copies. 16 tests in
+  `test/settlementReportsSummaryDiff.test.ts`.
+
 - `summarizeSettlementReports` summary-overflow fail-fast (2026-11-13,
   backlog #1098): every money accumulation in the summary (top-level
   totals, per-currency buckets, per-party inflow/outflow) is checked

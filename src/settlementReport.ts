@@ -1499,6 +1499,277 @@ export function diffSettlementReports(
   return diff;
 }
 
+/**
+ * How one party's ledger moved between two summaries: the role, and
+ * the ledger rows from each side (detached copies, so mutating the
+ * diff never touches either summary). The move itself is decided by
+ * `samePartyLedger` (inflow, outflow, net at cent precision, label
+ * included) — the same rule `diffSettlementReports` uses for single
+ * reports, so the two diffs never disagree about what a party move is.
+ */
+export interface SettlementReportsSummaryPartyDiff {
+  role: PartyRole;
+  from: PartyLedger;
+  to: PartyLedger;
+}
+
+/**
+ * How the party ledgers moved between two summaries: roles that appear
+ * in only one summary (`added` / `removed`, in that summary's party
+ * order), and roles present in both whose ledger moved (`changed`, in
+ * `a`'s party order). A role listed twice compares by its first row —
+ * the build path never emits a duplicate role, and this is a
+ * comparison, not a validation (see {@link diffSettlementReports}).
+ */
+export interface SettlementReportsSummaryPartiesDiff {
+  added: PartyRole[];
+  removed: PartyRole[];
+  changed: SettlementReportsSummaryPartyDiff[];
+}
+
+/**
+ * How one currency bucket moved between two summaries: the code, and
+ * the bucket figures from each side (detached copies). The move is
+ * decided by the bucket's five figures — `reports` exactly, the four
+ * money figures at integer-cent precision.
+ */
+export interface SettlementReportsSummaryCurrencyDiff {
+  currency: string;
+  from: SettlementCurrencySummary;
+  to: SettlementCurrencySummary;
+}
+
+/**
+ * How the per-currency buckets moved between two summaries: codes
+ * that appear in only one summary (`added` / `removed`, in that
+ * summary's key order — a bucket present on one side only is reported
+ * whole, never field by field), and codes present in both whose
+ * figures moved (`changed`, in `a`'s key order).
+ */
+export interface SettlementReportsSummaryCurrenciesDiff {
+  added: string[];
+  removed: string[];
+  changed: SettlementReportsSummaryCurrencyDiff[];
+}
+
+/**
+ * Field-level difference between two settlement-reports summaries.
+ * Only fields that moved are present: two identical summaries diff
+ * to `{}`. Counts compare exactly; every money comparison is at
+ * integer-cent precision (see `toCents`) — figures that differ only
+ * below a cent, the raw-float noise the rest of the library already
+ * rounds away, are the same amount, and a one-cent difference is a
+ * change. `outcomes` is one entry carrying the whole four-tier record
+ * (detached copies), so a single tier moving is visible without
+ * hand-written per-tier compares; `balanced` flipping is its own
+ * entry, so a summary that stopped balancing is visible even when no
+ * single amount looks wrong.
+ */
+export interface SettlementReportsSummaryDiff {
+  totalChanged?: { from: number; to: number };
+  reportsChanged?: { from: number; to: number };
+  errorsChanged?: { from: number; to: number };
+  outcomesChanged?: {
+    from: Record<SettlementOutcome, number>;
+    to: Record<SettlementOutcome, number>;
+  };
+  totalDepositChanged?: { from: number; to: number };
+  totalInflowChanged?: { from: number; to: number };
+  totalOutflowChanged?: { from: number; to: number };
+  totalRemainingChanged?: { from: number; to: number };
+  partiesChanged?: SettlementReportsSummaryPartiesDiff;
+  byCurrencyChanged?: SettlementReportsSummaryCurrenciesDiff;
+  balancedChanged?: { from: boolean; to: boolean };
+}
+
+/** The four outcome tiers, in the canonical order the summary uses. */
+const SETTLEMENT_OUTCOME_TIERS: readonly SettlementOutcome[] = [
+  "released",
+  "refunded",
+  "expired",
+  "partially-released",
+];
+
+function sameOutcomes(
+  a: Record<SettlementOutcome, number>,
+  b: Record<SettlementOutcome, number>,
+): boolean {
+  return SETTLEMENT_OUTCOME_TIERS.every((tier) => a[tier] === b[tier]);
+}
+
+function sameCurrencySummary(
+  a: SettlementCurrencySummary,
+  b: SettlementCurrencySummary,
+): boolean {
+  return (
+    a.reports === b.reports &&
+    sameMoney(a.totalDeposit, b.totalDeposit) &&
+    sameMoney(a.totalInflow, b.totalInflow) &&
+    sameMoney(a.totalOutflow, b.totalOutflow) &&
+    sameMoney(a.totalRemaining, b.totalRemaining)
+  );
+}
+
+/**
+ * Compare two settlement-reports summaries and report what changed
+ * between them — the reconciliation question ("what moved since the
+ * summary I stored last night?") without hand-written field compares
+ * that disagree about float tolerance, party alignment, or currency
+ * buckets. This is the escrow-side mirror of dataquest's
+ * `diffTaskSettlementsSummaries` (backlog #1094), with the same diff
+ * shape — `{ <field>Changed: { from, to } }` per moved field, `{}` when
+ * nothing moved — and the same contract: a comparison, not a
+ * validation. The nested shapes follow this file's own
+ * `diffSettlementReports` (backlog #1092): parties align by role and
+ * currency buckets align by code, a role or code present on one side
+ * only is reported as added or removed, never silently dropped.
+ *
+ * One deliberate difference from the dataquest mirror, forced by what
+ * the summary carries: there is no identity guard. A
+ * `SettlementReport` carries an `escrowId` the single-report diff
+ * refuses to cross; a `SettlementReportsSummary` carries no batch id
+ * at all, so there is nothing to compare identity on. Diffing
+ * summaries of two different batches is the caller's responsibility —
+ * the diff answers "what moved", never "are these the same batch".
+ *
+ * Pure: reads both summaries, never mutates them, and every object the
+ * diff carries is a detached copy. This is a comparison, not a
+ * validation — it does not re-check that either summary's
+ * `totalRemaining` equals the sum of its reports' `remaining`, that its
+ * currency buckets sum to the top-level totals, that `balanced` agrees
+ * with its totals, or that its figures match any audit history; run an
+ * untrusted input through the summary parsers when the input itself is
+ * untrusted.
+ *
+ *   const before = summarizeSettlementReports(results);
+ *   const after = summarizeSettlementReports(recomputed);
+ *   diffSettlementReportsSummaries(before, after);
+ *   // { totalChanged: { from: 1, to: 2 },
+ *   //   reportsChanged: { from: 1, to: 2 },
+ *   //   totalDepositChanged: { from: 10630, to: 21260 }, ... }
+ *   // (A second escrow settling adds a report and doubles the locked
+ *   // deposit; the per-currency bucket moves with it, while `balanced`
+ *   // stays true and reports no entry.)
+ */
+export function diffSettlementReportsSummaries(
+  a: SettlementReportsSummary,
+  b: SettlementReportsSummary,
+): SettlementReportsSummaryDiff {
+  if (!isRecord(a) || !isRecord(b)) {
+    throw new Error(
+      "invalid settlement reports summary diff: both summaries must be objects",
+    );
+  }
+  const diff: SettlementReportsSummaryDiff = {};
+  if (a.total !== b.total) {
+    diff.totalChanged = { from: a.total, to: b.total };
+  }
+  if (a.reports !== b.reports) {
+    diff.reportsChanged = { from: a.reports, to: b.reports };
+  }
+  if (a.errors !== b.errors) {
+    diff.errorsChanged = { from: a.errors, to: b.errors };
+  }
+  if (!sameOutcomes(a.outcomes, b.outcomes)) {
+    diff.outcomesChanged = { from: { ...a.outcomes }, to: { ...b.outcomes } };
+  }
+  if (!sameMoney(a.totalDeposit, b.totalDeposit)) {
+    diff.totalDepositChanged = { from: a.totalDeposit, to: b.totalDeposit };
+  }
+  if (!sameMoney(a.totalInflow, b.totalInflow)) {
+    diff.totalInflowChanged = { from: a.totalInflow, to: b.totalInflow };
+  }
+  if (!sameMoney(a.totalOutflow, b.totalOutflow)) {
+    diff.totalOutflowChanged = { from: a.totalOutflow, to: b.totalOutflow };
+  }
+  if (!sameMoney(a.totalRemaining, b.totalRemaining)) {
+    diff.totalRemainingChanged = {
+      from: a.totalRemaining,
+      to: b.totalRemaining,
+    };
+  }
+  const aParties = indexParties(a.parties);
+  const bParties = indexParties(b.parties);
+  const added: PartyRole[] = [];
+  const removed: PartyRole[] = [];
+  const changed: SettlementReportsSummaryPartyDiff[] = [];
+  for (const row of b.parties) {
+    if (!aParties.has(row.party) && !added.includes(row.party)) {
+      added.push(row.party);
+    }
+  }
+  for (const row of a.parties) {
+    if (!bParties.has(row.party) && !removed.includes(row.party)) {
+      removed.push(row.party);
+    }
+  }
+  for (const row of a.parties) {
+    const other = bParties.get(row.party);
+    if (
+      other !== undefined &&
+      !samePartyLedger(row, other) &&
+      !changed.some((entry) => entry.role === row.party)
+    ) {
+      changed.push({ role: row.party, from: { ...row }, to: { ...other } });
+    }
+  }
+  if (added.length > 0 || removed.length > 0 || changed.length > 0) {
+    diff.partiesChanged = { added, removed, changed };
+  }
+  const hasCurrency = (
+    buckets: Record<string, SettlementCurrencySummary>,
+    code: string,
+  ): boolean => Object.prototype.hasOwnProperty.call(buckets, code);
+  const addedCurrencies: string[] = [];
+  const removedCurrencies: string[] = [];
+  const changedCurrencies: SettlementReportsSummaryCurrencyDiff[] = [];
+  for (const code of Object.keys(b.byCurrency)) {
+    if (
+      !hasCurrency(a.byCurrency, code) &&
+      !addedCurrencies.includes(code)
+    ) {
+      addedCurrencies.push(code);
+    }
+  }
+  for (const code of Object.keys(a.byCurrency)) {
+    if (
+      !hasCurrency(b.byCurrency, code) &&
+      !removedCurrencies.includes(code)
+    ) {
+      removedCurrencies.push(code);
+    }
+  }
+  for (const code of Object.keys(a.byCurrency)) {
+    if (!hasCurrency(b.byCurrency, code)) continue;
+    const other = b.byCurrency[code];
+    if (
+      !sameCurrencySummary(a.byCurrency[code], other) &&
+      !changedCurrencies.some((entry) => entry.currency === code)
+    ) {
+      changedCurrencies.push({
+        currency: code,
+        from: { ...a.byCurrency[code] },
+        to: { ...other },
+      });
+    }
+  }
+  if (
+    addedCurrencies.length > 0 ||
+    removedCurrencies.length > 0 ||
+    changedCurrencies.length > 0
+  ) {
+    diff.byCurrencyChanged = {
+      added: addedCurrencies,
+      removed: removedCurrencies,
+      changed: changedCurrencies,
+    };
+  }
+  if (a.balanced !== b.balanced) {
+    diff.balancedChanged = { from: a.balanced, to: b.balanced };
+  }
+  return diff;
+}
+
 function money(n: number): string {
   return (
     "$" +

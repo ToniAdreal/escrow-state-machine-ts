@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1953 tests, all local
+npm test   # 1969 tests, all local
 ```
 
 ## Quickstart
@@ -1519,6 +1519,25 @@ single amount looks wrong. Reports of different escrows throw
 the same fail-fast identity rule `diffEscrowSnapshots` uses for
 snapshots. The function is pure and returns detached copies.
 
+To answer what changed between two stored batch summaries — the same
+reconciliation question one level up — `diffSettlementReportsSummaries(a, b)`
+compares two `SettlementReportsSummary` values field by field and
+returns a `SettlementReportsSummaryDiff` carrying only the fields that
+moved; identical summaries diff to `{}`. Counts compare exactly and
+money compares at integer-cent precision, the same rule as the
+single-report diff; `outcomes` is one entry carrying the whole
+four-tier record, parties align by role, and currency buckets align by
+code, with a role or code present on one side only reported as added
+or removed instead of silently dropped. A summary carries no batch id,
+so — unlike the single-report diff, which refuses to cross escrows —
+there is no identity guard: diffing summaries of two different batches
+is the caller's responsibility. The function is pure and returns
+detached copies, and like the single-report diff it is a comparison,
+not a validation: it does not re-check that either summary's
+`totalRemaining` equals the sum of its reports' `remaining`, that its
+currency buckets sum to the top-level totals, or that `balanced`
+agrees with its totals.
+
 Currency: `buildSettlementReport({ ..., currency: "USD" })` accepts an
 optional ISO 4217 alpha-3 code — exactly three uppercase letters, checked
 for shape only, not against the published registry. Anything else throws
@@ -1657,7 +1676,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1953 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1969 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
