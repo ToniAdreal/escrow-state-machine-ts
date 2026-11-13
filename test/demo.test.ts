@@ -149,6 +149,7 @@ import {
   DEMO_PATROL_UNMAPPED_VERIFY_AT,
   DEMO_PENDING_ESCROW_ID,
   DEMO_PRO_FEE_BPS,
+  DEMO_REPORT_DIFF_PRO_FEE_BPS,
   DEMO_QUORUM_APPROVAL_ATS,
   DEMO_QUORUM_EVIDENCE_FIRST_AT,
   DEMO_QUORUM_EVIDENCE_LOG_AFTER_REVOKE,
@@ -1411,6 +1412,118 @@ test("demo lines print the batch reports + summary section", async () => {
   );
 });
 
+test("demo single-report diff compares the same escrow re-settled at a higher fee rate (hand-computed diff)", async () => {
+  const { escrow, report, reportAtHigherFee, reportDiff } = await runDemo();
+
+  // The re-settlement shares the escrow's identity and history: only
+  // the fee rate moved (500 -> 600 bps), so the deposit and the
+  // totals never move.
+  assert.equal(reportAtHigherFee.escrowId, escrow.id);
+  assert.equal(reportAtHigherFee.outcome, "released");
+  assert.equal(reportAtHigherFee.settlement?.proFee, 637.8);
+  assert.equal(reportAtHigherFee.settlement?.net, 9992.2);
+  assert.equal(reportAtHigherFee.deposit.deposit, 10630);
+  assert.equal(reportAtHigherFee.totalInflow, 10630);
+  assert.equal(reportAtHigherFee.totalOutflow, 10630);
+  assert.equal(reportAtHigherFee.eventCount, 4);
+  assert.equal(report.settlement?.proFee, 531.5);
+  // Exactly two diff keys: the fee moves from creator to platform.
+  assert.deepEqual(Object.keys(reportDiff).sort(), [
+    "partiesChanged",
+    "settlementChanged",
+  ]);
+  assert.deepEqual(reportDiff.settlementChanged, {
+    from: { gross: 10630, proFee: 531.5, referralCredits: 0, net: 10098.5 },
+    to: { gross: 10630, proFee: 637.8, referralCredits: 0, net: 9992.2 },
+  });
+  assert.deepEqual(reportDiff.partiesChanged?.added, []);
+  assert.deepEqual(reportDiff.partiesChanged?.removed, []);
+  assert.deepEqual(
+    reportDiff.partiesChanged?.changed.map((entry) => entry.role),
+    ["creator", "platform"],
+  );
+  assert.deepEqual(
+    reportDiff.partiesChanged?.changed.map((entry) => [
+      entry.from.net,
+      entry.to.net,
+    ]),
+    [
+      [10098.5, 9992.2],
+      [531.5, 637.8],
+    ],
+  );
+  // Unchanged fields are absent from the diff — the point of the
+  // segment: currency and outcome never moved, neither did the totals.
+  assert.equal(reportDiff.currencyChanged, undefined);
+  assert.equal(reportDiff.outcomeChanged, undefined);
+  assert.equal(reportDiff.depositChanged, undefined);
+  assert.equal(reportDiff.totalInflowChanged, undefined);
+  assert.equal(reportDiff.totalOutflowChanged, undefined);
+  assert.equal(reportDiff.balancedChanged, undefined);
+  assert.equal(reportDiff.eventCountChanged, undefined);
+});
+
+test("demo lines print the single-report diff section after the batch summary", async () => {
+  const { lines } = await runDemo();
+  const text = lines.join("\n");
+
+  assert.match(
+    text,
+    /Single-report diff \(same escrow, re-settled at a higher fee rate\):/,
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_ESCROW_ID}: ${DEMO_PRO_FEE_BPS} bps -> ${DEMO_REPORT_DIFF_PRO_FEE_BPS} bps — proFee 531.5 -> 637.8, net 10098.5 -> 9992.2 (gross 10630 unchanged)`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  changed parties: creator net 10098.5 -> 9992.2, platform net 531.5 -> 637.8 (sponsor/referrer untouched, nothing added or removed)",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  unchanged (absent from the diff): outcome released, currency, totals inflow/outflow 10630, balanced true, eventCount 4",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  identical reports diff to {} — re-running the same settlement reports no change",
+    ),
+  );
+  // Position: after the batch summary, before the batch webhooks.
+  const summaryAt = text.indexOf(
+    "Batch settlement reports (batch -> per-item isolation -> summary):",
+  );
+  const diffAt = text.indexOf(
+    "Single-report diff (same escrow, re-settled at a higher fee rate):",
+  );
+  const webhooksAt = text.indexOf(
+    "Batch settlement webhooks (batch reports -> per-item signed webhooks):",
+  );
+  assert.ok(summaryAt < diffAt && diffAt < webhooksAt);
+});
+
+test("demo single-report diff segment is deterministic: two runs print byte-identical diff lines", async () => {
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf(
+        "Single-report diff (same escrow, re-settled at a higher fee rate):",
+      ),
+      ls.indexOf(
+        "Batch settlement webhooks (batch reports -> per-item signed webhooks):",
+      ) - 1,
+    );
+  const a = await runDemo();
+  const b = await runDemo();
+  const segA = segment(a.lines);
+  // Header + 4 fixed lines; every value is hand-pinned from the
+  // fixed fee vector, so no normalization is needed.
+  assert.equal(segA.length, 5);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(a.reportDiff, b.reportDiff);
+});
+
 test("demo batch webhooks sign each successful report with a distinct factory eventId and isolate the error entry", async () => {
   const { batchResults, batchWebhooks, batchWebhooksVerified } = await runDemo();
 
@@ -2612,6 +2725,23 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
   assert.match(
     out,
     /summary totals: deposit 21260, inflow 21260, outflow 21260, remaining 0 — balanced ✓/,
+  );
+  // Single-report diff tail: same escrow re-settled at 600 bps — the
+  // fee moves from creator to platform, everything else stays out
+  // of the diff, and identical reports diff to {}.
+  assert.match(
+    out,
+    /Single-report diff \(same escrow, re-settled at a higher fee rate\):/,
+  );
+  assert.ok(
+    out.includes(
+      "  DEMO-ESC-001: 500 bps -> 600 bps — proFee 531.5 -> 637.8, net 10098.5 -> 9992.2 (gross 10630 unchanged)",
+    ),
+  );
+  assert.ok(
+    out.includes(
+      "  identical reports diff to {} — re-running the same settlement reports no change",
+    ),
   );
   // Batch webhook tail: per-item signed webhooks over the batch
   // reports — distinct factory eventIds, the error forwarded in the

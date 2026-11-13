@@ -18,6 +18,17 @@ version changes.
 
 ### Added
 
+- CLI demo gains a single-report `diffSettlementReports` segment
+  (2026-11-13, backlog #1109): the main escrow is re-settled at 600
+  bps (up from 500) and diffed against its own 500 bps report — the
+  diff carries exactly `settlementChanged` (proFee 531.5 → 637.8, net
+  10,098.5 → 9,992.2, gross 10,630 unchanged) and `partiesChanged`
+  (creator and platform nets move; sponsor/referrer untouched,
+  nothing added or removed), while outcome, currency, totals,
+  balanced flag and event count are unchanged and absent from the
+  diff; identical reports diff to `{}`. `DemoResult` gains
+  `reportAtHigherFee` and `reportDiff`; the demo fails fast if any
+  pinned figure moves.
 - Optional `expiresAt` expiry on the three signed snapshot envelopes
   (2026-11-13, backlog #1103): `Escrow`,
   `SettlementEventDedupe`, and `SettlementWebhookOutbox`

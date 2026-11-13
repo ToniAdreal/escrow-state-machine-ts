@@ -447,6 +447,7 @@ import {
   deliverSettlementWebhookToMany,
   depositAmountFromHistory,
   diffEscrowSnapshots,
+  diffSettlementReports,
   dispatchArbitration,
   expiredEscrows,
   expireOverdueEscrows,
@@ -511,6 +512,7 @@ import {
   type SettlementWebhookOutboxEntry,
   type SettlementReport,
   type SettlementReportCsv,
+  type SettlementReportDiff,
   type SettlementReportResult,
   type SettlementReportsSummary,
   type SettlementWebhook,
@@ -523,6 +525,8 @@ import {
 /** Fixed demo fixture: the portfolio golden fee vector (deposit 10,630). */
 export const DEMO_ESCROW_ID = "DEMO-ESC-001";
 export const DEMO_PRO_FEE_BPS = 500;
+/** Re-settlement fee rate for the single-report diff segment (500 -> 600 bps). */
+export const DEMO_REPORT_DIFF_PRO_FEE_BPS = 600;
 
 /**
  * Signing secret for the demo webhook only — a placeholder printed in
@@ -2655,6 +2659,22 @@ export interface DemoResult {
   batchResults: SettlementReportResult[];
   /** Reconciliation summary over {@link DemoResult.batchResults}. */
   batchSummary: SettlementReportsSummary;
+  /**
+   * Re-settlement of the main escrow at
+   * {@link DEMO_REPORT_DIFF_PRO_FEE_BPS} bps — same escrow, history,
+   * final state and deposit as {@link DemoResult.report}, only the
+   * fee rate moved (500 -> 600 bps).
+   */
+  reportAtHigherFee: SettlementReport;
+  /**
+   * Field-by-field diff between {@link DemoResult.report} and
+   * {@link DemoResult.reportAtHigherFee}: exactly
+   * `settlementChanged` + `partiesChanged` — the fee moves from the
+   * creator to the platform (proFee 531.5 -> 637.8); outcome,
+   * currency, totals, balanced flag and event count are unchanged
+   * and absent from the diff.
+   */
+  reportDiff: SettlementReportDiff;
   /** Per-item batch webhooks built from {@link DemoResult.batchResults}. */
   batchWebhooks: BuildSettlementWebhooksResult[];
   /**
@@ -4994,6 +5014,73 @@ export async function runDemo(): Promise<DemoResult> {
     `  summary: ${batchSummary.total} escrows — ${batchSummary.reports} reports, ${batchSummary.errors} error (released ${batchSummary.outcomes.released}, refunded ${batchSummary.outcomes.refunded}, expired ${batchSummary.outcomes.expired})`,
     `  summary totals: deposit ${batchSummary.totalDeposit}, inflow ${batchSummary.totalInflow}, outflow ${batchSummary.totalOutflow}, remaining ${batchSummary.totalRemaining} — ${batchSummary.balanced ? "balanced ✓" : "UNBALANCED ✗"}`,
     `  summary parties: ${batchSummary.parties.map((p) => `${p.party} net ${p.net}`).join(", ")}`,
+  );
+
+  // --- Single-report diff: same escrow, re-settled at a new fee rate ---
+  // The batch above compares different escrows; this segment compares
+  // one escrow against itself. The main escrow is re-settled with the
+  // same escrowId, history, final state and deposit — only the fee rate
+  // moves (500 -> 600 bps), the "we renegotiated the platform fee"
+  // re-run a bookkeeping caller does when a rate changes after the
+  // fact. The deposit never moves, so the totals stay put: the fee
+  // moves from the creator to the platform, and that is exactly what
+  // the diff reports. Hand-computed expectations, pinned before
+  // printing (the same fail-fast shape the keyed batch uses):
+  //   diff keys exactly { settlementChanged, partiesChanged }
+  //   settlement: gross 10630 unchanged, proFee 531.5 -> 637.8,
+  //     net 10098.5 -> 9992.2, referralCredits 0 on both sides
+  //   parties: creator net 10098.5 -> 9992.2, platform net
+  //     531.5 -> 637.8; sponsor/referrer untouched, nothing
+  //     added or removed
+  //   absent from the diff: currency (undefined on both sides),
+  //     outcome (released on both sides), deposit, totals,
+  //     balanced, eventCount, audit window — unchanged fields are
+  //     not reported
+  //   two identical reports diff to {} — checked here, not just in
+  //     the unit tests, so the demo itself proves the empty case
+  const reportAtHigherFee = buildSettlementReport({
+    escrowId: escrow.id,
+    history: escrow.history,
+    finalState: escrow.state,
+    deposit: fees,
+    settlement: { proFeeBps: DEMO_REPORT_DIFF_PRO_FEE_BPS },
+  });
+  const reportDiff = diffSettlementReports(report, reportAtHigherFee);
+  const reportDiffChangedParties =
+    reportDiff.partiesChanged?.changed.map((entry) => entry.role) ?? [];
+  if (
+    Object.keys(reportDiff).sort().join(",") !==
+      "partiesChanged,settlementChanged" ||
+    reportDiff.settlementChanged?.from?.proFee !== 531.5 ||
+    reportDiff.settlementChanged?.to?.proFee !== 637.8 ||
+    reportDiff.settlementChanged?.from?.net !== 10098.5 ||
+    reportDiff.settlementChanged?.to?.net !== 9992.2 ||
+    reportDiff.settlementChanged?.from?.gross !== 10630 ||
+    reportDiff.settlementChanged?.to?.gross !== 10630 ||
+    reportDiff.partiesChanged?.added.length !== 0 ||
+    reportDiff.partiesChanged?.removed.length !== 0 ||
+    reportDiffChangedParties.join(",") !== "creator,platform" ||
+    reportDiff.partiesChanged?.changed[0]?.from.net !== 10098.5 ||
+    reportDiff.partiesChanged?.changed[0]?.to.net !== 9992.2 ||
+    reportDiff.partiesChanged?.changed[1]?.from.net !== 531.5 ||
+    reportDiff.partiesChanged?.changed[1]?.to.net !== 637.8 ||
+    reportDiff.currencyChanged !== undefined ||
+    reportDiff.outcomeChanged !== undefined ||
+    reportDiff.totalInflowChanged !== undefined ||
+    reportDiff.totalOutflowChanged !== undefined ||
+    Object.keys(diffSettlementReports(report, report)).length !== 0
+  ) {
+    throw new Error(
+      "demo fixture broken: single-report diff does not match the pinned shape (500 -> 600 bps moves only the fee: proFee 531.5 -> 637.8, creator net 10098.5 -> 9992.2, platform net 531.5 -> 637.8; outcome, currency, totals and event count stay out of the diff)",
+    );
+  }
+  lines.push(
+    "",
+    "Single-report diff (same escrow, re-settled at a higher fee rate):",
+    `  ${escrow.id}: ${DEMO_PRO_FEE_BPS} bps -> ${DEMO_REPORT_DIFF_PRO_FEE_BPS} bps — proFee ${reportDiff.settlementChanged?.from?.proFee} -> ${reportDiff.settlementChanged?.to?.proFee}, net ${reportDiff.settlementChanged?.from?.net} -> ${reportDiff.settlementChanged?.to?.net} (gross ${reportDiff.settlementChanged?.from?.gross} unchanged)`,
+    "  changed parties: creator net 10098.5 -> 9992.2, platform net 531.5 -> 637.8 (sponsor/referrer untouched, nothing added or removed)",
+    "  unchanged (absent from the diff): outcome released, currency, totals inflow/outflow 10630, balanced true, eventCount 4",
+    "  identical reports diff to {} — re-running the same settlement reports no change",
   );
 
   // --- Batch webhooks: batch reports -> per-item signed webhooks ---
@@ -10521,6 +10608,8 @@ export async function runDemo(): Promise<DemoResult> {
     pendingEscrow,
     batchResults,
     batchSummary,
+    reportAtHigherFee,
+    reportDiff,
     batchWebhooks,
     batchWebhooksVerified,
     fanoutResult,

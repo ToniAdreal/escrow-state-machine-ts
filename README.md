@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2010 tests, all local
+npm test   # 2013 tests, all local
 ```
 
 ## Quickstart
@@ -88,7 +88,16 @@ the batch without blocking the refunded report after it — and
 `summarizeSettlementReports` prints the batch's reconciliation
 summary (2 reports, 1 error, totals of 21,260 on the two golden
 deposits, and a still-locked `remaining` of 0 — both successful
-reports are fully settled, so neither carries a remainder). The batch results then go straight into
+reports are fully settled, so neither carries a remainder). Between
+the summary and the webhooks, the demo re-settles the main escrow
+at 600 bps (up from 500) and runs `diffSettlementReports` on the two
+reports of the same escrow: the diff carries exactly
+`settlementChanged` (proFee 531.5 → 637.8, net 10,098.5 → 9,992.2,
+gross 10,630 unchanged) and `partiesChanged` (creator and platform
+nets move, sponsor/referrer untouched, nothing added or removed),
+while outcome, currency, totals, balanced flag and event count are
+unchanged and absent from the diff — and two identical reports diff
+to `{}`. The batch results then go straight into
 `buildSettlementWebhooks`, which signs one webhook per successful
 report under the shared demo secret at one fixed batch timestamp —
 one factory-generated `eventId` per report (`evt_demo_batch_001`,
@@ -1717,7 +1726,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2010 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2013 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
