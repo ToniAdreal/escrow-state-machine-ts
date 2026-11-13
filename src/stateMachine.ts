@@ -783,6 +783,39 @@ function isCanonicalIso(s: unknown): s is string {
 }
 
 /**
+ * Fail-fast validation + normalization for the watchdog executors'
+ * optional `at` timestamp ({@link expireOverdueEscrows},
+ * {@link actOnStaleEscrows}).
+ *
+ * A `Date` is normalized with `toISOString()` (already canonical
+ * form); a string must already be canonical ISO-8601 — dispatch's
+ * own `at` bar. Anything else — a non-string/non-Date value, an
+ * invalid Date, a non-canonical string — throws `invalid at: …`
+ * before any escrow is touched, so a bad pin can never half-stamp a
+ * batch. `undefined` means "no pin": the caller falls back to the
+ * screening `now` (the #552 semantic), never to the wall clock.
+ * Mirrors dataquest's `resolveWatchdogAt` (same wording, same bar),
+ * except the fallback: dataquest's executors stamp the wall clock
+ * when unpinned, while this repo's executors pin the screening
+ * `now` when unpinned.
+ */
+function resolveWatchdogAt(at: Date | string | undefined): string | undefined {
+  if (at === undefined) return undefined;
+  if (at instanceof Date) {
+    if (!Number.isFinite(at.getTime())) {
+      throw new Error("invalid at: expected a valid Date");
+    }
+    return at.toISOString();
+  }
+  if (typeof at === "string" && isCanonicalIso(at)) return at;
+  throw new Error(
+    `invalid at: expected a canonical ISO-8601 string or a valid Date, got ${
+      typeof at === "string" ? JSON.stringify(at) : String(at)
+    }`,
+  );
+}
+
+/**
  * Parse and strictly validate an untrusted value into an EscrowSnapshot.
  *
  * Throws with a specific message on the first problem found:
@@ -3481,15 +3514,29 @@ export interface ExpireOverdueEscrowsOptions {
    * (`opts` must be an object, `dryRun` must be a boolean).
    */
   dryRun?: boolean;
+  /**
+   * Audit-timestamp pin: the `at` stamped on every `EXPIRE` entry
+   * this run appends. A `Date` is normalized with `toISOString()`;
+   * a string must already be canonical ISO-8601 — anything else
+   * throws `invalid at: …` fail-fast, before any escrow is screened
+   * or dispatched. Omitted, the pin stays the screening `now` (the
+   * #552 semantic), so a fixed screening instant still yields
+   * identical audit entries across the batch and across replays.
+   * The pin inherits dispatch's no-backward-clock rule: an `at`
+   * earlier than an escrow's last history entry lands as a
+   * per-escrow error and the batch continues. A dry run only
+   * validates the pin — it dispatches nothing.
+   */
+  at?: Date | string;
 }
 
 /**
  * Dry-run prediction for one screened escrow: replay, in the same
  * order, the checks the live `dispatch("EXPIRE", undefined, undefined,
- * { actor: "system", at: now })` would run — without dispatching
+ * { actor: "system", at: atIso })` would run — without dispatching
  * anything, so the escrow is untouched and no listener is notified:
  *
- * (1) the pinned `now` must not move the audit clock backwards (same
+ * (1) the pinned `at` must not move the audit clock backwards (same
  * check dispatch runs first, same wording); (2) edge legality, read
  * off the transition table via `transition()` (its throw carries the
  * exact message the live run would report); (3) RBAC, read off the
@@ -3501,11 +3548,11 @@ export interface ExpireOverdueEscrowsOptions {
  */
 function predictExpireOverdueEscrow(
   escrow: Escrow,
-  now: Date
+  atIso: string
 ): ExpireOverdueResult {
-  // (1) Backward clock: dispatch pins `now` as the EXPIRE entry's `at`
-  // and rejects it when it predates the last history entry.
-  const at = now.toISOString();
+  // (1) Backward clock: dispatch pins `atIso` as the EXPIRE entry's
+  // `at` and rejects it when it predates the last history entry.
+  const at = atIso;
   const history = escrow.history;
   const last = history[history.length - 1];
   if (last !== undefined && Date.parse(at) < Date.parse(last.at)) {
@@ -3583,6 +3630,14 @@ function predictExpireOverdueEscrow(
  * screening instant, and an audit entry can never be older than the
  * events it follows.
  *
+ * `opts.at` pins a different audit timestamp instead — pass a `Date`
+ * or a canonical ISO-8601 string to stamp the `EXPIRE` entries with
+ * a known instant other than the screening `now` (deterministic
+ * replay, backfilling history), validated fail-fast (`invalid at: …`)
+ * before any escrow is touched; omitted, the pin stays `now`. The
+ * same pin is what a dry run predicts against, so a backdated `at`
+ * reports the same per-escrow error in both modes.
+ *
  * Dry run (`opts.dryRun: true`): the safe rehearsal port for an
  * operator about to expire a batch — the executor screens the same
  * set, in the same order, but dispatches nothing: no state change, no
@@ -3615,23 +3670,31 @@ export function expireOverdueEscrows(
       );
     }
   }
+  // Fail fast on a bad `at` before screening or dispatching anything:
+  // a malformed pin must never half-stamp a batch.
+  const atOpt = resolveWatchdogAt(opts?.at);
   const screened = expiredEscrows(escrows, now);
+  // Omitted, the pin stays the screening `now` (the #552 semantic).
+  // Resolved after screening: an invalid `now` screens nothing, so
+  // this never throws a bare RangeError for it.
+  const atIso = atOpt ?? now.toISOString();
   if (opts?.dryRun === true) {
-    return screened.map((escrow) => predictExpireOverdueEscrow(escrow, now));
+    return screened.map((escrow) => predictExpireOverdueEscrow(escrow, atIso));
   }
   return screened.map((escrow) => {
     try {
-      // Pin the screening `now` as the EXPIRE audit entry's `at`: every
-      // entry in the batch carries the same timestamp as the screening
-      // decision, so fixed-`now` tests and replays produce identical
-      // histories. The dispatch is attributed to the `system` actor —
+      // Pin the resolved `at` (the screening `now` when unpinned) as
+      // the EXPIRE audit entry's `at`: every entry in the batch
+      // carries the same timestamp as the screening decision, so
+      // fixed-`now` tests and replays produce identical histories.
+      // The dispatch is attributed to the `system` actor —
       // the executor acts on the escrow's behalf, so a `requireActor`
       // escrow still expires instead of failing the attribution gate.
       // dispatch's own no-backward-clock check still applies
-      // (a backdated `now` lands as a per-escrow error, batch continues).
+      // (a backdated pin lands as a per-escrow error, batch continues).
       escrow.dispatch("EXPIRE", undefined, undefined, {
         actor: "system",
-        at: now,
+        at: atIso,
       });
       // The history getter returns frozen detached copies, so the last
       // entry is already the immutable audit record of this dispatch.
@@ -4300,8 +4363,29 @@ export function settlementAging(
   return result;
 }
 
+/**
+ * Context handed to {@link actOnStaleEscrows}'s action alongside the
+ * escrow: the audit timestamp the action should stamp on any
+ * dispatch it performs.
+ */
+export interface StaleEscrowActionContext {
+  /**
+   * The pinned audit timestamp for this run — canonical ISO-8601.
+   * The executor's `opts.at` when given, otherwise the screening
+   * `now` (the #552 semantic, shared with
+   * {@link expireOverdueEscrows}). A dispatch-style action should
+   * pass it through (`dispatch(…, { at: context.at })`) so the
+   * appended entry carries the run's pinned instant instead of the
+   * wall clock; a notify-only action ignores it.
+   */
+  at: string;
+}
+
 /** Action {@link actOnStaleEscrows} runs for each stale escrow. */
-export type StaleEscrowAction = (escrow: Escrow) => void;
+export type StaleEscrowAction = (
+  escrow: Escrow,
+  context: StaleEscrowActionContext,
+) => void;
 
 /**
  * Per-escrow outcome of {@link actOnStaleEscrows}.
@@ -4378,6 +4462,11 @@ export interface StaleEscrowActionResult {
  * non-function `action`, an invalid `maxAgeByState`, or an invalid
  * `now` (the latter two via `staleEscrows()`) throws and no escrow is
  * touched. The `now` default is the real clock, so unit tests pin it.
+ * The action receives a second argument, `{ at }` — the pinned audit
+ * timestamp for the run (`opts.at` when given, otherwise the screening
+ * `now`); a dispatch-style action should pass it through so its
+ * appended entry carries the run's pinned instant instead of the wall
+ * clock.
  *
  * Dry run (`opts.dryRun: true`): the safe rehearsal port for an
  * operator about to run a stale-escrow sweep — the executor screens
@@ -4401,6 +4490,17 @@ export interface ActOnStaleEscrowsOptions {
    * must be a boolean).
    */
   dryRun?: boolean;
+  /**
+   * Audit-timestamp pin, handed to the action as `context.at` so a
+   * dispatch-style action can stamp its entries with a known instant
+   * instead of the wall clock (deterministic replay, backfilling
+   * history). A `Date` is normalized with `toISOString()`; a string
+   * must already be canonical ISO-8601 — anything else throws
+   * `invalid at: …` fail-fast, before any escrow is screened or
+   * acted on. Omitted, the pin stays the screening `now` (the #552
+   * semantic). A dry run only validates the pin — it calls nothing.
+   */
+  at?: Date | string;
 }
 
 export function actOnStaleEscrows(
@@ -4425,9 +4525,18 @@ export function actOnStaleEscrows(
   if (typeof action !== "function") {
     throw new Error("invalid action: expected a function (escrow) => void");
   }
+  // Fail fast on a bad `at` before screening or acting on anything:
+  // a malformed pin must never half-stamp a batch. A dry run only
+  // validates the pin — it calls nothing.
+  const atOpt = resolveWatchdogAt(opts?.at);
   // staleEscrows() validates maxAgeByState and now fail-fast, before
   // any action runs.
   const selected = staleEscrows(escrows, maxAgeByState, now);
+  // Omitted, the pin stays the screening `now`; the action receives
+  // it as `context.at` and stamps its own dispatches with it.
+  // Resolved after screening so an invalid `now` still reports the
+  // `invalid now: …` error above, never a bare RangeError here.
+  const atIso = atOpt ?? now.toISOString();
   if (opts?.dryRun === true) {
     return selected.map((escrow) => ({ escrow, acted: false, wouldAct: true }));
   }
@@ -4439,7 +4548,7 @@ export function actOnStaleEscrows(
     // expireOverdueEscrows() and dataquest's actOnStaleTasks().
     const before = escrow.history.length;
     try {
-      action(escrow);
+      action(escrow, { at: atIso });
       const history = escrow.history;
       return history.length > before
         ? { escrow, acted: true, entry: history[history.length - 1] }

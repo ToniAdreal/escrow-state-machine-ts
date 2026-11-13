@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1932 tests, all local
+npm test   # 1944 tests, all local
 ```
 
 ## Quickstart
@@ -465,7 +465,12 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   The executor pins the screening `now` as the `at` of every `EXPIRE`
   entry it appends (`dispatch("EXPIRE", …, { actor: "system", at: now })`),
   so a fixed screening instant produces identical audit entries across the batch
-  and across replays — the wall clock never leaks in. The `system`
+  and across replays — the wall clock never leaks in. Pass `opts.at`
+  (`{ at }`, a `Date` or a canonical ISO-8601 string) to stamp the
+  entries with a different known instant instead — screening at `now`,
+  auditing at `at` — for deterministic replay or backfilling history;
+  a malformed pin throws `invalid at: …` fail-fast before any escrow
+  is touched, and a dry run only validates it. The `system`
   attribution also means the executor passes an escrow's opt-in
   `requireActor` gate, and a `rolePolicy` that lists `EXPIRE` must
   include `system` for the watchdog to get through (otherwise the
@@ -560,7 +565,12 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   maxAgeByState, now?, opts?)`, which runs a caller-supplied action for each
   stale escrow and returns per-escrow `{ escrow, acted, error?, entry? }`
   outcomes, isolating failures so one unactionable escrow never
-  aborts the batch. Pass `{ dryRun: true }` to rehearse instead: the
+  aborts the batch. The action receives a second argument,
+  `{ at }` — the pinned audit timestamp for the run (`opts.at` when
+  given, otherwise the screening `now`) — so a dispatch-style action
+  can stamp its entries with the run's pinned instant
+  (`dispatch(…, { at: context.at })`) instead of the wall clock; a
+  notify-only action ignores it. Pass `{ dryRun: true }` to rehearse instead: the
   executor screens the same stale set, in the same order, but calls
   the action for none of them, returning `{ escrow, acted: false,
   wouldAct: true }` per selected escrow — `wouldAct` answers only
@@ -1641,7 +1651,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1932 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1944 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

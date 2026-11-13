@@ -18,6 +18,20 @@ version changes.
 
 ### Added
 
+- Watchdog executors' optional `at` audit-timestamp pin (2026-11-13,
+  backlog #1097): `ExpireOverdueEscrowsOptions` and
+  `ActOnStaleEscrowsOptions` each gain `at?: Date | string`, validated
+  with dataquest's `resolveWatchdogAt` bar (Date → `toISOString()`,
+  string must be canonical ISO-8601, anything else throws
+  `invalid at: …` fail-fast before any escrow is touched); omitted,
+  the pin stays the screening `now` (the #552 semantic). The dry-run
+  prediction checks the pin too, so a backdated `at` reports the same
+  per-escrow error in both modes. `actOnStaleEscrows` hands the pin to
+  the action as `context.at` (new exported `StaleEscrowActionContext`),
+  so a dispatch-style action stamps its entries with the run's pinned
+  instant instead of the wall clock. 12 tests in
+  `test/watchdogAt.test.ts`.
+
 - `formatMinorUnits` / `parseMinorUnits` exact amount-string helpers
   (2026-11-13, backlog #1095): `formatMinorUnits` renders integer
   cents as a bare two-decimal string (`1063000` → `"10630.00"`, no

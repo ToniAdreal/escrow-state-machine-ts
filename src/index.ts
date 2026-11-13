@@ -16,6 +16,7 @@ export type {
   ExpireOverdueResult,
   NextEscrowDeadline,
   StaleEscrowAction,
+  StaleEscrowActionContext,
   StaleEscrowActionResult,
   ActOnStaleEscrowsOptions,
   ListenerErrorContext,
