@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2041 tests, all local
+npm test   # 2052 tests, all local
 ```
 
 ## Quickstart
@@ -1121,7 +1121,15 @@ try {
 }
 outbox.pending();    // failed but not yet exhausted — still worth a retry
 outbox.deadLetter(); // 3 consecutive failures — needs a human, not another retry
+outbox.stats();      // { size, pending, deadLettered, totalAttempts } — the same counts without materializing the lists
 ```
+
+`stats()` is a pure read: `size` equals the `size` getter
+(pending + dead-lettered), `totalAttempts` sums `attempts` over every
+tracked pair — dead-lettered pairs included, at their capped value —
+and the call changes nothing in the ledger, so a dashboard or health
+check that only needs the counts never pays for `pending()` /
+`deadLetter()` copies.
 
 A failed attempt increments the pair's consecutive-failure count
 (capped at `maxAttempts`, while later failures still refresh
@@ -1763,7 +1771,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2041 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2052 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

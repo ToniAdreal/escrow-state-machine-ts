@@ -18,6 +18,17 @@ version changes.
 
 ### Added
 
+- `SettlementWebhookOutbox.stats()` observability snapshot
+  (2026-11-13, backlog #1120): returns `{ size, pending,
+  deadLettered, totalAttempts }` — the same counts as the `size`
+  getter plus `pending()` / `deadLetter()` without materializing
+  either list; `totalAttempts` sums `attempts` over every tracked
+  pair (dead-lettered pairs included, at their capped value). Pure
+  read, mirroring `SettlementEventDedupe.stats()`; the
+  pending/dead-letter boundary is re-derived from the outbox's
+  `maxAttempts`, so a restored snapshot counts the same pairs
+  under a different cap.
+
 - `unreconciledSettlements(escrows)` reconciliation screen
   (2026-11-13, backlog #1116): returns the RELEASED escrows whose
   RELEASE entry carries no `settlementRef` — releases with no pointer

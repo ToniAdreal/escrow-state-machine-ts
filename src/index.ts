@@ -61,6 +61,7 @@ export type {
   SettlementWebhookOutboxRetrySummary,
   SettlementWebhookOutboxSignedSnapshotEnvelope,
   SettlementWebhookOutboxSnapshot,
+  SettlementWebhookOutboxStats,
   SettlementWebhook,
   SettlementWebhookEndpoint,
   SettlementWebhookEndpointResult,

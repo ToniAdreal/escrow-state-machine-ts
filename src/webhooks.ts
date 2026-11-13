@@ -1730,6 +1730,35 @@ export interface SettlementWebhookOutboxSnapshot {
 }
 
 /**
+ * Point-in-time observability snapshot of a
+ * {@link SettlementWebhookOutbox}, produced by `stats()`.
+ *
+ * - `size`: tracked `(endpoint, eventId)` pairs — the same number as
+ *   the `size` getter (pending + dead-lettered).
+ * - `pending`: pairs that have failed but not yet exhausted their
+ *   retries (`attempts < maxAttempts`) — the same population as
+ *   `pending()`, counted without materializing the list.
+ * - `deadLettered`: pairs that have exhausted their retries
+ *   (`attempts >= maxAttempts`) — the same population as
+ *   `deadLetter()`.
+ * - `totalAttempts`: the sum of `attempts` over every tracked pair,
+ *   dead-lettered pairs included — a pair that failed three times
+ *   contributes 3, not 1. It is a cumulative failure count, not a
+ *   delivery count: successes clear pairs (see `acknowledge()`), so
+ *   a pair's attempts stop counting once it is delivered.
+ *
+ * The returned object is a fresh copy — mutating it does not affect
+ * the ledger — and `stats()` itself is a pure read: it neither
+ * records nor drops anything.
+ */
+export interface SettlementWebhookOutboxStats {
+  size: number;
+  pending: number;
+  deadLettered: number;
+  totalAttempts: number;
+}
+
+/**
  * Integrity-protected form of a {@link SettlementWebhookOutboxSnapshot},
  * produced by `SettlementWebhookOutbox.exportSignedSnapshot(secret)` and
  * consumed by `SettlementWebhookOutbox.restoreSignedSnapshot(envelope,
@@ -2137,6 +2166,35 @@ export class SettlementWebhookOutbox {
   /** Drop every tracked pair. */
   clear(): void {
     this.records.clear();
+  }
+
+  /**
+   * Point-in-time observability snapshot (see
+   * {@link SettlementWebhookOutboxStats}): how many pairs are
+   * tracked, how many are still pending vs dead-lettered, and how
+   * many failed attempts they carry in total. Pure read — it
+   * materializes no lists and changes nothing in the ledger, so a
+   * caller that only needs the counts never pays for `pending()` /
+   * `deadLetter()` copies. `size` is the same number as the `size`
+   * getter.
+   */
+  stats(): SettlementWebhookOutboxStats {
+    let pending = 0;
+    let deadLettered = 0;
+    let totalAttempts = 0;
+    for (const byEvent of this.records.values()) {
+      for (const entry of byEvent.values()) {
+        if (entry.attempts >= this.maxAttempts) deadLettered++;
+        else pending++;
+        totalAttempts += entry.attempts;
+      }
+    }
+    return {
+      size: pending + deadLettered,
+      pending,
+      deadLettered,
+      totalAttempts,
+    };
   }
 
   /**
