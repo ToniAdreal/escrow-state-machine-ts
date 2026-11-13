@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 1969 tests, all local
+npm test   # 1984 tests, all local
 ```
 
 ## Quickstart
@@ -1427,6 +1427,7 @@ the whole summary:
 import {
   parseSettlementReportsSummaryCsv,
   parseSettlementReportsSummaryJson,
+  renderSettlementReportsSummary,
   renderSettlementReportsSummaryCsv,
   renderSettlementReportsSummaryJson,
   summarizeSettlementReports,
@@ -1437,9 +1438,25 @@ renderSettlementReportsSummaryCsv(summary);
 // => "section,key,count,total,reports,errors,totalDeposit,totalInflow,totalOutflow,totalRemaining,net,balanced\nsummary,,,4,3,1,31890.00,31890.00,31890.00,6378.00,,true\noutcome,released,1,..."
 renderSettlementReportsSummaryJson(summary);
 // => '{"total":4,"reports":3,"errors":1,"outcomes":{"released":1,...},"totalDeposit":31890,...}'
+renderSettlementReportsSummary(summary);
+// => "Settlement reports summary\nReports: 3 (errors: 1)\nReleased: 1\n..."
 parseSettlementReportsSummaryCsv(renderSettlementReportsSummaryCsv(summary)); // => the same summary
 parseSettlementReportsSummaryJson(renderSettlementReportsSummaryJson(summary)); // => the same summary
 ```
+
+For a log line or a terminal paste, `renderSettlementReportsSummary`
+renders the same summary as plain human-readable text — title line,
+counts line, four outcome rows, four money lines, one row per party,
+one row per currency bucket, a `balanced` line, and a units line, in
+that fixed order. Money is spelled with exactly two decimals, the
+same spelling the CSV uses. It is a display form, not an interchange
+form: there is no parser back (the CSV and JSON renderers are the
+round-trippable text forms), and the units line says so in the output
+itself — the top-level totals sum raw figures across currencies, so a
+mixed-currency batch must be read bucket by bucket. The renderer
+applies the same shape check as the CSV/JSON renderers and throws
+`cannot render settlement reports summary: …` on a malformed summary
+instead of emitting a document that reads consistent but is not.
 
 The CSV is a table with one `summary` row (the batch totals), four
 `outcome` rows in fixed order, four `party` rows in canonical role
@@ -1676,7 +1693,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 1969 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 1984 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

@@ -18,6 +18,28 @@ version changes.
 
 ### Added
 
+- `renderSettlementReportsSummary` plain-text batch-summary render
+  (2026-11-13, backlog #1102): renders a `SettlementReportsSummary`
+  as human-readable text for a log line or a terminal paste — title
+  line, `Reports: N (errors: M)` counts line, four outcome rows in
+  fixed order, four money lines, one row per party in canonical role
+  order, one row per currency bucket in alphabetical order, a
+  `balanced` line, and a units line, in that fixed order, mirroring
+  dataquest's `renderTaskSettlements` (#1096) and the single-report
+  `renderReport`. Money is spelled with exactly two decimals via
+  `formatMinorUnits` (summary figures are cent-exact floats, converted
+  to integer minor units, so the spelling matches the CSV exactly);
+  a figure whose minor units leave the safe integer range throws
+  fail-closed instead of printing a rounded-off amount. The units
+  line states the honest limit in the output itself: top-level totals
+  sum raw figures across currencies, so a mixed-currency batch must
+  be read bucket by bucket. Display form only — no parser back; the
+  CSV/JSON renderers stay the round-trippable text forms. The shared
+  summary shape/consistency check runs first, so a malformed summary
+  throws `cannot render settlement reports summary: …`. Pure, never
+  mutates the summary. 15 tests in
+  `test/settlementReportsSummaryText.test.ts`.
+
 - `diffSettlementReportsSummaries` batch-summary diff (2026-11-13,
   backlog #1101): compares two `SettlementReportsSummary` values field
   by field and returns a `SettlementReportsSummaryDiff` carrying only

@@ -35,7 +35,7 @@ import {
   type EscrowState,
   verifyHistoryChain,
 } from "./stateMachine.js";
-import type { FeeBreakdown } from "./feeCalculator.js";
+import { formatMinorUnits, type FeeBreakdown } from "./feeCalculator.js";
 import {
   settlePartialRelease,
   settleRelease,
@@ -3325,4 +3325,143 @@ export function parseSettlementReportsSummaryJson(
     "cannot parse settlement reports summary JSON",
   );
   return canonicalSettlementReportsSummary(parsed);
+}
+
+/**
+ * Spell one summary money figure with exactly two decimals, via
+ * {@link formatMinorUnits}: summary figures are cent-exact floats in
+ * the reports' currency units, so the ×100 step converts them to
+ * integer minor units and `Math.round` absorbs the binary-float
+ * residue of that step (`0.29 * 100` is `28.999…`, which rounds back
+ * to `29`). The spelling therefore matches `csvMoney` exactly —
+ * `1234.56` here is `1234.56` in the CSV — while staying free of
+ * locale-dependent separators, so the same summary always renders
+ * the same bytes.
+ *
+ * Fail-closed limit: a figure whose minor units leave the safe
+ * integer range (roughly ±9e13 in currency units, where one cent is
+ * smaller than a float step) cannot be spelled exactly, so it throws
+ * with the render prefix instead of printing a rounded-off figure.
+ * Realistic settlement batches are far below that bound; the CSV
+ * renderer stays the escape hatch for astronomical hand-built
+ * summaries.
+ */
+function summaryMoney(n: number): string {
+  const minor = Math.round(n * 100);
+  if (!Number.isSafeInteger(minor)) {
+    throw new Error(
+      `cannot render settlement reports summary: amount ${n} is outside the safely renderable range`,
+    );
+  }
+  return formatMinorUnits(minor);
+}
+
+/**
+ * Render a settlement-reports summary as plain human-readable text —
+ * the form for a log line or a terminal paste during reconciliation:
+ * a caller that wants to eyeball a batch's position no longer has to
+ * hand-build the string or paste a JSON document into a chat.
+ *
+ * The layout follows the dataquest-side `renderTaskSettlements`
+ * (backlog #1096) and this file's single-report {@link renderReport}:
+ * a title line, a counts line, the four outcome rows in fixed order,
+ * the four money lines, one row per party in canonical role order,
+ * one row per currency bucket in alphabetical order, a `balanced`
+ * line, and a units line, in that fixed order — so the same summary
+ * always renders the same bytes, and a reader scanning two batches
+ * can compare line by line:
+ *
+ * ```text
+ * Settlement reports summary
+ * Reports: 3 (errors: 1)
+ * Released: 1
+ * Refunded: 1
+ * Expired: 0
+ * Partially-released: 1
+ * Total deposit: 31890.00
+ * Total inflow: 31890.00
+ * Total outflow: 31890.00
+ * Total remaining: 6378.00
+ * Sponsor (depositor): inflow 17008.00, outflow 31890.00, net -14882.00
+ * Creator (payee): inflow 14137.90, outflow 0.00, net 14137.90
+ * Platform (pro fee): inflow 744.10, outflow 0.00, net 744.10
+ * Referrer (referral credits): inflow 0.00, outflow 0.00, net 0.00
+ * EUR: 1 report, deposit 10630.00, inflow 10630.00, outflow 10630.00, remaining 0.00
+ * USD: 2 reports, deposit 21260.00, inflow 21260.00, outflow 21260.00, remaining 6378.00
+ * Balanced: true
+ * Amounts are in the reports' currency units, shown with two decimals; top-level totals sum figures across currencies — read the per-currency rows for single-currency money.
+ * ```
+ *
+ * The counts, outcome, money, party, and `balanced` rows are always
+ * present, even when zero, so a zero batch reads as an explicit
+ * all-zero position rather than a missing section. Currency rows
+ * appear only for buckets the summary actually carries — an empty or
+ * all-error batch has none, mirroring the CSV renderer.
+ *
+ * Before rendering, the summary is shape-checked and
+ * self-consistency-checked with the shared check (see
+ * {@link assertSettlementReportsSummary}): a non-object summary, a
+ * missing or unknown field, a non-integer or unsafe-integer count, a
+ * non-cent-exact money figure, a `total` that does not equal
+ * `reports + errors`, outcome counts that do not sum to `reports`,
+ * party ledgers whose inflow/outflow do not sum to the totals, a
+ * party `net` that does not equal `inflow − outflow`, currency
+ * buckets whose sums do not equal the top-level totals, or a
+ * `balanced: true` over disagreeing totals all throw
+ * `cannot render settlement reports summary: …` instead of emitting
+ * a document that reads consistent but is not.
+ *
+ * Honest limit, shared with the CSV/JSON renderers but stronger
+ * here: this is a display form, not an interchange form. There is no
+ * parser back — the CSV and JSON renderers are the round-trippable
+ * text forms — and reading figures off this text does not re-verify
+ * the audit histories the summary claims to summarize. The units
+ * line says so in the output itself: the top-level totals sum raw
+ * figures across currencies, so a mixed-currency batch must be read
+ * bucket by bucket.
+ *
+ * Pure: the summary is only read, never mutated.
+ */
+export function renderSettlementReportsSummary(
+  summary: SettlementReportsSummary,
+): string {
+  assertSettlementReportsSummary(
+    summary,
+    "cannot render settlement reports summary",
+  );
+  const lines: string[] = [
+    "Settlement reports summary",
+    `Reports: ${summary.reports} (errors: ${summary.errors})`,
+  ];
+  for (const outcome of SUMMARY_OUTCOME_ORDER) {
+    const label =
+      outcome === "partially-released"
+        ? "Partially-released"
+        : outcome[0].toUpperCase() + outcome.slice(1);
+    lines.push(`${label}: ${summary.outcomes[outcome]}`);
+  }
+  lines.push(
+    `Total deposit: ${summaryMoney(summary.totalDeposit)}`,
+    `Total inflow: ${summaryMoney(summary.totalInflow)}`,
+    `Total outflow: ${summaryMoney(summary.totalOutflow)}`,
+    `Total remaining: ${summaryMoney(summary.totalRemaining)}`,
+  );
+  const partyByRole = new Map(summary.parties.map((p) => [p.party, p]));
+  for (const role of SUMMARY_PARTY_ORDER) {
+    const party = partyByRole.get(role)!;
+    lines.push(
+      `${party.label}: inflow ${summaryMoney(party.inflow)}, outflow ${summaryMoney(party.outflow)}, net ${summaryMoney(party.net)}`,
+    );
+  }
+  for (const code of Object.keys(summary.byCurrency).sort()) {
+    const bucket = summary.byCurrency[code];
+    lines.push(
+      `${code}: ${bucket.reports} ${bucket.reports === 1 ? "report" : "reports"}, deposit ${summaryMoney(bucket.totalDeposit)}, inflow ${summaryMoney(bucket.totalInflow)}, outflow ${summaryMoney(bucket.totalOutflow)}, remaining ${summaryMoney(bucket.totalRemaining)}`,
+    );
+  }
+  lines.push(
+    `Balanced: ${summary.balanced ? "true" : "false"}`,
+    "Amounts are in the reports' currency units, shown with two decimals; top-level totals sum figures across currencies — read the per-currency rows for single-currency money.",
+  );
+  return lines.join("\n");
 }
