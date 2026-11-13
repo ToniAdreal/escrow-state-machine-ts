@@ -18,6 +18,21 @@ version changes.
 
 ### Added
 
+- Optional `expiresAt` expiry on the three signed snapshot envelopes
+  (2026-11-13, backlog #1103): `Escrow`,
+  `SettlementEventDedupe`, and `SettlementWebhookOutbox`
+  `exportSignedSnapshot(secret, opts?)` accept `{ expiresAt }` (a
+  canonical ISO-8601 UTC timestamp) or `{ maxAgeMs, now? }`; the
+  timestamp is written into the envelope and covered by its MAC, so
+  it cannot be extended without the secret.
+  `restoreSignedSnapshot` rejects an expired envelope
+  (`now > expiresAt` — restoring at exactly `expiresAt` still
+  succeeds) after the MAC check and before any snapshot parsing,
+  with `opts.now` injecting the clock (a millisecond timestamp for
+  `Escrow`, the options' `now` clock function for the dedupe and the
+  outbox). Envelopes without `expiresAt` never expire, exactly as
+  before. Mirrors dataquest's `TaskLifecycle` / `PayoutEventDedupe` /
+  `PayoutWebhookOutbox` envelopes (backlog #1076).
 - `renderSettlementReportsSummary` plain-text batch-summary render
   (2026-11-13, backlog #1102): renders a `SettlementReportsSummary`
   as human-readable text for a log line or a terminal paste — title

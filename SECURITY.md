@@ -249,6 +249,13 @@ encryption: the eventIds inside are wire-visible values, and the
 secret is never written into the envelope — a restored dedupe
 must be handed the secret again, like the audit key above, and
 key storage and distribution remain the caller's responsibility.
+Each envelope can also carry an optional expiry:
+`exportSignedSnapshot(secret, { expiresAt })` or
+`{ maxAgeMs, now? }` writes a canonical ISO-8601 UTC `expiresAt`
+into the envelope, covered by the MAC, so a stolen envelope cannot
+keep a dedupe alive past its expiry; restore rejects an expired
+envelope (`now > expiresAt`) after the MAC check and before any
+snapshot parsing. An envelope without `expiresAt` never expires.
 
 Escrow snapshots get the same treatment at the snapshot level:
 `Escrow.exportSignedSnapshot(secret)` wraps the whole
@@ -267,6 +274,15 @@ independently); `opts.auditKey` is still handed to `fromJSON` on
 restore so a keyed chain re-verifies under its own key. The
 unsigned `fromJSON()` path stays accepted as trusted
 configuration, and the two forms never accept each other.
+Each envelope can also carry an optional expiry:
+`exportSignedSnapshot(secret, { expiresAt })` or
+`{ maxAgeMs, now? }` writes a canonical ISO-8601 UTC `expiresAt`
+into the envelope, covered by the MAC, so a stolen envelope cannot
+resurrect the escrow's state — a revoked policy, cleared
+idempotency keys, a pushed-back deadline — after its expiry;
+restore rejects an expired envelope (`now > expiresAt`) after the
+MAC check and before any snapshot parsing. An envelope without
+`expiresAt` never expires.
 
 Outbox snapshots get the same treatment:
 `SettlementWebhookOutbox.exportSignedSnapshot(secret)` wraps the
@@ -286,7 +302,14 @@ protection only, not encryption: the endpoints and eventIds inside
 are wire-visible values, and the secret is never written into the
 envelope — a restored outbox must be handed the secret again, like
 the audit key above, and key storage and distribution remain the
-caller's responsibility.
+caller's responsibility. Each envelope can also carry an optional
+expiry: `exportSignedSnapshot(secret, { expiresAt })` or
+`{ maxAgeMs, now? }` writes a canonical ISO-8601 UTC `expiresAt`
+into the envelope, covered by the MAC, so a stolen envelope cannot
+resurrect a cleared dead letter after its expiry; restore rejects
+an expired envelope (`now > expiresAt`) after the MAC check and
+before any snapshot parsing. An envelope without `expiresAt` never
+expires.
 
 ## Deliberately NOT here (production would need it)
 
