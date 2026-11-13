@@ -152,12 +152,12 @@ test("released golden report still renders byte-identically", () => {
   assert.equal(
     renderReportCsv(releasedReport()),
     [
-      "escrowId,outcome,currency,role,inflow,outflow,net",
-      "esc-10630,released,,sponsor,0.00,10630.00,-10630.00",
-      "esc-10630,released,,creator,10098.50,0.00,10098.50",
-      "esc-10630,released,,platform,531.50,0.00,531.50",
-      "esc-10630,released,,referrer,0.00,0.00,0.00",
-      "esc-10630,released,,TOTAL,10630.00,10630.00,0.00",
+      "escrowId,outcome,currency,settlementRef,role,inflow,outflow,net",
+      "esc-10630,released,,,sponsor,0.00,10630.00,-10630.00",
+      "esc-10630,released,,,creator,10098.50,0.00,10098.50",
+      "esc-10630,released,,,platform,531.50,0.00,531.50",
+      "esc-10630,released,,,referrer,0.00,0.00,0.00",
+      "esc-10630,released,,,TOTAL,10630.00,10630.00,0.00",
     ].join("\n"),
   );
 });
@@ -166,12 +166,12 @@ test("refunded golden report still renders byte-identically", () => {
   assert.equal(
     renderReportCsv(refundedReport()),
     [
-      "escrowId,outcome,currency,role,inflow,outflow,net",
-      "esc-refund,refunded,,sponsor,10630.00,10630.00,0.00",
-      "esc-refund,refunded,,creator,0.00,0.00,0.00",
-      "esc-refund,refunded,,platform,0.00,0.00,0.00",
-      "esc-refund,refunded,,referrer,0.00,0.00,0.00",
-      "esc-refund,refunded,,TOTAL,10630.00,10630.00,0.00",
+      "escrowId,outcome,currency,settlementRef,role,inflow,outflow,net",
+      "esc-refund,refunded,,,sponsor,10630.00,10630.00,0.00",
+      "esc-refund,refunded,,,creator,0.00,0.00,0.00",
+      "esc-refund,refunded,,,platform,0.00,0.00,0.00",
+      "esc-refund,refunded,,,referrer,0.00,0.00,0.00",
+      "esc-refund,refunded,,,TOTAL,10630.00,10630.00,0.00",
     ].join("\n"),
   );
 });
@@ -180,12 +180,12 @@ test("expired golden report still renders byte-identically", () => {
   assert.equal(
     renderReportCsv(expiredReport()),
     [
-      "escrowId,outcome,currency,role,inflow,outflow,net",
-      "esc-expired,expired,,sponsor,10630.00,10630.00,0.00",
-      "esc-expired,expired,,creator,0.00,0.00,0.00",
-      "esc-expired,expired,,platform,0.00,0.00,0.00",
-      "esc-expired,expired,,referrer,0.00,0.00,0.00",
-      "esc-expired,expired,,TOTAL,10630.00,10630.00,0.00",
+      "escrowId,outcome,currency,settlementRef,role,inflow,outflow,net",
+      "esc-expired,expired,,,sponsor,10630.00,10630.00,0.00",
+      "esc-expired,expired,,,creator,0.00,0.00,0.00",
+      "esc-expired,expired,,,platform,0.00,0.00,0.00",
+      "esc-expired,expired,,,referrer,0.00,0.00,0.00",
+      "esc-expired,expired,,,TOTAL,10630.00,10630.00,0.00",
     ].join("\n"),
   );
 });

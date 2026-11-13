@@ -2486,11 +2486,12 @@ export interface DemoResult {
   /**
    * `renderReportCsv(report)` on the main settlement report: the same
    * released report as CSV — header
-   * `escrowId,outcome,currency,role,inflow,outflow,net`, one row per party in
+   * `escrowId,outcome,currency,settlementRef,role,inflow,outflow,net`, one row per party in
    * fixed sponsor/creator/platform/referrer order, and a final `TOTAL`
    * row whose inflow/outflow/net columns sum the party rows. This
-   * report was built without a currency, so the `currency` column is
-   * empty on every row.
+   * report was built without a currency and without a settlement
+   * ref, so the `currency` and `settlementRef` columns are empty on
+   * every row.
    */
   reportCsv: string;
   /**
@@ -2521,7 +2522,10 @@ export interface DemoResult {
    * outcome, the four party ledgers, the TOTAL row's totals, and
    * `balanced`), re-rendering byte-identically through
    * `renderReportCsv`, as an independent object graph (mutating it
-   * never touches `report`).
+   * never touches `report`). The subset also carries the
+   * `settlementRef` when the report has one (empty here, because
+   * this report's RELEASE entry carries none) — and the `currency`
+   * when the report was built with one (empty here too).
    */
   reportCsvImported: SettlementReportCsv;
   /**
@@ -4368,22 +4372,22 @@ export async function runDemo(): Promise<DemoResult> {
   const reportCsvNetSum =
     Math.round(report.parties.reduce((sum, p) => sum + p.net, 0) * 100) / 100;
   if (
-    reportCsvLines[0] !== "escrowId,outcome,currency,role,inflow,outflow,net" ||
+    reportCsvLines[0] !== "escrowId,outcome,currency,settlementRef,role,inflow,outflow,net" ||
     reportCsvLines.length !== report.parties.length + 2 ||
-    reportCsvTotal[3] !== "TOTAL" ||
-    reportCsvTotal[4] !== report.totalInflow.toFixed(2) ||
-    reportCsvTotal[5] !== report.totalOutflow.toFixed(2) ||
-    reportCsvTotal[6] !== reportCsvNetSum.toFixed(2)
+    reportCsvTotal[4] !== "TOTAL" ||
+    reportCsvTotal[5] !== report.totalInflow.toFixed(2) ||
+    reportCsvTotal[6] !== report.totalOutflow.toFixed(2) ||
+    reportCsvTotal[7] !== reportCsvNetSum.toFixed(2)
   ) {
     throw new Error(
-      "demo fixture broken: renderReportCsv on the main settlement report does not match the pinned shape (header escrowId,outcome,currency,role,inflow,outflow,net, one row per party, and a TOTAL row summing the party rows to the report totals)",
+      "demo fixture broken: renderReportCsv on the main settlement report does not match the pinned shape (header escrowId,outcome,currency,settlementRef,role,inflow,outflow,net, one row per party, and a TOTAL row summing the party rows to the report totals)",
     );
   }
   lines.push(
     "",
     "Settlement report as CSV (renderReportCsv — the same released report, for bookkeeping imports):",
     ...reportCsvLines.map((line) => `  ${line}`),
-    `  TOTAL row check: inflow ${reportCsvTotal[4]} = report totalInflow ${report.totalInflow.toFixed(2)}, outflow ${reportCsvTotal[5]} = report totalOutflow ${report.totalOutflow.toFixed(2)}, net ${reportCsvTotal[6]} = party nets sum ${reportCsvNetSum.toFixed(2)} (the CSV sums its own party rows — an importer reads columns, never the prose report above)`,
+    `  TOTAL row check: inflow ${reportCsvTotal[5]} = report totalInflow ${report.totalInflow.toFixed(2)}, outflow ${reportCsvTotal[6]} = report totalOutflow ${report.totalOutflow.toFixed(2)}, net ${reportCsvTotal[7]} = party nets sum ${reportCsvNetSum.toFixed(2)} (the CSV sums its own party rows — an importer reads columns, never the prose report above)`,
   );
 
   // --- Settlement report as JSON: renderReportJson ---
@@ -4500,7 +4504,8 @@ export async function runDemo(): Promise<DemoResult> {
   // `releasePath`, `eventCount`, or audit window, so the import does
   // not reconstruct them — but it does carry the `currency` column
   // when the report was built with one (empty here, because this
-  // report carries none) — and, as with the JSON import, the import
+  // report carries none) and the `settlementRef` column when the
+  // report carries one (empty here too) — and, as with the JSON import, the import
   // is structural validation only, not a re-verification of the audit
   // chain (that stays with verifyHistoryChain below); a hand-built
   // CSV with internally consistent rows would parse, and the demo
@@ -4509,7 +4514,7 @@ export async function runDemo(): Promise<DemoResult> {
   const importedReportCsvText = renderReportCsv(importedReportCsv);
   const damagedCsvLines = reportCsv.split("\n");
   const damagedCsvTotal = damagedCsvLines[damagedCsvLines.length - 1].split(",");
-  damagedCsvTotal[4] = "10631.00";
+  damagedCsvTotal[5] = "10631.00";
   damagedCsvLines[damagedCsvLines.length - 1] = damagedCsvTotal.join(",");
   const damagedReportCsv = damagedCsvLines.join("\n");
   let damagedReportCsvError = "";
@@ -4547,7 +4552,7 @@ export async function runDemo(): Promise<DemoResult> {
     "",
     "Settlement report as CSV, imported back (parseSettlementReportCsv — the same released report, read back from a bookkeeping import):",
     `  round-trip: parseSettlementReportCsv(reportCsv) recovers the CSV-carried subset and re-renders byte-identically (escrowId ${importedReportCsv.escrowId}, outcome ${importedReportCsv.outcome}, ${importedReportCsv.parties.length} party rows, TOTAL ${importedReportCsv.totalInflow.toFixed(2)}/${importedReportCsv.totalOutflow.toFixed(2)}, balanced ${importedReportCsv.balanced})`,
-    `  carried fields only: the deposit breakdown, settlement parameters, releasePath, eventCount and audit window are not in the CSV and are not reconstructed (the currency column is empty here because this report was built without a currency; a report built with one carries it in every row — the import is structural validation, not a re-verification of the audit chain)`,
+    `  carried fields only: the deposit breakdown, settlement parameters, releasePath, eventCount and audit window are not in the CSV and are not reconstructed (the currency column is empty here because this report was built without a currency, and the settlementRef column is empty because its RELEASE entry carries no ref; a report built with one carries it in every row — the import is structural validation, not a re-verification of the audit chain)`,
     `  damaged CSV rejected: TOTAL inflow 10631.00 against party-row sum 10630.00 -> "${damagedReportCsvError}" (the import fails fast instead of returning a self-inconsistent report)`,
   );
 

@@ -18,6 +18,21 @@ version changes.
 
 ### Added
 
+- Settlement report carries the terminal RELEASE entry's `settlementRef`
+  (2026-11-13, backlog #1113): a `released` report gains
+  `SettlementReport.settlementRef` — the pointer to the real-world
+  payment — only when the RELEASE entry carries one, so ref-less
+  releases and every other outcome keep their previous shape exactly.
+  The ref rides the CSV export (a `settlementRef` column on every row,
+  empty when absent; files written before the column existed, with the
+  7-column header, still parse with the ref simply absent), the JSON
+  export, and the plain-text render (`Settlement ref:` line), and
+  `diffSettlementReports` reports a moved ref as
+  `settlementRefChanged`. An illegal ref on the terminal entry (empty,
+  non-string, or over `MAX_SETTLEMENT_REF_LENGTH` characters — the
+  history parser's rule) fails the build, as does a ref on an
+  `ARBITRATE_RELEASE` entry; the batch summary is unaffected (it
+  aggregates money, not pointers).
 - `diffSettlementReports` benchmark row (2026-11-13, backlog #1110):
   one measured op diffs the fixed golden released report (500 bps)
   against the same escrow re-settled at 600 bps — the change-key set

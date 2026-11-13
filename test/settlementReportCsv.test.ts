@@ -46,12 +46,12 @@ test("released golden fixture renders the exact CSV rows", () => {
   assert.equal(
     csv,
     [
-      "escrowId,outcome,currency,role,inflow,outflow,net",
-      "esc-10630,released,,sponsor,0.00,10630.00,-10630.00",
-      "esc-10630,released,,creator,10098.50,0.00,10098.50",
-      "esc-10630,released,,platform,531.50,0.00,531.50",
-      "esc-10630,released,,referrer,0.00,0.00,0.00",
-      "esc-10630,released,,TOTAL,10630.00,10630.00,0.00",
+      "escrowId,outcome,currency,settlementRef,role,inflow,outflow,net",
+      "esc-10630,released,,,sponsor,0.00,10630.00,-10630.00",
+      "esc-10630,released,,,creator,10098.50,0.00,10098.50",
+      "esc-10630,released,,,platform,531.50,0.00,531.50",
+      "esc-10630,released,,,referrer,0.00,0.00,0.00",
+      "esc-10630,released,,,TOTAL,10630.00,10630.00,0.00",
     ].join("\n"),
   );
 });
@@ -70,12 +70,12 @@ test("refunded escrow returns the full deposit to the sponsor in CSV", () => {
   assert.equal(
     renderReportCsv(report),
     [
-      "escrowId,outcome,currency,role,inflow,outflow,net",
-      "esc-refund,refunded,,sponsor,10630.00,10630.00,0.00",
-      "esc-refund,refunded,,creator,0.00,0.00,0.00",
-      "esc-refund,refunded,,platform,0.00,0.00,0.00",
-      "esc-refund,refunded,,referrer,0.00,0.00,0.00",
-      "esc-refund,refunded,,TOTAL,10630.00,10630.00,0.00",
+      "escrowId,outcome,currency,settlementRef,role,inflow,outflow,net",
+      "esc-refund,refunded,,,sponsor,10630.00,10630.00,0.00",
+      "esc-refund,refunded,,,creator,0.00,0.00,0.00",
+      "esc-refund,refunded,,,platform,0.00,0.00,0.00",
+      "esc-refund,refunded,,,referrer,0.00,0.00,0.00",
+      "esc-refund,refunded,,,TOTAL,10630.00,10630.00,0.00",
     ].join("\n"),
   );
 });
@@ -91,21 +91,21 @@ test("expired escrow renders the same full-refund shape with outcome expired", (
     deposit: goldenDeposit(),
   });
   const lines = renderReportCsv(report).split("\n");
-  assert.equal(lines[0], "escrowId,outcome,currency,role,inflow,outflow,net");
-  assert.equal(lines[1], "esc-expired,expired,,sponsor,10630.00,10630.00,0.00");
-  assert.equal(lines[5], "esc-expired,expired,,TOTAL,10630.00,10630.00,0.00");
+  assert.equal(lines[0], "escrowId,outcome,currency,settlementRef,role,inflow,outflow,net");
+  assert.equal(lines[1], "esc-expired,expired,,,sponsor,10630.00,10630.00,0.00");
+  assert.equal(lines[5], "esc-expired,expired,,,TOTAL,10630.00,10630.00,0.00");
 });
 
 test("TOTAL row sums agree with the report totals and the party nets", () => {
   const report = releasedReport();
   const lines = renderReportCsv(report).split("\n");
   const total = lines[lines.length - 1].split(",");
-  assert.equal(total[4], report.totalInflow.toFixed(2));
-  assert.equal(total[5], report.totalOutflow.toFixed(2));
+  assert.equal(total[5], report.totalInflow.toFixed(2));
+  assert.equal(total[6], report.totalOutflow.toFixed(2));
   const netSum = Math.round(
     report.parties.reduce((s, p) => s + p.net, 0) * 100,
   ) / 100;
-  assert.equal(total[6], netSum.toFixed(2));
+  assert.equal(total[7], netSum.toFixed(2));
 });
 
 test("zero-amount parties still get their own row", () => {
@@ -113,7 +113,7 @@ test("zero-amount parties still get their own row", () => {
   // Header + 4 party rows + TOTAL = 6 lines; the referrer row is all zeros
   // but present, so an import never has to guess whether a party is missing.
   assert.equal(lines.length, 6);
-  assert.equal(lines[4], "esc-10630,released,,referrer,0.00,0.00,0.00");
+  assert.equal(lines[4], "esc-10630,released,,,referrer,0.00,0.00,0.00");
 });
 
 test("referral credits land on the referrer row at two decimals", () => {
@@ -127,15 +127,15 @@ test("referral credits land on the referrer row at two decimals", () => {
   });
   const lines = renderReportCsv(report).split("\n");
   // Creator net = 10630 − 531.50 − 200 = 9898.50.
-  assert.equal(lines[2], "esc-referral,released,,creator,9898.50,0.00,9898.50");
-  assert.equal(lines[4], "esc-referral,released,,referrer,200.00,0.00,200.00");
+  assert.equal(lines[2], "esc-referral,released,,,creator,9898.50,0.00,9898.50");
+  assert.equal(lines[4], "esc-referral,released,,,referrer,200.00,0.00,200.00");
 });
 
 test("party rows keep the fixed sponsor/creator/platform/referrer order", () => {
   const roles = renderReportCsv(releasedReport())
     .split("\n")
     .slice(1, 5)
-    .map((line) => line.split(",")[3]);
+    .map((line) => line.split(",")[4]);
   assert.deepEqual(roles, ["sponsor", "creator", "platform", "referrer"]);
 });
 
@@ -163,8 +163,8 @@ test("fields with a comma or quote are RFC 4180-escaped", () => {
     eventCount: 4,
   };
   const lines = renderReportCsv(report).split("\n");
-  assert.equal(lines[1], '"esc,""x",released,,sponsor,0.00,10630.00,-10630.00');
-  assert.equal(lines[5], '"esc,""x",released,,TOTAL,10630.00,10630.00,0.00');
+  assert.equal(lines[1], '"esc,""x",released,,,sponsor,0.00,10630.00,-10630.00');
+  assert.equal(lines[5], '"esc,""x",released,,,TOTAL,10630.00,10630.00,0.00');
 });
 
 test("output is newline-joined with no trailing newline", () => {
