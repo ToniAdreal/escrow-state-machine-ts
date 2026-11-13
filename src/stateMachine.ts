@@ -4545,6 +4545,58 @@ export function settlementAging(
 }
 
 /**
+ * Reconciliation helper: from a batch of escrows, return the ones whose
+ * settlement lacks external payment evidence — currently RELEASED, but
+ * the `RELEASE` audit entry carries no `settlementRef`.
+ *
+ * This is the reconciliation tooling the `dispatch()` docs point at: a
+ * `RELEASE` without a `settlementRef` is legal (advisory only — the
+ * library cannot verify whether an external payment really happened),
+ * so finance ops need a one-liner to find the releases that still
+ * need chasing:
+ *
+ *   for (const escrow of unreconciledSettlements(allEscrows)) {
+ *     alertFinance(escrow.id, "released but settlement evidence missing");
+ *   }
+ *
+ * The check looks at the last `RELEASE` entry (the one that moved the
+ * escrow to RELEASED), not any earlier entry: a reference can only
+ * ever be written on a RELEASE (dispatch rejects it on any other
+ * event), so a ref anywhere else cannot evidence the settlement.
+ * Defensive: a RELEASED escrow with no `RELEASE` entry at all is
+ * also returned. The plain release path always writes one, but an
+ * arbitration release (`ARBITRATE_RELEASE`) reaches RELEASED without
+ * one — and that entry carries no `settlementRef` by construction,
+ * since dispatch rejects a ref on any event but RELEASE — so an
+ * arbitration-released escrow is unreconciled by the same rule, not
+ * by accident: its settlement still moved money with no pointer to
+ * the transfer. Either way, missing release evidence is exactly what
+ * reconciliation should flag, not silently pass.
+ *
+ * Pure: reads the escrows, never mutates or dispatches. An empty
+ * input returns an empty array. The returned array holds the same
+ * escrow objects, in input order. Mirrors the dataquest lifecycle's
+ * `unreconciledPayouts`, whose `PAYOUT_COMPLETE` entry is this
+ * escrow's `RELEASE` counterpart.
+ */
+export function unreconciledSettlements(
+  escrows: readonly Escrow[],
+): Escrow[] {
+  return escrows.filter((escrow) => {
+    if (escrow.state !== "RELEASED") return false;
+    let release: EscrowHistoryEntry | undefined;
+    for (const entry of escrow.history) {
+      if (entry.event === "RELEASE") release = entry;
+    }
+    // Defensive: a RELEASED escrow with no RELEASE entry — reachable
+    // through arbitration (ARBITRATE_RELEASE carries no ref by
+    // construction) — is reconciliation-worthy too.
+    if (release === undefined) return true;
+    return release.settlementRef === undefined;
+  });
+}
+
+/**
  * Context handed to {@link actOnStaleEscrows}'s action alongside the
  * escrow: the audit timestamp the action should stamp on any
  * dispatch it performs.

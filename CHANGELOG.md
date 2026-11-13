@@ -18,6 +18,19 @@ version changes.
 
 ### Added
 
+- `unreconciledSettlements(escrows)` reconciliation screen
+  (2026-11-13, backlog #1116): returns the RELEASED escrows whose
+  RELEASE entry carries no `settlementRef` — releases with no pointer
+  to the real-world payment — so finance ops can chase the missing
+  evidence instead of hand-scanning histories. An
+  arbitration-released escrow is unreconciled too (its
+  `ARBITRATE_RELEASE` entry carries no ref by construction);
+  REFUNDED, EXPIRED, and in-progress escrows never appear. Pure
+  (reads the escrows, never mutates or dispatches), same objects in
+  input order; mirrors the dataquest lifecycle's
+  `unreconciledPayouts`. With the opt-in `requireSettlementRef` gate
+  on, a ref-less RELEASE cannot happen at all, so the screen and the
+  gate agree by construction.
 - Settlement report carries the terminal RELEASE entry's `settlementRef`
   (2026-11-13, backlog #1113): a `released` report gains
   `SettlementReport.settlementRef` — the pointer to the real-world
