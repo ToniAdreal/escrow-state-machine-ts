@@ -213,6 +213,25 @@ export interface SettlementReport {
    * report is minted.
    */
   settlementRef?: string;
+  /**
+   * The external refund reference carried by the terminal
+   * ARBITRATE_REFUND entry's `refundRef` (backlog #1123) — the one
+   * pointer from this audit report to the real-world refund (bank
+   * refund reference, payment-gateway refund id, payout batch id)
+   * that refunded the escrow. Present only for the `refunded`
+   * outcome, and only when that ARBITRATE_REFUND entry carries a
+   * ref: a refund without one keeps the previous shape exactly (no
+   * key emitted), and `released` / `expired` /
+   * `partially-released` reports never carry it — a RELEASE entry
+   * never has a `refundRef` either (the history parser only allows
+   * it on ARBITRATE_REFUND), so a released report has no key here.
+   * The value is copied verbatim from the history entry; its shape
+   * (non-empty string, at most `MAX_SETTLEMENT_REF_LENGTH`
+   * characters — the same shared cap as `settlementRef`) is the same
+   * rule the history parser enforces, checked by the build path
+   * before the report is minted.
+   */
+  refundRef?: string;
   outcome: SettlementOutcome;
   /** e.g. "VERIFY_PASS → RELEASE" for released, undefined otherwise */
   releasePath?: string | undefined;
@@ -386,6 +405,37 @@ function assertSettlementRef(
   }
 }
 
+/**
+ * Validate the refund reference a terminal history entry carries,
+ * before it is copied onto a report. The mirror of
+ * {@link assertSettlementRef} for the refund side: the same rule the
+ * history parser enforces (`src/stateMachine.ts`, the `refundRef`
+ * branch of the snapshot entry validator) — a non-empty string of at
+ * most `MAX_SETTLEMENT_REF_LENGTH` characters, the shared cap — and
+ * the build path enforces the entry restriction by only ever reading
+ * the ref off the terminal entry (see the REFUNDED branch below). A
+ * live escrow can never produce an illegal ref (dispatch and the
+ * parser both reject it), so this only fires for hand-built histories
+ * passed straight to the builder — and there it must fail closed,
+ * because an illegal ref minted onto a report would then fail the
+ * library's own CSV/JSON shape checks downstream.
+ */
+function assertRefundRef(
+  ref: unknown,
+  escrowId: string,
+): asserts ref is string {
+  if (typeof ref !== "string" || ref.length === 0) {
+    throw new Error(
+      `cannot build settlement report for ${escrowId}: refundRef must be a non-empty string, got ${JSON.stringify(ref)}`,
+    );
+  }
+  if (ref.length > MAX_SETTLEMENT_REF_LENGTH) {
+    throw new Error(
+      `cannot build settlement report for ${escrowId}: refundRef must be at most ${MAX_SETTLEMENT_REF_LENGTH} characters, got ${ref.length}`,
+    );
+  }
+}
+
 function ledger(
   party: PartyRole,
   inflow: number,
@@ -433,7 +483,11 @@ function ledger(
  * terminal entry (empty, non-string, or over
  * `MAX_SETTLEMENT_REF_LENGTH` characters — the history parser's rule)
  * throws `cannot build settlement report: …` instead of minting a
- * report the library's own parsers would refuse.
+ * report the library's own parsers would refuse. The mirror holds for
+ * refunds: a `refunded` report carries the terminal ARBITRATE_REFUND
+ * entry's `refundRef` on `SettlementReport.refundRef` when the entry
+ * has one, and an illegal ref — or a ref on any other terminal entry
+ * — fails the build the same way.
  */
 export function buildSettlementReport(
   inputs: SettlementReportInputs,
@@ -558,6 +612,16 @@ export function buildSettlementReport(
         );
       }
     }
+    // The refund side's ref can never appear on a released report's
+    // terminal entry either (the parser only allows it on
+    // ARBITRATE_REFUND): fail closed instead of silently dropping it,
+    // the same rule as the settlementRef check above.
+    if (lastEntry.refundRef !== undefined) {
+      assertRefundRef(lastEntry.refundRef, escrowId);
+      throw new Error(
+        `cannot build settlement report for ${escrowId}: refundRef is only allowed on ARBITRATE_REFUND entries, got it on ${lastEvent}`,
+      );
+    }
     const parties = [
       ledger("sponsor", 0, depositAmount),
       ledger("creator", settlement.net, 0),
@@ -598,6 +662,34 @@ export function buildSettlementReport(
       throw new Error(
         `cannot build settlement report for ${escrowId}: state is ${finalState} but the last audit event is ${lastEvent}`,
       );
+    // The mirror of the RELEASED branch's settlementRef handling: the
+    // report keeps the pointer to the real-world refund — the terminal
+    // ARBITRATE_REFUND entry's `refundRef`, when it carries one. An
+    // ARBITRATE_REFUND entry is the only entry that may carry a ref
+    // (the history parser enforces that), so a ref on the terminal
+    // entry of an EXPIRED report is malformed history and fails
+    // closed here instead of being silently dropped — a live escrow
+    // can never produce that shape. No ref on the entry, no key on
+    // the report: a ref-less refund keeps the previous shape exactly.
+    const lastEntry = history[history.length - 1];
+    if (lastEntry.refundRef !== undefined) {
+      assertRefundRef(lastEntry.refundRef, escrowId);
+      if (lastEvent !== "ARBITRATE_REFUND") {
+        throw new Error(
+          `cannot build settlement report for ${escrowId}: refundRef is only allowed on ARBITRATE_REFUND entries, got it on ${lastEvent}`,
+        );
+      }
+    }
+    // The settlement side's ref can never appear on a refunded or
+    // expired report's terminal entry either (the parser only allows
+    // it on RELEASE): fail closed instead of silently dropping it,
+    // the same rule as the refundRef check above.
+    if (lastEntry.settlementRef !== undefined) {
+      assertSettlementRef(lastEntry.settlementRef, escrowId);
+      throw new Error(
+        `cannot build settlement report for ${escrowId}: settlementRef is only allowed on RELEASE entries, got it on ${lastEvent}`,
+      );
+    }
     const parties = [
       ledger("sponsor", depositAmount, depositAmount),
       ledger("creator", 0, 0),
@@ -607,6 +699,9 @@ export function buildSettlementReport(
     return {
       ...base,
       outcome: finalState === "REFUNDED" ? "refunded" : "expired",
+      ...(lastEvent === "ARBITRATE_REFUND" && lastEntry.refundRef !== undefined
+        ? { refundRef: lastEntry.refundRef }
+        : {}),
       parties,
       totalInflow: depositAmount,
       totalOutflow: depositAmount,
@@ -1324,6 +1419,7 @@ export interface SettlementReportPartiesDiff {
 export interface SettlementReportDiff {
   currencyChanged?: { from: string | undefined; to: string | undefined };
   settlementRefChanged?: { from: string | undefined; to: string | undefined };
+  refundRefChanged?: { from: string | undefined; to: string | undefined };
   outcomeChanged?: { from: SettlementOutcome; to: SettlementOutcome };
   releasePathChanged?: { from: string | undefined; to: string | undefined };
   depositChanged?: { from: FeeBreakdown; to: FeeBreakdown };
@@ -1436,6 +1532,8 @@ function indexParties(
  * present one are different states), `settlementRef` (an absent ref and
  * a present one are different states — a re-settlement against a new
  * real-world payment is a change even when every figure agrees),
+ * `refundRef` (the same rule on the refund side — a re-refund against
+ * a new real-world refund is a change even when every figure agrees),
  * `outcome`, `releasePath`, the
  * `deposit` breakdown (every money field at integer-cent precision, the
  * complexity multiplier exactly), the `settlement` / `partialSettlement`
@@ -1490,6 +1588,9 @@ export function diffSettlementReports(
   }
   if (a.settlementRef !== b.settlementRef) {
     diff.settlementRefChanged = { from: a.settlementRef, to: b.settlementRef };
+  }
+  if (a.refundRef !== b.refundRef) {
+    diff.refundRefChanged = { from: a.refundRef, to: b.refundRef };
   }
   if (a.outcome !== b.outcome) {
     diff.outcomeChanged = { from: a.outcome, to: b.outcome };
@@ -1895,12 +1996,12 @@ function csvField(value: string): string {
  * text, so callers never have to parse prose lines whose format may change.
  *
  * Shape (lines joined by `\n`, no trailing newline):
- * - Header: `escrowId,outcome,currency,settlementRef,role,inflow,outflow,net`.
+ * - Header: `escrowId,outcome,currency,settlementRef,refundRef,role,inflow,outflow,net`.
  * - One row per party in the report's party order (sponsor, creator,
  *   platform, referrer), including zero-amount parties, so a row is never
  *   silently absent from an import. Amounts are cent-rounded with exactly
  *   two decimals, matching `renderReport`'s cent precision.
- * - A final `TOTAL` row (`escrowId,outcome,currency,settlementRef,TOTAL,...`) whose inflow/outflow/
+ * - A final `TOTAL` row (`escrowId,outcome,currency,settlementRef,refundRef,TOTAL,...`) whose inflow/outflow/
  *   net columns are the sums over the party rows above it — computed from
  *   the rows themselves, not copied from the report's totals, so the CSV is
  *   self-consistent even if a hand-built report's totals disagree.
@@ -1909,7 +2010,7 @@ function csvField(value: string): string {
  * (including `TOTAL`), so a multi-currency bookkeeping import can tell
  * USD rows from EUR rows without re-querying the report. A report built
  * without a currency renders the column empty — the column is still
- * present, so a currency-less export keeps the same 8-column shape and
+ * present, so a currency-less export keeps the same 9-column shape and
  * an importer never has to guess the column count from the header.
  *
  * The `settlementRef` column carries the report's external payment
@@ -1917,12 +2018,26 @@ function csvField(value: string): string {
  * can pair the report with the real-world payment without re-querying
  * it. A report built without a ref renders the column empty — the
  * column is still present, so a ref-less export keeps the same
- * 8-column shape. The column was added in backlog #1113: exports
+ * 9-column shape. The column was added in backlog #1113: exports
  * written before it carry the 7-column header
  * `escrowId,outcome,currency,role,inflow,outflow,net`, and
  * {@link parseSettlementReportCsv} still accepts those (the parsed
  * value simply omits `settlementRef`, and re-renders in the new
- * 8-column shape).
+ * 9-column shape).
+ *
+ * The `refundRef` column carries the report's external refund
+ * reference on every row (including `TOTAL`), the mirror of the
+ * `settlementRef` column for the refund side, so a bookkeeping import
+ * can pair a refunded report with the real-world refund without
+ * re-querying it. A report built without a ref renders the column
+ * empty — the column is still present, so a ref-less export keeps
+ * the same 9-column shape. The column was added in backlog #1123:
+ * exports written before it carry the 8-column header
+ * `escrowId,outcome,currency,settlementRef,role,inflow,outflow,net`,
+ * and {@link parseSettlementReportCsv} still accepts those (the
+ * parsed value simply omits `refundRef`, and re-renders in the new
+ * 9-column shape) — as it still accepts the 7-column header from
+ * before #1113.
  *
  * String fields are RFC 4180-escaped (today's ids/roles/outcomes contain no
  * special characters; the escaping is pinned anyway so a future id carrying
@@ -1930,14 +2045,15 @@ function csvField(value: string): string {
  *
  * The parameter is a full {@link SettlementReport} or the CSV-carried
  * subset returned by {@link parseSettlementReportCsv}: rendering reads
- * only `escrowId`, `outcome`, `currency`, `settlementRef`, and `parties`, so a parsed value re-renders
+ * only `escrowId`, `outcome`, `currency`, `settlementRef`, `refundRef`, and `parties`, so a parsed value re-renders
  * byte-identically without rebuilding the fields the CSV never carried.
  *
  * Before rendering, the CSV-carried fields are shape-checked with the
  * shared core also used by {@link assertReportShape} (see below): a non-object
  * report, an empty `escrowId`, an illegal `outcome`, an illegal `currency`,
  * an illegal `settlementRef` (empty, or over `MAX_SETTLEMENT_REF_LENGTH`
- * characters), an empty `parties` array, an unknown party role, or a non-finite party amount
+ * characters), an illegal `refundRef` (empty, or over
+ * `MAX_SETTLEMENT_REF_LENGTH` characters), an empty `parties` array, an unknown party role, or a non-finite party amount
  * throws `cannot render settlement report as CSV: …` instead of
  * emitting a row that reads `Infinity` or `NaN` — the literals
  * `csvMoney` used to produce for such figures. Only the carried fields
@@ -1953,7 +2069,7 @@ export function renderReportCsv(
   report: SettlementReport | SettlementReportCsv,
 ): string {
   assertReportCsvFields(report, "cannot render settlement report as CSV");
-  const lines: string[] = ["escrowId,outcome,currency,settlementRef,role,inflow,outflow,net"];
+  const lines: string[] = ["escrowId,outcome,currency,settlementRef,refundRef,role,inflow,outflow,net"];
   let totalInflow = 0;
   let totalOutflow = 0;
   let totalNet = 0;
@@ -1964,6 +2080,7 @@ export function renderReportCsv(
         csvField(report.outcome),
         csvField(report.currency ?? ""),
         csvField(report.settlementRef ?? ""),
+        csvField(report.refundRef ?? ""),
         csvField(p.party),
         csvMoney(p.inflow),
         csvMoney(p.outflow),
@@ -1980,6 +2097,7 @@ export function renderReportCsv(
       csvField(report.outcome),
       csvField(report.currency ?? ""),
       csvField(report.settlementRef ?? ""),
+      csvField(report.refundRef ?? ""),
       "TOTAL",
       csvMoney(totalInflow),
       csvMoney(totalOutflow),
@@ -1998,8 +2116,11 @@ export function renderReportCsv(
  * the `settlementRef` when the released report carries one (the column
  * is empty when it does not — and a CSV written before the column
  * existed, with the 7-column header, parses the same way, with the
- * ref simply absent), and the per-party `inflow`/`outflow`/`net`
- * ledgers, plus the `TOTAL` row that sums them.
+ * ref simply absent), the `refundRef` when the refunded report
+ * carries one (the column is empty when it does not — and a CSV
+ * written before the column existed, with the 7- or 8-column header,
+ * parses the same way, with the ref simply absent), and the per-party
+ * `inflow`/`outflow`/`net` ledgers, plus the `TOTAL` row that sums them.
  * It does NOT carry the deposit breakdown (`creatorPool`, `baseFee`,
  * `complexityMultiplier`, `loyaltyDiscount`, `oracleFee`), the
  * `settlement` parameters, the `releasePath`, the `eventCount`, or the
@@ -2037,6 +2158,18 @@ export interface SettlementReportCsv {
    * history parser enforces on the entry it came from.
    */
   settlementRef?: string;
+  /**
+   * The external refund reference from the refunded report's
+   * terminal ARBITRATE_REFUND entry, when it carries one. Absent
+   * when the CSV's refundRef column was empty, or when the CSV was
+   * written before the column existed (7- or 8-column header) — the
+   * column is still present in a current export, so a ref-less
+   * report re-renders byte-identically with the empty column. A
+   * present ref is a non-empty string of at most
+   * `MAX_SETTLEMENT_REF_LENGTH` characters, the same shape the
+   * history parser enforces on the entry it came from.
+   */
+  refundRef?: string;
   parties: PartyLedger[];
   totalInflow: number;
   totalOutflow: number;
@@ -2173,20 +2306,25 @@ function parseCsvMoney(
  *
  * The check is structural plus self-consistency, in the other direction
  * from rendering: the header must be exactly
- * `escrowId,outcome,currency,settlementRef,role,inflow,outflow,net` — or
- * the legacy `escrowId,outcome,currency,role,inflow,outflow,net` written
- * before the `settlementRef` column existed (backlog #1113), which
- * parses the same way with the ref simply absent; there must be exactly four
+ * `escrowId,outcome,currency,settlementRef,refundRef,role,inflow,outflow,net` — or
+ * the 8-column `escrowId,outcome,currency,settlementRef,role,inflow,outflow,net` written
+ * between backlog #1113 and #1123, or the legacy
+ * `escrowId,outcome,currency,role,inflow,outflow,net` written before
+ * the `settlementRef` column existed (backlog #1113) — which parse
+ * the same way with the missing ref(s) simply absent; there must be exactly four
  * party rows (one per role, each once, in any order) plus a final `TOTAL`
  * row; every row must carry the same `escrowId` (non-empty and at most
  * {@link MAX_ESCROW_ID_LENGTH} characters, the same cap the escrow
  * constructor enforces — a longer id could never have been minted by
  * this library), `outcome`, `currency` (empty when the report was
  * built without one; a non-empty code must be a 3-letter uppercase ISO
- * 4217 code), and `settlementRef` (empty when the report carries none;
+ * 4217 code), `settlementRef` (empty when the report carries none;
  * a non-empty ref must be at most `MAX_SETTLEMENT_REF_LENGTH`
  * characters, the same cap the history parser enforces on the RELEASE
- * entry it came from); every amount must be a finite two-decimal figure; every
+ * entry it came from), and `refundRef` (empty when the report carries
+ * none; a non-empty ref must be at most `MAX_SETTLEMENT_REF_LENGTH`
+ * characters, the same cap the history parser enforces on the
+ * ARBITRATE_REFUND entry it came from); every amount must be a finite two-decimal figure; every
  * party's `net` must equal its `inflow − outflow` at cent precision; and
  * the `TOTAL` row must equal the sums over the party rows. Any violation
  * throws `cannot parse settlement report CSV: …` instead of returning a
@@ -2197,9 +2335,9 @@ function parseCsvMoney(
  * CSV carries. The deposit breakdown, settlement parameters,
  * `releasePath`, `eventCount`, and audit window are not in the file and
  * are not reconstructed — a parsed value re-renders byte-identically
- * through `renderReportCsv` when the file used the current 8-column
- * header (a legacy 7-column file parses to the same subset but
- * re-renders in the new 8-column shape), but it is not the original
+ * through `renderReportCsv` when the file used the current 9-column
+ * header (an older 8- or 7-column file parses to the same subset but
+ * re-renders in the new 9-column shape), but it is not the original
  * `SettlementReport`, and no field in it should be read as the original
  * breakdown. Import is structural validation only, not a re-verification
  * of the audit chain: a hand-built CSV with internally consistent rows
@@ -2232,14 +2370,27 @@ export function parseSettlementReportCsv(text: string): SettlementReportCsv {
     );
   }
   const header = records[0];
-  // Two headers are accepted: the current 8-column header (with the
-  // `settlementRef` column, added in backlog #1113) and the legacy
-  // 7-column header written before it existed. A legacy file parses
-  // to the same subset with `settlementRef` simply absent — and
-  // re-renders in the new 8-column shape, so the re-render identity
-  // holds for current exports, not for legacy ones. Anything else is
-  // not a header this library ever wrote and fails closed.
+  // Three headers are accepted: the current 9-column header (with the
+  // `settlementRef` and `refundRef` columns, the latter added in backlog
+  // #1123), the 8-column header written between #1113 and #1123 (with
+  // `settlementRef` but no `refundRef`), and the legacy 7-column header
+  // written before either existed. An older file parses to the same
+  // subset with the missing ref(s) simply absent — and re-renders in
+  // the new 9-column shape, so the re-render identity holds for
+  // current exports, not for older ones. Anything else is not a header
+  // this library ever wrote and fails closed.
   const isCurrentHeader =
+    header.length === 9 &&
+    header[0] === "escrowId" &&
+    header[1] === "outcome" &&
+    header[2] === "currency" &&
+    header[3] === "settlementRef" &&
+    header[4] === "refundRef" &&
+    header[5] === "role" &&
+    header[6] === "inflow" &&
+    header[7] === "outflow" &&
+    header[8] === "net";
+  const isSettlementRefHeader =
     header.length === 8 &&
     header[0] === "escrowId" &&
     header[1] === "outcome" &&
@@ -2258,28 +2409,38 @@ export function parseSettlementReportCsv(text: string): SettlementReportCsv {
     header[4] === "inflow" &&
     header[5] === "outflow" &&
     header[6] === "net";
-  if (!isCurrentHeader && !isLegacyHeader) {
+  if (!isCurrentHeader && !isSettlementRefHeader && !isLegacyHeader) {
     fail(
-      'header must be exactly "escrowId,outcome,currency,settlementRef,role,inflow,outflow,net" (or the legacy "escrowId,outcome,currency,role,inflow,outflow,net")',
+      'header must be exactly "escrowId,outcome,currency,settlementRef,refundRef,role,inflow,outflow,net" (or the 8-column "escrowId,outcome,currency,settlementRef,role,inflow,outflow,net", or the legacy "escrowId,outcome,currency,role,inflow,outflow,net")',
     );
   }
-  const hasRefColumn = isCurrentHeader;
-  // Column indices shift by one when the ref column is present.
-  const roleIdx = hasRefColumn ? 4 : 3;
+  const hasSettlementRefColumn = isCurrentHeader || isSettlementRefHeader;
+  const hasRefundRefColumn = isCurrentHeader;
+  // Column indices shift by one per ref column present.
+  const roleIdx = hasRefundRefColumn ? 5 : hasSettlementRefColumn ? 4 : 3;
   const inflowIdx = roleIdx + 1;
   const outflowIdx = roleIdx + 2;
   const netIdx = roleIdx + 3;
-  const columnCount = hasRefColumn ? 8 : 7;
+  const columnCount = hasRefundRefColumn ? 9 : hasSettlementRefColumn ? 8 : 7;
   const escrowId = records[1][0];
   const outcome = records[1][1];
   const currency = records[1][2];
-  const settlementRef = hasRefColumn ? records[1][3] : "";
+  const settlementRef = hasSettlementRefColumn ? records[1][3] : "";
   if (settlementRef === undefined) {
     fail("settlementRef must be present (empty when the report carries none)");
   }
   if (settlementRef.length > MAX_SETTLEMENT_REF_LENGTH) {
     fail(
       `settlementRef must be at most ${MAX_SETTLEMENT_REF_LENGTH} characters, got ${settlementRef.length}`,
+    );
+  }
+  const refundRef = hasRefundRefColumn ? records[1][4] : "";
+  if (refundRef === undefined) {
+    fail("refundRef must be present (empty when the report carries none)");
+  }
+  if (refundRef.length > MAX_SETTLEMENT_REF_LENGTH) {
+    fail(
+      `refundRef must be at most ${MAX_SETTLEMENT_REF_LENGTH} characters, got ${refundRef.length}`,
     );
   }
   if (escrowId === undefined || escrowId === "") {
@@ -2311,7 +2472,8 @@ export function parseSettlementReportCsv(text: string): SettlementReportCsv {
     if (row[0] !== escrowId) fail(`${where} escrowId ${JSON.stringify(row[0])} does not match ${JSON.stringify(escrowId)}`);
     if (row[1] !== outcome) fail(`${where} outcome ${JSON.stringify(row[1])} does not match ${JSON.stringify(outcome)}`);
     if (row[2] !== currency) fail(`${where} currency ${JSON.stringify(row[2])} does not match ${JSON.stringify(currency)}`);
-    if (hasRefColumn && row[3] !== settlementRef) fail(`${where} settlementRef ${JSON.stringify(row[3])} does not match ${JSON.stringify(settlementRef)}`);
+    if (hasSettlementRefColumn && row[3] !== settlementRef) fail(`${where} settlementRef ${JSON.stringify(row[3])} does not match ${JSON.stringify(settlementRef)}`);
+    if (hasRefundRefColumn && row[4] !== refundRef) fail(`${where} refundRef ${JSON.stringify(row[4])} does not match ${JSON.stringify(refundRef)}`);
     const role = row[roleIdx];
     if (role !== "sponsor" && role !== "creator" && role !== "platform" && role !== "referrer") {
       fail(`${where} role must be a PartyRole, got ${JSON.stringify(role)}`);
@@ -2342,7 +2504,8 @@ export function parseSettlementReportCsv(text: string): SettlementReportCsv {
   if (total[0] !== escrowId) fail(`TOTAL row escrowId does not match ${JSON.stringify(escrowId)}`);
   if (total[1] !== outcome) fail(`TOTAL row outcome does not match ${JSON.stringify(outcome)}`);
   if (total[2] !== currency) fail(`TOTAL row currency does not match ${JSON.stringify(currency)}`);
-  if (hasRefColumn && total[3] !== settlementRef) fail(`TOTAL row settlementRef does not match ${JSON.stringify(settlementRef)}`);
+  if (hasSettlementRefColumn && total[3] !== settlementRef) fail(`TOTAL row settlementRef does not match ${JSON.stringify(settlementRef)}`);
+  if (hasRefundRefColumn && total[4] !== refundRef) fail(`TOTAL row refundRef does not match ${JSON.stringify(refundRef)}`);
   if (total[roleIdx] !== "TOTAL") fail(`last row role must be "TOTAL", got ${JSON.stringify(total[roleIdx])}`);
   const totalInflow = parseCsvMoney(total[inflowIdx], "TOTAL row inflow");
   const totalOutflow = parseCsvMoney(total[outflowIdx], "TOTAL row outflow");
@@ -2369,6 +2532,10 @@ export function parseSettlementReportCsv(text: string): SettlementReportCsv {
     // file without the column at all) means no ref, and the key is
     // omitted so a current export re-renders byte-identically.
     ...(settlementRef !== "" ? { settlementRef } : {}),
+    // Same for the refund ref: an empty column (or an older file
+    // without the column at all) means no ref, and the key is
+    // omitted so a current export re-renders byte-identically.
+    ...(refundRef !== "" ? { refundRef } : {}),
     parties,
     totalInflow,
     totalOutflow,
@@ -2400,7 +2567,7 @@ export function parseSettlementReportCsv(text: string): SettlementReportCsv {
  * report shape checks: {@link renderReportCsv} applies exactly this (with a CSV
  * prefix) because rendering reads nothing else, and
  * {@link assertReportShape} applies it first and then adds the
- * full-report fields. `currency`, `settlementRef`, totals, and `balanced` are carried by
+ * full-report fields. `currency`, `settlementRef`, `refundRef`, totals, and `balanced` are carried by
  * both shapes, so when present they must be sane; a bare carried-fields
  * value without them still passes here, and the full-report check below
  * requires the totals and the balanced flag. The `escrowId` is capped at
@@ -2445,6 +2612,18 @@ function assertReportCsvFields(report: unknown, prefix: string): void {
       typeof settlementRef === "string"
         ? `settlementRef must be at most ${MAX_SETTLEMENT_REF_LENGTH} characters, got ${settlementRef.length}`
         : "settlementRef must be a non-empty string when present",
+    );
+  const refundRef = r.refundRef;
+  if (
+    refundRef !== undefined &&
+    (typeof refundRef !== "string" ||
+      refundRef.length === 0 ||
+      refundRef.length > MAX_SETTLEMENT_REF_LENGTH)
+  )
+    fail(
+      typeof refundRef === "string"
+        ? `refundRef must be at most ${MAX_SETTLEMENT_REF_LENGTH} characters, got ${refundRef.length}`
+        : "refundRef must be a non-empty string when present",
     );
   if (!Array.isArray(r.parties) || r.parties.length === 0)
     fail("parties must be a non-empty array");
@@ -2548,7 +2727,8 @@ function assertReportShape(
  * feed the report to a bookkeeping API or a database instead of a CSV
  * import. The output is `JSON.stringify` of the report itself, so it
  * carries exactly the {@link SettlementReport} fields (escrowId, outcome,
- * releasePath when present, `settlementRef` when present, deposit breakdown, settlement when present,
+ * releasePath when present, `settlementRef` when present, `refundRef`
+ * when present, deposit breakdown, settlement when present,
  * partialSettlement and remaining when present, the four party ledgers,
  * totals, balanced flag, and audit window) with no field added, renamed,
  * or dropped.
@@ -2620,6 +2800,9 @@ export function renderReport(report: SettlementReport): string {
     ...(report.currency !== undefined ? [`Currency: ${report.currency}`] : []),
     ...(report.settlementRef !== undefined
       ? [`Settlement ref: ${report.settlementRef}`]
+      : []),
+    ...(report.refundRef !== undefined
+      ? [`Refund ref: ${report.refundRef}`]
       : []),
     `Deposit: ${money(d.deposit)} (pool ${money(d.creatorPool)} + base ${money(d.baseFee)}×${d.complexityMultiplier} − loyalty ${money(d.loyaltyDiscount)} + oracle ${money(d.oracleFee)})`,
     "",

@@ -47,12 +47,12 @@ test("USD report renders the currency column with the code on every row", () => 
   assert.equal(
     csv,
     [
-      "escrowId,outcome,currency,settlementRef,role,inflow,outflow,net",
-      "esc-10630,released,USD,,sponsor,0.00,10630.00,-10630.00",
-      "esc-10630,released,USD,,creator,10098.50,0.00,10098.50",
-      "esc-10630,released,USD,,platform,531.50,0.00,531.50",
-      "esc-10630,released,USD,,referrer,0.00,0.00,0.00",
-      "esc-10630,released,USD,,TOTAL,10630.00,10630.00,0.00",
+      "escrowId,outcome,currency,settlementRef,refundRef,role,inflow,outflow,net",
+      "esc-10630,released,USD,,,sponsor,0.00,10630.00,-10630.00",
+      "esc-10630,released,USD,,,creator,10098.50,0.00,10098.50",
+      "esc-10630,released,USD,,,platform,531.50,0.00,531.50",
+      "esc-10630,released,USD,,,referrer,0.00,0.00,0.00",
+      "esc-10630,released,USD,,,TOTAL,10630.00,10630.00,0.00",
     ].join("\n"),
   );
 });
@@ -71,23 +71,23 @@ test("EUR and USD reports differ only in the currency column", () => {
   }
 });
 
-test("currency-less report renders the same 8-column shape with an empty currency column", () => {
+test("currency-less report renders the same 9-column shape with an empty currency column", () => {
   const csv = renderReportCsv(releasedReport());
   assert.equal(
     csv,
     [
-      "escrowId,outcome,currency,settlementRef,role,inflow,outflow,net",
-      "esc-10630,released,,,sponsor,0.00,10630.00,-10630.00",
-      "esc-10630,released,,,creator,10098.50,0.00,10098.50",
-      "esc-10630,released,,,platform,531.50,0.00,531.50",
-      "esc-10630,released,,,referrer,0.00,0.00,0.00",
-      "esc-10630,released,,,TOTAL,10630.00,10630.00,0.00",
+      "escrowId,outcome,currency,settlementRef,refundRef,role,inflow,outflow,net",
+      "esc-10630,released,,,,sponsor,0.00,10630.00,-10630.00",
+      "esc-10630,released,,,,creator,10098.50,0.00,10098.50",
+      "esc-10630,released,,,,platform,531.50,0.00,531.50",
+      "esc-10630,released,,,,referrer,0.00,0.00,0.00",
+      "esc-10630,released,,,,TOTAL,10630.00,10630.00,0.00",
     ].join("\n"),
   );
   // Same column count as the currency-carrying export, so an importer
   // never has to guess the shape from the header.
   for (const line of csv.split("\n")) {
-    assert.equal(line.split(",").length, 8);
+    assert.equal(line.split(",").length, 9);
   }
 });
 
@@ -138,8 +138,8 @@ test("parse rejects a four-letter currency code", () => {
 
 test("parse rejects a currency mismatch across rows", () => {
   const csv = renderReportCsv(releasedReport("esc-10630", "USD")).replace(
-    "esc-10630,released,USD,,creator",
-    "esc-10630,released,EUR,,creator",
+    "esc-10630,released,USD,,,creator",
+    "esc-10630,released,EUR,,,creator",
   );
   assert.throws(
     () => parseSettlementReportCsv(csv),

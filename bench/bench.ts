@@ -10056,17 +10056,17 @@ function benchRenderReportRefundedExpired(): number {
 // Hand-written expected lines — the header verbatim, one row per
 // party in the report's party order, and the TOTAL row — written
 // out from the documented CSV shape (header
-// `escrowId,outcome,currency,settlementRef,role,inflow,outflow,net`, cent-rounded
+// `escrowId,outcome,currency,settlementRef,refundRef,role,inflow,outflow,net`, cent-rounded
 // two-decimal amounts, no thousands separators) and the golden
 // figures above, cross-checked against
 // test/settlementReportCsv.test.ts — never produced by calling
 // renderReportCsv itself:
-//   header:   "escrowId,outcome,currency,settlementRef,role,inflow,outflow,net"
-//   sponsor:  "BENCH-001,released,,,sponsor,0.00,10630.00,-10630.00"
-//   creator:  "BENCH-001,released,,,creator,10098.50,0.00,10098.50"
-//   platform: "BENCH-001,released,,,platform,531.50,0.00,531.50"
-//   referrer: "BENCH-001,released,,,referrer,0.00,0.00,0.00"
-//   TOTAL:    "BENCH-001,released,,,TOTAL,10630.00,10630.00,0.00"
+//   header:   "escrowId,outcome,currency,settlementRef,refundRef,role,inflow,outflow,net"
+//   sponsor:  "BENCH-001,released,,,,sponsor,0.00,10630.00,-10630.00"
+//   creator:  "BENCH-001,released,,,,creator,10098.50,0.00,10098.50"
+//   platform: "BENCH-001,released,,,,platform,531.50,0.00,531.50"
+//   referrer: "BENCH-001,released,,,,referrer,0.00,0.00,0.00"
+//   TOTAL:    "BENCH-001,released,,,,TOTAL,10630.00,10630.00,0.00"
 // The TOTAL row is additionally re-derived on every iteration from
 // the party rows themselves (parsed back out of the CSV text and
 // summed at cent precision), so the check pins the CSV's
@@ -10074,12 +10074,12 @@ function benchRenderReportRefundedExpired(): number {
 // them — rather than only the pinned TOTAL line.
 // ---------------------------------------------------------------------
 const RENDER_CSV_EXPECTED_LINES: readonly string[] = [
-  "escrowId,outcome,currency,settlementRef,role,inflow,outflow,net",
-  "BENCH-001,released,,,sponsor,0.00,10630.00,-10630.00",
-  "BENCH-001,released,,,creator,10098.50,0.00,10098.50",
-  "BENCH-001,released,,,platform,531.50,0.00,531.50",
-  "BENCH-001,released,,,referrer,0.00,0.00,0.00",
-  "BENCH-001,released,,,TOTAL,10630.00,10630.00,0.00",
+  "escrowId,outcome,currency,settlementRef,refundRef,role,inflow,outflow,net",
+  "BENCH-001,released,,,,sponsor,0.00,10630.00,-10630.00",
+  "BENCH-001,released,,,,creator,10098.50,0.00,10098.50",
+  "BENCH-001,released,,,,platform,531.50,0.00,531.50",
+  "BENCH-001,released,,,,referrer,0.00,0.00,0.00",
+  "BENCH-001,released,,,,TOTAL,10630.00,10630.00,0.00",
 ];
 
 function checkRenderReportCsv(text: string): void {
@@ -10101,16 +10101,16 @@ function checkRenderReportCsv(text: string): void {
   let net = 0;
   for (let i = 1; i <= 4; i++) {
     const cols = lines[i].split(",");
-    inflow = Math.round((inflow + Number(cols[5])) * 100) / 100;
-    outflow = Math.round((outflow + Number(cols[6])) * 100) / 100;
-    net = Math.round((net + Number(cols[7])) * 100) / 100;
+    inflow = Math.round((inflow + Number(cols[6])) * 100) / 100;
+    outflow = Math.round((outflow + Number(cols[7])) * 100) / 100;
+    net = Math.round((net + Number(cols[8])) * 100) / 100;
   }
   const totalCols = lines[5].split(",");
   if (
-    totalCols[4] !== "TOTAL" ||
-    totalCols[5] !== inflow.toFixed(2) ||
-    totalCols[6] !== outflow.toFixed(2) ||
-    totalCols[7] !== net.toFixed(2) ||
+    totalCols[5] !== "TOTAL" ||
+    totalCols[6] !== inflow.toFixed(2) ||
+    totalCols[7] !== outflow.toFixed(2) ||
+    totalCols[8] !== net.toFixed(2) ||
     inflow !== report.totalInflow ||
     outflow !== report.totalOutflow
   ) {

@@ -118,12 +118,12 @@ test("RFC 4180-quoted escrowId with comma and quote round-trips", () => {
 
 test("party rows in any order parse and keep CSV order", () => {
   const csv = [
-    "escrowId,outcome,currency,settlementRef,role,inflow,outflow,net",
-    "esc-10630,released,,,referrer,0.00,0.00,0.00",
-    "esc-10630,released,,,platform,531.50,0.00,531.50",
-    "esc-10630,released,,,creator,10098.50,0.00,10098.50",
-    "esc-10630,released,,,sponsor,0.00,10630.00,-10630.00",
-    "esc-10630,released,,,TOTAL,10630.00,10630.00,0.00",
+    "escrowId,outcome,currency,settlementRef,refundRef,role,inflow,outflow,net",
+    "esc-10630,released,,,,referrer,0.00,0.00,0.00",
+    "esc-10630,released,,,,platform,531.50,0.00,531.50",
+    "esc-10630,released,,,,creator,10098.50,0.00,10098.50",
+    "esc-10630,released,,,,sponsor,0.00,10630.00,-10630.00",
+    "esc-10630,released,,,,TOTAL,10630.00,10630.00,0.00",
   ].join("\n");
   const parsed = parseSettlementReportCsv(csv);
   assert.deepEqual(

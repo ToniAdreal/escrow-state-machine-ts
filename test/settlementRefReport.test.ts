@@ -146,7 +146,7 @@ test("CSV round-trip with ref: every row carries it, parse recovers it", () => {
   const lines = csv.split("\n");
   assert.equal(
     lines[0],
-    "escrowId,outcome,currency,settlementRef,role,inflow,outflow,net",
+    "escrowId,outcome,currency,settlementRef,refundRef,role,inflow,outflow,net",
   );
   for (const line of lines.slice(1)) {
     assert.equal(line.split(",")[3], "wire-2026-0315");
@@ -181,10 +181,10 @@ test("legacy 7-column CSV parses and yields no settlementRef key", () => {
   assert.equal(parsed.outcome, "released");
   assert.equal("settlementRef" in parsed, false);
   assert.deepEqual(parsed.parties, releasedReport("esc-10630").parties);
-  // Re-rendering a legacy file produces the current 8-column shape.
+  // Re-rendering a legacy file produces the current 9-column shape.
   assert.equal(
     renderReportCsv(parsed).split("\n")[0],
-    "escrowId,outcome,currency,settlementRef,role,inflow,outflow,net",
+    "escrowId,outcome,currency,settlementRef,refundRef,role,inflow,outflow,net",
   );
 });
 
@@ -250,8 +250,8 @@ test("diff detects a ref added and reports nothing when refs agree", () => {
 test("parse CSV rejects a settlementRef that differs across rows", () => {
   const report = releasedReport("esc-ref", "wire-001");
   const csv = renderReportCsv(report).replaceAll(
-    "wire-001,creator",
-    "wire-002,creator",
+    "wire-001,,creator",
+    "wire-002,,creator",
   );
   assert.throws(
     () => parseSettlementReportCsv(csv),

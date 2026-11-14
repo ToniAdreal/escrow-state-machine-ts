@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2052 tests, all local
+npm test   # 2081 tests, all local
 ```
 
 ## Quickstart
@@ -1578,7 +1578,9 @@ a `SettlementReportDiff` carrying only the fields that moved — an
 identical pair diffs to `{}`. Money compares at integer-cent precision,
 never on raw floats, so sub-cent noise is not a change; a moved
 `settlementRef` is its own entry too, so a re-settlement against a new
-payment is visible even when every figure agrees; parties align
+payment is visible even when every figure agrees, and a moved
+`refundRef` is its own entry the same way, so a re-refund against a new
+refund is visible even when every figure agrees; parties align
 by role, with a role present on one side only reported as added or
 removed instead of silently dropped; and a `balanced` flip is its own
 entry, so a report that stopped balancing is visible even when no
@@ -1644,6 +1646,26 @@ parsers would refuse, and a ref on an `ARBITRATE_RELEASE` entry is
 rejected the same way. The batch summary is unaffected: it aggregates
 money, not pointers, and carries no ref field.
 
+Refund reference: a `refunded` report carries the terminal
+ARBITRATE_REFUND entry's `refundRef` on `SettlementReport.refundRef` —
+the mirror of `settlementRef` for the refund side, the one pointer from
+the audit report to the real-world refund (bank refund reference,
+payment-gateway refund id, payout batch id) that refunded the escrow.
+A refund without a ref, and every other outcome, omit the key, so those
+shapes are unchanged. The ref rides the CSV export (a `refundRef`
+column on every row, empty when absent) and the JSON export verbatim,
+appears as a `Refund ref:` line in the plain-text render, and is a
+first-class diff field: `diffSettlementReports` reports a moved ref as
+`refundRefChanged`, so a re-refund against a new refund is visible even
+when every figure agrees. CSV files written before the column existed
+(7- or 8-column header) still parse, with the ref simply absent. An
+illegal ref on the terminal entry (empty, non-string, or over
+`MAX_SETTLEMENT_REF_LENGTH` characters — the history parser's rule)
+fails the build instead of minting a report the library's own parsers
+would refuse, and a ref on any other terminal entry is rejected the
+same way. The batch summary is unaffected: it aggregates money, not
+pointers, and carries no ref field.
+
 Keyed histories: an escrow built with `EscrowOptions.auditKey` produces
 an HMAC-chained history, so its report must be built with the same key
 (`buildSettlementReport({ ..., auditKey })`); without it, or with the
@@ -1698,7 +1720,7 @@ above), so an honest ledger is not misread as a shortfall.
 For bookkeeping imports, `renderReportCsv(report)` renders the same
 report as CSV — the machine-readable counterpart to `renderReport`'s
 human-readable text, so an importer never has to parse prose lines:
-header `escrowId,outcome,currency,settlementRef,role,inflow,outflow,net`, one row per party in
+header `escrowId,outcome,currency,settlementRef,refundRef,role,inflow,outflow,net`, one row per party in
 fixed sponsor/creator/platform/referrer order (zero-amount parties
 included, never silently absent), amounts at exactly two decimals with
 no thousands separators, and a final `TOTAL` row whose columns are the
@@ -1708,12 +1730,16 @@ so a multi-currency import can tell USD rows from EUR rows without
 re-querying the report. The `settlementRef` column carries the report's
 external payment reference on every row (empty when the report carries
 none), so an import can pair the report with the real-world payment
-without re-querying it. String fields follow RFC 4180 escaping
+without re-querying it. The `refundRef` column carries the report's
+external refund reference on every row (empty when the report carries
+none), so an import can pair a refunded report with the real-world
+refund without re-querying it. String fields follow RFC 4180 escaping
 (comma/quote/newline fields are quoted, inner quotes doubled), and the
-TOTAL row repeats the report's `escrowId`/`outcome`/`currency`/`settlementRef` so imports can group
+TOTAL row repeats the report's `escrowId`/`outcome`/`currency`/`settlementRef`/`refundRef` so imports can group
 rows back to their escrow. As with the JSON renderer, the CSV renderer
 shape-checks its input first: a non-object report, an empty `escrowId`,
 an illegal `outcome`, an illegal `currency`, an illegal `settlementRef`
+(empty, or over `MAX_SETTLEMENT_REF_LENGTH` characters), an illegal `refundRef`
 (empty, or over `MAX_SETTLEMENT_REF_LENGTH` characters), an empty `parties` array, an unknown party role,
 or a non-finite party amount throws
 `cannot render settlement report as CSV: …` instead of emitting an
@@ -1724,21 +1750,22 @@ parsed `SettlementReportCsv` still re-renders.
 that hop: it parses the header, the four party rows, and the `TOTAL` row
 with an RFC 4180 record parser (quoted fields may carry commas, quotes,
 and line breaks), and it cross-checks the document before returning
-anything — same `escrowId`/`outcome`/`currency`/`settlementRef` on every row, exactly one row per
+anything — same `escrowId`/`outcome`/`currency`/`settlementRef`/`refundRef` on every row, exactly one row per
 party role, every amount a finite two-decimal figure, every party `net`
 equal to its `inflow − outflow`, and the `TOTAL` row equal to the sums
 over the party rows. Anything else throws
 `cannot parse settlement report CSV: …`. A CSV written before the
 `settlementRef` column existed (7-column header) still parses, with the
-ref simply absent. The return value is a
+ref simply absent, as does a CSV written before the `refundRef` column
+existed (8-column header). The return value is a
 `SettlementReportCsv`: the CSV-carried subset (`escrowId`, `outcome`,
 `currency` when the report was built with one, `settlementRef` when it
-carries one, party ledgers, totals,
+carries one, `refundRef` when it carries one, party ledgers, totals,
 `balanced`), not a full `SettlementReport` — the
 CSV carries no deposit breakdown, settlement parameters, `releasePath`,
 `eventCount`, or audit window, and the import does not invent them, so
 a parsed value re-renders byte-identically through `renderReportCsv`
-(a legacy 7-column file re-renders in the new 8-column shape)
+(a legacy 7- or 8-column file re-renders in the new 9-column shape)
 but must not be read as the original breakdown. As with the JSON import,
 this is structural validation only, not a re-verification of the audit
 chain.
@@ -1746,7 +1773,7 @@ chain.
 For programmatic consumers instead of imports, `renderReportJson(report)`
 renders the same report as JSON — `JSON.stringify` of the report itself,
 so it carries exactly the `SettlementReport` fields (escrowId, outcome,
-releasePath when present, `settlementRef` when present, deposit breakdown, settlement when present, the
+releasePath when present, `settlementRef` when present, `refundRef` when present, deposit breakdown, settlement when present, the
 four party ledgers, totals, balanced flag, and audit window) with no field
 added, renamed, or dropped. The one deliberate difference from CSV: amounts
 stay JSON numbers (`10098.5`), not two-decimal strings (`"10098.50"`), so
@@ -1771,7 +1798,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2052 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2081 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

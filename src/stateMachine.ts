@@ -231,6 +231,26 @@ export interface EscrowHistoryEntry {
    */
   settlementRef?: string;
   /**
+   * Reference to the external refund behind an ARBITRATE_REFUND — e.g.
+   * a bank refund reference, a payment-gateway refund id, or a payout
+   * batch id. Only present on ARBITRATE_REFUND entries (dispatch
+   * validates it as a non-empty string no longer than
+   * {@link MAX_SETTLEMENT_REF_LENGTH} characters — the same rule as
+   * `settlementRef`, one shared cap for both external references —
+   * and rejects it on any other event). The mirror of
+   * `settlementRef` for the refund side: the library does NOT verify
+   * that the referenced refund is real — it records the caller's
+   * claim so finance ops can reconcile the refund against the ledger,
+   * and so a `refunded` settlement report keeps its pointer to the
+   * real-world refund the way a `released` report keeps its pointer
+   * to the real-world payment. No uniqueness is enforced: one ref may
+   * legitimately refund several escrows (one refund batch, one bank
+   * transfer). Recorded verbatim and covered by the hash chain, so a
+   * persisted entry whose ref is rewritten breaks
+   * {@link verifyHistoryChain}.
+   */
+  refundRef?: string;
+  /**
    * Hash-chain fields (tamper evidence for persisted audit logs).
    *
    * `prevHash` links to the previous entry's `hash` (the genesis entry's
@@ -718,6 +738,7 @@ const HISTORY_ENTRY_FIELDS = new Set([
   "amount",
   "evidence",
   "settlementRef",
+  "refundRef",
   "prevHash",
   "hash",
 ]);
@@ -901,6 +922,11 @@ function resolveWatchdogAt(at: Date | string | undefined): string | undefined {
  *    longer than {@link MAX_SETTLEMENT_REF_LENGTH} characters and
  *    may only appear on RELEASE entries (oversized refs in an
  *    untrusted log are malformed — the same bar dispatch() applies)
+ *  - `refundRef`, when present, must be a non-empty string no
+ *    longer than {@link MAX_SETTLEMENT_REF_LENGTH} characters and
+ *    may only appear on ARBITRATE_REFUND entries (oversized refs in
+ *    an untrusted log are malformed — the same bar dispatch()
+ *    applies)
  *  - `prevHash`/`hash`, when present, must both be non-empty strings and
  *    appear on every entry (mixed chained/hashless histories are
  *    rejected); when every entry carries them, the hash chain is
@@ -949,7 +975,7 @@ function resolveWatchdogAt(at: Date | string | undefined): string | undefined {
  *    `maxDeposit`/`requireVerifyEvidence`/`requireActor`
  *    (`unknown field "<name>"`), and a history entry allows only
  *    `seq`/`event`/`from`/`to`/`at`/`actor`/`note`/`amount`/`evidence`/
- *    `settlementRef`/`prevHash`/`hash` (`history[i]: unknown field "<name>"). A typo
+ *    `settlementRef`/`refundRef`/`prevHash`/`hash` (`history[i]: unknown field "<name>"). A typo
  *    like `deadlline` or `amout` therefore fails loudly instead of
  *    quietly losing a deadline or a FUND amount.
  *
@@ -1146,6 +1172,30 @@ function parseEscrowSnapshot(
       }
       entry.settlementRef = raw.settlementRef;
     }
+    if (raw.refundRef !== undefined) {
+      if (event !== "ARBITRATE_REFUND") {
+        throw new Error(
+          `${tag}: refundRef only allowed on ARBITRATE_REFUND entries`
+        );
+      }
+      if (
+        typeof raw.refundRef !== "string" ||
+        raw.refundRef.length === 0
+      ) {
+        throw new Error(
+          `${tag}: refundRef must be a non-empty string, got ${JSON.stringify(raw.refundRef)}`
+        );
+      }
+      // Same bar as dispatch(): an oversized ref in an untrusted log
+      // is malformed, so a corrupted snapshot cannot blow up
+      // rehydration with a multi-megabyte ref string.
+      if (raw.refundRef.length > MAX_SETTLEMENT_REF_LENGTH) {
+        throw new Error(
+          `${tag}: refundRef must be at most ${MAX_SETTLEMENT_REF_LENGTH} characters, got ${raw.refundRef.length}`
+        );
+      }
+      entry.refundRef = raw.refundRef;
+    }
     // Hash-chain fields are all-or-nothing: one without the other, or a
     // history that mixes chained and hashless entries, is rejected here.
     // Chain CONTENT verification happens after the structural checks.
@@ -1285,7 +1335,8 @@ function parseEscrowSnapshot(
  * (seq from 1 with no gaps, from/to chain continuous from CREATED,
  * every edge legal, canonical non-decreasing timestamps, `amount`
  * only on FUND and PARTIAL_RELEASE, `evidence` only on VERIFY_PASS,
- * `settlementRef` only on RELEASE, unknown entry fields rejected, and a fully chained history's hash
+ * `settlementRef` only on RELEASE, `refundRef` only on
+ * ARBITRATE_REFUND, unknown entry fields rejected, and a fully chained history's hash
  * chain re-verified —
  * with `auditKey` when the chain is keyed).
  *
@@ -1667,6 +1718,7 @@ function canonicalHistoryEntry(
   if (entry.evidence !== undefined) obj.evidence = entry.evidence;
   if (entry.settlementRef !== undefined)
     obj.settlementRef = entry.settlementRef;
+  if (entry.refundRef !== undefined) obj.refundRef = entry.refundRef;
   if (entry.prevHash !== undefined) obj.prevHash = entry.prevHash;
   return JSON.stringify(obj);
 }
@@ -1893,6 +1945,21 @@ export interface DispatchOptions {
    * {@link EscrowOptions.requireSettlementRef}).
    */
   settlementRef?: string;
+  /**
+   * Accepted ONLY on ARBITRATE_REFUND (any other event throws). When
+   * present it must be a non-empty string no longer than
+   * {@link MAX_SETTLEMENT_REF_LENGTH} characters (longer references
+   * are rejected, never truncated — truncation would change which
+   * refund the reference names) and is recorded verbatim on the
+   * audit history entry. The mirror of `settlementRef` for the refund
+   * side: the library does NOT verify the refund — it records the
+   * caller's claim so downstream tooling can audit it. No uniqueness
+   * is enforced: one ref may refund several escrows (one refund
+   * batch, one bank transfer), mirroring the dataquest lifecycle's
+   * `payoutRef` semantics. An ARBITRATE_REFUND without a ref stays
+   * legal by default — the ref is advisory, not a gate.
+   */
+  refundRef?: string;
   /**
    * Audit timestamp for this dispatch — injectable so dispatch-level
    * tests and replay scenarios can pin the clock (quorum approvals have
@@ -2570,6 +2637,10 @@ export class Escrow {
    *               unless the escrow was constructed with
    *               `requireSettlementRef: true` (see
    *               {@link EscrowOptions.requireSettlementRef}).
+   *               `opts.refundRef` (ARBITRATE_REFUND only) records a
+   *               refund reference (bank refund ref, gateway refund id)
+   *               on the audit entry; an ARBITRATE_REFUND without one
+   *               stays legal — the ref is advisory, not a gate.
    *               `opts.at` pins the audit entry's timestamp
    *               (Date or canonical ISO-8601 string; see
    *               {@link DispatchOptions.at}) — invalid or backwards
@@ -2827,6 +2898,36 @@ export class Escrow {
         );
       }
     }
+    // Refund references are only meaningful on ARBITRATE_REFUND — the
+    // mirror of the settlementRef gate above. A non-empty string is
+    // recorded verbatim on the audit entry; the library does not
+    // verify the referenced refund (see DispatchOptions).
+    const refundRef = opts?.refundRef;
+    if (event !== "ARBITRATE_REFUND" && refundRef !== undefined) {
+      throw new Error(
+        `refundRef is only accepted on ARBITRATE_REFUND, not on ${event}`
+      );
+    }
+    if (refundRef !== undefined) {
+      if (typeof refundRef !== "string" || refundRef.length === 0) {
+        throw new Error(
+          `invalid dispatch: refundRef must be a non-empty string, got ${String(
+            refundRef
+          )}`
+        );
+      }
+      // Same bar as the settlementRef cap: an oversized reference is
+      // rejected outright, never silently truncated (truncation would
+      // change which refund the reference names). Like the other
+      // reference-shape checks this runs after the idempotency dedup:
+      // a duplicate delivery stays a pure no-op, and a failed dispatch
+      // consumes no key.
+      if (refundRef.length > MAX_SETTLEMENT_REF_LENGTH) {
+        throw new Error(
+          `invalid dispatch: refundRef must be at most ${MAX_SETTLEMENT_REF_LENGTH} characters, got ${refundRef.length}`
+        );
+      }
+    }
     if (amount !== undefined && event !== "FUND" && event !== "PARTIAL_RELEASE") {
       throw new Error(
         `amount is only accepted on FUND and PARTIAL_RELEASE, not on ${event}`
@@ -3005,6 +3106,9 @@ export class Escrow {
         : {}),
       ...(event === "RELEASE" && settlementRef !== undefined
         ? { settlementRef }
+        : {}),
+      ...(event === "ARBITRATE_REFUND" && refundRef !== undefined
+        ? { refundRef }
         : {}),
       prevHash,
     };
