@@ -1579,6 +1579,20 @@
  *      absent), the moved figures, and the three moved party ledgers;
  *      an identical pair reporting {} is pinned once, outside the
  *      timed loop. Pure comparison, no dispatch, no network.
+ *  89. unreconciled settlements — `unreconciledSettlements(batch)`
+ *      over one fixed mixed batch of 10 escrows (composition
+ *      hand-counted in the fixture comment below: 2 RELEASED with a
+ *      settlementRef, 2 RELEASED without one, 1 arbitration-released,
+ *      1 arbitration-refunded, 1 EXPIRED, and 3 in progress — FUNDED,
+ *      VERIFIED, DISPUTED). The #1116 helper previously had unit
+ *      tests only, so the finance-ops "which releases still need
+ *      chasing" screen — the RELEASED escrows whose RELEASE entry
+ *      carries no `settlementRef` — had no throughput baseline. The
+ *      helper is pure, so the same batch is re-screened on every
+ *      iteration and each result is checked against the hand-counted
+ *      id list (3 ids, in batch order) on every iteration, at fixture
+ *      build time as well; the empty batch returning [] is pinned
+ *      once, outside the timed loop.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -1651,6 +1665,7 @@ import {
   transitionTableJson,
   summarizeSettlementReports,
   transition,
+  unreconciledSettlements,
   verifyHistoryChain,
   verifySettlementWebhook,
   type EscrowEvent,
@@ -6065,14 +6080,16 @@ checkOutboxExportSnapshot(outboxListSource.exportSnapshot(), "fixture export");
     { label: "version 2", snapshot: { v: 2, entries: [] } },
     { label: "entries not an array", snapshot: { v: 1, entries: {} } },
     {
-      label: "attempts 0",
+      // attempts: 0 is legitimate since #1126 (a redriven pair's
+      // export); the still-malformed shape is a negative count.
+      label: "attempts -1",
       snapshot: {
         v: 1,
         entries: [
           {
             endpoint: OUTBOX_ENDPOINT,
             eventId: "bench-outbox-bad-001",
-            attempts: 0,
+            attempts: -1,
             lastAt: OUTBOX_NOW_MS,
           },
         ],
@@ -7043,6 +7060,132 @@ checkAgingResult(
   settlementAging(agingBatch, AGING_NOW),
   AGING_EXPECTED,
   "settlementAging",
+);
+
+// Unreconciled-settlements fixture: one fixed mixed batch of 10
+// escrows, screened by `unreconciledSettlements` (the #1116 helper,
+// previously unit-tested only): the finance-ops "which releases
+// still need chasing" screen — the RELEASED escrows whose RELEASE
+// entry carries no `settlementRef` — had no throughput baseline.
+// Composition, hand-counted (ids are BENCH-UNREC-<nn>; every FUND
+// is 1000, at the fixed 2026-03-01T00:00:00.000Z instant; RELEASE
+// at 03:00:00.000Z; arbitration releases/refunds through a fresh
+// 5-of-9 quorum with the ARBITRATE entry pinned at 03:00:00.000Z):
+//   01  RELEASED, settlementRef "wire-001" -> reconciled
+//   02  RELEASED, no ref -> UNRECONCILED
+//   03  RELEASED, settlementRef "wire-002" -> reconciled
+//   04  arbitration-released (no RELEASE entry) -> UNRECONCILED
+//   05  RELEASED, no ref -> UNRECONCILED
+//   06  arbitration-refunded -> REFUNDED, never appears
+//   07  EXPIRED -> never appears
+//   08  FUNDED, in progress -> never appears
+//   09  VERIFIED, in progress -> never appears
+//   10  DISPUTED, in progress -> never appears
+// Hand-counted expectation (NOT produced by the implementation):
+//   ["BENCH-UNREC-02", "BENCH-UNREC-04", "BENCH-UNREC-05"], input order.
+const UNREC_AT = [
+  "2026-03-01T00:00:00.000Z",
+  "2026-03-01T01:00:00.000Z",
+  "2026-03-01T02:00:00.000Z",
+  "2026-03-01T03:00:00.000Z",
+];
+function unrecReleased(id: string, settlementRef?: string): Escrow {
+  const escrow = new Escrow(id);
+  escrow.dispatch("FUND", undefined, 1000, { at: UNREC_AT[0] });
+  escrow.dispatch("SUBMIT_MILESTONE", undefined, undefined, {
+    at: UNREC_AT[1],
+  });
+  escrow.dispatch("VERIFY_PASS", undefined, undefined, { at: UNREC_AT[2] });
+  escrow.dispatch("RELEASE", undefined, undefined, {
+    at: UNREC_AT[3],
+    ...(settlementRef !== undefined ? { settlementRef } : {}),
+  });
+  return escrow;
+}
+function unrecDisputed(id: string): Escrow {
+  const escrow = new Escrow(id);
+  escrow.dispatch("FUND", undefined, 1000, { at: UNREC_AT[0] });
+  escrow.dispatch("DISPUTE", undefined, undefined, { at: UNREC_AT[1] });
+  return escrow;
+}
+function unrecQuorum(): Quorum {
+  const quorum = createQuorum({
+    threshold: QUORUM_THRESHOLD,
+    signers: QUORUM_SIGNERS,
+    now: () => BASE_MS,
+  });
+  for (let i = 0; i < QUORUM_THRESHOLD; i++) {
+    quorum.approve(QUORUM_SIGNERS[i]);
+  }
+  return quorum;
+}
+/** DISPUTED escrow released by arbitration (no RELEASE entry). */
+function unrecArbitrationReleased(id: string): Escrow {
+  const escrow = unrecDisputed(id);
+  dispatchArbitration(escrow, unrecQuorum(), "release", undefined, {
+    at: UNREC_AT[3],
+  });
+  return escrow;
+}
+/** DISPUTED escrow refunded by arbitration. */
+function unrecArbitrationRefunded(id: string): Escrow {
+  const escrow = unrecDisputed(id);
+  dispatchArbitration(escrow, unrecQuorum(), "refund", undefined, {
+    at: UNREC_AT[3],
+  });
+  return escrow;
+}
+function unrecExpired(id: string): Escrow {
+  const escrow = new Escrow(id);
+  escrow.dispatch("FUND", undefined, 1000, { at: UNREC_AT[0] });
+  escrow.dispatch("EXPIRE", undefined, undefined, { at: UNREC_AT[1] });
+  return escrow;
+}
+function unrecFunded(id: string): Escrow {
+  const escrow = new Escrow(id);
+  escrow.dispatch("FUND", undefined, 1000, { at: UNREC_AT[0] });
+  return escrow;
+}
+function unrecVerified(id: string): Escrow {
+  const escrow = new Escrow(id);
+  escrow.dispatch("FUND", undefined, 1000, { at: UNREC_AT[0] });
+  escrow.dispatch("SUBMIT_MILESTONE", undefined, undefined, {
+    at: UNREC_AT[1],
+  });
+  escrow.dispatch("VERIFY_PASS", undefined, undefined, { at: UNREC_AT[2] });
+  return escrow;
+}
+const unrecBatch: Escrow[] = [
+  unrecReleased("BENCH-UNREC-01", "wire-001"),
+  unrecReleased("BENCH-UNREC-02"),
+  unrecReleased("BENCH-UNREC-03", "wire-002"),
+  unrecArbitrationReleased("BENCH-UNREC-04"),
+  unrecReleased("BENCH-UNREC-05"),
+  unrecArbitrationRefunded("BENCH-UNREC-06"),
+  unrecExpired("BENCH-UNREC-07"),
+  unrecFunded("BENCH-UNREC-08"),
+  unrecVerified("BENCH-UNREC-09"),
+  unrecDisputed("BENCH-UNREC-10"),
+];
+if (unrecBatch.length !== 10) {
+  throw new Error("benchmark fixture failed: unreconciled batch size");
+}
+const UNREC_EXPECTED_IDS: string[] = [
+  "BENCH-UNREC-02",
+  "BENCH-UNREC-04",
+  "BENCH-UNREC-05",
+];
+checkFilterIds(
+  unreconciledSettlements(unrecBatch),
+  UNREC_EXPECTED_IDS,
+  "unreconciledSettlements",
+);
+// The empty batch reports nothing to chase, pinned once outside
+// the timed loop.
+checkFilterIds(
+  unreconciledSettlements([]),
+  [],
+  "unreconciledSettlements empty batch",
 );
 
 // Deadline-warning fixture: one fixed mixed batch of 14 escrows,
@@ -10424,8 +10567,8 @@ checkParseSettlementReportCsv(parseSettlementReportCsv(REPORT_CSV));
 // shared cache.
 {
   const damagedCsv = REPORT_CSV.replace(
-    "BENCH-001,released,,,TOTAL,10630.00,10630.00,0.00",
-    "BENCH-001,released,,,TOTAL,10631.00,10630.00,0.00",
+    "BENCH-001,released,,,,TOTAL,10630.00,10630.00,0.00",
+    "BENCH-001,released,,,,TOTAL,10631.00,10630.00,0.00",
   );
   let damagedError = "";
   try {
@@ -12156,6 +12299,16 @@ function benchSettlementAging(): number {
   }, ITERATIONS);
 }
 
+function benchUnreconciledSettlements(): number {
+  return measure(() => {
+    checkFilterIds(
+      unreconciledSettlements(unrecBatch),
+      UNREC_EXPECTED_IDS,
+      "unreconciledSettlements",
+    );
+  }, ITERATIONS);
+}
+
 function benchEscrowsApproachingDeadline(): number {
   return measure(() => {
     checkWatchdogIds(
@@ -13458,6 +13611,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "escrowsByEvent (batch 60 escrows, 6 DISPUTE)", ops: benchEscrowsByEvent() },
   { path: "escrowsByFilters (batch 60 escrows, 6 DISPUTED+carol+DISPUTE)", ops: benchEscrowsByFilters() },
   { path: "settlementAging (batch 10 escrows, 3/3/2/2 buckets)", ops: benchSettlementAging() },
+  { path: "unreconciledSettlements (batch 10 escrows, 3 unreconciled)", ops: benchUnreconciledSettlements() },
   { path: "escrowsApproachingDeadline (batch 14 escrows, 6 approaching)", ops: benchEscrowsApproachingDeadline() },
   { path: "nextEscrowDeadline (batch 10 escrows, earliest 2026-06-03)", ops: benchNextEscrowDeadline() },
 ];

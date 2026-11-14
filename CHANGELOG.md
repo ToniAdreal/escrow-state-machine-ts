@@ -18,6 +18,21 @@ version changes.
 
 ### Added
 
+- Benchmark row for `unreconciledSettlements(escrows)` (2026-11-14,
+  backlog #1129): one measured op screens a fixed mixed batch of 10
+  escrows (2 RELEASED with a settlementRef, 2 RELEASED without one,
+  1 arbitration-released, 1 arbitration-refunded, 1 EXPIRED, 3 in
+  progress) and pins the hand-counted 3-id hit list in batch order on
+  every iteration; the empty batch returning [] is pinned outside the
+  timed loop. Measured ~161,003 ops/sec (6.21 µs/op) on a 2026-11-14
+  run. The same commit repairs two bench self-checks that had gone
+  stale against the library: the outbox malformed-snapshot case now
+  pins `attempts: -1` (a negative count is still rejected;
+  `attempts: 0` became legitimate when #1126's redrive made it a
+  redriven pair's export), and the damaged-CSV gate's TOTAL-row
+  literal gains the settlementRef/refundRef columns (#1113/#1123
+  added them to the CSV layout).
+
 - `SettlementWebhookOutbox.redrive()` dead-letter redrive
   (2026-11-14, backlog #1126): moves a dead-lettered
   `(endpoint, eventId)` pair back to `pending()` for a fresh

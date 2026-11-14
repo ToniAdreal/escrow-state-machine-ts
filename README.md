@@ -2683,6 +2683,14 @@ BENCH-NEXT-02 at 2026-06-03T00:00:00.000Z — on every iteration.
 Outside the timed loop, the fail-fast shape is pinned: an invalid
 `now` throws its exact error, and the empty batch and an
 all-excluded batch each return undefined.
+The new `unreconciledSettlements` row measures the #1116 combination
+as a cost path: one measured op screens one fixed mixed batch of 10
+escrows (2 RELEASED with a settlementRef, 2 RELEASED without one, 1
+arbitration-released, 1 arbitration-refunded, 1 EXPIRED, and 3 in
+progress — FUNDED, VERIFIED, DISPUTED) and pins the hand-counted hit
+list — 3 ids in batch order — on every iteration, at fixture build
+time as well. Outside the timed loop, the empty batch returning [] is
+pinned.
 One real run on 2026-11-04:
 
 | path | throughput |
@@ -2794,6 +2802,7 @@ One real run on 2026-11-04:
 | settlementAging (batch 10 escrows, 3/3/2/2 buckets) | ~148,075 ops/sec (6.75 µs/op) |
 | escrowsApproachingDeadline (batch 14 escrows, 6 approaching) | ~315,088 ops/sec (3.17 µs/op) |
 | nextEscrowDeadline (batch 10 escrows, earliest 2026-06-03) | ~316,600 ops/sec (3.16 µs/op) |
+| unreconciledSettlements (batch 10 escrows, 3 unreconciled) | ~161,003 ops/sec (6.21 µs/op) |
 
 The two batch-filter rows, the escrowsApproachingDeadline row,
 and the settlePartialRelease row above were measured on
@@ -2801,7 +2810,7 @@ and the settlePartialRelease row above were measured on
 escrowsByEvent row above were measured on 2026-11-06 runs; the
 settlePartialReleases row above was measured on a 2026-11-08 run; the
 escrowsByFilters and settlementAging rows above were measured on a
-2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the signed-snapshot rows above were measured on a 2026-11-11 run; the diffSettlementReports row above was measured on a 2026-11-13 run; the renderSettlementReportsSummary and diffSettlementReportsSummaries rows above were measured on a 2026-11-13 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
+2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the signed-snapshot rows above were measured on a 2026-11-11 run; the diffSettlementReports row above was measured on a 2026-11-13 run; the renderSettlementReportsSummary and diffSettlementReportsSummaries rows above were measured on a 2026-11-13 run; the unreconciledSettlements row above was measured on a 2026-11-14 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
 came in mixed under shared-host load, so refreshing the whole
 table would misreport changes in paths these additions never
 touched.
