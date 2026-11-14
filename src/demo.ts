@@ -49,7 +49,12 @@
  * report from that same batch result — each with its own
  * factory-generated `eventId`, the failed entry forwarded as
  * `{escrowId, error}` — with a receiver-side re-verification of a
- * built webhook printed per successful item. The main report is
+ * built webhook printed per successful item. Right after the
+ * summary, an `unreconciledSettlements` screen over the same batch
+ * — plus a release carrying a `settlementRef` and an arbitration
+ * release — prints the two releases still missing payment evidence:
+ * the main escrow, released with no ref, and the arbitration-released
+ * escrow, which by construction can never carry one. The main report is
  * then delivered for real in a fan-out segment:
  * `deliverSettlementWebhookToMany` sends that one logical
  * settlement event to three fixed endpoints through an injected
@@ -484,6 +489,7 @@ import {
   summarizeSettlementReports,
   transitionTable,
   transitionTableJson,
+  unreconciledSettlements,
   verifyHistoryChain,
   verifySettlementWebhook,
   type ApprovalLogEntry,
@@ -2390,6 +2396,33 @@ export const DEMO_PARTIAL_RELEASES_GUARD_ID = "DEMO-ESC-036";
 export const DEMO_PARTIAL_RELEASES_GUARD_FUND_AT = "2026-03-17T09:00:00.000Z";
 
 /**
+ * Unreconciled-settlements fixtures (backlog #1132): the two cases
+ * the day-end batch above lacks, so `unreconciledSettlements` has
+ * one example per branch to show — a release that carries a
+ * `settlementRef` (DEMO-ESC-037, released on the golden deposit with
+ * the ref below, the reconciled control) and an arbitration release
+ * (DEMO-ESC-038: funded, milestone submitted, verification failed,
+ * disputed, then released by a 2-of-3 quorum — an `ARBITRATE_RELEASE`
+ * entry carries no ref by construction, so it stays unreconciled
+ * alongside the main escrow). All timestamps fixed; the printed
+ * lines carry ids and the ref only, so no wall clock enters the
+ * output.
+ */
+export const DEMO_UNRECONCILED_REF_ID = "DEMO-ESC-037";
+export const DEMO_UNRECONCILED_REF_SETTLEMENT_REF = "wire-2026-03-09-001";
+export const DEMO_UNRECONCILED_ARB_ID = "DEMO-ESC-038";
+export const DEMO_UNRECONCILED_FUND_AT = "2026-03-09T09:00:00.000Z";
+export const DEMO_UNRECONCILED_SUBMIT_AT = "2026-03-09T10:00:00.000Z";
+export const DEMO_UNRECONCILED_VERIFY_PASS_AT = "2026-03-09T11:00:00.000Z";
+export const DEMO_UNRECONCILED_VERIFY_FAIL_AT = "2026-03-09T11:00:00.000Z";
+export const DEMO_UNRECONCILED_RELEASE_AT = "2026-03-09T12:00:00.000Z";
+export const DEMO_UNRECONCILED_ARB_APPROVAL_ATS = [
+  "2026-03-09T12:30:00.000Z",
+  "2026-03-09T12:45:00.000Z",
+] as const;
+export const DEMO_UNRECONCILED_ARB_AT = "2026-03-09T13:00:00.000Z";
+
+/**
  * Webhook-outbox fixtures (backlog #1024): the delivery-failure
  * ledger story the earlier delivery segments never show — a
  * receiver that answers 500 three times in a row, and a second
@@ -2665,6 +2698,29 @@ export interface DemoResult {
   batchResults: SettlementReportResult[];
   /** Reconciliation summary over {@link DemoResult.batchResults}. */
   batchSummary: SettlementReportsSummary;
+  /**
+   * The with-ref release built for the unreconciled-settlements
+   * segment: RELEASED on the golden deposit, its RELEASE entry
+   * carrying {@link DEMO_UNRECONCILED_REF_SETTLEMENT_REF} — the
+   * reconciled control, excluded from the unreconciled list.
+   */
+  unreconciledRefEscrow: Escrow;
+  /**
+   * The arbitration release built for the unreconciled-settlements
+   * segment: RELEASED via `ARBITRATE_RELEASE` after a 2-of-3 quorum
+   * (no RELEASE entry, so no ref is possible) — unreconciled by the
+   * same rule as the main escrow, not by accident.
+   */
+  unreconciledArbEscrow: Escrow;
+  /**
+   * Ids of the escrows `unreconciledSettlements` flags over the
+   * day-end batch (main + pending + dispute + the two extra cases),
+   * in batch order: {@link DEMO_ESCROW_ID} (RELEASED, RELEASE entry
+   * without a ref) and {@link DEMO_UNRECONCILED_ARB_ID} (RELEASED
+   * via `ARBITRATE_RELEASE`). The with-ref release, the still-FUNDED
+   * escrow, and the refunded escrow are excluded.
+   */
+  unreconciledSettlementIds: string[];
   /**
    * Re-settlement of the main escrow at
    * {@link DEMO_REPORT_DIFF_PRO_FEE_BPS} bps — same escrow, history,
@@ -5023,6 +5079,119 @@ export async function runDemo(): Promise<DemoResult> {
     `  summary: ${batchSummary.total} escrows — ${batchSummary.reports} reports, ${batchSummary.errors} error (released ${batchSummary.outcomes.released}, refunded ${batchSummary.outcomes.refunded}, expired ${batchSummary.outcomes.expired})`,
     `  summary totals: deposit ${batchSummary.totalDeposit}, inflow ${batchSummary.totalInflow}, outflow ${batchSummary.totalOutflow}, remaining ${batchSummary.totalRemaining} — ${batchSummary.balanced ? "balanced ✓" : "UNBALANCED ✗"}`,
     `  summary parties: ${batchSummary.parties.map((p) => `${p.party} net ${p.net}`).join(", ")}`,
+  );
+
+  // --- Unreconciled settlements: which releases lack payment evidence ---
+  // The batch summary above counts what the reports claim; this
+  // segment asks the other question — which released escrows still
+  // have no pointer to the external transfer. The input batch is
+  // the demo's day-end batch (main, pending, dispute) plus the two
+  // cases it lacks: a release that carries a settlementRef, and an
+  // arbitration release, which by construction can never carry one.
+  // Hand-pinned expectations:
+  //   unreconciled, in input order: DEMO-ESC-001 (RELEASED, its
+  //     RELEASE entry without a ref) and DEMO-ESC-038 (RELEASED via
+  //     ARBITRATE_RELEASE — no RELEASE entry at all);
+  //   excluded: DEMO-ESC-037 (RELEASED with settlementRef
+  //     wire-2026-03-09-001), DEMO-ESC-003 (still FUNDED),
+  //     DEMO-ESC-002 (REFUNDED, never released).
+  const unreconciledRefEscrow = new Escrow(DEMO_UNRECONCILED_REF_ID);
+  unreconciledRefEscrow.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "sponsor",
+    at: DEMO_UNRECONCILED_FUND_AT,
+  });
+  unreconciledRefEscrow.dispatch(
+    "SUBMIT_MILESTONE",
+    "Deliverable URLs + IPFS metadata hash",
+    undefined,
+    { actor: "creator", at: DEMO_UNRECONCILED_SUBMIT_AT },
+  );
+  unreconciledRefEscrow.dispatch(
+    "VERIFY_PASS",
+    "KPIs met — verification passed",
+    undefined,
+    { actor: "oracle", at: DEMO_UNRECONCILED_VERIFY_PASS_AT },
+  );
+  unreconciledRefEscrow.dispatch("RELEASE", "Milestone accepted — release", undefined, {
+    actor: "oracle",
+    at: DEMO_UNRECONCILED_RELEASE_AT,
+    settlementRef: DEMO_UNRECONCILED_REF_SETTLEMENT_REF,
+  });
+  const unreconciledArbEscrow = new Escrow(DEMO_UNRECONCILED_ARB_ID);
+  unreconciledArbEscrow.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "sponsor",
+    at: DEMO_UNRECONCILED_FUND_AT,
+  });
+  unreconciledArbEscrow.dispatch(
+    "SUBMIT_MILESTONE",
+    "Deliverable URLs + IPFS metadata hash",
+    undefined,
+    { actor: "creator", at: DEMO_UNRECONCILED_SUBMIT_AT },
+  );
+  unreconciledArbEscrow.dispatch(
+    "VERIFY_FAIL",
+    "KPIs missed — verification failed, dispute opened",
+    undefined,
+    { actor: "oracle", at: DEMO_UNRECONCILED_VERIFY_FAIL_AT },
+  );
+  let unreconciledArbApprovalTick = 0;
+  const unreconciledArbQuorum = createQuorum({
+    threshold: DEMO_QUORUM_THRESHOLD,
+    signers: [...DEMO_QUORUM_SIGNERS],
+    now: () =>
+      Date.parse(
+        DEMO_UNRECONCILED_ARB_APPROVAL_ATS[
+          Math.min(
+            unreconciledArbApprovalTick++,
+            DEMO_UNRECONCILED_ARB_APPROVAL_ATS.length - 1,
+          )
+        ],
+      ),
+  });
+  unreconciledArbQuorum.approve(DEMO_QUORUM_SIGNERS[0]);
+  unreconciledArbQuorum.approve(DEMO_QUORUM_SIGNERS[1]);
+  dispatchArbitration(
+    unreconciledArbEscrow,
+    unreconciledArbQuorum,
+    "release",
+    "Dispute upheld — release to creator",
+    { actor: DEMO_QUORUM_SIGNERS[1], at: DEMO_UNRECONCILED_ARB_AT },
+  );
+  const unreconciledBatch = [
+    escrow,
+    pendingEscrow,
+    disputeEscrow,
+    unreconciledRefEscrow,
+    unreconciledArbEscrow,
+  ];
+  const unreconciledSettlementIds = unreconciledSettlements(
+    unreconciledBatch,
+  ).map((item) => item.id);
+  const unreconciledRefReleaseEntry = unreconciledRefEscrow.history.find(
+    (entry) => entry.event === "RELEASE",
+  );
+  const unreconciledArbLastEntry =
+    unreconciledArbEscrow.history[unreconciledArbEscrow.history.length - 1];
+  if (
+    unreconciledSettlementIds.join(",") !==
+      `${DEMO_ESCROW_ID},${DEMO_UNRECONCILED_ARB_ID}` ||
+    unreconciledRefEscrow.state !== "RELEASED" ||
+    unreconciledRefReleaseEntry?.settlementRef !==
+      DEMO_UNRECONCILED_REF_SETTLEMENT_REF ||
+    unreconciledArbEscrow.state !== "RELEASED" ||
+    unreconciledArbLastEntry?.event !== "ARBITRATE_RELEASE"
+  ) {
+    throw new Error(
+      "demo fixture broken: unreconciledSettlements segment does not match the pinned shape (unreconciled DEMO-ESC-001 + DEMO-ESC-038 in batch order; DEMO-ESC-037 released with settlementRef wire-2026-03-09-001, DEMO-ESC-003 still FUNDED, DEMO-ESC-002 refunded)",
+    );
+  }
+  lines.push(
+    "",
+    "Unreconciled settlements (unreconciledSettlements over the day-end batch):",
+    `  ${DEMO_ESCROW_ID}: released without settlementRef — the RELEASE entry names no external transfer`,
+    `  ${DEMO_UNRECONCILED_ARB_ID}: released by arbitration (ARBITRATE_RELEASE) — no RELEASE entry, so no ref is possible`,
+    `  reconciled (excluded): ${DEMO_UNRECONCILED_REF_ID} released with settlementRef ${DEMO_UNRECONCILED_REF_SETTLEMENT_REF}; ${DEMO_PENDING_ESCROW_ID} still FUNDED; ${DEMO_DISPUTE_ESCROW_ID} refunded, never released`,
+    `  unreconciled: ${unreconciledSettlementIds.length} of ${unreconciledBatch.length} escrows — finance chases ${unreconciledSettlementIds.join(", ")}`,
   );
 
   // --- Single-report diff: same escrow, re-settled at a new fee rate ---
@@ -10617,6 +10786,9 @@ export async function runDemo(): Promise<DemoResult> {
     pendingEscrow,
     batchResults,
     batchSummary,
+    unreconciledRefEscrow,
+    unreconciledArbEscrow,
+    unreconciledSettlementIds,
     reportAtHigherFee,
     reportDiff,
     batchWebhooks,

@@ -188,6 +188,9 @@ import {
   DEMO_RECONCILE_REPORT_ONLY_ID,
   DEMO_RECONCILE_SUBMIT_AT,
   DEMO_RECONCILE_VERIFY_PASS_AT,
+  DEMO_UNRECONCILED_ARB_ID,
+  DEMO_UNRECONCILED_REF_ID,
+  DEMO_UNRECONCILED_REF_SETTLEMENT_REF,
   DEMO_SNAPSHOT_DIFF_FUND_AT,
   DEMO_SNAPSHOT_DIFF_ID,
   DEMO_SNAPSHOT_DIFF_OTHER_ID,
@@ -1408,6 +1411,136 @@ test("demo lines print the batch reports + summary section", async () => {
   assert.ok(
     text.includes(
       "  summary parties: sponsor net -10630, creator net 10098.5, platform net 531.5, referrer net 0",
+    ),
+  );
+});
+
+test("demo unreconciled settlements flags the releases missing payment evidence", async () => {
+  const {
+    escrow,
+    pendingEscrow,
+    disputeEscrow,
+    unreconciledRefEscrow,
+    unreconciledArbEscrow,
+    unreconciledSettlementIds,
+  } = await runDemo();
+
+  // In batch order: the main escrow (RELEASED, no ref) first, then
+  // the arbitration release — the with-ref release, the still-FUNDED
+  // escrow, and the refunded escrow are excluded.
+  assert.deepEqual(unreconciledSettlementIds, [
+    DEMO_ESCROW_ID,
+    DEMO_UNRECONCILED_ARB_ID,
+  ]);
+  assert.equal(escrow.id, DEMO_ESCROW_ID);
+  assert.equal(escrow.state, "RELEASED");
+  // The with-ref control: RELEASED, and its RELEASE entry carries
+  // the pinned ref verbatim — that is why it is reconciled.
+  assert.equal(unreconciledRefEscrow.id, DEMO_UNRECONCILED_REF_ID);
+  assert.equal(unreconciledRefEscrow.state, "RELEASED");
+  assert.equal(
+    unreconciledRefEscrow.history.find((entry) => entry.event === "RELEASE")
+      ?.settlementRef,
+    DEMO_UNRECONCILED_REF_SETTLEMENT_REF,
+  );
+  // The arbitration release: RELEASED via ARBITRATE_RELEASE — no
+  // RELEASE entry at all, so no ref could ever be attached.
+  assert.equal(unreconciledArbEscrow.id, DEMO_UNRECONCILED_ARB_ID);
+  assert.equal(unreconciledArbEscrow.state, "RELEASED");
+  assert.equal(
+    unreconciledArbEscrow.history[unreconciledArbEscrow.history.length - 1]
+      ?.event,
+    "ARBITRATE_RELEASE",
+  );
+  assert.equal(
+    unreconciledArbEscrow.history.some(
+      (entry) => entry.event === "RELEASE",
+    ),
+    false,
+  );
+  // The excluded cases are what they claim to be: still FUNDED and
+  // REFUNDED, never released.
+  assert.equal(pendingEscrow.state, "FUNDED");
+  assert.equal(disputeEscrow.state, "REFUNDED");
+});
+
+test("demo lines print the unreconciled settlements section after the batch summary", async () => {
+  const { lines } = await runDemo();
+  const text = lines.join("\n");
+
+  assert.match(
+    text,
+    /Unreconciled settlements \(unreconciledSettlements over the day-end batch\):/,
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_ESCROW_ID}: released without settlementRef — the RELEASE entry names no external transfer`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_UNRECONCILED_ARB_ID}: released by arbitration (ARBITRATE_RELEASE) — no RELEASE entry, so no ref is possible`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  reconciled (excluded): ${DEMO_UNRECONCILED_REF_ID} released with settlementRef ${DEMO_UNRECONCILED_REF_SETTLEMENT_REF}; ${DEMO_PENDING_ESCROW_ID} still FUNDED; ${DEMO_DISPUTE_ESCROW_ID} refunded, never released`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  unreconciled: 2 of 5 escrows — finance chases ${DEMO_ESCROW_ID}, ${DEMO_UNRECONCILED_ARB_ID}`,
+    ),
+  );
+  // Position: after the batch summary, before the single-report diff.
+  const summaryAt = text.indexOf(
+    "Batch settlement reports (batch -> per-item isolation -> summary):",
+  );
+  const unreconciledAt = text.indexOf(
+    "Unreconciled settlements (unreconciledSettlements over the day-end batch):",
+  );
+  const diffAt = text.indexOf(
+    "Single-report diff (same escrow, re-settled at a higher fee rate):",
+  );
+  assert.ok(summaryAt < unreconciledAt && unreconciledAt < diffAt);
+});
+
+test("demo unreconciled settlements segment is deterministic: two runs print byte-identical lines", async () => {
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf(
+        "Unreconciled settlements (unreconciledSettlements over the day-end batch):",
+      ),
+      ls.indexOf(
+        "Single-report diff (same escrow, re-settled at a higher fee rate):",
+      ) - 1,
+    );
+  const a = await runDemo();
+  const b = await runDemo();
+  const segA = segment(a.lines);
+  // Header + the two unreconciled lines + the excluded line + the
+  // chase line; every value is hand-pinned from the fixed batch, so
+  // no normalization is needed.
+  assert.equal(segA.length, 5);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(
+    a.unreconciledSettlementIds,
+    b.unreconciledSettlementIds,
+  );
+});
+
+test("compiled demo script prints the unreconciled settlements section", async () => {
+  const out = execFileSync("node", [path.join(repoRoot, "dist", "src", "demo.js")], {
+    encoding: "utf8",
+  });
+
+  assert.match(
+    out,
+    /Unreconciled settlements \(unreconciledSettlements over the day-end batch\):/,
+  );
+  assert.ok(
+    out.includes(
+      `  unreconciled: 2 of 5 escrows — finance chases ${DEMO_ESCROW_ID}, ${DEMO_UNRECONCILED_ARB_ID}`,
     ),
   );
 });

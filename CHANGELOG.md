@@ -18,6 +18,18 @@ version changes.
 
 ### Added
 
+- CLI demo `unreconciledSettlements` segment (2026-11-14,
+  backlog #1132): right after the day-end batch summary, the demo
+  screens the batch plus two new cases — a release carrying a
+  `settlementRef` (`wire-2026-03-09-001`) and an arbitration release
+  (2-of-3 quorum, `ARBITRATE_RELEASE`) — and prints the two releases
+  still missing payment evidence: the main escrow (released, no ref)
+  and the arbitration-released escrow (no `RELEASE` entry, so no ref
+  is possible); the with-ref release, the still-`FUNDED` escrow, and
+  the refunded escrow are excluded. `DemoResult` gains
+  `unreconciledSettlementIds` plus the two new escrows; the segment's
+  pinned id list is enforced by a fail-fast check inside the demo.
+
 - Benchmark row for `unreconciledSettlements(escrows)` (2026-11-14,
   backlog #1129): one measured op screens a fixed mixed batch of 10
   escrows (2 RELEASED with a settlementRef, 2 RELEASED without one,

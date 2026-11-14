@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2093 tests, all local
+npm test   # 2097 tests, all local
 ```
 
 ## Quickstart
@@ -88,8 +88,15 @@ the batch without blocking the refunded report after it — and
 `summarizeSettlementReports` prints the batch's reconciliation
 summary (2 reports, 1 error, totals of 21,260 on the two golden
 deposits, and a still-locked `remaining` of 0 — both successful
-reports are fully settled, so neither carries a remainder). Between
-the summary and the webhooks, the demo re-settles the main escrow
+reports are fully settled, so neither carries a remainder). Right
+after the summary, the demo runs `unreconciledSettlements` over the
+day-end batch plus two extra cases — a release carrying a
+`settlementRef` (`wire-2026-03-09-001`) and an arbitration release —
+and prints the two releases still missing payment evidence: the main
+escrow (released, no ref) and the arbitration-released escrow (no
+`RELEASE` entry, so no ref is possible), while the with-ref release,
+the still-`FUNDED` escrow, and the refunded escrow are excluded.
+Between the summary and the webhooks, the demo re-settles the main escrow
 at 600 bps (up from 500) and runs `diffSettlementReports` on the two
 reports of the same escrow: the diff carries exactly
 `settlementChanged` (proFee 531.5 → 637.8, net 10,098.5 → 9,992.2,
@@ -1813,7 +1820,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2093 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2097 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
