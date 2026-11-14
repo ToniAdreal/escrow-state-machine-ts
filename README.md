@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2097 tests, all local
+npm test   # 2109 tests, all local
 ```
 
 ## Quickstart
@@ -729,6 +729,13 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   pass `idempotencyKeys` (the log itself carries none, so the caller
   supplies them); omit it and the rebuild still starts with an *empty*
   key set, so a key consumed before the log was taken would re-execute.
+  Time travel over the same log needs no rebuild at all:
+  `escrow.stateAt(time)` (or the module-level
+  `stateAtFromHistory(log, time, auditKey?)` for a bare log) returns the
+  state the escrow was in at a moment — the `to` of the last entry at or
+  before it (inclusive boundary, a time before the first entry returns
+  `CREATED`); a keyed chain needs its `auditKey`, and a broken chain
+  throws instead of returning a guessed state.
 - NDJSON audit-log streaming: `historyToNdjson(history | escrow)` /
   `historyFromNdjson(text)` (`src/ndjson.ts`) export and import *only
   the audit log* — one canonical JSON entry per line, line order =
@@ -1820,7 +1827,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2097 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2109 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

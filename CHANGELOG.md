@@ -18,6 +18,21 @@ version changes.
 
 ### Added
 
+- Time-travel query `Escrow.stateAt(time)` plus module-level
+  `stateAtFromHistory(history, time, auditKey?)` (2026-11-14,
+  backlog #1134): the state the escrow was in at a moment, read from
+  the append-only audit history without rebuilding the escrow — the
+  `to` of the last entry at or before the query time (inclusive
+  boundary, the same boundary `isOverdue` uses), a time before the
+  first entry returns `CREATED`, an empty history is `CREATED` at any
+  time. The query is a pure read (state/history untouched, dispatching
+  afterwards continues at the next seq); a Date or an ISO-8601 string
+  is accepted and anything else throws `invalid stateAt time: …`
+  before any history is read. The pure form validates the log with
+  the same `parseEscrowHistory` checklist `fromHistory` applies, so a
+  broken chain throws instead of returning a guessed state, and a
+  keyed chain needs its `auditKey`. Mirrors dataquest #1130.
+
 - CLI demo `unreconciledSettlements` segment (2026-11-14,
   backlog #1132): right after the day-end batch summary, the demo
   screens the batch plus two new cases — a release carrying a

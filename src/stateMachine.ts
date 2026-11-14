@@ -1819,6 +1819,71 @@ export function verifyHistoryChain(
 }
 
 /**
+ * Resolve a `stateAt` query time to epoch milliseconds. Accepts a Date
+ * or an ISO-8601 string — any parseable form, not just canonical: the
+ * query time is caller input, not audit data, so the canonical-ISO bar
+ * that `parseEscrowHistory` applies to stored entries does not apply
+ * here. Anything else, or an unparseable value, is a caller error,
+ * thrown before any history is read (mirroring how `fromHistory`
+ * validates its options before touching the log).
+ */
+function resolveStateAtTime(time: Date | string): number {
+  if (time instanceof Date) {
+    const ms = time.getTime();
+    if (Number.isFinite(ms)) return ms;
+  } else if (typeof time === "string") {
+    const ms = Date.parse(time);
+    if (Number.isFinite(ms)) return ms;
+  }
+  throw new Error(
+    `invalid stateAt time: expected a valid Date or ISO-8601 string, got ${String(time)}`,
+  );
+}
+
+/**
+ * State at a moment, from already-validated entries: the `to` of the
+ * last entry whose `at` is at or before the query time. The boundary is
+ * inclusive — a query exactly on an entry's timestamp sees that entry's
+ * effect, the same boundary `isOverdue` uses (`now >= deadline`). No
+ * entry at or before the time means the escrow had not moved yet, so
+ * the answer is the initial state, "CREATED". Entries are non-decreasing
+ * in `at` (`parseEscrowHistory` enforces it; `dispatch` writes
+ * canonical ISO), so the scan stops at the first entry past the query
+ * time.
+ */
+function stateAtFromEntries(
+  entries: readonly EscrowHistoryEntry[],
+  timeMs: number,
+): EscrowState {
+  let state: EscrowState = "CREATED";
+  for (const entry of entries) {
+    if (Date.parse(entry.at) > timeMs) break;
+    state = entry.to;
+  }
+  return state;
+}
+
+/**
+ * Time travel over a raw audit log: the state the escrow was in at a
+ * moment, without rebuilding the escrow. The log is validated with the
+ * same `parseEscrowHistory` checklist `fromHistory` applies — a broken
+ * chain throws `invalid snapshot: …` instead of returning a guessed
+ * state — and a keyed chain needs the same `auditKey` a rehydration
+ * would. Pure: reads the log, never mutates it.
+ *
+ *   stateAtFromHistory(log, "2026-03-01T11:30:00.000Z"); // => "MILESTONE_SUBMITTED"
+ */
+export function stateAtFromHistory(
+  history: unknown,
+  time: Date | string,
+  auditKey?: AuditKey,
+): EscrowState {
+  const timeMs = resolveStateAtTime(time);
+  const entries = parseEscrowHistory(history, auditKey);
+  return stateAtFromEntries(entries, timeMs);
+}
+
+/**
  * Chain a parsed history: entries that already carry a chain pass
  * through untouched (the parser verified them); a fully hashless legacy
  * history gets its chain computed deterministically from the genesis
@@ -2541,6 +2606,24 @@ export class Escrow {
    */
   get history(): readonly EscrowHistoryEntry[] {
     return Object.freeze(this._history.map((e) => Object.freeze({ ...e })));
+  }
+
+  /**
+   * The state this escrow was in at a moment — a read-only "time travel"
+   * query over the append-only audit history, for audit and support
+   * questions ("what state was this escrow in yesterday at 15:00?")
+   * that do not need a full rebuild. Takes the `to` of the last entry
+   * whose `at` is at or before `time` (inclusive: a query exactly on an
+   * entry's timestamp sees that entry's effect); a time before the
+   * first entry returns the initial state, "CREATED". Accepts a Date or
+   * an ISO-8601 string; anything else, or an unparseable value, throws
+   * `invalid stateAt time: …`. Pure read: the escrow's state and history
+   * are untouched, and dispatching afterwards continues at the next
+   * seq. The module-level {@link stateAtFromHistory} is the same query
+   * over a raw log, with no instance at all.
+   */
+  stateAt(time: Date | string): EscrowState {
+    return stateAtFromEntries(this._history, resolveStateAtTime(time));
   }
 
   get isTerminal(): boolean {
