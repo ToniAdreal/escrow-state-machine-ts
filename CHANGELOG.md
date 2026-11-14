@@ -18,6 +18,19 @@ version changes.
 
 ### Added
 
+- CLI demo webhook-outbox `redrive` segment (2026-11-14,
+  backlog #1139): after the dead-letter run, the demo redrives the
+  dead-lettered pair at a fixed later clock
+  (2026-03-08T13:30:00.000Z) — back to `pending()` with `attempts`
+  reset to 0 and `lastAt` stamped with the redrive time — shows a
+  second redrive while pending being rejected with the pinned
+  error, then delivers the same signed webhook once through a
+  scripted 200 fetch; the success clears the pair and the ledger
+  ends pending 0, dead letter 0. `DemoResult` gains the redrive
+  ledger snapshots plus the pinned pending-redrive error, the
+  redelivery result, and the fetch call count; the segment's
+  expectations are enforced by a fail-fast check inside the demo.
+
 - HMAC-signed snapshot envelope for quorums (2026-11-14,
   backlog #1137): `exportSignedQuorumSnapshot(quorum, secret, opts?)`
   / `restoreSignedQuorumSnapshot(config, envelope, secret, opts?)`

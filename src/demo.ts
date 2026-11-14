@@ -407,7 +407,13 @@
  * the third it dead-letters at the maxAttempts cap of 3, the
  * one that needs a human; a second event fails once and then
  * delivers 200, so its success clears its own pair and the
- * ledger ends pending 0, dead letter 1. All sides are
+ * ledger ends pending 0, dead letter 1. The demo then shows
+ * the dead letter coming back: `redrive()` at a fixed later
+ * clock moves the dead-lettered pair back to pending with
+ * attempts reset to 0, a second redrive while pending is
+ * rejected with the pinned error, and one scripted 200 after
+ * the fix clears the pair, so the ledger ends pending 0, dead
+ * letter 0. All sides are
  * asserted outside the printing against hand-pinned
  * expectations.
  * The demo finally closes with a caller-string-length-limits
@@ -2448,6 +2454,12 @@ export const DEMO_UNRECONCILED_ARB_AT = "2026-03-09T13:00:00.000Z";
  *   same report with the demo secret) fails once (pending,
  *   attempts 1) and then delivers 200, so the success record
  *   clears the pair — the ledger ends pending 0, dead letter 1.
+ * - the dead-lettered pair is then redriven (backlog #1139): once
+ *   the downstream is fixed, `redrive()` at a fixed later clock
+ *   (13:30) moves it back to pending with attempts reset to 0 and
+ *   `lastAt` stamped with the redrive time; redriving it again
+ *   while pending throws the pinned error, and one scripted 200
+ *   clears the pair — the ledger ends pending 0, dead letter 0.
  * All timestamps fixed; the printed lines carry the endpoint,
  * eventIds, and counts only, so no wall clock enters the output.
  */
@@ -2459,6 +2471,9 @@ export const DEMO_OUTBOX_DEAD_LAST_ERROR =
   "webhook delivery to https://billing.example.com/hooks/settlement failed after 1 attempt: server responded with status 500";
 export const DEMO_OUTBOX_RECOVERED_EVENT_ID = "evt_demo_outbox_002";
 export const DEMO_OUTBOX_RECOVERED_AT = "2026-03-08T13:00:00.000Z";
+export const DEMO_OUTBOX_REDRIVE_NOW = "2026-03-08T13:30:00.000Z";
+export const DEMO_OUTBOX_REDRIVE_PENDING_ERROR =
+  "SettlementWebhookOutbox: cannot redrive a pending pair (only dead-lettered pairs can be redriven)";
 
 /**
  * Caller-string-length-limits fixtures (backlog #1069): the five
@@ -4256,6 +4271,54 @@ export interface DemoResult {
    * only its own pair, never the dead letter.
    */
   outboxDeadFinal: SettlementWebhookOutboxEntry[];
+  /**
+   * `outbox.deadLetter()` just before the redrive: exactly the
+   * one dead-lettered pair — attempts 3, capped at
+   * {@link DEMO_OUTBOX_MAX_ATTEMPTS}, `lastError` the exact
+   * delivery error {@link DEMO_OUTBOX_DEAD_LAST_ERROR}.
+   */
+  outboxRedriveDeadBefore: SettlementWebhookOutboxEntry[];
+  /**
+   * `outbox.pending()` just after the redrive: exactly one entry
+   * — the same pair, `attempts` reset to 0, `lastAt` stamped with
+   * the redrive time {@link DEMO_OUTBOX_REDRIVE_NOW}, no
+   * `lastError` — the old error belonged to the exhausted round.
+   */
+  outboxRedrivePendingAfter: SettlementWebhookOutboxEntry[];
+  /**
+   * `outbox.deadLetter()` just after the redrive: empty — the
+   * pair left the dead letter.
+   */
+  outboxRedriveDeadAfter: SettlementWebhookOutboxEntry[];
+  /**
+   * The exact error redriving the just-redriven (now pending)
+   * pair threw ({@link DEMO_OUTBOX_REDRIVE_PENDING_ERROR}):
+   * only a dead-lettered pair can be redriven.
+   */
+  outboxRedrivePendingError: string;
+  /**
+   * `deliverSettlementWebhook` result for the redelivery after
+   * the fix: `{status: 200, attempts: 1}` — the success the
+   * outbox records to clear the pair.
+   */
+  outboxRedriveDelivery: WebhookDeliveryResult;
+  /**
+   * Scripted-fetch call count for the redrive segment: 1 call
+   * against the redriven pair (the single 200 redelivery, no
+   * retries).
+   */
+  outboxRedriveFetchCalls: number;
+  /**
+   * `outbox.pending()` at the end of the redrive segment: empty
+   * — the redriven pair was cleared by its successful
+   * redelivery.
+   */
+  outboxPendingAfterRedrive: SettlementWebhookOutboxEntry[];
+  /**
+   * `outbox.deadLetter()` at the end of the redrive segment:
+   * empty — the dead letter is fully drained.
+   */
+  outboxDeadAfterRedrive: SettlementWebhookOutboxEntry[];
   /**
    * The caller-string-length-limits segment's branch escrow
    * ({@link DEMO_LIMITS_ESCROW_ID}), after its single
@@ -10481,6 +10544,122 @@ export async function runDemo(): Promise<DemoResult> {
     `  recovered event ${DEMO_OUTBOX_RECOVERED_EVENT_ID}: 1 failure (pending, attempts 1), then 200 — the success cleared the pair; ledger ends pending 0, dead letter 1`,
   );
 
+  // --- Webhook outbox redrive: a dead letter is not a dead end ---
+  // The outbox segment above ends with the main webhook's pair
+  // dead-lettered at attempts 3 — the one that needs a human.
+  // `redrive()` is that pair's only way back: once the downstream
+  // endpoint is fixed, a human moves it back to pending for a fresh
+  // delivery round. The redrive stamps `lastAt` with the injected
+  // redrive time (13:30, later than the outbox's fixed 13:00 clock)
+  // and resets `attempts` to 0, dropping the old `lastError`, so the
+  // pair re-enters `pending()` and the retry runner's next pass.
+  // Redriving it again while it is pending must fail fast (it still
+  // has retries left), and one scripted 200 through the same signed
+  // webhook clears the pair — the ledger ends pending 0, dead
+  // letter 0. Hand-pinned expectations (see the fixture comment
+  // above), asserted HERE, outside the printing: the dead-letter
+  // snapshot before the redrive, the pending snapshot after it
+  // (attempts 0, `lastAt` the redrive time, no `lastError`), the
+  // pinned rejection for the second redrive, and the redelivery's
+  // single POST carrying the byte-identical signed body. Zero
+  // network, zero real waiting, no wall clock.
+  const outboxRedriveNowMs = Date.parse(DEMO_OUTBOX_REDRIVE_NOW);
+  const outboxRedriveDeadBefore = outbox.deadLetter();
+  outbox.redrive(DEMO_OUTBOX_ENDPOINT, webhook.payload.eventId, {
+    now: outboxRedriveNowMs,
+  });
+  const outboxRedrivePendingAfter = outbox.pending();
+  const outboxRedriveDeadAfter = outbox.deadLetter();
+  // Redriving the just-redriven pair again must fail fast: it is
+  // pending now, with retries left — only a dead-lettered pair can
+  // be redriven.
+  let outboxRedrivePendingError: string | undefined;
+  try {
+    outbox.redrive(DEMO_OUTBOX_ENDPOINT, webhook.payload.eventId, {
+      now: outboxRedriveNowMs,
+    });
+  } catch (err) {
+    outboxRedrivePendingError =
+      err instanceof Error ? err.message : String(err);
+  }
+  if (outboxRedrivePendingError !== DEMO_OUTBOX_REDRIVE_PENDING_ERROR) {
+    throw new Error(
+      `demo fixture broken: redriving the pending pair did not throw the pinned pending-redrive error (got ${JSON.stringify(
+        outboxRedrivePendingError,
+      )})`,
+    );
+  }
+  const outboxRedriveCalls: Array<{
+    url: string;
+    method: string;
+    body: string;
+    signature: string;
+  }> = [];
+  const outboxRedriveFetch: typeof fetch = async (input, init) => {
+    outboxRedriveCalls.push({
+      url: String(input),
+      method: String(init?.method ?? ""),
+      body: String(init?.body ?? ""),
+      signature: String(
+        new Headers(init?.headers).get("x-signature") ?? "",
+      ),
+    });
+    return new Response("{}", {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  const outboxRedriveDelivery = await deliverSettlementWebhook(
+    DEMO_OUTBOX_ENDPOINT,
+    webhook,
+    { retries: 0, backoffMs: 0, fetchImpl: outboxRedriveFetch },
+  );
+  outbox.recordAttempt({
+    endpoint: DEMO_OUTBOX_ENDPOINT,
+    eventId: webhook.payload.eventId,
+    ok: true,
+    status: outboxRedriveDelivery.status,
+    at: outboxRedriveNowMs,
+  });
+  const outboxPendingAfterRedrive = outbox.pending();
+  const outboxDeadAfterRedrive = outbox.deadLetter();
+  if (
+    outboxRedriveDeadBefore.length !== 1 ||
+    outboxRedriveDeadBefore[0]?.endpoint !== DEMO_OUTBOX_ENDPOINT ||
+    outboxRedriveDeadBefore[0]?.eventId !== webhook.payload.eventId ||
+    outboxRedriveDeadBefore[0]?.attempts !== DEMO_OUTBOX_MAX_ATTEMPTS ||
+    outboxRedriveDeadBefore[0]?.lastError !==
+      DEMO_OUTBOX_DEAD_LAST_ERROR ||
+    outboxRedriveDeadBefore[0]?.lastAt !== outboxNowMs ||
+    outboxRedrivePendingAfter.length !== 1 ||
+    outboxRedrivePendingAfter[0]?.endpoint !== DEMO_OUTBOX_ENDPOINT ||
+    outboxRedrivePendingAfter[0]?.eventId !== webhook.payload.eventId ||
+    outboxRedrivePendingAfter[0]?.attempts !== 0 ||
+    outboxRedrivePendingAfter[0]?.lastAt !== outboxRedriveNowMs ||
+    outboxRedrivePendingAfter[0]?.lastError !== undefined ||
+    outboxRedriveDeadAfter.length !== 0 ||
+    outboxRedriveDelivery.status !== 200 ||
+    outboxRedriveDelivery.attempts !== 1 ||
+    outboxRedriveCalls.length !== 1 ||
+    outboxRedriveCalls[0]?.url !== DEMO_OUTBOX_ENDPOINT ||
+    outboxRedriveCalls[0]?.method !== "POST" ||
+    outboxRedriveCalls[0]?.body !== JSON.stringify(webhook.payload) ||
+    outboxRedriveCalls[0]?.signature !== webhook.signature ||
+    outboxPendingAfterRedrive.length !== 0 ||
+    outboxDeadAfterRedrive.length !== 0
+  ) {
+    throw new Error(
+      "demo fixture broken: webhook outbox redrive segment does not match the pinned shape (dead-lettered pair at attempts 3 before the redrive, back to pending at attempts 0 with lastAt the redrive time and no lastError after it, one scripted 200 carrying the byte-identical signed body clearing the pair, ledger ends pending 0, dead letter 0)",
+    );
+  }
+  lines.push(
+    "",
+    "Webhook outbox redrive (SettlementWebhookOutbox.redrive: the dead letter comes back to pending):",
+    `  ${DEMO_OUTBOX_ENDPOINT} — event ${webhook.payload.eventId}: dead-lettered at attempts 3, redriven at ${DEMO_OUTBOX_REDRIVE_NOW} — back to pending, attempts reset to 0, lastAt stamped with the redrive time`,
+    `  redriving the pending pair again rejected: ${DEMO_OUTBOX_REDRIVE_PENDING_ERROR}`,
+    `  redelivery after the fix: 200 on the first attempt — the success cleared the pair; ledger ends pending 0, dead letter 0`,
+  );
+
   // --- Caller string length limits: caller-supplied short identifiers (final closing) ---
   // The five caps the library enforces on caller-supplied short
   // identifiers — dispatch `actor` (256), webhook `eventId`
@@ -11021,6 +11200,14 @@ export async function runDemo(): Promise<DemoResult> {
     outboxRecoveredFetchCalls: outboxRecoveredCalls.length,
     outboxPendingFinal,
     outboxDeadFinal,
+    outboxRedriveDeadBefore,
+    outboxRedrivePendingAfter,
+    outboxRedriveDeadAfter,
+    outboxRedrivePendingError,
+    outboxRedriveDelivery,
+    outboxRedriveFetchCalls: outboxRedriveCalls.length,
+    outboxPendingAfterRedrive,
+    outboxDeadAfterRedrive,
     limitsEscrow,
     limitsActorError,
     limitsEventIdError,
