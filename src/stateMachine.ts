@@ -492,6 +492,27 @@ export interface EscrowSnapshot {
    */
   maxDeposit?: number;
   /**
+   * Per-state visit budget (see {@link EscrowOptions.maxVisitsByState}),
+   * present only when the escrow carries at least one budgeted state.
+   * `toJSON()` writes this field ONLY when the map is non-empty, so a
+   * budget-free escrow's snapshot keeps its exact legacy shape.
+   * `fromJSON()` restores it through the same strict validation as
+   * the constructor (tag `invalid snapshot`), so a tampered budget in
+   * a stored snapshot is rejected, not silently applied; an explicit
+   * `opts.maxVisitsByState` passed to `fromJSON()` overrides the
+   * snapshot's budget entirely (see {@link Escrow.fromJSON}). The
+   * used count is NOT stored: it is derived from the history (1 for
+   * the initial state plus 1 per entry landing in the state), so a
+   * restored escrow resumes with the exact count the live escrow had
+   * — the budget can never drift from the audit log.
+   *
+   * The schema version stays 1 for the same reason as
+   * `idempotencyKeys`: the field is optional and additive, so
+   * snapshots WITHOUT it load exactly as before, while a snapshot
+   * carrying it is rejected as an unknown field by older parsers.
+   */
+  maxVisitsByState?: Partial<Record<EscrowState, number>>;
+  /**
    * Verify-evidence gate (see {@link EscrowOptions.requireVerifyEvidence}),
    * present only when the gate is enabled. `toJSON()` writes this
    * field ONLY when true, so a gate-off escrow's snapshot keeps its
@@ -648,6 +669,7 @@ const SNAPSHOT_FIELDS = new Set([
   "idempotencyKeys",
   "rolePolicy",
   "maxDeposit",
+  "maxVisitsByState",
   "requireVerifyEvidence",
   "requireActor",
 ]);
@@ -667,6 +689,7 @@ const SNAPSHOT_FIELDS = new Set([
 const ESCROW_OPTION_FIELDS = new Set([
   "requireVerifyEvidence",
   "maxDeposit",
+  "maxVisitsByState",
   "auditKey",
   "rolePolicy",
   "requireActor",
@@ -769,6 +792,52 @@ const HISTORY_ENTRY_FIELDS = new Set([
  * {@link MAX_ACTOR_LENGTH} for the full reasoning.
  */
 export type RolePolicy = Partial<Record<EscrowEvent, string[]>>;
+
+/**
+ * Validate a per-state visit budget into a normalized lookup map.
+ *
+ * `undefined` means "no budgets" (the default: every state unlimited).
+ * Otherwise the value must be a plain record whose keys are known states
+ * and whose values are positive integers — 0 is rejected, not just
+ * non-integers: the escrow's initial state already counts as one visit,
+ * so a 0 budget could never admit even the state the escrow starts in.
+ * Anything else throws `<tag>: maxVisitsByState …`, fail-fast at
+ * construction, so a bad map can never produce an escrow that looks
+ * budgeted but is not. An empty map is legal and means "no budgets".
+ * Mirrors the dataquest lifecycle's `assertMaxVisitsByState` wording;
+ * callers pass the tag for their boundary (`invalid option` at
+ * construction, `invalid snapshot` on restore).
+ */
+function assertMaxVisitsByState(
+  value: unknown,
+  tag: string
+): Map<EscrowState, number> {
+  const budgets = new Map<EscrowState, number>();
+  if (value === undefined) return budgets;
+  if (!isRecord(value)) {
+    throw new Error(
+      `${tag}: maxVisitsByState must be an object, got ${typeof value}`
+    );
+  }
+  for (const [state, budget] of Object.entries(value)) {
+    if (!ESCROW_STATES.has(state as EscrowState)) {
+      throw new Error(
+        `${tag}: maxVisitsByState has unknown state ${state}`
+      );
+    }
+    if (
+      typeof budget !== "number" ||
+      !Number.isInteger(budget) ||
+      budget < 1
+    ) {
+      throw new Error(
+        `${tag}: maxVisitsByState[${state}] must be a positive integer, got ${String(budget)}`
+      );
+    }
+    budgets.set(state as EscrowState, budget);
+  }
+  return budgets;
+}
 
 /**
  * Validate an event-level RBAC policy into a normalized lookup map.
@@ -955,6 +1024,12 @@ function resolveWatchdogAt(at: Date | string | undefined): string | undefined {
  *    (the same bar the constructor applies); absent means no cap (the
  *    legacy shape). It is validated strictly but never consulted
  *    against the stored history — it governs future dispatches only
+ *  - `maxVisitsByState`, when present, must be an object mapping known
+ *    states to positive integers (the same bar the constructor
+ *    applies); absent means no budgets (the legacy shape). It is
+ *    validated strictly but never consulted against the stored
+ *    history — it governs future dispatches only, so a snapshot whose
+ *    history already exceeds a state's budget still restores
  *  - `requireVerifyEvidence`, when present, must be a boolean; absent
  *    means the gate is off (the legacy shape). Same treatment as
  *    `maxDeposit`: validated strictly, governs future dispatches only
@@ -972,7 +1047,7 @@ function resolveWatchdogAt(at: Date | string | undefined): string | undefined {
  *  - unknown fields are rejected (fail-closed), never silently dropped:
  *    top level allows only
  *    `v`/`id`/`state`/`history`/`deadline`/`idempotencyKeys`/`rolePolicy`/
- *    `maxDeposit`/`requireVerifyEvidence`/`requireActor`
+ *    `maxDeposit`/`maxVisitsByState`/`requireVerifyEvidence`/`requireActor`
  *    (`unknown field "<name>"`), and a history entry allows only
  *    `seq`/`event`/`from`/`to`/`at`/`actor`/`note`/`amount`/`evidence`/
  *    `settlementRef`/`refundRef`/`prevHash`/`hash` (`history[i]: unknown field "<name>"). A typo
@@ -1286,6 +1361,15 @@ function parseEscrowSnapshot(
     }
     maxDeposit = snapshot.maxDeposit;
   }
+  // Per-state visit budget: configuration for FUTURE dispatches,
+  // validated strictly but never consulted against the stored history
+  // (same treatment as the cap above) — a snapshot whose history
+  // already exceeds a state's budget is still a valid record; the
+  // next dispatch into that state will throw.
+  const maxVisitsByState = assertMaxVisitsByState(
+    snapshot.maxVisitsByState,
+    "invalid snapshot"
+  );
   let requireVerifyEvidence: boolean | undefined;
   if (snapshot.requireVerifyEvidence !== undefined) {
     if (typeof snapshot.requireVerifyEvidence !== "boolean") {
@@ -1322,6 +1406,13 @@ function parseEscrowSnapshot(
           ) as RolePolicy,
         }),
     ...(maxDeposit === undefined ? {} : { maxDeposit }),
+    ...(maxVisitsByState.size === 0
+      ? {}
+      : {
+          maxVisitsByState: Object.fromEntries(
+            maxVisitsByState
+          ) as Partial<Record<EscrowState, number>>,
+        }),
     ...(requireVerifyEvidence === undefined
       ? {}
       : { requireVerifyEvidence }),
@@ -2168,6 +2259,49 @@ export interface EscrowOptions {
   maxDeposit?: number;
 
   /**
+   * Optional per-state visit budget: state → the maximum number of
+   * times the escrow may ENTER that state. This is the state-level
+   * answer to the milestone loop the transition table otherwise
+   * leaves unbounded — `FUNDED → SUBMIT_MILESTONE →
+   * MILESTONE_SUBMITTED → PARTIAL_RELEASE → FUNDED` re-opens the
+   * milestone for the remaining tranches, so a caller (or a malicious
+   * actor) can cycle it forever and grow the history without bound.
+   * A visit is counted as 1 for the escrow's initial state (the first
+   * history entry's `from`, or the current state when the history is
+   * still empty) plus 1 per history entry whose `to` is that state —
+   * so the count is derived from the append-only history, exactly
+   * like the deposit cap's locked total, and survives `toJSON()` /
+   * `fromJSON()` round-trips without resetting. States absent from
+   * the map are unlimited, and omitting the map disables the check
+   * entirely (the pre-budget behavior). Each budget must be a
+   * positive integer — 0 would already be spent by the initial visit
+   * itself, so it is a construction error, not a usable budget;
+   * anything else throws `invalid option: …` at construction.
+   * The check runs in `dispatch()` after the transition-legality,
+   * RBAC, and amount / deposit-cap checks and before anything is
+   * appended or any idempotency key is consumed, so a rejected
+   * dispatch leaves no trace and a retry with the same key still
+   * executes (for a different, legal event). The budget IS part of
+   * `toJSON()`/`fromJSON()` snapshots (as `maxVisitsByState`,
+   * written only when non-empty — see {@link EscrowSnapshot}): a
+   * restored escrow keeps enforcing it unless
+   * `Escrow.fromJSON(snapshot, { maxVisitsByState })` explicitly
+   * overrides it. A legacy snapshot without the field restores
+   * unbudgeted. A bare history carries no budget, so
+   * `Escrow.fromHistory(id, history, { maxVisitsByState })` is the
+   * way to re-attach it there. Read the count any time with
+   * {@link Escrow.visitCount}.
+   *
+   * Honest limit: the budget caps re-entry into a state, not the
+   * total history length — an escrow can still grow a long history
+   * by walking distinct states and events the budget does not list.
+   * And a budget of 1 on a state the escrow starts in does not block
+   * leaving it (no edge re-enters CREATED): it only blocks the
+   * re-entry that would exceed the budget. See SECURITY.md.
+   */
+  maxVisitsByState?: Partial<Record<EscrowState, number>>;
+
+  /**
    * Optional secret key that upgrades the audit hash chain from plain
    * SHA-256 to HMAC-SHA256 (keyed mode). With a key set, every entry's
    * `hash` is `HMAC-SHA256(canonical(entry) + prevHash, auditKey)`:
@@ -2492,6 +2626,7 @@ export class Escrow {
   private _seenIdempotencyKeys = new Set<string>();
   private readonly _requireVerifyEvidence: boolean;
   private readonly _maxDeposit: number | undefined;
+  private readonly _maxVisitsByState: Map<EscrowState, number>;
   private readonly _auditKey: AuditKey | undefined;
   private _rolePolicy: Map<EscrowEvent, string[]>;
   /**
@@ -2550,6 +2685,14 @@ export class Escrow {
     this.id = id;
     this._requireVerifyEvidence = opts?.requireVerifyEvidence === true;
     this._maxDeposit = opts?.maxDeposit;
+    // assertMaxVisitsByState returns a fresh Map, so later caller
+    // mutation of the options object cannot change the budgets this
+    // escrow enforces. Mirrors the dataquest lifecycle's construction
+    // of the same budget (tag `invalid option`).
+    this._maxVisitsByState = assertMaxVisitsByState(
+      opts?.maxVisitsByState,
+      "invalid option"
+    );
     // Defensive copy for Buffer keys: the caller must not be able to
     // mutate the key material after construction and silently change
     // what future dispatches sign with.
@@ -2628,6 +2771,44 @@ export class Escrow {
 
   get isTerminal(): boolean {
     return isTerminal(this._state);
+  }
+
+  /**
+   * How many times the escrow has visited a state so far — read-only,
+   * derived from the append-only history (the exact count the
+   * `maxVisitsByState` budget check reads): 1 for the initial state
+   * plus 1 per history entry landing in that state, exactly as
+   * documented on the per-state visit budget. A state the escrow never
+   * entered counts 0. Throws on an unknown state, with the same
+   * `… unknown state …` bar `isTerminal(state)` applies — a misspelled
+   * state is a caller bug, not a zero count. Mirrors the dataquest
+   * lifecycle's `visitCount`.
+   */
+  visitCount(state: EscrowState): number {
+    if (!ESCROW_STATES.has(state)) {
+      throw new Error(`invalid visit count: unknown state ${String(state)}`);
+    }
+    return this._stateVisitCount(state);
+  }
+
+  /**
+   * The history-derived visit count (see {@link visitCount}): 1 for
+   * the initial state — the first history entry's `from`, or the
+   * current state when the history is still empty — plus 1 per history
+   * entry whose `to` is that state. Derived, never stored separately,
+   * so it can never drift from the audit log: a snapshot round-trip or
+   * a `fromHistory` rebuild resumes with the exact count the live
+   * escrow had.
+   */
+  private _stateVisitCount(state: EscrowState): number {
+    if (this._history.length === 0) {
+      return this._state === state ? 1 : 0;
+    }
+    let n = this._history[0].from === state ? 1 : 0;
+    for (const e of this._history) {
+      if (e.to === state) n++;
+    }
+    return n;
   }
 
   // ------------------------------------------------------------------
@@ -2766,13 +2947,19 @@ export class Escrow {
    *               with an authorized actor and the SAME key succeeds
    *               instead of being treated as a duplicate. The key is
    *               consumed only alongside a successful append;
-   *               (4) the opt-in `requireActor` gate runs after RBAC
+   *               (4) the opt-in per-state visit-budget check runs
+   *               after the transition, RBAC, and amount / deposit-cap
+   *               checks — a dispatch whose TARGET state already used
+   *               its `maxVisitsByState` budget throws
+   *               `state visit budget exhausted: …`, leaves no trace,
+   *               and consumes no key;
+   *               (5) the opt-in `requireActor` gate runs after RBAC
    *               and the amount / deposit-cap checks, just before the
    *               append — a dispatch without an actor is rejected with
    *               `actor required: …`, leaves no trace, and consumes no
    *               key; a listed event without an actor never reaches it
    *               (RBAC reports first);
-   *               (5) the opt-in `requireSettlementRef` gate runs after
+   *               (6) the opt-in `requireSettlementRef` gate runs after
    *               the requireActor gate, just before the append — a
    *               RELEASE without a settlementRef is rejected with
    *               `settlement reference required: …`, leaves no trace,
@@ -3117,6 +3304,32 @@ export class Escrow {
         );
       }
     }
+    // Per-state visit budget (opt-in, see EscrowOptions): when the
+    // escrow carries a `maxVisitsByState` budget for the TARGET state
+    // and the history already records that many visits to it (initial
+    // visit plus one per entry landing there — see
+    // `_stateVisitCount`), dispatch throws
+    // `state visit budget exhausted: …`. Checked after the
+    // transition-legality, RBAC, and amount / deposit-cap checks
+    // (mirroring the dataquest lifecycle, where the visit check runs
+    // after the transition, RBAC, and event-budget checks), and
+    // before anything is appended or any idempotency key is consumed
+    // — a rejected dispatch leaves no trace, and a retry with the
+    // same key still executes (for a different, legal event). Unlike
+    // the deposit cap, this one governs states, not events: it blocks
+    // re-entry into a state the escrow has already visited too often,
+    // whatever event would take it there — including the FUNDED
+    // self-loops (a top-up and a partial release each count as a
+    // fresh visit to FUNDED).
+    const visitBudget = this._maxVisitsByState.get(to);
+    if (visitBudget !== undefined) {
+      const visits = this._stateVisitCount(to);
+      if (visits >= visitBudget) {
+        throw new Error(
+          `state visit budget exhausted: ${to} already visited ${visits} of ${visitBudget} times`
+        );
+      }
+    }
     // Up-front actor-required gate (opt-in, see EscrowOptions): when
     // requireActor is on, a dispatch without an actor is rejected.
     // Checked after the transition / RBAC / amount-cap checks and
@@ -3360,6 +3573,13 @@ export class Escrow {
       ...(this._maxDeposit === undefined
         ? {}
         : { maxDeposit: this._maxDeposit }),
+      ...(this._maxVisitsByState.size === 0
+        ? {}
+        : {
+            maxVisitsByState: Object.fromEntries(
+              this._maxVisitsByState
+            ) as Partial<Record<EscrowState, number>>,
+          }),
       ...(this._requireVerifyEvidence
         ? { requireVerifyEvidence: true }
         : {}),
@@ -3374,11 +3594,12 @@ export class Escrow {
    * canonical JSON of the snapshot under `secret`. Persist the
    * envelope (plain JSON) before a restart and restore it with
    * {@link Escrow.restoreSignedSnapshot} — a process that restarts
-   * keeps its deadline, policy, deposit cap, verify-evidence gate,
-   * actor gate, and consumed idempotency keys, and anyone who rewrites the persisted file
+   * keeps its deadline, policy, deposit cap, per-state visit budget,
+   * verify-evidence gate, actor gate, and consumed idempotency keys,
+   * and anyone who rewrites the persisted file
    * without the secret is caught at restore instead of silently
    * pushing a deadline back, loosening a policy, clearing consumed
-   * keys, or lifting a cap.
+   * keys, lifting a cap, or widening a visit budget.
    *
    * The secret is never written into the envelope, and the envelope
    * is integrity protection only, not encryption: the snapshot
@@ -3437,25 +3658,29 @@ export class Escrow {
    * snapshot without the field restores unrestricted.
    *
    * The snapshot's deposit cap (`maxDeposit`, when present),
+   * per-state visit budget (`maxVisitsByState`, when present),
    * verify-evidence gate (`requireVerifyEvidence`, when present),
    * and audit-attribution gate (`requireActor`, when present) are
    * likewise restored and keep being enforced after a restart; a
-   * legacy snapshot without the fields restores uncapped with the
-   * gates off. The audit key is the exception: it is never stored in
-   * a snapshot, so a keyed chain still needs the key re-supplied
-   * here (see below).
+   * legacy snapshot without the fields restores uncapped, unbudgeted,
+   * with the gates off. The used visit count is not stored — it is
+   * derived from the restored history, so the budget resumes with the
+   * exact count the live escrow had. The audit key is the exception:
+   * it is never stored in a snapshot, so a keyed chain still needs
+   * the key re-supplied here (see below).
    *
    * @param opts - Optional per-instance dispatch configuration, passed
    *   straight through to the constructor (same validation rules).
-   *   `maxDeposit`, `requireVerifyEvidence`, and `requireActor` ARE
-   *   snapshot state now (see above), so they follow override semantics instead of
-   *   re-enable semantics, mirroring `rolePolicy`/`deadline`: when
-   *   `opts.maxDeposit` / `opts.requireVerifyEvidence` /
+   *   `maxDeposit`, `maxVisitsByState`, `requireVerifyEvidence`, and
+   *   `requireActor` ARE snapshot state now (see above), so they
+   *   follow override semantics instead of re-enable semantics,
+   *   mirroring `rolePolicy`/`deadline`: when `opts.maxDeposit` /
+   *   `opts.maxVisitsByState` / `opts.requireVerifyEvidence` /
    *   `opts.requireActor` is provided
    *   it replaces the snapshot's value entirely — it is NOT merged
    *   with it. When omitted (`undefined`), the snapshot's value is
    *   restored as-is. A legacy snapshot carrying none of the fields
-   *   restores uncapped with the gates off, exactly like a
+   *   restores uncapped, unbudgeted, with the gates off, exactly like a
    *   default-constructed escrow.
    *
    *   `opts.rolePolicy` is the exception to that pattern: the policy
@@ -3498,6 +3723,9 @@ export class Escrow {
     const snapshotGuardrails: EscrowOptions = {
       ...(parsed.maxDeposit !== undefined
         ? { maxDeposit: parsed.maxDeposit }
+        : {}),
+      ...(parsed.maxVisitsByState !== undefined
+        ? { maxVisitsByState: parsed.maxVisitsByState }
         : {}),
       ...(parsed.requireVerifyEvidence !== undefined
         ? { requireVerifyEvidence: parsed.requireVerifyEvidence }
@@ -3573,7 +3801,8 @@ export class Escrow {
    * snapshot under `secret` throws a descriptive configuration
    * `Error` and no escrow is produced — a tampered `state`,
    * `deadline`, `rolePolicy`, `idempotencyKeys`, `maxDeposit`,
-   * `requireVerifyEvidence`, or `requireActor`, a tampered history entry, or a wrong
+   * `maxVisitsByState`, `requireVerifyEvidence`, or `requireActor`,
+   * a tampered history entry, or a wrong
    * secret all fail here, before any snapshot parsing, so a
    * tampered envelope can never partially install. A MAC-valid
    * envelope whose snapshot is itself malformed then fails through
@@ -3725,11 +3954,11 @@ export class Escrow {
    * @param opts - Optional per-instance dispatch configuration,
    *   passed straight through to the constructor, with the same
    *   re-attach semantics as {@link Escrow.fromJSON}'s options:
-   *   `requireVerifyEvidence`/`maxDeposit`/`requireActor` are never
-   *   stored anywhere in the log (unlike a snapshot, which carries
-   *   all three), so a rebuilt escrow silently loses those guardrails
-   *   unless the caller re-enables them here — use `fromJSON` when they
-   *   must survive a restart.
+   *   `requireVerifyEvidence`/`maxDeposit`/`maxVisitsByState`/
+   *   `requireActor` are never stored anywhere in the log (unlike a
+   *   snapshot, which carries all four), so a rebuilt escrow silently
+   *   loses those guardrails unless the caller re-enables them here —
+   *   use `fromJSON` when they must survive a restart.
    *   `opts.idempotencyKeys` re-attaches the consumed dispatch
    *   idempotency keys the same way; omit it and the rebuilt escrow
    *   starts with an empty key set, so a retried key would
@@ -3748,7 +3977,7 @@ export class Escrow {
    *   overrides stored state; a bare history carries no policy at
    *   all, so here the option is the only source — when provided it
    *   is installed by the constructor, when omitted the rebuilt
-   *   escrow is unrestricted. (`maxDeposit`,
+   *   escrow is unrestricted. (`maxDeposit`, `maxVisitsByState`,
    *   `requireVerifyEvidence`, and `requireActor` differ the same
    *   way: a snapshot carries them, a bare history does not.)
    *
@@ -3912,7 +4141,11 @@ export interface ExpireOverdueEscrowsOptions {
  * actor, so a policy that lists `EXPIRE` must include it. The
  * `requireActor` gate needs no prediction: the live run always passes
  * an actor (`system`), and `EXPIRE` carries no amount, so the
- * money/cap checks never apply to it.
+ * money/cap checks never apply to it. The per-state visit budget
+ * needs none either: the live run dispatches into EXPIRED, and a
+ * screened (non-terminal) escrow has never visited EXPIRED, so its
+ * history-derived visit count there is 0 — below every positive
+ * budget — and the live run can never fail on it.
  */
 function predictExpireOverdueEscrow(
   escrow: Escrow,

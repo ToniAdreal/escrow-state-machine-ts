@@ -18,6 +18,30 @@ version changes.
 
 ### Added
 
+- Per-state visit budget `EscrowOptions.maxVisitsByState` (2026-11-14,
+  backlog #1140): caps how many times the escrow may *enter* each listed
+  state — the state-level answer to the milestone loop the transition
+  table otherwise leaves unbounded (`FUNDED → SUBMIT_MILESTONE →
+  MILESTONE_SUBMITTED → PARTIAL_RELEASE → FUNDED`). A visit counts as 1
+  for the initial state plus 1 per history entry landing there, so the
+  count is derived from the append-only history and survives
+  `toJSON()`/`fromJSON()` round-trips without resetting (the used count
+  is never stored separately). A dispatch whose target state already
+  used its budget throws `state visit budget exhausted: …` after the
+  transition/RBAC/amount-cap checks, appends nothing, and consumes no
+  idempotency key. Each budget must be a positive integer (0 is a
+  construction error); states absent from the map are unlimited, and
+  omitting the map disables the check entirely. The budget IS part of
+  snapshots (`maxVisitsByState`, written only when non-empty, strict
+  validation on restore, explicit `fromJSON` opts override it
+  entirely); a bare history carries no budget, so `fromHistory` takes
+  it via opts. Read-only `Escrow.visitCount(state)` exposes the count
+  (unknown states throw). Mirrors the dataquest lifecycle's
+  `maxVisitsByState` (same counting, same check order, same error
+  wording), including the pinned asymmetry: a budget of 1 on `CREATED`
+  does not block the first `FUND` (no edge re-enters `CREATED`), while
+  a budget of 1 on `FUNDED` is already spent by the first `FUND`.
+
 - CLI demo webhook-outbox `redrive` segment (2026-11-14,
   backlog #1139): after the dead-letter run, the demo redrives the
   dead-lettered pair at a fixed later clock

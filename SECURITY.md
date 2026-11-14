@@ -156,6 +156,23 @@ quorum approvals (`approveSigned()`).
   never written into snapshots and must be re-enabled on restore.
   Like the evidence gate, it does not verify the external settlement
   — it only guarantees the audit trail names the transfer.
+- **Per-state visit budget (when `maxVisitsByState` is set).**
+  `Escrow` constructed with a per-state visit budget rejects a dispatch
+  whose target state already used its budget with
+  `state visit budget exhausted: …`, after the transition/RBAC/amount-cap
+  checks and before any append — no history is appended and no
+  idempotency key is consumed. The count is derived from the append-only
+  history (1 for the initial state plus 1 per entry landing there), so a
+  restored escrow resumes with the exact count the live escrow had, and
+  the budget IS part of `toJSON()`/`fromJSON()` snapshots
+  (`maxVisitsByState`, written only when non-empty; a tampered budget in
+  a stored snapshot is rejected). A bare history carries no budget, so
+  `fromHistory` still needs the option re-supplied. Honest limit: the
+  budget caps re-entry into a state, not total history length — an
+  escrow can still grow a long history by walking distinct states and
+  events the budget does not list — and it is opt-in: without it the
+  milestone loop (`FUNDED → SUBMIT_MILESTONE → MILESTONE_SUBMITTED →
+  PARTIAL_RELEASE → FUNDED`) is unbounded by design.
 - **Optimistic-concurrency guard (when `expectedSeq` is passed).**
   `dispatch` rejects a caller whose `expectedSeq` no longer equals the
   current history length with `dispatch conflict: …`, before any
@@ -173,7 +190,10 @@ quorum approvals (`approveSigned()`).
   notes, `actor` (when present) a non-empty string, `rolePolicy`
   (when present) a valid allowlist of known events, and
   `idempotencyKeys` (when present) an array of non-empty
-  strings. Anything else throws `invalid snapshot: …`.
+  strings. Anything else throws `invalid snapshot: …`. The per-state
+  visit budget (`maxVisitsByState`, when present) must map known states
+  to positive integers, and is validated strictly but never consulted
+  against the stored history — it governs future dispatches only.
 - **Delivery fail-fast.** `deliverSettlementWebhook` rejects invalid URLs,
   non-http(s) protocols, and bad retry/timeout options before any request,
   and never retries 3xx/4xx other than 429 (the request itself is at fault);

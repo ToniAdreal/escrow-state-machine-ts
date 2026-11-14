@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2128 tests, all local
+npm test   # 2145 tests, all local
 ```
 
 ## Quickstart
@@ -375,6 +375,34 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   `Escrow.fromJSON(snapshot, { maxDeposit })` overrides the
   snapshot's cap entirely. The audit key is the deliberate exception:
   it is never written into a snapshot.
+- State visit budgets (opt-in): `new Escrow(id, { maxVisitsByState })`
+  caps how many times the escrow may *enter* each listed state — the
+  state-level answer to the milestone loop the transition table
+  otherwise leaves unbounded (`FUNDED → SUBMIT_MILESTONE →
+  MILESTONE_SUBMITTED → PARTIAL_RELEASE → FUNDED` re-opens the
+  milestone for the remaining tranches). A visit counts as 1 for the
+  escrow's initial state plus 1 per history entry landing in that
+  state, so the count is derived from the append-only history and
+  survives `toJSON()`/`fromJSON()` round-trips without resetting
+  (the used count is never stored separately, so it cannot drift from
+  the audit log). A dispatch whose target state already used its
+  budget throws `state visit budget exhausted: …` after the
+  transition, RBAC, and amount / deposit-cap checks and appends
+  nothing, so a failed dispatch leaves no audit residue and does not
+  consume an idempotency key. States absent from the map are
+  unlimited, and omitting the map disables the check entirely. Each
+  budget must be a positive integer (0 is a construction error: the
+  initial visit already spent it). The budget IS part of
+  `toJSON()`/`fromJSON()` snapshots (`maxVisitsByState`, written only
+  when non-empty), and an explicit
+  `Escrow.fromJSON(snapshot, { maxVisitsByState })` overrides it
+  entirely; a bare history carries no budget, so
+  `Escrow.fromHistory(id, history, { maxVisitsByState })` is the way
+  to re-attach it there. Read the count any time with
+  `escrow.visitCount(state)` (unknown states throw). Honest limit:
+  the budget caps re-entry into a state, not total history length,
+  and a budget of 1 on `CREATED` does not block the first `FUND`
+  (no edge re-enters `CREATED`).
 - Event-level RBAC (opt-in): `new Escrow(id, { rolePolicy })` maps events
   to the actor names allowed to dispatch them, e.g.
   `{ RELEASE: ["treasury"], ARBITRATE_RELEASE: ["dao-arbitrator"] }`.
@@ -639,7 +667,7 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   non-negative on FUND and PARTIAL_RELEASE entries only); malformed snapshots throw a
   descriptive `invalid snapshot: …` error instead of yielding a corrupt
   escrow. Unknown fields are rejected fail-closed at both levels —
-  top level allows only `v`/`id`/`state`/`history`/`deadline`/`idempotencyKeys`/`rolePolicy`/`maxDeposit`/`requireVerifyEvidence`/`requireActor` and an
+  top level allows only `v`/`id`/`state`/`history`/`deadline`/`idempotencyKeys`/`rolePolicy`/`maxDeposit`/`maxVisitsByState`/`requireVerifyEvidence`/`requireActor` and an
   entry only `seq`/`event`/`from`/`to`/`at`/`actor`/`note`/`amount`/`evidence`/
   `settlementRef`/`prevHash`/`hash` — so a typo like `deadlline` or `amout` throws
   `invalid snapshot: unknown field "…"` instead of silently losing a
@@ -662,14 +690,19 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   snapshot — a restored escrow keeps enforcing all three, a legacy snapshot
   without them restores uncapped with the gates off, and an explicit
   `fromJSON` opt overrides any of them entirely; a tampered cap or
-  gate in a stored snapshot is rejected. The audit key is never in a
+  gate in a stored snapshot is rejected. The per-state visit budget
+  (`maxVisitsByState`, only when non-empty) is likewise part of the
+  snapshot — the budget is restored, the used count is derived from
+  the restored history, and an explicit `fromJSON` opt overrides the
+  budget entirely; a tampered budget in a stored snapshot is
+  rejected. The audit key is never in a
   snapshot. Signed snapshots close the remaining gap: the hash chain
   covers history entries only, so the snapshot-level fields
   (`state`, `deadline`, `rolePolicy`, `idempotencyKeys`,
-  `maxDeposit`, `requireVerifyEvidence`, `requireActor`) sit outside it — a
+  `maxDeposit`, `maxVisitsByState`, `requireVerifyEvidence`, `requireActor`) sit outside it — a
   rewritten persisted file could push a deadline back, loosen a
-  policy, clear consumed keys, or lift a cap without breaking any
-  history link. `escrow.exportSignedSnapshot(secret)` wraps the
+  policy, clear consumed keys, lift a cap, or widen a visit budget
+  without breaking any history link. `escrow.exportSignedSnapshot(secret)` wraps the
   snapshot in `{ v: 1, snapshot, mac }` (HMAC-SHA256 over the
   canonical JSON of the whole snapshot, same envelope shape as the
   `SettlementEventDedupe` signed snapshot), and
@@ -1840,7 +1873,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2128 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2145 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
