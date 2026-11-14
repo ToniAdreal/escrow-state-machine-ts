@@ -46,7 +46,7 @@
  * they are not a substitute for the gate when dispatching.
  */
 
-import { KeyObject, verify } from "node:crypto";
+import { createHmac, KeyObject, timingSafeEqual, verify } from "node:crypto";
 import { MAX_ACTOR_LENGTH, MAX_EVIDENCE_LENGTH } from "./stateMachine.js";
 
 export interface QuorumConfig {
@@ -156,7 +156,12 @@ export interface ApprovalLogEntry {
  * any signature (the public keys live in `QuorumConfig`, never in the
  * snapshot). A `verified: true` flag in a restored snapshot is only as
  * trustworthy as the snapshot itself, exactly like the `evidence`
- * strings it carries.
+ * strings it carries. When the snapshot crosses an untrusted boundary
+ * (a persisted file, a queue, another service), wrap it in the
+ * HMAC-signed envelope instead — see
+ * {@link exportSignedQuorumSnapshot} /
+ * {@link restoreSignedQuorumSnapshot} — so a rewritten snapshot
+ * (including a forged `verified: true` flag) fails closed at restore.
  */
 export interface QuorumSnapshot {
   /** Snapshot schema version; only `1` exists. */
@@ -274,7 +279,11 @@ export interface Quorum {
    * and superseded entries included, with their original timestamps —
    * exporting never refreshes an approval's age). Mutating the
    * returned object cannot alter the quorum. Restore it after a
-   * restart with {@link restoreQuorum}.
+   * restart with {@link restoreQuorum}. When the snapshot crosses
+   * an untrusted boundary, wrap it with
+   * {@link exportSignedQuorumSnapshot} instead — the plain form
+   * carries no authentication, so a rewritten file restores
+   * silently.
    */
   snapshot(): QuorumSnapshot;
 }
@@ -687,4 +696,443 @@ export function restoreQuorum(
     });
   }
   return buildQuorum(config, entries);
+}
+
+/**
+ * Integrity-protected form of a {@link QuorumSnapshot}, produced by
+ * {@link exportSignedQuorumSnapshot} and consumed by
+ * {@link restoreSignedQuorumSnapshot} (see those functions for the
+ * exact contract). Same envelope shape as the sibling
+ * `EscrowSignedSnapshotEnvelope` (backlog #1017), the
+ * `SettlementEventDedupe` / `SettlementWebhookOutbox` signed
+ * snapshots, and the rfc9421 `ReplayCache` signed snapshot.
+ *
+ * - `v`: envelope format version. Only `1` exists; restore rejects
+ *   any other value (including a missing `v`) instead of guessing.
+ * - `snapshot`: the wrapped {@link QuorumSnapshot}, exactly as
+ *   `Quorum.snapshot()` produces it.
+ * - `mac`: lowercase hex HMAC-SHA256 over the canonical JSON of
+ *   `snapshot` (object keys sorted recursively, array order
+ *   preserved) under the caller's secret — or, when `expiresAt`
+ *   is present, over the canonical JSON of
+ *   `{ expiresAt, snapshot }`, so the expiry timestamp is inside
+ *   the MAC coverage and cannot be extended without the secret.
+ * - `expiresAt`: optional canonical ISO-8601 UTC timestamp. When
+ *   present the envelope restores only while `now <= expiresAt`
+ *   (`now > expiresAt` is expired, checked after the MAC so a
+ *   tampered `expiresAt` fails as a MAC mismatch first); absent
+ *   means the envelope never expires, exactly as before this
+ *   field existed — envelopes exported without it verify
+ *   unchanged.
+ *
+ * Why this exists: the plain snapshot carries the full approval
+ * audit trail, including the `verified: true` flags recorded by
+ * `approveSigned()`, and nothing in it is authenticated — a
+ * rewritten persisted snapshot could flip an unverified claim to
+ * "verified", invent approvals, or drop a revocation, and
+ * `restoreQuorum` would accept it as long as the shape is valid.
+ * The envelope MAC covers the whole snapshot, so any such rewrite
+ * fails closed at restore.
+ *
+ * The envelope carries no secret: the secret is caller configuration,
+ * never persisted in the envelope, and the same secret must be
+ * supplied at restore time. An envelope with any other field is
+ * rejected, so a caller cannot smuggle extra data (including a
+ * secret) past restore. The MAC is integrity protection only — it
+ * proves the snapshot was not rewritten by anyone without the
+ * secret — not confidentiality: the snapshot contents are plain
+ * JSON, and the envelope itself is plain JSON. A caller that needs
+ * the snapshot kept private must encrypt it separately; this
+ * envelope does not. The envelope secret need not equal any
+ * `auditKey` or webhook secret (they protect different things and
+ * are managed independently).
+ */
+export interface QuorumSignedSnapshotEnvelope {
+  v: 1;
+  snapshot: QuorumSnapshot;
+  expiresAt?: string;
+  mac: string;
+}
+
+/**
+ * Options for {@link exportSignedQuorumSnapshot} (backlog #1137):
+ * an optional expiry for the envelope. Exactly one of `expiresAt` /
+ * `maxAgeMs` may be set; `now` is only used with `maxAgeMs`. The
+ * resolved timestamp is written into the envelope and covered by
+ * its MAC, so it cannot be extended without the secret. An envelope
+ * exported with neither option never expires.
+ */
+export interface QuorumExportSignedSnapshotOptions {
+  /**
+   * Absolute expiry for the envelope, a canonical ISO-8601 UTC
+   * timestamp string (`new Date(ms).toISOString()` form — exactly
+   * what `Date.parse` round-trips). Mutually exclusive with
+   * `maxAgeMs`.
+   */
+  expiresAt?: string;
+  /**
+   * Relative expiry in milliseconds from `now` (below): the
+   * envelope's `expiresAt` is set to
+   * `new Date(now + maxAgeMs).toISOString()`. Mutually exclusive
+   * with `expiresAt`. Must be a positive finite number.
+   */
+  maxAgeMs?: number;
+  /**
+   * Clock override (milliseconds since the epoch) used only with
+   * `maxAgeMs` to compute `expiresAt`; defaults to `Date.now()`.
+   * Inject a fixed time for deterministic tests. Supplying it
+   * without `maxAgeMs` is a configuration error — there is nothing
+   * for it to compute.
+   */
+  now?: number;
+}
+
+/**
+ * Options for {@link restoreSignedQuorumSnapshot}: the clock used
+ * for the envelope-expiry check.
+ */
+export interface QuorumRestoreSignedSnapshotOptions {
+  /**
+   * Clock override (milliseconds since the epoch) for the
+   * `expiresAt` check; defaults to `Date.now()`. An envelope is
+   * expired only when `now > Date.parse(expiresAt)` — restoring at
+   * exactly `expiresAt` still succeeds, the same inclusive
+   * boundary the settlement webhook freshness window uses
+   * (`now - at > maxAgeMs` fails).
+   */
+  now?: number;
+}
+
+/**
+ * Canonical JSON for snapshot signing (backlog #1137): object keys
+ * sorted recursively, array order preserved, primitives via
+ * `JSON.stringify`. A non-JSON value (notably `undefined`, which
+ * `JSON.stringify` would silently drop) throws instead of being
+ * silently normalized — a MAC computed over a silently altered
+ * document would be worse than no MAC. Same semantics as the
+ * sibling `Escrow` helper and the rfc9421 `ReplayCache` signed
+ * snapshot's canonical form.
+ */
+function canonicalJsonForQuorumSignedSnapshot(value: unknown): string {
+  if (value === null) return "null";
+  if (typeof value === "number") {
+    if (!Number.isFinite(value))
+      throw new Error(
+        "Quorum: cannot canonicalize a non-finite number for snapshot signing",
+      );
+    return JSON.stringify(value);
+  }
+  if (typeof value === "string" || typeof value === "boolean")
+    return JSON.stringify(value);
+  if (Array.isArray(value))
+    return `[${value.map((entry) => canonicalJsonForQuorumSignedSnapshot(entry)).join(",")}]`;
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const keys = Object.keys(record).sort();
+    return `{${keys
+      .map(
+        (key) =>
+          `${JSON.stringify(key)}:${canonicalJsonForQuorumSignedSnapshot(record[key])}`,
+      )
+      .join(",")}}`;
+  }
+  throw new Error(
+    `Quorum: cannot canonicalize a non-JSON value of type ${typeof value} for snapshot signing`,
+  );
+}
+
+/**
+ * Validate a signed-snapshot secret and return its bytes. A secret
+ * is a non-empty string (UTF-8) or a non-empty `Buffer` — the same
+ * input shapes as the sibling `Escrow` helper, and deliberately
+ * without a length floor: this MAC is integrity protection for a
+ * persisted snapshot, and the contract rejects only an empty secret,
+ * so a shorter caller secret is the caller's risk to take (use a
+ * long random secret; the envelope never records how long it was).
+ * An empty or wrongly typed secret is a caller-configuration error,
+ * thrown before any quorum state is touched.
+ */
+function quorumSignedSnapshotSecretBytes(secret: unknown): Buffer {
+  if (typeof secret === "string") {
+    if (secret.length === 0)
+      throw new Error(
+        "Quorum: signed snapshot secret must not be empty",
+      );
+    return Buffer.from(secret, "utf8");
+  }
+  if (Buffer.isBuffer(secret)) {
+    if (secret.length === 0)
+      throw new Error(
+        "Quorum: signed snapshot secret must not be empty",
+      );
+    return secret;
+  }
+  throw new Error(
+    `Quorum: signed snapshot secret must be a non-empty string or Buffer, got ${typeof secret}`,
+  );
+}
+
+/**
+ * Resolve the `expiresAt` for a signed quorum snapshot export from
+ * `QuorumExportSignedSnapshotOptions` (backlog #1137):
+ * `expiresAt` must already be a canonical ISO-8601 UTC string,
+ * `maxAgeMs` must be a positive finite number and is resolved
+ * against `now` (default `Date.now()`), the two are mutually
+ * exclusive, and `now` without `maxAgeMs` is a configuration error.
+ * Returns `undefined` when the caller set neither (no expiry).
+ * Mirrors the sibling `Escrow` resolver, same wording, same bar.
+ */
+function resolveQuorumSignedSnapshotExpiresAt(
+  opts: QuorumExportSignedSnapshotOptions | undefined,
+): string | undefined {
+  if (opts === undefined) return undefined;
+  if (typeof opts !== "object" || opts === null || Array.isArray(opts))
+    throw new Error(
+      "Quorum: exportSignedQuorumSnapshot options must be an object",
+    );
+  const { expiresAt, maxAgeMs, now } = opts;
+  if (expiresAt !== undefined && maxAgeMs !== undefined)
+    throw new Error(
+      "Quorum: exportSignedQuorumSnapshot options must not combine expiresAt and maxAgeMs",
+    );
+  if (now !== undefined && maxAgeMs === undefined)
+    throw new Error(
+      "Quorum: exportSignedQuorumSnapshot option now is only used with maxAgeMs",
+    );
+  if (
+    now !== undefined &&
+    (typeof now !== "number" || !Number.isFinite(now))
+  )
+    throw new Error(
+      "Quorum: exportSignedQuorumSnapshot option now must be a finite number of milliseconds since the epoch",
+    );
+  if (expiresAt !== undefined) {
+    if (!isCanonicalIso(expiresAt))
+      throw new Error(
+        "Quorum: exportSignedQuorumSnapshot option expiresAt must be a canonical ISO-8601 UTC timestamp string",
+      );
+    return expiresAt;
+  }
+  if (maxAgeMs !== undefined) {
+    if (
+      typeof maxAgeMs !== "number" ||
+      !Number.isFinite(maxAgeMs) ||
+      maxAgeMs <= 0
+    )
+      throw new Error(
+        "Quorum: exportSignedQuorumSnapshot option maxAgeMs must be a positive finite number",
+      );
+    return new Date((now ?? Date.now()) + maxAgeMs).toISOString();
+  }
+  return undefined;
+}
+
+/**
+ * HMAC-SHA256 (hex) over the canonical JSON of a quorum snapshot —
+ * or, when `expiresAt` is present, over the canonical JSON of
+ * `{ expiresAt, snapshot }`, so the expiry timestamp is inside the
+ * MAC coverage and cannot be extended without the secret. Envelopes
+ * without `expiresAt` MAC exactly as before, so envelopes exported
+ * before this field existed still verify.
+ */
+function computeQuorumSignedSnapshotMac(
+  snapshot: QuorumSnapshot,
+  secretBytes: Buffer,
+  expiresAt?: string,
+): string {
+  const macInput =
+    expiresAt === undefined ? snapshot : { expiresAt, snapshot };
+  return createHmac("sha256", secretBytes)
+    .update(canonicalJsonForQuorumSignedSnapshot(macInput), "utf8")
+    .digest("hex");
+}
+
+/**
+ * Compare two hex digests in constant time. `timingSafeEqual` throws
+ * on length mismatch, and `Buffer.from(x, "hex")` silently drops
+ * non-hex characters, so both guards are applied explicitly: non-hex
+ * input, an odd-length digest, or a length mismatch is simply
+ * `false`, never a throw — a forged digest shape must fail
+ * verification, not crash the caller. Same helper as the sibling
+ * `Escrow` one, quorum-scoped.
+ */
+function constantTimeHexEqual(
+  expected: string,
+  actual: string | undefined,
+): boolean {
+  if (actual === undefined) return false;
+  if (
+    expected.length !== actual.length ||
+    expected.length % 2 !== 0 ||
+    !/^[0-9a-fA-F]+$/.test(expected) ||
+    !/^[0-9a-fA-F]+$/.test(actual)
+  ) {
+    return false;
+  }
+  const expectedBytes = Buffer.from(expected, "hex");
+  const actualBytes = Buffer.from(actual, "hex");
+  return (
+    expectedBytes.length === actualBytes.length &&
+    timingSafeEqual(expectedBytes, actualBytes)
+  );
+}
+
+/**
+ * Export a quorum's snapshot wrapped in an HMAC-signed envelope
+ * (see {@link QuorumSignedSnapshotEnvelope}):
+ * `{ v: 1, snapshot, mac }` where `mac` is HMAC-SHA256 over the
+ * canonical JSON of the snapshot under `secret`. Persist the
+ * envelope (plain JSON) before a restart and restore it with
+ * {@link restoreSignedQuorumSnapshot} — a process that restarts
+ * keeps its collected approvals, including which were
+ * signature-verified, and anyone who rewrites the persisted file
+ * without the secret is caught at restore instead of silently
+ * forging a `verified: true` approval or inventing votes.
+ *
+ * The secret is never written into the envelope, and the envelope
+ * is integrity protection only, not encryption: the snapshot
+ * contents are plain JSON, so the secret must be kept where the
+ * snapshot writer keeps its other signing-side secrets. An empty
+ * secret is a caller-configuration error. The unsigned `snapshot()`
+ * path is unchanged: this envelope is opt-in, and a caller that
+ * never signs keeps the old trusted-configuration semantics.
+ *
+ * `opts` optionally bounds the envelope's life
+ * (see {@link QuorumExportSignedSnapshotOptions}): `expiresAt` (an
+ * absolute canonical ISO-8601 UTC timestamp) or `maxAgeMs`
+ * (relative to `opts.now`, default `Date.now()`). The timestamp
+ * is written into the envelope and covered by the MAC, so it
+ * cannot be extended without the secret; an envelope exported
+ * with neither option never expires, exactly as before.
+ */
+export function exportSignedQuorumSnapshot(
+  quorum: Quorum,
+  secret: string | Buffer,
+  opts?: QuorumExportSignedSnapshotOptions,
+): QuorumSignedSnapshotEnvelope {
+  const secretBytes = quorumSignedSnapshotSecretBytes(secret);
+  const snapshot = quorum.snapshot();
+  const expiresAt = resolveQuorumSignedSnapshotExpiresAt(opts);
+  const mac = computeQuorumSignedSnapshotMac(snapshot, secretBytes, expiresAt);
+  return expiresAt === undefined
+    ? { v: 1, snapshot, mac }
+    : { v: 1, snapshot, expiresAt, mac };
+}
+
+/**
+ * Rebuild a quorum from a signed envelope produced by
+ * {@link exportSignedQuorumSnapshot} (typically after a
+ * `JSON.parse` of the persisted form), under `config` — pass the
+ * same configuration the snapshot was taken from; the strict
+ * config-match validation of {@link restoreQuorum} still applies
+ * after the MAC check.
+ *
+ * Restore is fail-closed, with authenticity checked first: an
+ * envelope with an unknown field (including a smuggled `secret`),
+ * a version other than `1`, a malformed `mac`, or a MAC that does
+ * not match the snapshot under `secret` throws a descriptive
+ * configuration `Error` and no quorum is produced — a tampered
+ * approval entry (including a flipped `verified` flag), a tampered
+ * threshold/signer list, or a wrong secret all fail here, before
+ * any snapshot parsing, so a tampered envelope can never partially
+ * install. A MAC-valid envelope whose snapshot is itself malformed
+ * then fails through the same strict snapshot validation as
+ * {@link restoreQuorum}, again with no quorum produced. The MAC
+ * comparison is constant-time over equal-length hex digests; a
+ * wrong-length `mac` is rejected as malformed before comparison.
+ *
+ * When the envelope carries `expiresAt`, restore additionally
+ * checks it after the MAC — so a tampered timestamp fails as a
+ * MAC mismatch first, never as an expiry — and before any
+ * snapshot parsing: the envelope is expired only when
+ * `now > Date.parse(expiresAt)`, so restoring at exactly
+ * `expiresAt` still succeeds, and an expired envelope throws a
+ * descriptive `Error` with no quorum produced. `opts.now`
+ * (milliseconds since the epoch, default `Date.now()`) injects
+ * the clock for deterministic tests. An envelope without
+ * `expiresAt` never expires.
+ *
+ * The unsigned `restoreQuorum()` and this signed restore do not
+ * accept each other's input: an unsigned snapshot has no `mac`
+ * (and fields where the envelope expects `snapshot`), and a signed
+ * envelope has fields the unsigned path rejects — so a caller
+ * cannot silently downgrade a signed restore to the
+ * trusted-configuration path.
+ */
+export function restoreSignedQuorumSnapshot(
+  config: QuorumConfig,
+  envelope: unknown,
+  secret: string | Buffer,
+  opts?: QuorumRestoreSignedSnapshotOptions,
+): Quorum {
+  const secretBytes = quorumSignedSnapshotSecretBytes(secret);
+  const fail = (detail: string): never => {
+    throw new Error(
+      `Quorum: invalid signed snapshot envelope: ${detail}`,
+    );
+  };
+  if (
+    typeof envelope !== "object" ||
+    envelope === null ||
+    Array.isArray(envelope)
+  )
+    fail("expected an object of the form { v: 1, snapshot, mac }");
+  const record = envelope as Record<string, unknown>;
+  for (const key of Object.keys(record)) {
+    if (
+      key !== "v" &&
+      key !== "snapshot" &&
+      key !== "mac" &&
+      key !== "expiresAt"
+    )
+      fail(`unknown field "${key}"`);
+  }
+  if (record.v !== 1)
+    fail(
+      `unsupported envelope version ${JSON.stringify(record.v) ?? String(record.v)} (expected 1)`,
+    );
+  const expiresAtRaw = record.expiresAt;
+  let expiresAt: string | undefined;
+  if (expiresAtRaw !== undefined) {
+    if (typeof expiresAtRaw === "string" && isCanonicalIso(expiresAtRaw)) {
+      expiresAt = expiresAtRaw;
+    } else {
+      fail("expiresAt must be a canonical ISO-8601 UTC timestamp string");
+    }
+  }
+  const mac = record.mac;
+  if (typeof mac !== "string" || !/^[0-9a-f]{64}$/.test(mac))
+    throw new Error(
+      "Quorum: invalid signed snapshot envelope: mac must be a 64-character lowercase hex HMAC-SHA256 digest",
+    );
+  const snapshot = record.snapshot;
+  if (
+    typeof snapshot !== "object" ||
+    snapshot === null ||
+    Array.isArray(snapshot)
+  )
+    fail('"snapshot" must be an object');
+  const expectedMac = computeQuorumSignedSnapshotMac(
+    snapshot as QuorumSnapshot,
+    secretBytes,
+    expiresAt,
+  );
+  if (!constantTimeHexEqual(expectedMac, mac))
+    throw new Error(
+      "Quorum: signed snapshot MAC mismatch: the snapshot was tampered with or the secret is wrong",
+    );
+  // MAC verified — now the expiry check, then the same strict
+  // structural validation as restoreQuorum().
+  if (expiresAt !== undefined) {
+    const now = opts?.now ?? Date.now();
+    if (typeof now !== "number" || !Number.isFinite(now))
+      throw new Error(
+        "Quorum: invalid signed snapshot envelope: restore option now must be a finite number of milliseconds since the epoch",
+      );
+    if (now > Date.parse(expiresAt))
+      throw new Error(
+        `Quorum: signed snapshot envelope expired at ${expiresAt}`,
+      );
+  }
+  return restoreQuorum(config, snapshot);
 }

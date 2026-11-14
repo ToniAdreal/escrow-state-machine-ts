@@ -18,6 +18,25 @@ version changes.
 
 ### Added
 
+- HMAC-signed snapshot envelope for quorums (2026-11-14,
+  backlog #1137): `exportSignedQuorumSnapshot(quorum, secret, opts?)`
+  / `restoreSignedQuorumSnapshot(config, envelope, secret, opts?)`
+  (same envelope shape as the escrow signed snapshot — `{ v: 1,
+  snapshot, mac }`, HMAC-SHA256 over the canonical JSON of the whole
+  snapshot, constant-time MAC comparison). The plain quorum snapshot
+  carries the full approval audit trail, including the `verified: true`
+  flags recorded by `approveSigned()`, with nothing authenticated — a
+  rewritten persisted snapshot could forge a verified approval,
+  invent votes, or drop a revocation and `restoreQuorum` would accept
+  it as long as the shape is valid; the envelope MAC closes that gap,
+  so any rewrite fails closed at restore. Optional expiry
+  (`{ expiresAt }` / `{ maxAgeMs, now? }`, covered by the MAC;
+  restoring at exactly `expiresAt` still succeeds, a tampered
+  `expiresAt` reports a MAC mismatch first), the secret is never
+  written into the envelope, and the unsigned `snapshot()` /
+  `restoreQuorum()` path is unchanged — the two forms never accept
+  each other.
+
 - Time-travel query `Escrow.stateAt(time)` plus module-level
   `stateAtFromHistory(history, time, auditKey?)` (2026-11-14,
   backlog #1134): the state the escrow was in at a moment, read from

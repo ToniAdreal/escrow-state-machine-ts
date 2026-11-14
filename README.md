@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2109 tests, all local
+npm test   # 2126 tests, all local
 ```
 
 ## Quickstart
@@ -861,7 +861,20 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   validation (unknown signers, duplicate entries, bad timestamps,
   illegal evidence, and config mismatches are rejected; expiry keeps
   aging from the original
-  timestamps, never refreshed by the restore). The snapshot is an
+  timestamps, never refreshed by the restore). When the snapshot
+  crosses an untrusted boundary, wrap it instead in the HMAC-signed
+  envelope: `exportSignedQuorumSnapshot(quorum, secret)` returns
+  `{ v: 1, snapshot, mac }` (same envelope shape as the escrow signed
+  snapshot), and `restoreSignedQuorumSnapshot(config, envelope, secret, opts?)`
+  verifies the MAC in constant time before any snapshot parsing — a
+  tampered approval (including a flipped `verified` flag), a wrong
+  secret, or a smuggled extra field fails closed with no quorum
+  produced, and a MAC-valid envelope whose snapshot is itself
+  malformed still fails strict snapshot validation. The envelope can
+  also carry an optional expiry (`{ expiresAt }` or `{ maxAgeMs, now? }`,
+  covered by the MAC; restoring at exactly `expiresAt` still succeeds),
+  and the secret is never written into the envelope — the MAC is
+  integrity protection only, not encryption. The snapshot is an
   export format, not a built-in store, and restored approvals are
   still caller-persisted data: a restored `verified` flag was not
   re-verified on restore (the public keys live in the config, never
@@ -1827,7 +1840,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2109 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2126 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

@@ -33,6 +33,14 @@ quorum approvals (`approveSigned()`).
   is meaningful only inside the quorum it was collected for; use one
   quorum per arbitration. A snapshot carries recorded `verified`
   flags as data and restoring one does not re-verify signatures.
+  When the snapshot crosses an untrusted boundary, wrap it in the
+  HMAC-signed envelope (`exportSignedQuorumSnapshot` /
+  `restoreSignedQuorumSnapshot`, same shape as the escrow envelope):
+  the MAC covers the whole snapshot, so a forged `verified` flag or
+  an invented approval fails closed at restore; the envelope may also
+  carry an `expiresAt` covered by the MAC, and the secret is never
+  written into the envelope — integrity protection only, not
+  encryption.
   Quorum approval `evidence` is capped at 32,768 characters (the
   same `MAX_EVIDENCE_LENGTH` ceiling as escrow history evidence),
   enforced at `approve()`, `approveSigned()`, and snapshot restore,
