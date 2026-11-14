@@ -694,6 +694,7 @@ const ESCROW_OPTION_FIELDS = new Set([
   "rolePolicy",
   "requireActor",
   "requireSettlementRef",
+  "requireRefundRef",
   "deadline",
   "idempotencyKeys",
 ]);
@@ -916,6 +917,26 @@ function assertRequireSettlementRef(value: unknown, tag: string): boolean {
   if (typeof value !== "boolean") {
     throw new Error(
       `${tag}: requireSettlementRef must be a boolean, got ${String(value)}`
+    );
+  }
+  return value;
+}
+
+/**
+ * Validate the `requireRefundRef` constructor option.
+ *
+ * `undefined` means "advisory" (the default: an ARBITRATE_REFUND
+ * without a refund reference is legal). Otherwise the value must be
+ * a boolean — anything else throws
+ * `<tag>: requireRefundRef must be a boolean, …`. The refund-side
+ * mirror of {@link assertRequireSettlementRef}, built on the
+ * `refundRef` field from #1123.
+ */
+function assertRequireRefundRef(value: unknown, tag: string): boolean {
+  if (value === undefined) return false;
+  if (typeof value !== "boolean") {
+    throw new Error(
+      `${tag}: requireRefundRef must be a boolean, got ${String(value)}`
     );
   }
   return value;
@@ -2113,7 +2134,10 @@ export interface DispatchOptions {
    * is enforced: one ref may refund several escrows (one refund
    * batch, one bank transfer), mirroring the dataquest lifecycle's
    * `payoutRef` semantics. An ARBITRATE_REFUND without a ref stays
-   * legal by default — the ref is advisory, not a gate.
+   * legal by default — the ref is advisory, not a gate,
+   * unless the escrow was constructed with
+   * `requireRefundRef: true` (see
+   * {@link EscrowOptions.requireRefundRef}).
    */
   refundRef?: string;
   /**
@@ -2414,6 +2438,35 @@ export interface EscrowOptions {
   requireSettlementRef?: boolean;
 
   /**
+   * Optional up-front enforcement of refund-reference recording:
+   * when `true`, `dispatch("ARBITRATE_REFUND")` without a
+   * `refundRef` throws `refund reference required: …` and appends
+   * nothing. This is the opt-in up-front counterpart to the advisory
+   * default, under which an ARBITRATE_REFUND without a reference is
+   * legal and the entry simply omits it — for refund flows where an
+   * external refund reference (bank refund ref, gateway refund id,
+   * refund batch id) always exists. The gate runs after the
+   * transition-legality, RBAC, and deposit-cap checks (after the
+   * `requireActor` and `requireSettlementRef` gates) and before
+   * anything is appended or any idempotency key is consumed, so a
+   * rejected dispatch leaves no trace and a retry with a reference
+   * and the same key still executes. Like `requireActor` and
+   * `requireSettlementRef`, the switch is escrow configuration, not
+   * audit data: it is never written into the `toJSON()` snapshot
+   * envelope, so a restored escrow must re-enable it via
+   * `Escrow.fromJSON(snapshot, { requireRefundRef: true })`
+   * or `Escrow.fromHistory(id, history, { requireRefundRef: true })`.
+   * Invalid values throw `invalid option: …` at construction.
+   *
+   * Default: false (unchanged legacy behavior).
+   *
+   * Honest limit: requiring a reference cannot verify the external
+   * refund happened — it only guarantees the audit trail says
+   * which transfer it was. See SECURITY.md.
+   */
+  requireRefundRef?: boolean;
+
+  /**
    * Optional advisory deadline attached at construction — the
    * constructor-time equivalent of {@link Escrow.setDeadline}: a Date
    * or a parseable string, stored as canonical ISO-8601, with the
@@ -2643,6 +2696,13 @@ export class Escrow {
    * fromJSON/fromHistory opts ({ requireSettlementRef: true }).
    */
   private readonly _requireSettlementRef: boolean;
+  /**
+   * Up-front enforcement for refund-reference recording.
+   * Escrow configuration: never written into the JSON snapshot (see
+   * toJSON), so a restored escrow re-enables it via
+   * fromJSON/fromHistory opts ({ requireRefundRef: true }).
+   */
+  private readonly _requireRefundRef: boolean;
 
   constructor(id: string, opts?: EscrowOptions) {
     // fromJSON validates the same rule; a live Escrow must never hold an id
@@ -2715,6 +2775,14 @@ export class Escrow {
     // validated here and never written into the snapshot (see toJSON).
     this._requireSettlementRef = assertRequireSettlementRef(
       opts?.requireSettlementRef,
+      "invalid option"
+    );
+    // assertRequireRefundRef mirrors assertRequireSettlementRef on
+    // the refund side: the switch is configuration, not audit data,
+    // so it is validated here and never written into the snapshot
+    // (see toJSON).
+    this._requireRefundRef = assertRequireRefundRef(
+      opts?.requireRefundRef,
       "invalid option"
     );
     // assertIdempotencyKeys returns a fresh, deduped Set, so later
@@ -2904,7 +2972,9 @@ export class Escrow {
    *               `opts.refundRef` (ARBITRATE_REFUND only) records a
    *               refund reference (bank refund ref, gateway refund id)
    *               on the audit entry; an ARBITRATE_REFUND without one
-   *               stays legal — the ref is advisory, not a gate.
+   *               stays legal unless the escrow was constructed with
+   *               `requireRefundRef: true` (see
+   *               {@link EscrowOptions.requireRefundRef}).
    *               `opts.at` pins the audit entry's timestamp
    *               (Date or canonical ISO-8601 string; see
    *               {@link DispatchOptions.at}) — invalid or backwards
@@ -2964,6 +3034,12 @@ export class Escrow {
    *               RELEASE without a settlementRef is rejected with
    *               `settlement reference required: …`, leaves no trace,
    *               and consumes no key; it only speaks for RELEASE.
+   *               (7) the opt-in `requireRefundRef` gate runs after
+   *               the requireSettlementRef gate, just before the
+   *               append — an ARBITRATE_REFUND without a refundRef is
+   *               rejected with `refund reference required: …`, leaves
+   *               no trace, and consumes no key; it only speaks for
+   *               ARBITRATE_REFUND.
    */
   dispatch(
     event: EscrowEvent,
@@ -3366,6 +3442,29 @@ export class Escrow {
     ) {
       throw new Error(
         "settlement reference required: RELEASE must carry a non-empty settlementRef when requireSettlementRef is enabled"
+      );
+    }
+    // Up-front refund-reference gate (opt-in, see EscrowOptions):
+    // when requireRefundRef is on, an ARBITRATE_REFUND without a
+    // refundRef is rejected. Checked after the transition /
+    // RBAC / amount-cap checks and the requireActor and
+    // requireSettlementRef gates, just before the append — a
+    // rejected dispatch leaves no trace and consumes no
+    // idempotency key, so a retry with a reference and the same
+    // key still executes. Only presence is checked here: a present
+    // reference already passed the dispatch shape validation above
+    // (non-empty string, at most MAX_SETTLEMENT_REF_LENGTH), so an
+    // empty or oversized reference never reaches this gate.
+    // ARBITRATE_REFUND is the only event it constrains. Requiring
+    // a reference cannot verify the external refund happened; it
+    // only guarantees the audit trail says which transfer it was.
+    if (
+      this._requireRefundRef &&
+      event === "ARBITRATE_REFUND" &&
+      refundRef === undefined
+    ) {
+      throw new Error(
+        "refund reference required: ARBITRATE_REFUND must carry a non-empty refundRef when requireRefundRef is enabled"
       );
     }
     this._state = to;

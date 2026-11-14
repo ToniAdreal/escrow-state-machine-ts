@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2145 tests, all local
+npm test   # 2159 tests, all local
 ```
 
 ## Quickstart
@@ -461,6 +461,24 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   re-enable it via `Escrow.fromJSON(snapshot, { requireSettlementRef: true })`
   or `Escrow.fromHistory(id, history, { requireSettlementRef: true })`.
   Honest limit: requiring a reference cannot verify the external settlement
+  happened — it only guarantees the audit trail says which transfer it was
+  (see SECURITY.md).
+- Refund reference (opt-in): `new Escrow(id, { requireRefundRef: true })`
+  makes `dispatch("ARBITRATE_REFUND")` without a `refundRef` throw
+  `refund reference required: ARBITRATE_REFUND must carry a non-empty refundRef when requireRefundRef is enabled`.
+  The gate runs after the transition-legality, RBAC, and deposit-cap checks
+  (after the `requireActor` and `requireSettlementRef` gates) and before
+  anything is appended, so a rejected dispatch leaves no history residue
+  and does not consume an idempotency key — a retry with a reference and
+  the same key still executes. It only constrains ARBITRATE_REFUND; other
+  events are unaffected, and the default (gate off) keeps a reference-free
+  ARBITRATE_REFUND legal. Non-boolean values throw
+  `invalid option: requireRefundRef …` at construction. Like
+  `requireSettlementRef`, the switch is configuration, not audit data: it is
+  never written into `toJSON()` snapshots, so a restored escrow must
+  re-enable it via `Escrow.fromJSON(snapshot, { requireRefundRef: true })`
+  or `Escrow.fromHistory(id, history, { requireRefundRef: true })`.
+  Honest limit: requiring a reference cannot verify the external refund
   happened — it only guarantees the audit trail says which transfer it was
   (see SECURITY.md).
 - Optimistic concurrency (opt-in): `dispatch` opts accept `expectedSeq`
@@ -1873,7 +1891,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2145 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2159 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

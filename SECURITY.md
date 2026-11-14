@@ -156,6 +156,18 @@ quorum approvals (`approveSigned()`).
   never written into snapshots and must be re-enabled on restore.
   Like the evidence gate, it does not verify the external settlement
   — it only guarantees the audit trail names the transfer.
+- **Refund-reference gate (when `requireRefundRef: true`).**
+  `Escrow` constructed with `requireRefundRef` rejects an
+  ARBITRATE_REFUND without a `refundRef` with
+  `refund reference required: …`, after the transition/RBAC/amount-cap
+  checks (after the `requireActor` and `requireSettlementRef` gates)
+  and before any append — no history is appended and no idempotency
+  key is consumed. Other events are unaffected, and the default (gate
+  off) keeps a reference-free ARBITRATE_REFUND legal. The switch is
+  configuration, not audit data: it is never written into snapshots
+  and must be re-enabled on restore. Like the settlement gate, it
+  does not verify the external refund — it only guarantees the audit
+  trail names the transfer.
 - **Per-state visit budget (when `maxVisitsByState` is set).**
   `Escrow` constructed with a per-state visit budget rejects a dispatch
   whose target state already used its budget with

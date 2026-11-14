@@ -18,6 +18,26 @@ version changes.
 
 ### Added
 
+- Opt-in refund-reference gate `EscrowOptions.requireRefundRef`
+  (2026-11-14, backlog #1142): `new Escrow(id, { requireRefundRef: true })`
+  makes `dispatch("ARBITRATE_REFUND")` without a `refundRef` throw
+  `refund reference required: ARBITRATE_REFUND must carry a non-empty refundRef when requireRefundRef is enabled`
+  and append nothing. The gate runs after the transition-legality, RBAC, and
+  deposit-cap checks (after the `requireActor` and `requireSettlementRef`
+  gates) and before anything is appended, so a rejected ARBITRATE_REFUND
+  leaves no history residue and consumes no idempotency key — a retry with
+  a reference and the same key still executes. It only constrains
+  ARBITRATE_REFUND; other events are unaffected, and the default (gate off)
+  keeps a reference-free ARBITRATE_REFUND legal. Non-boolean values throw
+  `invalid option: requireRefundRef …` at construction. Like
+  `requireSettlementRef`, the switch is configuration, not audit data: it is
+  never written into `toJSON()` snapshots, so a restored escrow re-enables
+  it via `Escrow.fromJSON(snapshot, { requireRefundRef: true })` or
+  `Escrow.fromHistory(id, history, { requireRefundRef: true })`. Requiring
+  a reference cannot verify the external refund happened — it only
+  guarantees the audit trail names the transfer. 14 tests in
+  `test/requireRefundRef.test.ts`.
+
 - Per-state visit budget `EscrowOptions.maxVisitsByState` (2026-11-14,
   backlog #1140): caps how many times the escrow may *enter* each listed
   state — the state-level answer to the milestone loop the transition
