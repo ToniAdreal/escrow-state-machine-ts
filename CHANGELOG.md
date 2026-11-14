@@ -18,6 +18,19 @@ version changes.
 
 ### Added
 
+- `SettlementWebhookOutbox.redrive()` dead-letter redrive
+  (2026-11-14, backlog #1126): moves a dead-lettered
+  `(endpoint, eventId)` pair back to `pending()` for a fresh
+  delivery round — `attempts` reset to 0, `lastAt` stamped with the
+  redrive time (`opts.now`, default the outbox clock), the old
+  `lastError` dropped — so a later failure counts from 1 again and
+  the pair re-enters the `retrySettlementWebhookOutbox` runner's
+  next pass. Only a dead-lettered pair can be redriven (a pending
+  or untracked pair throws); first-recorded order is kept.
+  `restore()` now accepts `attempts: 0` (a redriven pair's export),
+  still rejecting negative or non-integer counts, so a persisted
+  ledger never loses a pair moved back to pending.
+
 - `SettlementWebhookOutbox.stats()` observability snapshot
   (2026-11-13, backlog #1120): returns `{ size, pending,
   deadLettered, totalAttempts }` — the same counts as the `size`

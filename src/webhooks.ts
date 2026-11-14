@@ -1683,7 +1683,10 @@ export interface SettlementWebhookOutboxAttempt {
  * - `attempts`: consecutive failures recorded for this
  *   `(endpoint, eventId)` pair since the last success. A pair is
  *   pending while `attempts < maxAttempts` and dead-lettered once
- *   `attempts >= maxAttempts`.
+ *   `attempts >= maxAttempts`. `0` occurs only for a pair
+ *   redriven from the dead letter (see `redrive()`) that has not
+ *   failed again yet in its new round — it is pending, carries no
+ *   `lastError`, and its next failure counts from 1.
  * - `lastError`: the `error` of the most recent failed attempt, when
  *   the caller supplied one, truncated to
  *   {@link MAX_OUTBOX_ERROR_LENGTH} characters at record time (see
@@ -1708,7 +1711,9 @@ export interface SettlementWebhookOutboxEntry {
  * - `v`: snapshot format version. Only `1` exists; `restore` rejects
  *   any other value (including a missing `v`) instead of guessing.
  * - `entries`: one object per tracked `(endpoint, eventId)` pair, in
- *   first-recorded order. `attempts` is the consecutive-failure count;
+ *   first-recorded order. `attempts` is the consecutive-failure count
+ *   (`0` only for a pair redriven from the dead letter that has not
+ *   failed again yet — `restore()` accepts it, see below);
  *   whether an entry reads as pending or dead-lettered after restore
  *   is derived from `attempts` against the *restoring* outbox's
  *   `maxAttempts`, so a snapshot restored under a different
@@ -2156,6 +2161,78 @@ export class SettlementWebhookOutbox {
     return out;
   }
 
+  /**
+   * Move a dead-lettered `(endpoint, eventId)` pair back to pending
+   * for a fresh delivery round — the recovery path after the
+   * downstream endpoint is fixed. Only a dead-lettered pair can be
+   * redriven: redriving a pending pair throws (it still has retries
+   * left — wait for them, or let the retry runner spend them) and
+   * redriving an untracked pair throws (there is nothing to
+   * redrive). The redriven pair keeps its first-recorded position,
+   * its `attempts` reset to 0 and its `lastAt` stamped with
+   * `opts.now` (default the outbox clock), and it carries no
+   * `lastError` — the old error belonged to the exhausted round, and
+   * a fresh round has not failed yet. A later failure counts from 1
+   * again, exactly like a pair cleared by `acknowledge()`; a success
+   * clears it the same way.
+   *
+   * This is deliberately a manual, per-pair operation, not an
+   * automatic retry: the outbox never retries on its own, and a
+   * redriven pair re-enters `pending()` (and the
+   * `retrySettlementWebhookOutbox` runner's next pass) only because
+   * a human decided the endpoint is healthy again. Redrive is
+   * distinct from `restore()`: restore replays a persisted ledger
+   * with its failure counts intact, redrive starts a new round and
+   * discards the old count — so a redriven pair exports with
+   * `attempts: 0`, which `restore()` accepts (see
+   * {@link SettlementWebhookOutboxSnapshot}).
+   *
+   * Caller bugs fail fast before anything changes: an empty or
+   * non-string `endpoint`/`eventId`, or a non-finite `opts.now`.
+   */
+  redrive(
+    endpoint: string,
+    eventId: string,
+    opts?: { now?: number },
+  ): void {
+    if (typeof endpoint !== "string" || endpoint.length === 0) {
+      throw new Error(
+        "SettlementWebhookOutbox: endpoint must be a non-empty string",
+      );
+    }
+    if (typeof eventId !== "string" || eventId.length === 0) {
+      throw new Error(
+        "SettlementWebhookOutbox: eventId must be a non-empty string",
+      );
+    }
+    const now = opts?.now ?? this.clock();
+    if (typeof now !== "number" || !Number.isFinite(now)) {
+      throw new Error(
+        "SettlementWebhookOutbox: redrive now must be a finite number (milliseconds)",
+      );
+    }
+    const byEvent = this.records.get(endpoint);
+    if (byEvent === undefined) {
+      throw new Error(
+        "SettlementWebhookOutbox: cannot redrive an untracked pair",
+      );
+    }
+    const entry = byEvent.get(eventId);
+    if (entry === undefined) {
+      throw new Error(
+        "SettlementWebhookOutbox: cannot redrive an untracked pair",
+      );
+    }
+    if (entry.attempts < this.maxAttempts) {
+      throw new Error(
+        "SettlementWebhookOutbox: cannot redrive a pending pair (only dead-lettered pairs can be redriven)",
+      );
+    }
+    // Map.set on an existing key keeps its first-recorded position,
+    // so the redriven pair does not jump the queue.
+    byEvent.set(eventId, { endpoint, eventId, attempts: 0, lastAt: now });
+  }
+
   /** Number of tracked `(endpoint, eventId)` pairs (pending + dead-lettered). */
   get size(): number {
     let n = 0;
@@ -2278,11 +2355,14 @@ export class SettlementWebhookOutbox {
    * `1`, a non-array `entries`, or a malformed entry (not an object
    * with exactly `endpoint`/`eventId`/`attempts`/`lastAt` plus an
    * optional `lastError`, an empty/non-string `endpoint`, an
-   * empty/non-string/overlong `eventId`, a non-positive-integer
+   * empty/non-string/overlong `eventId`, a negative or non-integer
    * `attempts`, a non-string `lastError`, a non-finite `lastAt`)
    * throws — a corrupt snapshot fails loudly at startup rather than
    * silently clearing a dead letter. Duplicate `(endpoint, eventId)`
-   * pairs collapse to their last occurrence.
+   * pairs collapse to their last occurrence. (`attempts: 0` is valid:
+   * it is the shape a redriven pair exports before it fails again —
+   * see `redrive()` — so a persisted ledger never loses a pair that
+   * was moved back to pending.)
    *
    * An over-capacity snapshot is trimmed to the newest `maxEntries`
    * pairs by `lastAt` (ties break by snapshot order, earliest first),
@@ -2355,10 +2435,10 @@ export class SettlementWebhookOutbox {
       if (
         typeof attempts !== "number" ||
         !Number.isInteger(attempts) ||
-        attempts < 1
+        attempts < 0
       )
         fail(
-          `entries[${i}]: attempts must be a positive integer`,
+          `entries[${i}]: attempts must be a non-negative integer`,
         );
       if (lastError !== undefined && typeof lastError !== "string")
         fail(`entries[${i}]: lastError must be a string`);

@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2081 tests, all local
+npm test   # 2093 tests, all local
 ```
 
 ## Quickstart
@@ -1120,7 +1120,7 @@ try {
   outbox.recordAttempt({ endpoint: url, eventId: webhook.payload.eventId, ok: false, error: (err as Error).message });
 }
 outbox.pending();    // failed but not yet exhausted — still worth a retry
-outbox.deadLetter(); // 3 consecutive failures — needs a human, not another retry
+outbox.deadLetter(); // 3 consecutive failures — needs a human: fix the endpoint, then redrive() it
 outbox.stats();      // { size, pending, deadLettered, totalAttempts } — the same counts without materializing the lists
 ```
 
@@ -1130,6 +1130,21 @@ tracked pair — dead-lettered pairs included, at their capped value —
 and the call changes nothing in the ledger, so a dashboard or health
 check that only needs the counts never pays for `pending()` /
 `deadLetter()` copies.
+
+A dead letter is not a dead end: once the downstream endpoint is
+fixed, `redrive(endpoint, eventId)` moves that pair back to
+`pending()` for a fresh delivery round — `attempts` reset to 0,
+`lastAt` stamped with the redrive time, and the old `lastError`
+dropped, so a later failure counts from 1 again and the pair
+re-enters the `retrySettlementWebhookOutbox` runner's next pass.
+Only a dead-lettered pair can be redriven: redriving a pending pair
+(it still has retries left) or an untracked pair throws.
+`redrive(endpoint, eventId, { now })` takes an explicit timestamp
+for deterministic tests. Redrive is distinct from `restore()`,
+which replays a persisted ledger with its failure counts intact —
+a redriven pair exports with `attempts: 0`, which `restore()`
+accepts, so a persisted ledger never loses a pair that was moved
+back to pending.
 
 A failed attempt increments the pair's consecutive-failure count
 (capped at `maxAttempts`, while later failures still refresh
@@ -1798,7 +1813,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2081 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2093 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
