@@ -1490,7 +1490,7 @@
  *      well.
  *  84. settlement webhook outbox — `SettlementWebhookOutbox` (the
  *      failure ledger a gateway keeps for its settlement webhooks),
- *      six rows over a fixed outbox (`maxAttempts: 3`, injected
+ *      seven rows over a fixed outbox (`maxAttempts: 3`, injected
  *      fixed clock — see the outbox fixture below): recording one
  *      failure per fresh `(endpoint, eventId)` pair (`recordAttempt`
  *      with the pinned 500 error), driving one pair through the
@@ -1498,8 +1498,13 @@
  *      dead-lettered pairs (`pending()` / `deadLetter()` over a
  *      fixed 1,000-pair ledger: 700 pending, 300 dead-lettered),
  *      acknowledging a pending pair clear (`acknowledge`),
- *      exporting that 1,000-pair ledger (`exportSnapshot`), and
- *      restoring it from its JSON round-tripped form (`restore`).
+ *      exporting that 1,000-pair ledger (`exportSnapshot`),
+ *      restoring it from its JSON round-tripped form (`restore`),
+ *      and redriving one dead-lettered pair (the settled report's
+ *      own webhook event) back to pending at a fixed later clock
+ *      and re-delivering its signed webhook through a fake fetch
+ *      that answers 200 on the first attempt — the success clearing
+ *      the pair, so the ledger ends pending 0, dead letter 0.
  *      This is the bookkeeping cost every failed webhook delivery
  *      pays — the hot path a gateway hammers on every 500 — and it
  *      previously had unit tests only, no throughput baseline. The
@@ -5868,6 +5873,189 @@ function checkOutboxDeadLetter(where: string): void {
       "benchmark fixture failed: outbox success did not clear the pair",
     );
   }
+}
+
+// Redrive fixture (backlog #1153): the dead letter coming back. One
+// fixed pair — the settled report's own signed webhook event
+// (`WEBHOOK_EVENT_ID`, delivered to the same billing endpoint) —
+// driven to the dead letter (3 failures at the fixed injected clock),
+// redriven at a fixed later clock, then re-delivered through a fake
+// fetch that answers 200 on the first attempt. Built fresh on every
+// timed iteration (see `checkOutboxRedrive` below), so the reported
+// numbers include the rebuild cost — the same accounting the
+// dead-letter row uses. The fake records the call so the per-iteration
+// self-check can pin the delivered body and signature; it never
+// touches the global fetch (the delivery goes through the injected
+// `fetchImpl`, not `globalThis.fetch`).
+const OUTBOX_REDRIVE_NOW_MS = OUTBOX_NOW_MS + 3_600_000;
+let redriveCalls: Array<{ url: string; body: string; signature: string }> =
+  [];
+const redriveFetch = async (
+  url: string,
+  init: RequestInit,
+): Promise<Response> => {
+  redriveCalls.push({
+    url,
+    body: String(init?.body ?? ""),
+    signature: String(new Headers(init?.headers).get("x-signature") ?? ""),
+  });
+  return new Response("{}", {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+};
+
+async function checkOutboxRedrive(where: string): Promise<void> {
+  const fresh = new SettlementWebhookOutbox({
+    maxAttempts: OUTBOX_MAX_ATTEMPTS,
+    now: () => OUTBOX_NOW_MS,
+  });
+  for (let f = 0; f < OUTBOX_MAX_ATTEMPTS; f++) {
+    fresh.recordAttempt({
+      endpoint: OUTBOX_ENDPOINT,
+      eventId: WEBHOOK_EVENT_ID,
+      ok: false,
+      status: 500,
+      error: OUTBOX_ERROR,
+    });
+  }
+  if (
+    fresh.size !== 1 ||
+    fresh.pending().length !== 0 ||
+    fresh.deadLetter().length !== 1
+  ) {
+    throw new Error(
+      `benchmark ${where} failed: SettlementWebhookOutbox redrive fixture is not dead-lettered`,
+    );
+  }
+  // The recovery step: back to pending, attempts reset to 0, `lastAt`
+  // stamped with the redrive time, no `lastError` carried over.
+  fresh.redrive(OUTBOX_ENDPOINT, WEBHOOK_EVENT_ID, {
+    now: OUTBOX_REDRIVE_NOW_MS,
+  });
+  const redriven = fresh.pending();
+  if (
+    fresh.size !== 1 ||
+    redriven.length !== 1 ||
+    fresh.deadLetter().length !== 0 ||
+    redriven[0].endpoint !== OUTBOX_ENDPOINT ||
+    redriven[0].eventId !== WEBHOOK_EVENT_ID ||
+    redriven[0].attempts !== 0 ||
+    redriven[0].lastAt !== OUTBOX_REDRIVE_NOW_MS ||
+    redriven[0].lastError !== undefined
+  ) {
+    throw new Error(
+      `benchmark ${where} failed: SettlementWebhookOutbox redrive did not return the pair to pending`,
+    );
+  }
+  // The first delivery after the fix: one fake 200, no retry, then
+  // the success clears the pair — the ledger ends pending 0,
+  // dead letter 0.
+  redriveCalls = [];
+  const result = await deliverSettlementWebhook(OUTBOX_ENDPOINT, webhook, {
+    backoffMs: 0,
+    fetchImpl: redriveFetch,
+  });
+  if (
+    result.attempts !== 1 ||
+    result.status !== 200 ||
+    redriveCalls.length !== 1 ||
+    redriveCalls[0].url !== OUTBOX_ENDPOINT ||
+    redriveCalls[0].body !== webhookBody ||
+    redriveCalls[0].signature !== webhook.signature
+  ) {
+    throw new Error(
+      `benchmark ${where} failed: SettlementWebhookOutbox redrive redelivery`,
+    );
+  }
+  fresh.recordAttempt({
+    endpoint: OUTBOX_ENDPOINT,
+    eventId: WEBHOOK_EVENT_ID,
+    ok: true,
+  });
+  const stats = fresh.stats();
+  if (
+    stats.size !== 0 ||
+    stats.pending !== 0 ||
+    stats.deadLettered !== 0 ||
+    stats.totalAttempts !== 0 ||
+    fresh.pending().length !== 0 ||
+    fresh.deadLetter().length !== 0
+  ) {
+    throw new Error(
+      `benchmark ${where} failed: SettlementWebhookOutbox redrive ledger is not empty after the successful redelivery`,
+    );
+  }
+}
+
+// One-time validation (outside the timed loop): redriving a pending
+// pair and an untracked pair both fail fast with the pinned errors
+// and leave the ledger untouched, and the redelivery the timed loop
+// sends carries a signature that verifies under the bench secret.
+{
+  const probe = new SettlementWebhookOutbox({
+    maxAttempts: OUTBOX_MAX_ATTEMPTS,
+    now: () => OUTBOX_NOW_MS,
+  });
+  probe.recordAttempt({
+    endpoint: OUTBOX_ENDPOINT,
+    eventId: "bench-outbox-redrive-probe",
+    ok: false,
+    status: 500,
+    error: OUTBOX_ERROR,
+  });
+  probe.recordAttempt({
+    endpoint: OUTBOX_ENDPOINT,
+    eventId: "bench-outbox-redrive-probe",
+    ok: false,
+    status: 500,
+    error: OUTBOX_ERROR,
+  });
+  let pendingError: unknown;
+  try {
+    probe.redrive(OUTBOX_ENDPOINT, "bench-outbox-redrive-probe");
+  } catch (err) {
+    pendingError = err;
+  }
+  if (
+    !(pendingError instanceof Error) ||
+    pendingError.message !==
+      "SettlementWebhookOutbox: cannot redrive a pending pair (only dead-lettered pairs can be redriven)" ||
+    probe.size !== 1 ||
+    probe.pending().length !== 1
+  ) {
+    throw new Error(
+      "benchmark fixture failed: outbox redrive of a pending pair did not fail fast with the pinned error",
+    );
+  }
+  let untrackedError: unknown;
+  try {
+    probe.redrive(OUTBOX_ENDPOINT, "bench-outbox-redrive-missing");
+  } catch (err) {
+    untrackedError = err;
+  }
+  if (
+    !(untrackedError instanceof Error) ||
+    untrackedError.message !==
+      "SettlementWebhookOutbox: cannot redrive an untracked pair" ||
+    probe.size !== 1
+  ) {
+    throw new Error(
+      "benchmark fixture failed: outbox redrive of an untracked pair did not fail fast with the pinned error",
+    );
+  }
+}
+await checkOutboxRedrive("fixture");
+if (
+  !verifySettlementWebhook(
+    redriveCalls[0].body,
+    redriveCalls[0].signature,
+    WEBHOOK_SECRET,
+  )
+) {
+  throw new Error(
+    "benchmark fixture failed: outbox redrive redelivery signature does not verify",
+  );
 }
 
 // List / export / restore fixture: one fixed 1,000-pair ledger on
@@ -11352,6 +11540,12 @@ function benchSettlementWebhookOutboxRestore(): number {
   }, ITERATIONS);
 }
 
+async function benchSettlementWebhookOutboxRedrive(): Promise<number> {
+  return measureAsync(async () => {
+    await checkOutboxRedrive("self-check");
+  }, ITERATIONS);
+}
+
 function benchSettlementEventDedupeExportSignedSnapshot(): number {
   return measure(() => {
     // Per-iteration self-check against the hand-written
@@ -13851,6 +14045,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "SettlementWebhookOutbox acknowledge (pending pair, 2 failures)", ops: benchSettlementWebhookOutboxAcknowledge() },
   { path: "SettlementWebhookOutbox exportSnapshot (1,000-pair ledger)", ops: benchSettlementWebhookOutboxExportSnapshot() },
   { path: "SettlementWebhookOutbox restore (1,000-pair snapshot, JSON round-trip)", ops: benchSettlementWebhookOutboxRestore() },
+  { path: "SettlementWebhookOutbox redrive + redelivery (dead-lettered pair, fake fetch 200 first attempt)", ops: await benchSettlementWebhookOutboxRedrive() },
   { path: "SettlementEventDedupe exportSignedSnapshot (1,000-entry snapshot)", ops: benchSettlementEventDedupeExportSignedSnapshot() },
   { path: "SettlementEventDedupe restoreSignedSnapshot (1,000-entry snapshot, JSON round-trip)", ops: benchSettlementEventDedupeRestoreSignedSnapshot() },
   { path: "Escrow exportSignedSnapshot (4-entry history)", ops: benchEscrowExportSignedSnapshot() },

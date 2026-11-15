@@ -2242,7 +2242,7 @@ on a fresh outbox on every iteration, again with the rebuild
 cost inside the timed region; `exportSnapshot` exporting that
 same 1,000-pair ledger and `restore` rebuilding it from its
 JSON round-tripped form, the restored lists checked against the
-hand-written composition on every iteration; the full
+hand-written composition on every iteration; `redrive` moving one dead-lettered pair (3 failures, the settled report's own webhook event) back to pending at a fixed later clock and re-delivering its signed webhook through a fake fetch that answers 200 on the first attempt, the success clearing the pair so the ledger ends pending 0, dead letter 0, with the redriven shape and the delivered body and signature pinned on every iteration; the full
 entry-for-entry ledger comparison, the detached-copy and
 empty-store export shapes, the restore-keeps-counting shape,
 the `maxAttempts: 1` boundary re-derivation, and the 7 malformed
@@ -2879,6 +2879,7 @@ One real run on 2026-11-04:
 | SettlementWebhookOutbox acknowledge (pending pair, 2 failures) | ~688,089 ops/sec (1.45 µs/op) |
 | SettlementWebhookOutbox exportSnapshot (1,000-pair ledger) | ~12,582 ops/sec (79.48 µs/op) |
 | SettlementWebhookOutbox restore (1,000-pair snapshot, JSON round-trip) | ~2,859 ops/sec (349.78 µs/op) |
+| SettlementWebhookOutbox redrive + redelivery (dead-lettered pair, fake fetch 200 first attempt) | ~37,257 ops/sec (26.84 µs/op) |
 | SettlementEventDedupe exportSignedSnapshot (1,000-entry snapshot) | ~1,800 ops/sec (553.49 µs/op) |
 | SettlementEventDedupe restoreSignedSnapshot (1,000-entry snapshot, JSON round-trip) | ~796 ops/sec (1256.52 µs/op) |
 | Escrow exportSignedSnapshot (4-entry history) | ~51,300 ops/sec (19.49 µs/op) |

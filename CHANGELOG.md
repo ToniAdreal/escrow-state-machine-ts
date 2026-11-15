@@ -18,6 +18,20 @@ version changes.
 
 ### Added
 
+- Benchmark row for the settlement webhook outbox `redrive` + redelivery
+  (2026-11-15, backlog #1153): one measured op drives the settled
+  report's own signed webhook event to the dead letter (3 failures at
+  the fixed injected clock), redrives it back to pending at a fixed
+  later clock (attempts reset to 0, `lastAt` stamped with the redrive
+  time, no `lastError` carried over), re-delivers it through a fake
+  fetch that answers 200 on the first attempt, and records the success
+  so the ledger ends pending 0, dead letter 0, pinning the redriven
+  shape and the delivered body and signature on every iteration; a
+  pending-pair redrive and an untracked-pair redrive are pinned
+  outside the timed loop to fail fast with their exact errors, and
+  the redelivered signature is pinned to verify under the bench
+  secret. Measured ~37,257 ops/sec (26.84 µs/op) on a 2026-11-15 run.
+
 - Benchmark row for the quorum HMAC-signed snapshot round-trip
   (2026-11-15, backlog #1152): one measured op seals the fixed
   9-signer / threshold-5 quorum carrying 7 recorded approvals
