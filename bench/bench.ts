@@ -1675,6 +1675,7 @@ import type { AddressInfo } from "node:net";
 import {
   actOnStaleEscrows,
   allowedEvents,
+  approvalStatement,
   assertNonNegativeMoney,
   buildSettlementReport,
   buildSettlementReports,
@@ -13609,6 +13610,83 @@ function benchFormatMinorUnitsParseMinorUnitsRoundTrip(): number {
   }, ITERATIONS);
 }
 
+// Quorum approval-statement construction fixture (backlog #1166):
+// the fixed 5-of-9 quorum's five approvers (the first five of the
+// bench's 9-signer set, dao-1..dao-5 — the same signers the quorum
+// approval rows approve to the threshold). `approvalStatement` is
+// the canonical byte string a signer signs for `approveSigned()`:
+// `escrow-quorum:approve:<signerId>` (UTF-8, no trailing newline).
+// The expected bytes below are hand-pinned (NOT produced by the
+// implementation — each string was written out from the canonical
+// format documented on `approvalStatement` and cross-checked
+// against `test/quorumSignedApproval.test.ts`, which pins
+// `escrow-quorum:approve:dao-1`).
+const APPROVAL_STATEMENT_SIGNERS: readonly string[] = [
+  "dao-1",
+  "dao-2",
+  "dao-3",
+  "dao-4",
+  "dao-5",
+];
+const APPROVAL_STATEMENT_EXPECTED: readonly string[] = [
+  "escrow-quorum:approve:dao-1",
+  "escrow-quorum:approve:dao-2",
+  "escrow-quorum:approve:dao-3",
+  "escrow-quorum:approve:dao-4",
+  "escrow-quorum:approve:dao-5",
+];
+if (APPROVAL_STATEMENT_SIGNERS.length !== 5) {
+  throw new Error(
+    "benchmark fixture failed: approval-statement signer corpus size",
+  );
+}
+if (APPROVAL_STATEMENT_EXPECTED.length !== 5) {
+  throw new Error(
+    "benchmark fixture failed: approval-statement expectation corpus size",
+  );
+}
+function checkApprovalStatements(label: string): void {
+  // Per-iteration self-check: every approver's statement is byte-
+  // identical to its pinned canonical bytes; the same signer
+  // constructed twice yields byte-identical output (deterministic,
+  // no per-call randomness or state); and no two signers share a
+  // statement (the signer id is bound into the bytes, so a
+  // signature for dao-1 can never verify as dao-2's).
+  const seen = new Set<string>();
+  for (let i = 0; i < APPROVAL_STATEMENT_SIGNERS.length; i++) {
+    const statement = approvalStatement(APPROVAL_STATEMENT_SIGNERS[i]);
+    const expected = Buffer.from(APPROVAL_STATEMENT_EXPECTED[i], "utf8");
+    if (!statement.equals(expected)) {
+      throw new Error(
+        `benchmark self-check failed (${label}): approvalStatement(${APPROVAL_STATEMENT_SIGNERS[i]}): expected ${APPROVAL_STATEMENT_EXPECTED[i]}, got ${statement.toString("utf8")}`,
+      );
+    }
+    seen.add(statement.toString("utf8"));
+  }
+  if (!approvalStatement("dao-1").equals(approvalStatement("dao-1"))) {
+    throw new Error(
+      `benchmark self-check failed (${label}): approvalStatement(dao-1) not deterministic`,
+    );
+  }
+  if (seen.size !== APPROVAL_STATEMENT_SIGNERS.length) {
+    throw new Error(
+      `benchmark self-check failed (${label}): approval statements not distinct per signer`,
+    );
+  }
+}
+checkApprovalStatements("fixture build");
+
+function benchApprovalStatement(): number {
+  return measure(() => {
+    // One measured op constructs the approval statement for each
+    // of the 5 approvers and pins every statement byte for byte —
+    // the per-signature statement cost `approveSigned()` pays
+    // before the ed25519 sign call. Pure function, so no fixture
+    // rebuild is needed.
+    checkApprovalStatements("timed loop");
+  }, ITERATIONS);
+}
+
 function benchEscrowsApproachingDeadline(): number {
   return measure(() => {
     checkWatchdogIds(
@@ -14931,6 +15009,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "quorum exportSignedQuorumSnapshot x restoreSignedQuorumSnapshot round-trip (7 approvals of 9, JSON round-trip)", ops: benchQuorumSignedSnapshotRoundTrip() },
   { path: "escrowsApproachingDeadline (batch 14 escrows, 6 approaching)", ops: benchEscrowsApproachingDeadline() },
   { path: "nextEscrowDeadline (batch 10 escrows, earliest 2026-06-03)", ops: benchNextEscrowDeadline() },
+  { path: "approvalStatement (5 of 9 signers, canonical statement bytes)", ops: benchApprovalStatement() },
 ];
 
 console.log("path                                              throughput");

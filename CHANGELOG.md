@@ -18,6 +18,16 @@ version changes.
 
 ### Added
 
+- Benchmark row for `approvalStatement` (2026-11-15, backlog
+  #1166): one measured op constructs the canonical approval
+  statement bytes for each of the 5 approvers of the fixed 9-signer
+  / threshold-5 quorum (dao-1..dao-5) and pins every statement byte
+  for byte against its hand-written `escrow-quorum:approve:<signerId>`
+  expectation, pinning on every iteration that the same signer
+  constructed twice yields byte-identical output and that no two
+  signers share a statement. Measured ~37,546 ops/sec (26.63 µs/op)
+  on a 2026-11-15 run (Node v24.22.1, AMD EPYC 9D25).
+
 - Benchmark row for `formatMinorUnits` x `parseMinorUnits` round-trip
   (2026-11-15, backlog #1165): one measured op formats a fixed
   12-vector corpus of integer cents (zero, a single cent, the

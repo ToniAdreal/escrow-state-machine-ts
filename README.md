@@ -2869,6 +2869,19 @@ envelope (one approval rewritten under the original MAC) and a wrong
 secret are pinned to throw the MAC-mismatch error, and the
 envelope's snapshot is pinned byte-identical to the unsigned
 snapshot.
+The new `approvalStatement` row measures the #1166 quorum
+approval-statement construction as a cost path: one measured op
+constructs the canonical statement bytes for each of the 5
+approvers of the fixed 9-signer / threshold-5 quorum (dao-1..dao-5,
+the same signers the quorum approval rows approve to the
+threshold) and pins every statement byte for byte against its
+hand-written `escrow-quorum:approve:<signerId>` expectation,
+pinning on every iteration that the same signer constructed twice
+yields byte-identical output and that no two signers share a
+statement — the signer id is bound into the bytes, so a signature
+for dao-1 can never verify as dao-2's. The five pinned
+expectations are checked once at fixture build, outside the timed
+loop.
 One real run on 2026-11-04:
 
 | path | throughput |
@@ -2992,6 +3005,7 @@ One real run on 2026-11-04:
 | stateAtFromHistory (64-entry history, mid-history query) | ~1,651 ops/sec (605.80 µs/op) |
 | formatMinorUnits x parseMinorUnits round-trip (12-vector corpus) | ~167,931 ops/sec (5.95 µs/op) |
 | quorum exportSignedQuorumSnapshot x restoreSignedQuorumSnapshot round-trip (7 approvals of 9, JSON round-trip) | ~4,377 ops/sec (228.48 µs/op) |
+| approvalStatement (5 of 9 signers, canonical statement bytes) | ~37,546 ops/sec (26.63 µs/op) |
 
 The two batch-filter rows, the escrowsApproachingDeadline row,
 and the settlePartialRelease row above were measured on
@@ -2999,7 +3013,7 @@ and the settlePartialRelease row above were measured on
 escrowsByEvent row above were measured on 2026-11-06 runs; the
 settlePartialReleases row above was measured on a 2026-11-08 run; the
 escrowsByFilters and settlementAging rows above were measured on a
-2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the signed-snapshot rows above were measured on a 2026-11-11 run; the diffSettlementReports row above was measured on a 2026-11-13 run; the renderSettlementReportsSummary and diffSettlementReportsSummaries rows above were measured on a 2026-11-13 run; the unreconciledSettlements row above was measured on a 2026-11-14 run; the stateAt row above was measured on a 2026-11-15 run; the stateAtFromHistory row above was measured on a 2026-11-15 run; the formatMinorUnits x parseMinorUnits round-trip row above was measured on a 2026-11-15 run; the quorum signed-snapshot round-trip row above was measured on a 2026-11-15 run; the calculateDepositCents row above was measured on a 2026-11-15 run; the escrowsBySettlementRef row above was measured on a 2026-11-15 run; the parseSettlementReportsSummaryCsv and parseSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the renderSettlementReportsSummaryCsv and renderSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
+2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the signed-snapshot rows above were measured on a 2026-11-11 run; the diffSettlementReports row above was measured on a 2026-11-13 run; the renderSettlementReportsSummary and diffSettlementReportsSummaries rows above were measured on a 2026-11-13 run; the unreconciledSettlements row above was measured on a 2026-11-14 run; the stateAt row above was measured on a 2026-11-15 run; the stateAtFromHistory row above was measured on a 2026-11-15 run; the formatMinorUnits x parseMinorUnits round-trip row above was measured on a 2026-11-15 run; the quorum signed-snapshot round-trip row above was measured on a 2026-11-15 run; the calculateDepositCents row above was measured on a 2026-11-15 run; the escrowsBySettlementRef row above was measured on a 2026-11-15 run; the parseSettlementReportsSummaryCsv and parseSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the renderSettlementReportsSummaryCsv and renderSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the approvalStatement row above was measured on a 2026-11-15 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
 came in mixed under shared-host load, so refreshing the whole
 table would misreport changes in paths these additions never
 touched.
