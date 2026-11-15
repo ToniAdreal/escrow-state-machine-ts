@@ -18,6 +18,21 @@ version changes.
 
 ### Added
 
+- Benchmark row for `formatMinorUnits` x `parseMinorUnits` round-trip
+  (2026-11-15, backlog #1165): one measured op formats a fixed
+  12-vector corpus of integer cents (zero, a single cent, the
+  sub-yuan and one-yuan boundaries, the golden 10,630 and 1,063,000,
+  their negatives, a large 1,234,567,890,123, and
+  Number.MAX_SAFE_INTEGER) to its hand-pinned two-decimal strings
+  and parses each back, pinning the exact string and the exact
+  round-trip integer on every iteration; the two directions share
+  one row because the settlement path always pays both. A
+  fractional format input, over-precision / separator /
+  scientific-notation / empty parse inputs, and an amount past the
+  safe-integer range are pinned once, outside the timed loop, to
+  throw their exact errors. Measured ~167,931 ops/sec (5.95 µs/op)
+  on a 2026-11-15 run (Node v24.22.1, AMD EPYC 9D25).
+
 - Benchmark row for `stateAtFromHistory` (2026-11-15, backlog
   #1164): one measured op asks the same fixed 64-entry hash-chained
   history the `stateAt` row measures (the golden 10,630 funded once,

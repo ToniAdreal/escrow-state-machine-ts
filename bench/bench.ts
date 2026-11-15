@@ -1702,11 +1702,13 @@ import {
   expiredEscrows,
   expireOverdueEscrows,
   exportSignedQuorumSnapshot,
+  formatMinorUnits,
   historyFromNdjson,
   historyToNdjson,
   isOverdue,
   nextEscrowDeadline,
   parseEscrowHistory,
+  parseMinorUnits,
   parseRetryAfter,
   parseSettlementReportCsv,
   parseSettlementReportJson,
@@ -13481,6 +13483,132 @@ function benchStateAtFromHistory(): number {
   }, ITERATIONS);
 }
 
+// Minor-unit display/parse round-trip fixture (backlog #1165): the
+// fixed 12-vector corpus the `formatMinorUnits` / `parseMinorUnits`
+// unit tests pin, spanning the boundaries the settlement display
+// and reconciliation-import paths actually hit. Hand-pinned
+// expectations (NOT produced by the implementation — each string
+// was written out by hand from the integer-arithmetic rule and
+// cross-checked against the unit tests):
+//   - 0 -> "0.00" (zero renders with two decimals, no minus);
+//   - 1 -> "0.01" (a single cent: the smallest non-zero amount);
+//   - 99 -> "0.99" (largest sub-yuan amount);
+//   - 100 -> "1.00" (one-yuan boundary);
+//   - 101 -> "1.01" (just over one yuan);
+//   - 10098 -> "100.98" (the golden deposit in cents);
+//   - 1063000 -> "10630.00" (the golden deposit, 1,063,000 cents,
+//     the fee calculator's agreement vector);
+//   - -1 -> "-0.01" (negative cent keeps its minus);
+//   - -100 -> "-1.00" (negative one yuan);
+//   - -10098 -> "-100.98" (negative golden);
+//   - 1234567890123 -> "12345678901.23" (large amount, exact
+//     through integer arithmetic, never float division);
+//   - Number.MAX_SAFE_INTEGER -> "90071992547409.91" (largest safe
+//     integer formats exactly, remainder 91).
+// The dataquest sibling benchmarks the two directions on separate
+// rows; here they are one row because the settlement path always
+// pays both (format for the statement, parse back for the import),
+// so the round-trip is the cost the reconciliation job actually
+// incurs per amount.
+const MINOR_UNITS_ROUND_TRIP_CASES: Array<{
+  input: number;
+  formatted: string;
+}> = [
+  { input: 0, formatted: "0.00" },
+  { input: 1, formatted: "0.01" },
+  { input: 99, formatted: "0.99" },
+  { input: 100, formatted: "1.00" },
+  { input: 101, formatted: "1.01" },
+  { input: 10098, formatted: "100.98" },
+  { input: 1063000, formatted: "10630.00" },
+  { input: -1, formatted: "-0.01" },
+  { input: -100, formatted: "-1.00" },
+  { input: -10098, formatted: "-100.98" },
+  { input: 1234567890123, formatted: "12345678901.23" },
+  { input: Number.MAX_SAFE_INTEGER, formatted: "90071992547409.91" },
+];
+if (MINOR_UNITS_ROUND_TRIP_CASES.length !== 12) {
+  throw new Error(
+    "benchmark fixture failed: minor-units round-trip corpus size",
+  );
+}
+function checkMinorUnitsRoundTrip(
+  input: number,
+  formatted: string,
+  label: string,
+): void {
+  if (formatMinorUnits(input) !== formatted) {
+    throw new Error(
+      `benchmark self-check failed (${label}): formatMinorUnits(${input}): expected ${formatted}, got ${formatMinorUnits(input)}`,
+    );
+  }
+  if (parseMinorUnits(formatted) !== input) {
+    throw new Error(
+      `benchmark self-check failed (${label}): parseMinorUnits(${formatted}): expected ${input}, got ${parseMinorUnits(formatted)}`,
+    );
+  }
+}
+// Illegal-input rejection (outside the timed loop): a fractional
+// "minor unit" is a caller error, not a representable amount, and
+// the strict parser rejects over-precision, separators, scientific
+// notation, and empty input — plus an amount past the safe-integer
+// range, which must overflow loudly instead of returning a
+// rounded-off integer.
+let minorUnitsFractionalError = "";
+try {
+  formatMinorUnits(1.5);
+} catch (err) {
+  minorUnitsFractionalError = (err as Error).message;
+}
+if (
+  minorUnitsFractionalError !== "minor units must be an integer, got 1.5"
+) {
+  throw new Error(
+    "benchmark fixture failed: formatMinorUnits fractional input error mismatch",
+  );
+}
+for (const bad of ["12.345", "1,234.56", "1.2e3", ""]) {
+  let rejected = false;
+  try {
+    parseMinorUnits(bad);
+  } catch (err) {
+    rejected = (err as Error).message.includes(
+      "is not a strict decimal amount",
+    );
+  }
+  if (!rejected) {
+    throw new Error(
+      `benchmark fixture failed: parseMinorUnits accepted ${JSON.stringify(bad)}`,
+    );
+  }
+}
+let minorUnitsOverflowError = "";
+try {
+  parseMinorUnits("90071992547409.92");
+} catch (err) {
+  minorUnitsOverflowError = (err as Error).message;
+}
+if (!minorUnitsOverflowError.includes("minor units conversion overflowed")) {
+  throw new Error(
+    "benchmark fixture failed: parseMinorUnits overflow error mismatch",
+  );
+}
+for (const { input, formatted } of MINOR_UNITS_ROUND_TRIP_CASES) {
+  checkMinorUnitsRoundTrip(input, formatted, "fixture build");
+}
+
+function benchFormatMinorUnitsParseMinorUnitsRoundTrip(): number {
+  return measure(() => {
+    // Per-iteration self-check: every vector formats to exactly
+    // its pinned string and parses back to exactly its input —
+    // the round-trip the settlement display/import path pays per
+    // amount. Pure functions, so no fixture rebuild is needed.
+    for (const { input, formatted } of MINOR_UNITS_ROUND_TRIP_CASES) {
+      checkMinorUnitsRoundTrip(input, formatted, "timed loop");
+    }
+  }, ITERATIONS);
+}
+
 function benchEscrowsApproachingDeadline(): number {
   return measure(() => {
     checkWatchdogIds(
@@ -14799,6 +14927,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "unreconciledSettlements (batch 10 escrows, 3 unreconciled)", ops: benchUnreconciledSettlements() },
   { path: "stateAt (64-entry history, mid-history query)", ops: benchStateAt() },
   { path: "stateAtFromHistory (64-entry history, mid-history query)", ops: benchStateAtFromHistory() },
+  { path: "formatMinorUnits x parseMinorUnits round-trip (12-vector corpus)", ops: benchFormatMinorUnitsParseMinorUnitsRoundTrip() },
   { path: "quorum exportSignedQuorumSnapshot x restoreSignedQuorumSnapshot round-trip (7 approvals of 9, JSON round-trip)", ops: benchQuorumSignedSnapshotRoundTrip() },
   { path: "escrowsApproachingDeadline (batch 14 escrows, 6 approaching)", ops: benchEscrowsApproachingDeadline() },
   { path: "nextEscrowDeadline (batch 10 escrows, earliest 2026-06-03)", ops: benchNextEscrowDeadline() },
