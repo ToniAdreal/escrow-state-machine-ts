@@ -18,6 +18,19 @@ version changes.
 
 ### Added
 
+- Benchmark row for the quorum HMAC-signed snapshot round-trip
+  (2026-11-15, backlog #1152): one measured op seals the fixed
+  9-signer / threshold-5 quorum carrying 7 recorded approvals
+  (dao-1..dao-7, one second apart on a stepped fixed clock) into its
+  HMAC-signed envelope with `exportSignedQuorumSnapshot` and restores
+  it from the JSON round-tripped persisted form with
+  `restoreSignedQuorumSnapshot`, pinning the envelope shape (v 1,
+  64-hex MAC, no expiry) and the restored approvals (7, dao-1..dao-7
+  in record order, threshold reached, audit log of 7) on every
+  iteration; a tampered envelope and a wrong secret are pinned
+  outside the timed loop to throw the MAC-mismatch error. Measured
+  ~4,377 ops/sec (228.48 µs/op) on a 2026-11-15 run.
+
 - Benchmark row for `Escrow.stateAt(time)` (2026-11-15, backlog
   #1151): one measured op asks a fixed escrow carrying a 64-entry
   hash-chained history (the golden 10,630 funded once, then 60

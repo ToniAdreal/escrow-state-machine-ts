@@ -1606,6 +1606,19 @@
  *      iteration, at fixture build time as well; the before-first
  *      (CREATED) and after-last (RELEASED) answers, and both
  *      inclusive boundaries, are pinned once, outside the timed loop.
+ *  91. quorum signed-snapshot round-trip —
+ *      `exportSignedQuorumSnapshot` -> `restoreSignedQuorumSnapshot`
+ *      over the fixed 9-signer / threshold-5 quorum carrying 7
+ *      recorded approvals (the same group-14 shape the unsigned
+ *      quorum snapshot rows use: dao-1..dao-7, one second apart on a
+ *      stepped fixed clock): one measured op seals the quorum into
+ *      its HMAC-signed envelope and restores it from the JSON
+ *      round-tripped persisted form, and each result is checked
+ *      against the hand-pinned approvals (7, dao-1..dao-7 in record
+ *      order, threshold reached, audit log of 7) on every iteration.
+ *      The #1137 envelope's seal/verify cost had no measured
+ *      baseline. A tampered envelope and a wrong secret are pinned
+ *      to throw the MAC-mismatch error once, outside the timed loop.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -1651,6 +1664,7 @@ import {
   escrowsByState,
   expiredEscrows,
   expireOverdueEscrows,
+  exportSignedQuorumSnapshot,
   historyFromNdjson,
   historyToNdjson,
   isOverdue,
@@ -1665,6 +1679,7 @@ import {
   renderReportJson,
   renderSettlementReportsSummary,
   restoreQuorum,
+  restoreSignedQuorumSnapshot,
   settleRelease,
   settlePartialRelease,
   settlePartialReleases,
@@ -1687,6 +1702,7 @@ import {
   type EscrowSnapshot,
   type EscrowState,
   type Quorum,
+  type QuorumSignedSnapshotEnvelope,
   type RefundSettlementInputs,
   type RolePolicy,
   type QuorumSnapshot,
@@ -6319,6 +6335,69 @@ function checkOutboxSignedSnapshotRestore(where: string): void {
     );
   }
 }
+// Quorum signed-snapshot fixture (backlog #1152): the #1137 envelope
+// over the same group-14 shape the unsigned quorum rows use — the
+// 9-signer / threshold-5 quorum carrying 7 recorded approvals
+// (dao-1..dao-7, one second apart on a stepped fixed clock),
+// `quorumExportSource` above — sealed once under the shared fixed
+// secret. The envelope wraps the unsigned snapshot, never rewrites
+// it; the restore side JSON round-trips the envelope on every
+// iteration, the persisted form a process reloads at startup.
+// Hand-written expectations (NOT produced by the implementation):
+// the envelope is v 1 with a 64-hex MAC and no `expiresAt` (no
+// expiry was requested); the restored quorum reaches the threshold
+// with exactly the 7 approvals dao-1..dao-7 in record order and an
+// audit log of exactly those 7 entries; a re-export of the restored
+// quorum reproduces the unsigned snapshot byte-for-byte.
+const quorumSignedSnapshotEnvelope: QuorumSignedSnapshotEnvelope =
+  exportSignedQuorumSnapshot(quorumExportSource, SIGNED_SNAPSHOT_SECRET);
+function checkQuorumSignedSnapshotExport(
+  envelope: QuorumSignedSnapshotEnvelope,
+  where: string,
+): void {
+  if (
+    envelope.v !== 1 ||
+    !SIGNED_SNAPSHOT_MAC_RE.test(envelope.mac) ||
+    envelope.expiresAt !== undefined
+  ) {
+    throw new Error(
+      `benchmark self-check failed: quorum exportSignedQuorumSnapshot ${where}`,
+    );
+  }
+  checkQuorumSnapshotExport(envelope.snapshot, where);
+}
+function checkQuorumSignedSnapshotRoundTrip(where: string): void {
+  // One measured op: seal the fixed 7-approval quorum into its
+  // HMAC-signed envelope, restore it from the JSON round-tripped
+  // persisted form, and pin the envelope shape plus the restored
+  // approvals on every iteration. `exportSignedQuorumSnapshot` is
+  // pure and the restore starts from a fresh JSON parse, so the
+  // same source quorum is re-sealed on every iteration.
+  const envelope = exportSignedQuorumSnapshot(
+    quorumExportSource,
+    SIGNED_SNAPSHOT_SECRET,
+  );
+  checkQuorumSignedSnapshotExport(envelope, where);
+  const restored = restoreSignedQuorumSnapshot(
+    RESTORE_CONFIG,
+    JSON.parse(JSON.stringify(envelope)),
+    SIGNED_SNAPSHOT_SECRET,
+  );
+  if (
+    !restored.hasQuorum() ||
+    restored.approvalCount() !== RESTORE_APPROVAL_COUNT ||
+    restored.approvals().length !== RESTORE_APPROVAL_COUNT ||
+    restored
+      .approvals()
+      .some((s, i) => s !== RESTORE_EXPECTED_APPROVALS[i]) ||
+    restored.approvalLog().length !== RESTORE_APPROVAL_COUNT ||
+    JSON.stringify(restored.snapshot()) !== JSON.stringify(restoreSnapshot)
+  ) {
+    throw new Error(
+      `benchmark self-check failed: quorum signed snapshot round-trip ${where}`,
+    );
+  }
+}
 // One-time validation (outside the timed loop): each signed
 // envelope's snapshot is byte-identical to its unsigned snapshot
 // (the envelope wraps, never rewrites); the export / restore
@@ -6351,6 +6430,14 @@ if (
     "benchmark fixture failed: outbox signed envelope snapshot differs from the unsigned snapshot",
   );
 }
+if (
+  JSON.stringify(quorumSignedSnapshotEnvelope.snapshot) !==
+  JSON.stringify(restoreSnapshot)
+) {
+  throw new Error(
+    "benchmark fixture failed: quorum signed envelope snapshot differs from the unsigned snapshot",
+  );
+}
 checkDedupeSignedSnapshotExport(
   dedupeSignedSnapshotEnvelope,
   "fixture export",
@@ -6363,9 +6450,14 @@ checkOutboxSignedSnapshotExport(
   outboxSignedSnapshotEnvelope,
   "fixture export",
 );
+checkQuorumSignedSnapshotExport(
+  quorumSignedSnapshotEnvelope,
+  "fixture export",
+);
 checkDedupeSignedSnapshotRestore("fixture restore");
 checkEscrowSignedSnapshotRestore("fixture restore");
 checkOutboxSignedSnapshotRestore("fixture restore");
+checkQuorumSignedSnapshotRoundTrip("fixture restore");
 {
   const dedupeSignedGood =
     SettlementEventDedupe.restoreSignedSnapshot(
@@ -6529,6 +6621,60 @@ checkOutboxSignedSnapshotRestore("fixture restore");
   ) {
     throw new Error(
       "benchmark fixture failed: restored outbox changed after rejected signed restores",
+    );
+  }
+}
+{
+  const quorumSignedGood = restoreSignedQuorumSnapshot(
+    RESTORE_CONFIG,
+    JSON.parse(JSON.stringify(quorumSignedSnapshotEnvelope)),
+    SIGNED_SNAPSHOT_SECRET,
+  );
+  const tamperedQuorum = JSON.parse(
+    JSON.stringify(quorumSignedSnapshotEnvelope),
+  );
+  tamperedQuorum.snapshot.approvals[0].signerId = "dao-9";
+  let quorumTamperedThrew = false;
+  try {
+    restoreSignedQuorumSnapshot(
+      RESTORE_CONFIG,
+      tamperedQuorum,
+      SIGNED_SNAPSHOT_SECRET,
+    );
+  } catch (error) {
+    quorumTamperedThrew =
+      error instanceof Error && error.message.includes("MAC mismatch");
+  }
+  if (!quorumTamperedThrew) {
+    throw new Error(
+      "benchmark fixture failed: tampered quorum signed snapshot was accepted",
+    );
+  }
+  let quorumWrongSecretThrew = false;
+  try {
+    restoreSignedQuorumSnapshot(
+      RESTORE_CONFIG,
+      JSON.parse(JSON.stringify(quorumSignedSnapshotEnvelope)),
+      SIGNED_SNAPSHOT_WRONG_SECRET,
+    );
+  } catch (error) {
+    quorumWrongSecretThrew =
+      error instanceof Error && error.message.includes("MAC mismatch");
+  }
+  if (!quorumWrongSecretThrew) {
+    throw new Error(
+      "benchmark fixture failed: quorum signed snapshot under a wrong secret was accepted",
+    );
+  }
+  if (
+    !quorumSignedGood.hasQuorum() ||
+    quorumSignedGood.approvalCount() !== RESTORE_APPROVAL_COUNT ||
+    quorumSignedGood
+      .approvals()
+      .some((s, i) => s !== RESTORE_EXPECTED_APPROVALS[i])
+  ) {
+    throw new Error(
+      "benchmark fixture failed: restored quorum changed after rejected signed restores",
     );
   }
 }
@@ -11249,6 +11395,12 @@ function benchEscrowRestoreSignedSnapshot(): number {
   }, ITERATIONS);
 }
 
+function benchQuorumSignedSnapshotRoundTrip(): number {
+  return measure(() => {
+    checkQuorumSignedSnapshotRoundTrip("self-check");
+  }, ITERATIONS);
+}
+
 function benchSettlementWebhookOutboxExportSignedSnapshot(): number {
   return measure(() => {
     // Per-iteration self-check against the hand-written
@@ -13738,6 +13890,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "settlementAging (batch 10 escrows, 3/3/2/2 buckets)", ops: benchSettlementAging() },
   { path: "unreconciledSettlements (batch 10 escrows, 3 unreconciled)", ops: benchUnreconciledSettlements() },
   { path: "stateAt (64-entry history, mid-history query)", ops: benchStateAt() },
+  { path: "quorum exportSignedQuorumSnapshot x restoreSignedQuorumSnapshot round-trip (7 approvals of 9, JSON round-trip)", ops: benchQuorumSignedSnapshotRoundTrip() },
   { path: "escrowsApproachingDeadline (batch 14 escrows, 6 approaching)", ops: benchEscrowsApproachingDeadline() },
   { path: "nextEscrowDeadline (batch 10 escrows, earliest 2026-06-03)", ops: benchNextEscrowDeadline() },
 ];
