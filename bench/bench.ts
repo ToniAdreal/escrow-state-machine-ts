@@ -1729,6 +1729,7 @@ import {
   SettlementEventDedupe,
   SettlementWebhookOutbox,
   staleEscrows,
+  stateAtFromHistory,
   stateDiagram,
   transitionTable,
   transitionTableJson,
@@ -7692,6 +7693,110 @@ checkStateAt(
   "after last entry",
 );
 
+// stateAtFromHistory fixture (backlog #1164): the same fixed 64-entry
+// hash-chained history the #1151 `stateAt` row measures, as detached
+// plain copies — exactly what a persisted audit log looks like. The
+// module-level `stateAtFromHistory` query re-validates the whole log
+// (`parseEscrowHistory` hash-chain check) on every call, unlike the
+// instance read which scans the already-trusted in-memory history,
+// so the two rows over the same log isolate the validation cost of
+// the bare-log path. Hand-pinned expectations are the same five
+// moments the #1151 fixture pins (NOT produced by the implementation):
+//   - mid query at BASE + 31.5s (between the seq-32 and seq-33 FUND
+//     entries) -> FUNDED;
+//   - a query before the first entry (BASE - 1s) -> CREATED;
+//   - a query exactly on the first entry (BASE) -> FUNDED: the
+//     boundary is inclusive;
+//   - a query exactly on the last entry (BASE + 63s) -> RELEASED;
+//   - a query after the last entry (BASE + 64s) -> RELEASED.
+// The query is a pure read, so the same log is re-queried on every
+// iteration; the fixture asserts the log is untouched by the query.
+const stateAtFromHistoryFixture: EscrowHistoryEntry[] =
+  stateAtEscrow.history.map((e) => ({ ...e }));
+if (
+  stateAtFromHistoryFixture.length !== 64 ||
+  !verifyHistoryChain(stateAtFromHistoryFixture)
+) {
+  throw new Error(
+    "benchmark fixture failed: stateAtFromHistory history shape",
+  );
+}
+function checkStateAtFromHistory(
+  actual: EscrowState,
+  expected: EscrowState,
+  label: string,
+): void {
+  if (actual !== expected) {
+    throw new Error(
+      `benchmark self-check failed: stateAtFromHistory ${label}: expected ${expected}, got ${actual}`,
+    );
+  }
+}
+checkStateAtFromHistory(
+  stateAtFromHistory(stateAtFromHistoryFixture, STATE_AT_MID),
+  "FUNDED",
+  "mid-history query",
+);
+checkStateAtFromHistory(
+  stateAtFromHistory(
+    stateAtFromHistoryFixture,
+    new Date(BASE_MS - 1000),
+  ),
+  "CREATED",
+  "before first entry",
+);
+checkStateAtFromHistory(
+  stateAtFromHistory(stateAtFromHistoryFixture, new Date(BASE_MS)),
+  "FUNDED",
+  "on first entry (inclusive)",
+);
+checkStateAtFromHistory(
+  stateAtFromHistory(
+    stateAtFromHistoryFixture,
+    new Date(BASE_MS + 63_000),
+  ),
+  "RELEASED",
+  "on last entry (inclusive)",
+);
+checkStateAtFromHistory(
+  stateAtFromHistory(
+    stateAtFromHistoryFixture,
+    new Date(BASE_MS + 64_000),
+  ),
+  "RELEASED",
+  "after last entry",
+);
+// Tamper rejection (outside the timed loop): the note-tampered copy
+// must be rejected with the hash-chain error — and the intact fixture
+// must still answer afterwards, proving the tamper copy was detached
+// and that the timed path really re-validates the chain (a bench that
+// skipped validation would answer the tampered log instead of
+// throwing).
+const stateAtFromHistoryTampered: EscrowHistoryEntry[] =
+  stateAtFromHistoryFixture.map((e) => ({ ...e }));
+stateAtFromHistoryTampered[31] = {
+  ...stateAtFromHistoryTampered[31],
+  note: "mallory",
+};
+let stateAtFromHistoryTamperRejected = false;
+try {
+  stateAtFromHistory(stateAtFromHistoryTampered, STATE_AT_MID);
+} catch (err) {
+  stateAtFromHistoryTamperRejected =
+    err instanceof Error &&
+    err.message.includes("history hash chain is broken");
+}
+if (!stateAtFromHistoryTamperRejected) {
+  throw new Error(
+    "benchmark fixture failed: stateAtFromHistory accepted a tampered history",
+  );
+}
+checkStateAtFromHistory(
+  stateAtFromHistory(stateAtFromHistoryFixture, STATE_AT_MID),
+  "FUNDED",
+  "mid-history query after tamper check",
+);
+
 // Deadline-warning fixture: one fixed mixed batch of 14 escrows,
 // screened by escrowsApproachingDeadline (the #840 helper, previously
 // unit-tested only, no throughput baseline) over a fixed 7-day window
@@ -13358,6 +13463,24 @@ function benchStateAt(): number {
   }, ITERATIONS);
 }
 
+function benchStateAtFromHistory(): number {
+  return measure(() => {
+    // Per-iteration self-check: the mid-history query over the raw
+    // log returns the hand-pinned FUNDED state, and the pure read
+    // leaves the 64-entry fixture untouched (see the fixture above).
+    checkStateAtFromHistory(
+      stateAtFromHistory(stateAtFromHistoryFixture, STATE_AT_MID),
+      "FUNDED",
+      "mid-history query",
+    );
+    if (stateAtFromHistoryFixture.length !== 64) {
+      throw new Error(
+        "benchmark self-check failed: stateAtFromHistory query mutated the history",
+      );
+    }
+  }, ITERATIONS);
+}
+
 function benchEscrowsApproachingDeadline(): number {
   return measure(() => {
     checkWatchdogIds(
@@ -14675,6 +14798,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "settlementAging (batch 10 escrows, 3/3/2/2 buckets)", ops: benchSettlementAging() },
   { path: "unreconciledSettlements (batch 10 escrows, 3 unreconciled)", ops: benchUnreconciledSettlements() },
   { path: "stateAt (64-entry history, mid-history query)", ops: benchStateAt() },
+  { path: "stateAtFromHistory (64-entry history, mid-history query)", ops: benchStateAtFromHistory() },
   { path: "quorum exportSignedQuorumSnapshot x restoreSignedQuorumSnapshot round-trip (7 approvals of 9, JSON round-trip)", ops: benchQuorumSignedSnapshotRoundTrip() },
   { path: "escrowsApproachingDeadline (batch 14 escrows, 6 approaching)", ops: benchEscrowsApproachingDeadline() },
   { path: "nextEscrowDeadline (batch 10 escrows, earliest 2026-06-03)", ops: benchNextEscrowDeadline() },

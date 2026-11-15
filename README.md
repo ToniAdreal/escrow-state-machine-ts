@@ -2843,6 +2843,19 @@ untouched. Outside the timed loop, the before-first-entry answer
 (CREATED), the after-last-entry answer (RELEASED), and both inclusive
 boundaries (exactly on the first entry: FUNDED; exactly on the last:
 RELEASED) are pinned.
+The new `stateAtFromHistory` row measures the #1164 bare-log
+time-travel read as a cost path: one measured op asks the same fixed
+64-entry hash-chained history — the golden 10,630 funded once, then
+60 top-ups of 1, then SUBMIT_MILESTONE / VERIFY_PASS / RELEASE, as
+detached plain copies — what state it was in at BASE + 31.5s, and
+pins the hand-counted FUNDED answer on every iteration, plus that
+the pure read leaves the 64-entry log untouched. Unlike the instance
+read, the bare-log query re-validates the whole log
+(`parseEscrowHistory` hash-chain check) on every call, so it runs
+about 17x slower than the `stateAt` row in the same run. Outside the timed loop, the before-first-entry answer
+(CREATED), the after-last-entry answer (RELEASED), and both inclusive
+boundaries are pinned, and a note-tampered copy is pinned to throw
+the hash-chain error while the intact log still answers afterwards.
 The new `quorum signed-snapshot round-trip` row measures the #1137
 envelope as a cost path: one measured op seals the fixed 9-signer /
 threshold-5 quorum carrying 7 recorded approvals (dao-1..dao-7, one
@@ -2975,6 +2988,7 @@ One real run on 2026-11-04:
 | nextEscrowDeadline (batch 10 escrows, earliest 2026-06-03) | ~316,600 ops/sec (3.16 µs/op) |
 | unreconciledSettlements (batch 10 escrows, 3 unreconciled) | ~161,003 ops/sec (6.21 µs/op) |
 | stateAt (64-entry history, mid-history query) | ~46,671 ops/sec (21.43 µs/op) |
+| stateAtFromHistory (64-entry history, mid-history query) | ~1,651 ops/sec (605.80 µs/op) |
 | quorum exportSignedQuorumSnapshot x restoreSignedQuorumSnapshot round-trip (7 approvals of 9, JSON round-trip) | ~4,377 ops/sec (228.48 µs/op) |
 
 The two batch-filter rows, the escrowsApproachingDeadline row,
@@ -2983,7 +2997,7 @@ and the settlePartialRelease row above were measured on
 escrowsByEvent row above were measured on 2026-11-06 runs; the
 settlePartialReleases row above was measured on a 2026-11-08 run; the
 escrowsByFilters and settlementAging rows above were measured on a
-2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the signed-snapshot rows above were measured on a 2026-11-11 run; the diffSettlementReports row above was measured on a 2026-11-13 run; the renderSettlementReportsSummary and diffSettlementReportsSummaries rows above were measured on a 2026-11-13 run; the unreconciledSettlements row above was measured on a 2026-11-14 run; the stateAt row above was measured on a 2026-11-15 run; the quorum signed-snapshot round-trip row above was measured on a 2026-11-15 run; the calculateDepositCents row above was measured on a 2026-11-15 run; the escrowsBySettlementRef row above was measured on a 2026-11-15 run; the parseSettlementReportsSummaryCsv and parseSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the renderSettlementReportsSummaryCsv and renderSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
+2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the signed-snapshot rows above were measured on a 2026-11-11 run; the diffSettlementReports row above was measured on a 2026-11-13 run; the renderSettlementReportsSummary and diffSettlementReportsSummaries rows above were measured on a 2026-11-13 run; the unreconciledSettlements row above was measured on a 2026-11-14 run; the stateAt row above was measured on a 2026-11-15 run; the stateAtFromHistory row above was measured on a 2026-11-15 run; the quorum signed-snapshot round-trip row above was measured on a 2026-11-15 run; the calculateDepositCents row above was measured on a 2026-11-15 run; the escrowsBySettlementRef row above was measured on a 2026-11-15 run; the parseSettlementReportsSummaryCsv and parseSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the renderSettlementReportsSummaryCsv and renderSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
 came in mixed under shared-host load, so refreshing the whole
 table would misreport changes in paths these additions never
 touched.

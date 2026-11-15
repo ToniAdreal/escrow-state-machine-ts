@@ -18,6 +18,21 @@ version changes.
 
 ### Added
 
+- Benchmark row for `stateAtFromHistory` (2026-11-15, backlog
+  #1164): one measured op asks the same fixed 64-entry hash-chained
+  history the `stateAt` row measures (the golden 10,630 funded once,
+  then 60 top-ups of 1, then SUBMIT_MILESTONE / VERIFY_PASS /
+  RELEASE, as detached plain copies) what state it was in at BASE +
+  31.5s, pinning the hand-counted FUNDED answer on every iteration
+  plus that the pure read leaves the log untouched; the
+  before-first-entry (CREATED), after-last-entry (RELEASED), and both
+  inclusive boundary answers are pinned once, outside the timed
+  loop, as is a note-tampered copy throwing the hash-chain error
+  while the intact log still answers. Measured ~1,651 ops/sec
+  (605.80 µs/op) on a 2026-11-15 run (Node v24.22.1, AMD EPYC 9D25)
+  — about 17x slower than the instance `stateAt` row in the same
+  run, the cost of re-validating the whole log on every call.
+
 - Benchmark rows for `renderSettlementReportsSummaryCsv` /
   `renderSettlementReportsSummaryJson` (2026-11-15, backlog #1163):
   one measured op each renders the fixed batch-4 summary (3 reports
