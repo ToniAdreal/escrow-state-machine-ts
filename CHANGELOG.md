@@ -18,6 +18,18 @@ version changes.
 
 ### Added
 
+- Benchmark rows for `renderSettlementReportsSummaryCsv` /
+  `renderSettlementReportsSummaryJson` (2026-11-15, backlog #1163):
+  one measured op each renders the fixed batch-4 summary (3 reports
+  + 1 error: released 2, refunded 1, totals 31,890, single
+  UNSPECIFIED bucket) to CSV / JSON, checking the rendered CSV
+  byte-for-byte against the hand-pinned 11-line table and the
+  rendered JSON by parsing it back field for field against the
+  hand-pinned batch-4 figures and stringifying it to the export text
+  itself on every iteration. Measured ~81,330 ops/sec (12.30 µs/op)
+  for the CSV render and ~27,463 ops/sec (36.41 µs/op) for the JSON
+  render on a 2026-11-15 run.
+
 - Benchmark rows for `parseSettlementReportsSummaryCsv` /
   `parseSettlementReportsSummaryJson` (2026-11-15, backlog #1162):
   one measured op each renders the fixed batch-4 summary (3 reports

@@ -13120,6 +13120,128 @@ function benchParseSettlementReportsSummaryJson(): number {
   }, ITERATIONS);
 }
 
+// renderSettlementReportsSummaryCsv / renderSettlementReportsSummaryJson
+// fixtures: the module-scope batch-4 `batchSummary` above (3 reports +
+// 1 error: released 2, refunded 1, totals 31,890, single UNSPECIFIED
+// bucket) — the pure-render counterpart of the #1162 round-trip rows:
+// each measured op is one render, so the wire forms' rendering cost is
+// metered apart from the parse cost. The CSV check pins the whole
+// 11-line text verbatim and in order (header, summary row, four
+// outcome rows, four party rows, one currency row — the figures are
+// the same hand-derived batch-4 figures `checkBatchSummary` pins);
+// the JSON check parses the text and pins the totals fields, then
+// pins `JSON.stringify(parsed)` against the export text itself, exact
+// deep equality, because the parsed key order is the export's
+// canonical order (see the single-report `renderReportJson` row for
+// the same argument). A drift in either renderer's output breaks the
+// run instead of silently re-timing a changed export.
+// ---------------------------------------------------------------------
+const SUMMARY_CSV_EXPECTED_LINES: readonly string[] = [
+  "section,key,count,total,reports,errors,totalDeposit,totalInflow,totalOutflow,totalRemaining,net,balanced",
+  "summary,,,4,3,1,31890.00,31890.00,31890.00,0.00,,true",
+  "outcome,released,2,,,,,,,,,",
+  "outcome,refunded,1,,,,,,,,,",
+  "outcome,expired,0,,,,,,,,,",
+  "outcome,partially-released,0,,,,,,,,,",
+  "party,sponsor,,,,,,10630.00,31890.00,,-21260.00,",
+  "party,creator,,,,,,20197.00,0.00,,20197.00,",
+  "party,platform,,,,,,1063.00,0.00,,1063.00,",
+  "party,referrer,,,,,,0.00,0.00,,0.00,",
+  "currency,UNSPECIFIED,3,,,,31890.00,31890.00,31890.00,0.00,,",
+];
+
+function checkRenderedSettlementReportsSummaryCsv(text: string): void {
+  if (text !== SUMMARY_CSV_EXPECTED_LINES.join("\n")) {
+    throw new Error(
+      "benchmark self-check failed: renderSettlementReportsSummaryCsv",
+    );
+  }
+}
+
+function checkRenderedSettlementReportsSummaryJson(text: string): void {
+  const parsed = JSON.parse(text) as SettlementReportsSummary;
+  if (
+    parsed.total !== 4 ||
+    parsed.reports !== 3 ||
+    parsed.errors !== 1 ||
+    parsed.outcomes.released !== 2 ||
+    parsed.outcomes.refunded !== 1 ||
+    parsed.outcomes.expired !== 0 ||
+    parsed.outcomes["partially-released"] !== 0 ||
+    parsed.totalDeposit !== 31890 ||
+    parsed.totalInflow !== 31890 ||
+    parsed.totalOutflow !== 31890 ||
+    parsed.totalRemaining !== 0 ||
+    parsed.balanced !== true ||
+    parsed.parties.length !== 4 ||
+    parsed.parties[0].party !== "sponsor" ||
+    parsed.parties[0].inflow !== 10630 ||
+    parsed.parties[0].outflow !== 31890 ||
+    parsed.parties[0].net !== -21260 ||
+    parsed.parties[1].party !== "creator" ||
+    parsed.parties[1].inflow !== 20197 ||
+    parsed.parties[1].outflow !== 0 ||
+    parsed.parties[1].net !== 20197 ||
+    parsed.parties[2].party !== "platform" ||
+    parsed.parties[2].inflow !== 1063 ||
+    parsed.parties[2].outflow !== 0 ||
+    parsed.parties[2].net !== 1063 ||
+    parsed.parties[3].party !== "referrer" ||
+    parsed.parties[3].inflow !== 0 ||
+    parsed.parties[3].outflow !== 0 ||
+    parsed.parties[3].net !== 0 ||
+    Object.keys(parsed.byCurrency).join(",") !== "UNSPECIFIED" ||
+    parsed.byCurrency.UNSPECIFIED.reports !== 3 ||
+    parsed.byCurrency.UNSPECIFIED.totalDeposit !== 31890 ||
+    parsed.byCurrency.UNSPECIFIED.totalInflow !== 31890 ||
+    parsed.byCurrency.UNSPECIFIED.totalOutflow !== 31890 ||
+    parsed.byCurrency.UNSPECIFIED.totalRemaining !== 0
+  ) {
+    throw new Error(
+      "benchmark self-check failed: renderSettlementReportsSummaryJson summary equality",
+    );
+  }
+  if (JSON.stringify(parsed) !== text) {
+    throw new Error(
+      "benchmark self-check failed: renderSettlementReportsSummaryJson deep equality",
+    );
+  }
+}
+
+// Pre-checks outside the timed loop: the batch-4 summary renders to
+// both wire forms before any number is reported.
+checkRenderedSettlementReportsSummaryCsv(
+  renderSettlementReportsSummaryCsv(batchSummary),
+);
+checkRenderedSettlementReportsSummaryJson(
+  renderSettlementReportsSummaryJson(batchSummary),
+);
+
+function benchRenderSettlementReportsSummaryCsv(): number {
+  // Per-iteration self-check: the rendered CSV is the hand-pinned
+  // 11-line batch-4 table, byte-identical — a drift in the export
+  // shape breaks the run instead of silently re-timing a changed
+  // export.
+  return measure(() => {
+    checkRenderedSettlementReportsSummaryCsv(
+      renderSettlementReportsSummaryCsv(batchSummary),
+    );
+  }, ITERATIONS);
+}
+
+function benchRenderSettlementReportsSummaryJson(): number {
+  // Per-iteration self-check: the rendered JSON parses back to the
+  // hand-pinned batch-4 figures and stringifies to the export text
+  // itself — a drift in the export shape or in the canonical key
+  // order breaks the run instead of silently re-timing a changed
+  // export.
+  return measure(() => {
+    checkRenderedSettlementReportsSummaryJson(
+      renderSettlementReportsSummaryJson(batchSummary),
+    );
+  }, ITERATIONS);
+}
+
 function benchExpiredEscrows(): number {
   return measure(() => {
     checkWatchdogIds(
@@ -14465,6 +14587,8 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "diffEscrowSnapshots (23-entry history, 2 appended)", ops: benchDiffEscrowSnapshots() },
   { path: "diffSettlementReports (released report, 500 vs 600 bps)", ops: benchDiffSettlementReports() },
   { path: "renderSettlementReportsSummary (batch 4 summary)", ops: benchRenderSettlementReportsSummary() },
+  { path: "renderSettlementReportsSummaryCsv (batch 4 summary)", ops: benchRenderSettlementReportsSummaryCsv() },
+  { path: "renderSettlementReportsSummaryJson (batch 4 summary)", ops: benchRenderSettlementReportsSummaryJson() },
   { path: "diffSettlementReportsSummaries (batch 4 vs top-up batch 2)", ops: benchDiffSettlementReportsSummaries() },
   { path: "parseSettlementReportsSummaryCsv (batch 4 summary, CSV round-trip)", ops: benchParseSettlementReportsSummaryCsv() },
   { path: "parseSettlementReportsSummaryJson (batch 4 summary, JSON round-trip)", ops: benchParseSettlementReportsSummaryJson() },

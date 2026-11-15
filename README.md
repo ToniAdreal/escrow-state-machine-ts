@@ -2010,6 +2010,16 @@ fixed batch-4 summary — 3 reports + 1 error: released 2, refunded
 1, totals 31,890, UNSPECIFIED currency bucket — with the rendered
 text checked byte-for-byte, all 17 lines in order, on every
 iteration),
+batch-summary CSV rendering (`renderSettlementReportsSummaryCsv` over
+the fixed batch-4 summary — 3 reports + 1 error: released 2,
+refunded 1, totals 31,890, UNSPECIFIED currency bucket — with the
+rendered CSV checked byte-for-byte, all 11 lines in order, on every
+iteration),
+batch-summary JSON rendering (`renderSettlementReportsSummaryJson`
+over the same fixed batch-4 summary — with the rendered JSON parsed
+back and checked field for field against the hand-pinned batch-4
+figures and stringified to the export text itself on every
+iteration),
 batch-summary comparison (`diffSettlementReportsSummaries` over a
 fixed pair of summaries — the batch-4 summary against the top-up
 batch-2 summary: total 4 -> 2, reports 3 -> 2, errors 1 -> 0,
@@ -2875,6 +2885,8 @@ One real run on 2026-11-04:
 | diffEscrowSnapshots (23-entry history, 2 appended) | ~2,734 ops/sec (365.73 µs/op) |
 | diffSettlementReports (released report, 500 vs 600 bps) | ~91,197 ops/sec (10.97 µs/op) |
 | renderSettlementReportsSummary (batch 4 summary) | ~108,925 ops/sec (9.18 µs/op) |
+| renderSettlementReportsSummaryCsv (batch 4 summary) | ~81,330 ops/sec (12.30 µs/op) |
+| renderSettlementReportsSummaryJson (batch 4 summary) | ~27,463 ops/sec (36.41 µs/op) |
 | diffSettlementReportsSummaries (batch 4 vs top-up batch 2) | ~208,967 ops/sec (4.79 µs/op) |
 | parseSettlementReportsSummaryCsv (batch 4 summary, CSV round-trip) | ~21,723 ops/sec (46.03 µs/op) |
 | parseSettlementReportsSummaryJson (batch 4 summary, JSON round-trip) | ~44,820 ops/sec (22.31 µs/op) |
@@ -2971,7 +2983,7 @@ and the settlePartialRelease row above were measured on
 escrowsByEvent row above were measured on 2026-11-06 runs; the
 settlePartialReleases row above was measured on a 2026-11-08 run; the
 escrowsByFilters and settlementAging rows above were measured on a
-2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the signed-snapshot rows above were measured on a 2026-11-11 run; the diffSettlementReports row above was measured on a 2026-11-13 run; the renderSettlementReportsSummary and diffSettlementReportsSummaries rows above were measured on a 2026-11-13 run; the unreconciledSettlements row above was measured on a 2026-11-14 run; the stateAt row above was measured on a 2026-11-15 run; the quorum signed-snapshot round-trip row above was measured on a 2026-11-15 run; the calculateDepositCents row above was measured on a 2026-11-15 run; the escrowsBySettlementRef row above was measured on a 2026-11-15 run; the parseSettlementReportsSummaryCsv and parseSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
+2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the signed-snapshot rows above were measured on a 2026-11-11 run; the diffSettlementReports row above was measured on a 2026-11-13 run; the renderSettlementReportsSummary and diffSettlementReportsSummaries rows above were measured on a 2026-11-13 run; the unreconciledSettlements row above was measured on a 2026-11-14 run; the stateAt row above was measured on a 2026-11-15 run; the quorum signed-snapshot round-trip row above was measured on a 2026-11-15 run; the calculateDepositCents row above was measured on a 2026-11-15 run; the escrowsBySettlementRef row above was measured on a 2026-11-15 run; the parseSettlementReportsSummaryCsv and parseSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the renderSettlementReportsSummaryCsv and renderSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
 came in mixed under shared-host load, so refreshing the whole
 table would misreport changes in paths these additions never
 touched.
