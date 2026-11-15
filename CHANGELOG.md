@@ -18,6 +18,22 @@ version changes.
 
 ### Added
 
+- Benchmark rows for `parseSettlementReportsSummaryCsv` /
+  `parseSettlementReportsSummaryJson` (2026-11-15, backlog #1162):
+  one measured op each renders the fixed batch-4 summary (3 reports
+  + 1 error: released 2, refunded 1, totals 31,890, single
+  UNSPECIFIED bucket) to CSV / JSON and parses it back, checking the
+  round-tripped summary field for field against the hand-pinned
+  batch-4 figures and re-rendering it byte-identically on every
+  iteration (the JSON row additionally pins `JSON.stringify(parsed)`
+  against the export text); a summary-row totalDeposit 1 higher than
+  the currency buckets' sum and a JSON copy with `parties` removed
+  are pinned once, outside the timed loop, to throw their exact
+  import errors, and two parses of the same text are pinned to yield
+  independent object graphs. Measured ~21,723 ops/sec (46.03
+  µs/op) for the CSV round-trip and ~44,820 ops/sec (22.31 µs/op)
+  for the JSON round-trip on a 2026-11-15 run.
+
 - Benchmark row for `calculateDepositCents` (2026-11-15, backlog
   #1156): one measured op runs the fixed 3-shape corpus (the golden
   vector in cents, a complexity-1.5 case, and a large-pool case)

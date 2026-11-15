@@ -2021,6 +2021,23 @@ partiesChanged and byCurrencyChanged, with totalRemaining and
 balanced absent), the moved figures, and the three moved party
 ledgers checked on every iteration, and an identical pair reporting
 {} pinned once outside the timed loop),
+batch-summary CSV parsing (`parseSettlementReportsSummaryCsv` over
+the fixed batch-4 summary — 3 reports + 1 error: released 2,
+refunded 1, totals 31,890, UNSPECIFIED currency bucket — with one
+measured op rendering the summary to CSV and parsing it back, the
+round-tripped summary checked field for field against the
+hand-pinned batch-4 figures and re-rendered byte-identically on
+every iteration, and a summary-row totalDeposit 1 higher than the
+currency buckets' sum pinned once outside the timed loop to throw
+the exact import error),
+batch-summary JSON parsing (`parseSettlementReportsSummaryJson` over
+the same fixed batch-4 summary — with one measured op rendering the
+summary to JSON and parsing it back, the round-tripped summary
+checked field for field against the hand-pinned batch-4 figures,
+re-rendered byte-identically, and stringified to the export text
+itself on every iteration, and a copy with the `parties` field
+removed pinned once outside the timed loop to throw the exact
+import error),
 `buildSettlementReport`,
 settlement report release path (`buildSettlementReport` over the
 fixed released history — outcome `released` and `releasePath`
@@ -2859,6 +2876,8 @@ One real run on 2026-11-04:
 | diffSettlementReports (released report, 500 vs 600 bps) | ~91,197 ops/sec (10.97 µs/op) |
 | renderSettlementReportsSummary (batch 4 summary) | ~108,925 ops/sec (9.18 µs/op) |
 | diffSettlementReportsSummaries (batch 4 vs top-up batch 2) | ~208,967 ops/sec (4.79 µs/op) |
+| parseSettlementReportsSummaryCsv (batch 4 summary, CSV round-trip) | ~21,723 ops/sec (46.03 µs/op) |
+| parseSettlementReportsSummaryJson (batch 4 summary, JSON round-trip) | ~44,820 ops/sec (22.31 µs/op) |
 | buildSettlementWebhooks (batch 4 results) | ~6,353 ops/sec (157.41 µs/op) |
 | buildSettlementReports x buildSettlementWebhooks x deliverSettlementWebhookToMany (batch 4, 3 settlements x 4 endpoints) | ~898.6 ops/sec (1112.82 µs/op) |
 | buildSettlementWebhook (sign) | ~32,649 ops/sec (30.63 µs/op) |
@@ -2952,7 +2971,7 @@ and the settlePartialRelease row above were measured on
 escrowsByEvent row above were measured on 2026-11-06 runs; the
 settlePartialReleases row above was measured on a 2026-11-08 run; the
 escrowsByFilters and settlementAging rows above were measured on a
-2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the signed-snapshot rows above were measured on a 2026-11-11 run; the diffSettlementReports row above was measured on a 2026-11-13 run; the renderSettlementReportsSummary and diffSettlementReportsSummaries rows above were measured on a 2026-11-13 run; the unreconciledSettlements row above was measured on a 2026-11-14 run; the stateAt row above was measured on a 2026-11-15 run; the quorum signed-snapshot round-trip row above was measured on a 2026-11-15 run; the calculateDepositCents row above was measured on a 2026-11-15 run; the escrowsBySettlementRef row above was measured on a 2026-11-15 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
+2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the signed-snapshot rows above were measured on a 2026-11-11 run; the diffSettlementReports row above was measured on a 2026-11-13 run; the renderSettlementReportsSummary and diffSettlementReportsSummaries rows above were measured on a 2026-11-13 run; the unreconciledSettlements row above was measured on a 2026-11-14 run; the stateAt row above was measured on a 2026-11-15 run; the quorum signed-snapshot round-trip row above was measured on a 2026-11-15 run; the calculateDepositCents row above was measured on a 2026-11-15 run; the escrowsBySettlementRef row above was measured on a 2026-11-15 run; the parseSettlementReportsSummaryCsv and parseSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
 came in mixed under shared-host load, so refreshing the whole
 table would misreport changes in paths these additions never
 touched.

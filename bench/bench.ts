@@ -1710,11 +1710,15 @@ import {
   parseRetryAfter,
   parseSettlementReportCsv,
   parseSettlementReportJson,
+  parseSettlementReportsSummaryCsv,
+  parseSettlementReportsSummaryJson,
   reconcileSettlements,
   renderReport,
   renderReportCsv,
   renderReportJson,
   renderSettlementReportsSummary,
+  renderSettlementReportsSummaryCsv,
+  renderSettlementReportsSummaryJson,
   restoreQuorum,
   restoreSignedQuorumSnapshot,
   settleRelease,
@@ -1750,6 +1754,7 @@ import {
   type SettlementAgingResult,
   type SettlementEventDedupeSignedSnapshotEnvelope,
   type SettlementReportCsv,
+  type SettlementReportsSummary,
   type SettlementReportInputs,
   type SettlementWebhookEndpoint,
   type SettlementWebhookOutboxSignedSnapshotEnvelope,
@@ -12914,6 +12919,207 @@ function benchDiffSettlementReportsSummaries(): number {
   }, ITERATIONS);
 }
 
+// ---------------------------------------------------------------------
+// parseSettlementReportsSummaryCsv / parseSettlementReportsSummaryJson
+// fixtures: the CSV and JSON of the module-scope batch-4 `batchSummary`
+// above (3 reports + 1 error: released 2, refunded 1, totals 31,890,
+// single UNSPECIFIED bucket) — the same summary the #1102 text-render
+// row re-renders, so the bench CSV/JSON rows and the render row can
+// never drift apart in figures. Both parsers are pure (they only read
+// the text and return a fresh object graph), and the renderers are
+// pure too, so each measured op is a full render → parse round-trip
+// over the same summary. The check below compares the parsed summary
+// field for field against the hand-derived batch-4 figures (the same
+// figures `checkBatchSummary` pins: totals, outcome counts, the four
+// party ledgers, the UNSPECIFIED bucket) and re-renders it
+// byte-identically through the matching renderer: the CSV carries
+// every field, so equality against the full summary is the check
+// here — the JSON row additionally pins `JSON.stringify(parsed)`
+// against the export text itself, exact deep equality, because the
+// parsed key order is the export's canonical order (see the
+// single-report `parseSettlementReportJson` row for the same
+// argument). A drift in either import shape or in the shared
+// self-consistency check breaks the run instead of silently
+// re-timing a changed import.
+// ---------------------------------------------------------------------
+const SUMMARY_CSV: string = renderSettlementReportsSummaryCsv(batchSummary);
+const SUMMARY_JSON: string =
+  renderSettlementReportsSummaryJson(batchSummary);
+
+function checkParsedSettlementReportsSummary(
+  parsed: SettlementReportsSummary,
+  text: string,
+  render: (summary: SettlementReportsSummary) => string,
+  label: string,
+): void {
+  if (
+    parsed.total !== 4 ||
+    parsed.reports !== 3 ||
+    parsed.errors !== 1 ||
+    parsed.outcomes.released !== 2 ||
+    parsed.outcomes.refunded !== 1 ||
+    parsed.outcomes.expired !== 0 ||
+    parsed.outcomes["partially-released"] !== 0 ||
+    parsed.totalDeposit !== 31890 ||
+    parsed.totalInflow !== 31890 ||
+    parsed.totalOutflow !== 31890 ||
+    parsed.totalRemaining !== 0 ||
+    parsed.balanced !== true ||
+    parsed.parties.length !== 4 ||
+    parsed.parties[0].party !== "sponsor" ||
+    parsed.parties[0].inflow !== 10630 ||
+    parsed.parties[0].outflow !== 31890 ||
+    parsed.parties[0].net !== -21260 ||
+    parsed.parties[1].party !== "creator" ||
+    parsed.parties[1].inflow !== 20197 ||
+    parsed.parties[1].outflow !== 0 ||
+    parsed.parties[1].net !== 20197 ||
+    parsed.parties[2].party !== "platform" ||
+    parsed.parties[2].inflow !== 1063 ||
+    parsed.parties[2].outflow !== 0 ||
+    parsed.parties[2].net !== 1063 ||
+    parsed.parties[3].party !== "referrer" ||
+    parsed.parties[3].inflow !== 0 ||
+    parsed.parties[3].outflow !== 0 ||
+    parsed.parties[3].net !== 0 ||
+    Object.keys(parsed.byCurrency).join(",") !== "UNSPECIFIED" ||
+    parsed.byCurrency.UNSPECIFIED.reports !== 3 ||
+    parsed.byCurrency.UNSPECIFIED.totalDeposit !== 31890 ||
+    parsed.byCurrency.UNSPECIFIED.totalInflow !== 31890 ||
+    parsed.byCurrency.UNSPECIFIED.totalOutflow !== 31890 ||
+    parsed.byCurrency.UNSPECIFIED.totalRemaining !== 0
+  ) {
+    throw new Error(
+      `benchmark self-check failed: ${label} summary equality`,
+    );
+  }
+  if (render(parsed) !== text) {
+    throw new Error(`benchmark self-check failed: ${label} re-render`);
+  }
+}
+
+function checkParsedSettlementReportsSummaryJson(
+  parsed: SettlementReportsSummary,
+): void {
+  checkParsedSettlementReportsSummary(
+    parsed,
+    SUMMARY_JSON,
+    renderSettlementReportsSummaryJson,
+    "parseSettlementReportsSummaryJson",
+  );
+  if (JSON.stringify(parsed) !== SUMMARY_JSON) {
+    throw new Error(
+      "benchmark self-check failed: parseSettlementReportsSummaryJson deep equality",
+    );
+  }
+}
+
+// Pre-checks outside the timed loop: the batch-4 summary round-trips
+// through both wire forms before any number is reported.
+checkParsedSettlementReportsSummary(
+  parseSettlementReportsSummaryCsv(SUMMARY_CSV),
+  SUMMARY_CSV,
+  renderSettlementReportsSummaryCsv,
+  "parseSettlementReportsSummaryCsv",
+);
+checkParsedSettlementReportsSummaryJson(
+  parseSettlementReportsSummaryJson(SUMMARY_JSON),
+);
+
+// Outside the timed loop: the import fail-fast probes and the
+// fresh-object-graph probes. A copy whose summary-row totalDeposit is
+// 1 higher than the currency buckets' sum must be rejected with the
+// exact import error (a summary row that disagrees with its own
+// buckets never becomes a plausible-looking summary), a JSON copy
+// with the `parties` field removed must be rejected with the exact
+// import error, and two parses of the same text must yield
+// independent graphs (mutating one leaves a fresh parse untouched) —
+// the imports promise a fresh object graph, not a shared cache.
+{
+  const damagedCsv = SUMMARY_CSV.replace(
+    "31890.00,31890.00,31890.00,0.00",
+    "31891.00,31890.00,31890.00,0.00",
+  );
+  let damagedCsvError = "";
+  try {
+    parseSettlementReportsSummaryCsv(damagedCsv);
+  } catch (err) {
+    damagedCsvError = err instanceof Error ? err.message : String(err);
+  }
+  if (
+    damagedCsvError !==
+    "cannot parse settlement reports summary CSV: currency buckets sum to totalDeposit 31890 but totalDeposit is 31891"
+  ) {
+    throw new Error(
+      "benchmark fixture failed: parseSettlementReportsSummaryCsv damaged-input gate",
+    );
+  }
+  const damagedJsonParsed = JSON.parse(SUMMARY_JSON) as Record<
+    string,
+    unknown
+  >;
+  delete damagedJsonParsed.parties;
+  let damagedJsonError = "";
+  try {
+    parseSettlementReportsSummaryJson(JSON.stringify(damagedJsonParsed));
+  } catch (err) {
+    damagedJsonError = err instanceof Error ? err.message : String(err);
+  }
+  if (
+    damagedJsonError !==
+    'cannot parse settlement reports summary JSON: missing field "parties"'
+  ) {
+    throw new Error(
+      "benchmark fixture failed: parseSettlementReportsSummaryJson damaged-input gate",
+    );
+  }
+  const firstCsvParse = parseSettlementReportsSummaryCsv(SUMMARY_CSV);
+  firstCsvParse.parties[0].inflow = -1;
+  checkParsedSettlementReportsSummary(
+    parseSettlementReportsSummaryCsv(SUMMARY_CSV),
+    SUMMARY_CSV,
+    renderSettlementReportsSummaryCsv,
+    "parseSettlementReportsSummaryCsv",
+  );
+  const firstJsonParse = parseSettlementReportsSummaryJson(SUMMARY_JSON);
+  firstJsonParse.parties[0].inflow = -1;
+  checkParsedSettlementReportsSummaryJson(
+    parseSettlementReportsSummaryJson(SUMMARY_JSON),
+  );
+}
+
+function benchParseSettlementReportsSummaryCsv(): number {
+  // Per-iteration self-check: the round-tripped summary equals the
+  // hand-pinned batch-4 figures and re-renders byte-identically — a
+  // drift in the import shape or in the TOTAL self-consistency check
+  // breaks the run instead of silently re-timing a changed import.
+  return measure(() => {
+    checkParsedSettlementReportsSummary(
+      parseSettlementReportsSummaryCsv(
+        renderSettlementReportsSummaryCsv(batchSummary),
+      ),
+      SUMMARY_CSV,
+      renderSettlementReportsSummaryCsv,
+      "parseSettlementReportsSummaryCsv",
+    );
+  }, ITERATIONS);
+}
+
+function benchParseSettlementReportsSummaryJson(): number {
+  // Per-iteration self-check: the round-tripped summary equals the
+  // hand-pinned batch-4 figures, re-renders byte-identically, and
+  // stringifies to the export text itself — a drift in the import
+  // shape or in the shared self-consistency check breaks the run
+  // instead of silently re-timing a changed import.
+  return measure(() => {
+    checkParsedSettlementReportsSummaryJson(
+      parseSettlementReportsSummaryJson(
+        renderSettlementReportsSummaryJson(batchSummary),
+      ),
+    );
+  }, ITERATIONS);
+}
+
 function benchExpiredEscrows(): number {
   return measure(() => {
     checkWatchdogIds(
@@ -14260,6 +14466,8 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "diffSettlementReports (released report, 500 vs 600 bps)", ops: benchDiffSettlementReports() },
   { path: "renderSettlementReportsSummary (batch 4 summary)", ops: benchRenderSettlementReportsSummary() },
   { path: "diffSettlementReportsSummaries (batch 4 vs top-up batch 2)", ops: benchDiffSettlementReportsSummaries() },
+  { path: "parseSettlementReportsSummaryCsv (batch 4 summary, CSV round-trip)", ops: benchParseSettlementReportsSummaryCsv() },
+  { path: "parseSettlementReportsSummaryJson (batch 4 summary, JSON round-trip)", ops: benchParseSettlementReportsSummaryJson() },
   { path: "buildSettlementWebhooks (batch 4 results)", ops: benchBuildSettlementWebhooks() },
   { path: "buildSettlementReports x buildSettlementWebhooks x deliverSettlementWebhookToMany (batch 4, 3 settlements x 4 endpoints)", ops: await benchBuildSettlementReportsWebhookFanout() },
   { path: "buildSettlementWebhook (sign)", ops: benchBuildSettlementWebhook() },
