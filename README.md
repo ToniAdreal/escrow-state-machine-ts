@@ -2758,6 +2758,15 @@ iteration. Outside the timed loop, the backlog's literal combo is
 pinned to its honest answer: { state: "FUNDED", actor: "bob",
 event: "DISPUTE" } returns [], because a DISPUTE always moves an
 escrow out of FUNDED, so that slice is empty by construction.
+The new `escrowsBySettlementRef` row measures the #1159 addition
+as a cost path: one measured op screens the same fixed batch of 60
+escrows for the shared settlementRef — the reconciliation screen's
+"which escrows did this bank transfer settle" — and pins the
+hand-counted hit list of 6 ids (all of the RELEASED group, whose
+RELEASE entries all carry the shared ref, in batch order) on every
+iteration. Outside the timed loop, a missing ref returning [], the
+case-sensitive miss (lowercase ref matches nothing), and the
+empty-ref fail-fast are pinned.
 The new `settlementAging` row measures the #992 combination as a
 cost path: one measured op buckets one fixed mixed batch of 10
 escrows at the fixed 2026-03-09T09:00:00.000Z now (the same `now`
@@ -2929,6 +2938,7 @@ One real run on 2026-11-04:
 | escrowsByActor (batch 60 escrows, 39 alice) | ~9,706 ops/sec (103.02 µs/op) |
 | escrowsByEvent (batch 60 escrows, 6 DISPUTE) | ~7,971 ops/sec (125.45 µs/op) |
 | escrowsByFilters (batch 60 escrows, 6 DISPUTED+carol+DISPUTE) | ~50,789 ops/sec (19.69 µs/op) |
+| escrowsBySettlementRef (batch 60 escrows, 6 shared ref) | ~26,058 ops/sec (38.38 µs/op) |
 | settlementAging (batch 10 escrows, 3/3/2/2 buckets) | ~148,075 ops/sec (6.75 µs/op) |
 | escrowsApproachingDeadline (batch 14 escrows, 6 approaching) | ~315,088 ops/sec (3.17 µs/op) |
 | nextEscrowDeadline (batch 10 escrows, earliest 2026-06-03) | ~316,600 ops/sec (3.16 µs/op) |
@@ -2942,7 +2952,7 @@ and the settlePartialRelease row above were measured on
 escrowsByEvent row above were measured on 2026-11-06 runs; the
 settlePartialReleases row above was measured on a 2026-11-08 run; the
 escrowsByFilters and settlementAging rows above were measured on a
-2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the signed-snapshot rows above were measured on a 2026-11-11 run; the diffSettlementReports row above was measured on a 2026-11-13 run; the renderSettlementReportsSummary and diffSettlementReportsSummaries rows above were measured on a 2026-11-13 run; the unreconciledSettlements row above was measured on a 2026-11-14 run; the stateAt row above was measured on a 2026-11-15 run; the quorum signed-snapshot round-trip row above was measured on a 2026-11-15 run; the calculateDepositCents row above was measured on a 2026-11-15 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
+2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the signed-snapshot rows above were measured on a 2026-11-11 run; the diffSettlementReports row above was measured on a 2026-11-13 run; the renderSettlementReportsSummary and diffSettlementReportsSummaries rows above were measured on a 2026-11-13 run; the unreconciledSettlements row above was measured on a 2026-11-14 run; the stateAt row above was measured on a 2026-11-15 run; the quorum signed-snapshot round-trip row above was measured on a 2026-11-15 run; the calculateDepositCents row above was measured on a 2026-11-15 run; the escrowsBySettlementRef row above was measured on a 2026-11-15 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
 came in mixed under shared-host load, so refreshing the whole
 table would misreport changes in paths these additions never
 touched.

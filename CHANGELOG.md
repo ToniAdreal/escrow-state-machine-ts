@@ -29,6 +29,17 @@ version changes.
   and the zero-fee boundary are pinned once, outside the timed
   loop. Measured ~240,571 ops/sec (4.16 µs/op) on a 2026-11-15 run.
 
+- Benchmark row for `escrowsBySettlementRef` (2026-11-15, backlog
+  #1159): one measured op screens the fixed mixed batch of 60
+  escrows for the shared settlementRef and checks the hand-counted
+  6-id hit list (all of the RELEASED group, in batch order) on
+  every iteration; the batch's RELEASED escrows now carry the
+  shared ref on their RELEASE entries, so the batch-filter fixture
+  also exercises the "one payout batch settles several escrows"
+  shape. A missing ref returning [], the case-sensitive miss, and
+  the empty-ref fail-fast are pinned once, outside the timed loop.
+  Measured ~26,058 ops/sec (38.38 µs/op) on a 2026-11-15 run.
+
 - Benchmark row for the settlement webhook outbox `redrive` + redelivery
   (2026-11-15, backlog #1153): one measured op drives the settled
   report's own signed webhook event to the dead letter (3 failures at

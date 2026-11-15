@@ -1396,20 +1396,28 @@
  *      the exact divergence error are pinned once, outside the
  *      timed loop. Pure comparison, no dispatch, no network.
  *  78. batch filters — `escrowsByState(batch, state)`,
- *      `escrowsByActor(batch, actor)`, and `escrowsByEvent(batch,
- *      event)` over one fixed mixed batch of 60 escrows
+ *      `escrowsByActor(batch, actor)`, `escrowsByEvent(batch,
+ *      event)`, and `escrowsBySettlementRef(batch, ref)` over one
+ *      fixed mixed batch of 60 escrows
  *      (composition hand-counted in the fixture comment below: 22
  *      FUNDED, 39 ever touched by alice, 6 ever disputed, 55 ever
  *      funded, 5 ever expired, plus multi-entry histories and
  *      actor-less entries). The #843 / #927 helpers previously had
  *      unit tests only, so listing a portfolio by state, by
  *      operator, or by event — the batch reconciliation screen —
- *      had no throughput baseline. All three filters are pure, so
+ *      had no throughput baseline. All four slices are pure, so
  *      the same batch is re-screened on every iteration and each
  *      result is checked against the hand-counted expected id list
  *      (in batch order) on every iteration; the fail-fast shapes
  *      (unknown state, empty or non-string actor, unknown event)
- *      are pinned once, outside the timed loop.
+ *      are pinned once, outside the timed loop. The
+ *      settlement-reference slice reuses the same batch: the 6
+ *      RELEASED escrows share one fixed settlementRef, so
+ *      `escrowsBySettlementRef(batch, ref)` — the reconciliation
+ *      screen's "which escrows did this bank transfer settle" —
+ *      pins its hand-counted 6-id hit list on every iteration; a
+ *      missing ref returning [], the case-sensitive miss, and the
+ *      empty-ref fail-fast are pinned once, outside the timed loop.
  *  79. deadline warning — `escrowsApproachingDeadline(batch, withinMs,
  *      now)` over one fixed mixed batch of 14 escrows (deadlines
  *      in-window, exactly at the inclusive upper edge, 1 ms past it,
@@ -1689,6 +1697,7 @@ import {
   escrowsByActor,
   escrowsByEvent,
   escrowsByFilters,
+  escrowsBySettlementRef,
   escrowsByState,
   expiredEscrows,
   expireOverdueEscrows,
@@ -7103,7 +7112,10 @@ checkWatchdogIds(
 //   D x8   VERIFIED, FUND by bob + SUBMIT_MILESTONE by alice +
 //          VERIFY_PASS by carol
 //   E x6   RELEASED, FUND by alice + SUBMIT_MILESTONE by bob +
-//          VERIFY_PASS by carol + RELEASE by alice (alice twice)
+//          VERIFY_PASS by carol + RELEASE by alice (alice twice),
+//          the RELEASE entry carrying the shared settlementRef
+//          FILTER_SETTLEMENT_REF (one payout batch, one bank
+//          transfer settling six escrows)
 //   F x6   DISPUTED, FUND by bob + DISPUTE by carol
 //   G x5   CREATED, no history at all
 //   H x5   EXPIRED, FUND by alice + EXPIRE with no actor
@@ -7122,6 +7134,11 @@ checkWatchdogIds(
 //   escrowsByEvent(batch, "EXPIRE") -> 5 ids: all of H (5), batch
 //     order (the actor-less EXPIRE entry still counts: the event
 //     lens reads entries, not actors)
+//   escrowsBySettlementRef(batch, FILTER_SETTLEMENT_REF) -> 6 ids:
+//     all of E (6), batch order (only E ever carries a RELEASE
+//     entry, and every E RELEASE carries the shared ref; a
+//     RELEASED escrow without a ref would never match)
+const FILTER_SETTLEMENT_REF = "BENCH-SETTLEMENT-REF";
 let filterClock = 0;
 const filterAt = (): string => isoAt(BASE_MS + filterClock++ * 1000);
 function filterFunded(
@@ -7182,6 +7199,7 @@ function buildFilterBatch(): Escrow[] {
       escrow.dispatch("RELEASE", undefined, undefined, {
         actor: "alice",
         at: filterAt(),
+        settlementRef: FILTER_SETTLEMENT_REF,
       });
       return escrow;
     }),
@@ -7227,6 +7245,7 @@ const FILTER_FUND_IDS: string[] = [
   ...filterIds("H", 5),
 ];
 const FILTER_EXPIRE_IDS: string[] = [...filterIds("H", 5)];
+const FILTER_SETTLEMENT_REF_IDS: string[] = [...filterIds("E", 6)];
 function checkFilterIds(
   found: Escrow[],
   expected: string[],
@@ -7276,6 +7295,26 @@ checkFilterIds(
   escrowsByEvent(filterBatch, "EXPIRE"),
   FILTER_EXPIRE_IDS,
   "escrowsByEvent EXPIRE",
+);
+checkFilterIds(
+  escrowsBySettlementRef(filterBatch, FILTER_SETTLEMENT_REF),
+  FILTER_SETTLEMENT_REF_IDS,
+  "escrowsBySettlementRef",
+);
+checkFilterIds(
+  escrowsBySettlementRef(filterBatch, "BENCH-NO-SUCH-REF"),
+  [],
+  "escrowsBySettlementRef missing ref",
+);
+checkFilterIds(
+  escrowsBySettlementRef(filterBatch, "bench-settlement-ref"),
+  [],
+  "escrowsBySettlementRef case-sensitive",
+);
+checkFilterThrows(
+  () => escrowsBySettlementRef(filterBatch, ""),
+  /invalid escrowsBySettlementRef: settlementRef must be a non-empty string, got ""/,
+  "escrowsBySettlementRef empty ref",
 );
 checkFilterThrows(
   () => escrowsByState(filterBatch, "FUNDEDD" as never),
@@ -12939,6 +12978,16 @@ function benchEscrowsByFilters(): number {
   }, ITERATIONS);
 }
 
+function benchEscrowsBySettlementRef(): number {
+  return measure(() => {
+    checkFilterIds(
+      escrowsBySettlementRef(filterBatch, FILTER_SETTLEMENT_REF),
+      FILTER_SETTLEMENT_REF_IDS,
+      "escrowsBySettlementRef",
+    );
+  }, ITERATIONS);
+}
+
 function benchSettlementAging(): number {
   return measure(() => {
     checkAgingResult(
@@ -14290,6 +14339,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "escrowsByActor (batch 60 escrows, 39 alice)", ops: benchEscrowsByActor() },
   { path: "escrowsByEvent (batch 60 escrows, 6 DISPUTE)", ops: benchEscrowsByEvent() },
   { path: "escrowsByFilters (batch 60 escrows, 6 DISPUTED+carol+DISPUTE)", ops: benchEscrowsByFilters() },
+  { path: "escrowsBySettlementRef (batch 60 escrows, 6 shared ref)", ops: benchEscrowsBySettlementRef() },
   { path: "settlementAging (batch 10 escrows, 3/3/2/2 buckets)", ops: benchSettlementAging() },
   { path: "unreconciledSettlements (batch 10 escrows, 3 unreconciled)", ops: benchUnreconciledSettlements() },
   { path: "stateAt (64-entry history, mid-history query)", ops: benchStateAt() },
