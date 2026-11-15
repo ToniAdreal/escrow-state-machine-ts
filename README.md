@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2159 tests, all local
+npm test   # 2162 tests, all local
 ```
 
 ## Quickstart
@@ -80,7 +80,14 @@ snapshotted, round-tripped through JSON, and restored with
 path), a below-threshold `dispatchArbitration`
 attempt is refused with the escrow untouched — and the reached quorum
 refunding the sponsor in full to `REFUNDED` with its refund settlement
-report. The demo closes with the day-end batch pipeline over all three
+report. Right after the refund, the demo seals a fresh 2-of-3 quorum at
+threshold into an HMAC-signed snapshot envelope with
+`exportSignedQuorumSnapshot`: a detached copy with exactly one byte
+changed inside the snapshot is refused at restore with the pinned
+MAC-mismatch error, the untampered envelope restores at the identical
+2-of-2 count, and an envelope sealed with a past `expiresAt` and a
+restore under the wrong secret are each refused with their pinned
+errors — the tamper-evident restart. The demo closes with the day-end batch pipeline over all three
 escrows (a third escrow is left `FUNDED`): `buildSettlementReports`
 builds one report per escrow with per-item error isolation — the
 still-`FUNDED` escrow lands as `{escrowId, error}` in the middle of
@@ -1891,7 +1898,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2159 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2162 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

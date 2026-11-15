@@ -18,6 +18,23 @@ version changes.
 
 ### Added
 
+- Demo segment for HMAC-signed quorum snapshots (2026-11-14, backlog
+  #1147): right after the dispute refund, a fresh 2-of-3 quorum at
+  threshold is sealed with `exportSignedQuorumSnapshot` under a fixed
+  demo secret, and the demo shows a detached copy with exactly one byte
+  changed inside the snapshot (the final digit of the first approval's
+  timestamp, `.000Z` -> `.001Z`) refused at restore with the pinned
+  `Quorum: signed snapshot MAC mismatch: the snapshot was tampered with
+  or the secret is wrong` error, the untampered envelope restoring
+  through a JSON round-trip at the identical 2-of-2 count with
+  identical approvals, an envelope sealed with a past `expiresAt`
+  refused once the injected restore clock passes it, and a restore
+  under the wrong secret failing exactly like tampering. Only the
+  envelope's version and the first 16 hex chars of its MAC are printed
+  — never the secret, never the full MAC — and the segment runs on
+  fixed fixtures with zero network, zero randomness, and no wall clock.
+  3 tests in `test/demo.test.ts`.
+
 - Opt-in refund-reference gate `EscrowOptions.requireRefundRef`
   (2026-11-14, backlog #1142): `new Escrow(id, { requireRefundRef: true })`
   makes `dispatch("ARBITRATE_REFUND")` without a `refundRef` throw

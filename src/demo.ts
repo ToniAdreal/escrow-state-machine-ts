@@ -39,7 +39,16 @@
  * path), with one below-threshold arbitration attempt refused
  * without touching the escrow — and the reached quorum refunds the
  * sponsor in full (REFUNDED), closing with
- * that escrow's refund settlement report. The demo closes with the
+ * that escrow's refund settlement report. Right after the refund, a
+ * fresh 2-of-3 quorum at threshold is sealed into an HMAC-signed
+ * snapshot envelope with `exportSignedQuorumSnapshot`: a detached
+ * copy with exactly one byte changed inside the snapshot is refused
+ * at restore with the pinned MAC-mismatch error, the untampered
+ * envelope restores at the identical 2-of-2 count, and an envelope
+ * sealed with a past `expiresAt` and a restore under the wrong
+ * secret are each refused with their pinned errors — the
+ * tamper-evident restart, all sides asserted outside the printing
+ * against hand-pinned expectations. The demo closes with the
  * day-end batch pipeline over all three escrows: `buildSettlementReports`
  * builds one report per escrow with per-item error isolation (the
  * third escrow is still FUNDED, so it lands as `{escrowId, error}`
@@ -462,6 +471,7 @@ import {
   dispatchArbitration,
   expiredEscrows,
   expireOverdueEscrows,
+  exportSignedQuorumSnapshot,
   escrowsApproachingDeadline,
   escrowsByActor,
   escrowsByEvent,
@@ -485,6 +495,7 @@ import {
   renderReportCsv,
   renderReportJson,
   restoreQuorum,
+  restoreSignedQuorumSnapshot,
   settlePartialRelease,
   settlePartialReleases,
   settleRefund,
@@ -514,6 +525,7 @@ import {
   type PartialSettlement,
   type Quorum,
   type QuorumConfig,
+  type QuorumSignedSnapshotEnvelope,
   type QuorumSnapshot,
   type ReconcileSettlementsResult,
   type RefundSettlement,
@@ -643,6 +655,36 @@ export const DEMO_QUORUM_APPROVAL_ATS = [
 /** Fixed `at` for the below-threshold attempt and the refund dispatch. */
 export const DEMO_ARBITRATION_ATTEMPT_AT = "2026-03-07T12:30:00.000Z";
 export const DEMO_ARBITRATION_AT = "2026-03-07T13:30:00.000Z";
+
+/**
+ * Fixed secret for the signed quorum snapshot segment (backlog #1147):
+ * the HMAC key the demo's signed envelope is sealed under. A demo-only
+ * secret printed in this file — not a real credential — and never
+ * written into the envelope itself.
+ */
+export const DEMO_QUORUM_SIGNED_SECRET = "demo-quorum-signing-secret";
+/** A different secret, used to show a wrong-key restore failing. */
+export const DEMO_QUORUM_SIGNED_WRONG_SECRET =
+  "demo-quorum-signing-secret-wrong";
+/**
+ * Fixed expiry for the segment's expired envelope: the envelope is
+ * sealed with this `expiresAt` and restored at
+ * {@link DEMO_QUORUM_SIGNED_EXPIRED_NOW_MS}, one hour past it.
+ */
+export const DEMO_QUORUM_SIGNED_EXPIRES_AT = "2026-03-07T14:00:00.000Z";
+export const DEMO_QUORUM_SIGNED_EXPIRED_NOW_MS = Date.parse(
+  "2026-03-07T15:00:00.000Z",
+);
+/**
+ * Error message of restoring a signed quorum envelope whose snapshot
+ * was rewritten or whose secret is wrong: the MAC no longer matches,
+ * so the restore fails before any snapshot parsing.
+ */
+export const DEMO_QUORUM_SIGNED_MAC_MISMATCH_ERROR =
+  "Quorum: signed snapshot MAC mismatch: the snapshot was tampered with or the secret is wrong";
+/** Error message of restoring the segment's expired envelope. */
+export const DEMO_QUORUM_SIGNED_EXPIRED_ERROR =
+  `Quorum: signed snapshot envelope expired at ${DEMO_QUORUM_SIGNED_EXPIRES_AT}`;
 
 /**
  * Third escrow for the closing batch section: funded with the same
@@ -2707,6 +2749,50 @@ export interface DemoResult {
    * part of the demo, and its refusal left the escrow untouched.
    */
   arbitrationRejection: string;
+  /**
+   * The HMAC-signed envelope of the signed-quorum-snapshot segment's
+   * quorum (2 approvals, at threshold): `{ v: 1, snapshot, mac }`
+   * sealed with {@link DEMO_QUORUM_SIGNED_SECRET} — the envelope a
+   * restart restores from, instead of the unsigned snapshot above.
+   */
+  quorumSignedEnvelope: QuorumSignedSnapshotEnvelope;
+  /**
+   * Error message of restoring a detached copy of
+   * {@link DemoResult.quorumSignedEnvelope} with exactly one byte
+   * changed inside the snapshot (the final digit of the first
+   * approval's timestamp, `.000Z` -> `.001Z`): exactly
+   * {@link DEMO_QUORUM_SIGNED_MAC_MISMATCH_ERROR} — the rewritten
+   * approval fails the MAC before any snapshot parsing.
+   */
+  quorumSignedTamperError: string;
+  /**
+   * Counting state of the quorum restored from the untampered
+   * {@link DemoResult.quorumSignedEnvelope} via a JSON round-trip +
+   * `restoreSignedQuorumSnapshot`: 2 approvals, at threshold —
+   * identical to the quorum the envelope was sealed from.
+   */
+  quorumSignedRestoredApprovalCount: number;
+  quorumSignedRestoredHasQuorum: boolean;
+  /**
+   * Signer ids of the quorum restored from the untampered envelope,
+   * in record order: `[arb-1, arb-2]`, identical to the sealed
+   * snapshot's approvals.
+   */
+  quorumSignedRestoredApprovals: string[];
+  /**
+   * Error message of restoring the segment's expired envelope (sealed
+   * with `expiresAt` {@link DEMO_QUORUM_SIGNED_EXPIRES_AT}, restored
+   * at {@link DEMO_QUORUM_SIGNED_EXPIRED_NOW_MS}): exactly
+   * {@link DEMO_QUORUM_SIGNED_EXPIRED_ERROR}.
+   */
+  quorumSignedExpiredError: string;
+  /**
+   * Error message of restoring the untampered envelope under
+   * {@link DEMO_QUORUM_SIGNED_WRONG_SECRET}: exactly
+   * {@link DEMO_QUORUM_SIGNED_MAC_MISMATCH_ERROR} — a wrong key
+   * reads exactly like tampering, and no quorum is produced.
+   */
+  quorumSignedWrongSecretError: string;
   /** Third escrow, left FUNDED so the batch section has a failing item. */
   pendingEscrow: Escrow;
   /** Per-item batch results, in batch order (released, error, refunded). */
@@ -5080,6 +5166,156 @@ export async function runDemo(): Promise<DemoResult> {
   }
   lines.push("", "Settlement report (dispute refund):");
   lines.push(renderReport(disputeReport));
+
+  // --- Signed quorum snapshot: HMAC envelope (tamper-evident restart) ---
+  // The dispute branch above restarts the quorum through its UNSIGNED
+  // snapshot — trusted configuration, fine inside one process. A
+  // snapshot that crosses an untrusted boundary (a persisted file a
+  // restart reads back) needs the HMAC envelope instead: a rewritten
+  // approval, a flipped `verified` flag, or an invented vote must
+  // fail at restore, not install silently. A FRESH quorum (2-of-3,
+  // same signer ids as the dispute quorum, its own injected clock on
+  // the same fixed approval timestamps) collects two votes to
+  // threshold and is sealed with exportSignedQuorumSnapshot under the
+  // fixed demo secret. A detached copy with exactly one byte changed
+  // inside the snapshot — the final digit of the first approval's
+  // timestamp (".000Z" -> ".001Z") — is then refused with the pinned
+  // MAC-mismatch error; the untampered envelope restores through a
+  // JSON round-trip at the identical count with identical approvals;
+  // an envelope sealed with a fixed past expiresAt is refused once
+  // the injected restore clock passes it; and restoring the untampered
+  // envelope under a different secret fails exactly like tampering.
+  // Hand-pinned expectations, asserted HERE, outside the printing: a
+  // tamper that slipped through, a restore that lost a vote, an
+  // expired envelope that installed, or a wrong secret that verified
+  // would fail the demo itself, not just a test. Only the envelope's
+  // version, the first 16 hex chars of its MAC, and the approval
+  // timestamps are printed — never the secret, never the full MAC.
+  // The clock never advances past the fixed fixtures, so zero network,
+  // zero randomness, and no wall clock enter the segment.
+  let signedQuorumApprovalTick = 0;
+  const signedQuorumConfig: QuorumConfig = {
+    threshold: DEMO_QUORUM_THRESHOLD,
+    signers: [...DEMO_QUORUM_SIGNERS],
+    now: () =>
+      Date.parse(
+        DEMO_QUORUM_APPROVAL_ATS[
+          Math.min(
+            signedQuorumApprovalTick++,
+            DEMO_QUORUM_APPROVAL_ATS.length - 1,
+          )
+        ],
+      ),
+  };
+  const signedQuorum = createQuorum(signedQuorumConfig);
+  signedQuorum.approve(DEMO_QUORUM_SIGNERS[0]);
+  signedQuorum.approve(DEMO_QUORUM_SIGNERS[1]);
+  const quorumSignedEnvelope = exportSignedQuorumSnapshot(
+    signedQuorum,
+    DEMO_QUORUM_SIGNED_SECRET,
+  );
+  const signedFirstApprovalAt =
+    quorumSignedEnvelope.snapshot.approvals[0].at;
+  if (!signedFirstApprovalAt.endsWith("0Z")) {
+    throw new Error(
+      "demo fixture broken: signed quorum snapshot segment expects the first approval timestamp to end in 0Z so the one-byte tamper is well-defined",
+    );
+  }
+  const signedTamperedApprovalAt = `${signedFirstApprovalAt.slice(0, -2)}1Z`;
+  const quorumSignedTamperedEnvelope: QuorumSignedSnapshotEnvelope = {
+    ...quorumSignedEnvelope,
+    snapshot: {
+      ...quorumSignedEnvelope.snapshot,
+      approvals: [
+        {
+          ...quorumSignedEnvelope.snapshot.approvals[0],
+          at: signedTamperedApprovalAt,
+        },
+        ...quorumSignedEnvelope.snapshot.approvals.slice(1),
+      ],
+    },
+  };
+  let quorumSignedTamperError = "";
+  try {
+    restoreSignedQuorumSnapshot(
+      signedQuorumConfig,
+      JSON.parse(JSON.stringify(quorumSignedTamperedEnvelope)),
+      DEMO_QUORUM_SIGNED_SECRET,
+    );
+  } catch (err) {
+    quorumSignedTamperError = err instanceof Error ? err.message : String(err);
+  }
+  const quorumSignedRestored = restoreSignedQuorumSnapshot(
+    signedQuorumConfig,
+    JSON.parse(JSON.stringify(quorumSignedEnvelope)),
+    DEMO_QUORUM_SIGNED_SECRET,
+  );
+  const quorumSignedRestoredApprovalCount =
+    quorumSignedRestored.approvalCount();
+  const quorumSignedRestoredHasQuorum = quorumSignedRestored.hasQuorum();
+  const quorumSignedRestoredApprovals = [...quorumSignedRestored.approvals()];
+  const quorumSignedExpiredEnvelope = exportSignedQuorumSnapshot(
+    signedQuorum,
+    DEMO_QUORUM_SIGNED_SECRET,
+    { expiresAt: DEMO_QUORUM_SIGNED_EXPIRES_AT },
+  );
+  let quorumSignedExpiredError = "";
+  try {
+    restoreSignedQuorumSnapshot(
+      signedQuorumConfig,
+      JSON.parse(JSON.stringify(quorumSignedExpiredEnvelope)),
+      DEMO_QUORUM_SIGNED_SECRET,
+      { now: DEMO_QUORUM_SIGNED_EXPIRED_NOW_MS },
+    );
+  } catch (err) {
+    quorumSignedExpiredError =
+      err instanceof Error ? err.message : String(err);
+  }
+  let quorumSignedWrongSecretError = "";
+  try {
+    restoreSignedQuorumSnapshot(
+      signedQuorumConfig,
+      JSON.parse(JSON.stringify(quorumSignedEnvelope)),
+      DEMO_QUORUM_SIGNED_WRONG_SECRET,
+    );
+  } catch (err) {
+    quorumSignedWrongSecretError =
+      err instanceof Error ? err.message : String(err);
+  }
+  if (
+    quorumSignedEnvelope.v !== 1 ||
+    !/^[0-9a-f]{64}$/.test(quorumSignedEnvelope.mac) ||
+    signedQuorum.approvalCount() !== DEMO_QUORUM_THRESHOLD ||
+    signedQuorum.hasQuorum() !== true ||
+    quorumSignedTamperError !== DEMO_QUORUM_SIGNED_MAC_MISMATCH_ERROR ||
+    quorumSignedRestoredApprovalCount !== DEMO_QUORUM_THRESHOLD ||
+    quorumSignedRestoredHasQuorum !== true ||
+    JSON.stringify(quorumSignedRestoredApprovals) !==
+      JSON.stringify([
+        DEMO_QUORUM_SIGNERS[0],
+        DEMO_QUORUM_SIGNERS[1],
+      ]) ||
+    JSON.stringify(quorumSignedRestored.snapshot().approvals) !==
+      JSON.stringify(quorumSignedEnvelope.snapshot.approvals) ||
+    quorumSignedExpiredEnvelope.expiresAt !==
+      DEMO_QUORUM_SIGNED_EXPIRES_AT ||
+    quorumSignedExpiredError !== DEMO_QUORUM_SIGNED_EXPIRED_ERROR ||
+    quorumSignedWrongSecretError !== DEMO_QUORUM_SIGNED_MAC_MISMATCH_ERROR
+  ) {
+    throw new Error(
+      "demo fixture broken: signed quorum snapshot segment does not match the pinned shape (fresh 2-of-3 quorum at threshold, v1 envelope with a 64-hex MAC, one-byte tamper refused with the pinned MAC-mismatch error, untampered envelope restoring at the identical count with identical approvals, expired envelope refused with the pinned expiry error, wrong secret refused exactly like tampering)",
+    );
+  }
+  lines.push(
+    "",
+    "Signed quorum snapshot (HMAC envelope — a rewritten snapshot fails at restore):",
+    `  quorum: ${DEMO_QUORUM_THRESHOLD}-of-${DEMO_QUORUM_SIGNERS.length} arbitrators (${DEMO_QUORUM_SIGNERS.join(", ")}) — ${DEMO_QUORUM_SIGNERS[0]} and ${DEMO_QUORUM_SIGNERS[1]} approved at ${DEMO_QUORUM_APPROVAL_ATS[0]} / ${DEMO_QUORUM_APPROVAL_ATS[1]}, quorum ${signedQuorum.approvalCount()}/${DEMO_QUORUM_THRESHOLD} — hasQuorum: ${signedQuorum.hasQuorum()}`,
+    `  exportSignedQuorumSnapshot(): v ${quorumSignedEnvelope.v}, mac ${quorumSignedEnvelope.mac.slice(0, 16)}… (64 lowercase hex chars, HMAC-SHA256 over the canonical snapshot under the demo secret — the secret is never printed or persisted)`,
+    `  tampered envelope rejected: one byte changed in the first approval's timestamp (${signedFirstApprovalAt} -> ${signedTamperedApprovalAt}) throws "${quorumSignedTamperError}" — a rewritten vote fails before any snapshot parsing`,
+    `  original envelope restores: approvalCount ${quorumSignedRestoredApprovalCount}/${DEMO_QUORUM_THRESHOLD} — hasQuorum: ${quorumSignedRestoredHasQuorum}, approvals [${quorumSignedRestoredApprovals.join(", ")}] identical to the sealed snapshot`,
+    `  expired envelope rejected: sealed with expiresAt ${DEMO_QUORUM_SIGNED_EXPIRES_AT}, restore at ${new Date(DEMO_QUORUM_SIGNED_EXPIRED_NOW_MS).toISOString()} throws "${quorumSignedExpiredError}"`,
+    `  wrong secret rejected: restore under a different secret throws "${quorumSignedWrongSecretError}" — a wrong key reads exactly like tampering`,
+  );
 
   // --- Batch settlement: one batch -> per-item reports -> one summary ---
   // The day-end pipeline the single-report sections above feed into.
@@ -10962,6 +11198,13 @@ export async function runDemo(): Promise<DemoResult> {
     quorumRestoredApprovalCount,
     quorumRestoredHasQuorum,
     arbitrationRejection,
+    quorumSignedEnvelope,
+    quorumSignedTamperError,
+    quorumSignedRestoredApprovalCount,
+    quorumSignedRestoredHasQuorum,
+    quorumSignedRestoredApprovals,
+    quorumSignedExpiredError,
+    quorumSignedWrongSecretError,
     pendingEscrow,
     batchResults,
     batchSummary,

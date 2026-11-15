@@ -157,6 +157,12 @@ import {
   DEMO_QUORUM_EVIDENCE_REF,
   DEMO_QUORUM_EVIDENCE_SECOND_AT,
   DEMO_QUORUM_SIGNERS,
+  DEMO_QUORUM_SIGNED_EXPIRED_ERROR,
+  DEMO_QUORUM_SIGNED_EXPIRED_NOW_MS,
+  DEMO_QUORUM_SIGNED_EXPIRES_AT,
+  DEMO_QUORUM_SIGNED_MAC_MISMATCH_ERROR,
+  DEMO_QUORUM_SIGNED_SECRET,
+  DEMO_QUORUM_SIGNED_WRONG_SECRET,
   DEMO_QUORUM_THRESHOLD,
   DEMO_REVOKE_FIRST_AT,
   DEMO_REVOKE_LOG_AFTER_REVOKE,
@@ -359,6 +365,7 @@ import {
   renderReportCsv,
   renderReportJson,
   restoreQuorum,
+  restoreSignedQuorumSnapshot,
   settlePartialReleases,
   settleRelease,
   stateDiagram,
@@ -1271,6 +1278,158 @@ test("demo lines print the quorum snapshot restore segment between the first vot
       snapshotAt < restoredAt &&
       restoredAt < refusalAt &&
       refusalAt < secondVoteAt,
+  );
+});
+
+test("demo signed quorum snapshot rejects a one-byte tamper, restores the original, and rejects expired and wrong-secret envelopes", async () => {
+  const {
+    quorumSignedEnvelope,
+    quorumSignedTamperError,
+    quorumSignedRestoredApprovalCount,
+    quorumSignedRestoredHasQuorum,
+    quorumSignedRestoredApprovals,
+    quorumSignedExpiredError,
+    quorumSignedWrongSecretError,
+  } = await runDemo();
+
+  // The sealed envelope: v1, no expiry, a 64-hex MAC, the two fixed
+  // approvals at the fixed timestamps — and no secret inside it.
+  assert.equal(quorumSignedEnvelope.v, 1);
+  assert.equal(quorumSignedEnvelope.expiresAt, undefined);
+  assert.match(quorumSignedEnvelope.mac, /^[0-9a-f]{64}$/);
+  assert.equal(
+    quorumSignedEnvelope.snapshot.threshold,
+    DEMO_QUORUM_THRESHOLD,
+  );
+  assert.deepEqual(quorumSignedEnvelope.snapshot.signers, [
+    ...DEMO_QUORUM_SIGNERS,
+  ]);
+  assert.deepEqual(quorumSignedEnvelope.snapshot.approvals, [
+    { signerId: DEMO_QUORUM_SIGNERS[0], at: DEMO_QUORUM_APPROVAL_ATS[0] },
+    { signerId: DEMO_QUORUM_SIGNERS[1], at: DEMO_QUORUM_APPROVAL_ATS[1] },
+  ]);
+  assert.equal(
+    JSON.stringify(quorumSignedEnvelope).includes(DEMO_QUORUM_SIGNED_SECRET),
+    false,
+  );
+  // One byte changed inside the snapshot fails the MAC before any
+  // snapshot parsing.
+  assert.equal(
+    quorumSignedTamperError,
+    DEMO_QUORUM_SIGNED_MAC_MISMATCH_ERROR,
+  );
+  // The untampered envelope restores at the identical count.
+  assert.equal(quorumSignedRestoredApprovalCount, 2);
+  assert.equal(quorumSignedRestoredHasQuorum, true);
+  assert.deepEqual(quorumSignedRestoredApprovals, [
+    DEMO_QUORUM_SIGNERS[0],
+    DEMO_QUORUM_SIGNERS[1],
+  ]);
+  // Expired and wrong-secret restores fail with their pinned errors.
+  assert.equal(quorumSignedExpiredError, DEMO_QUORUM_SIGNED_EXPIRED_ERROR);
+  assert.equal(
+    quorumSignedWrongSecretError,
+    DEMO_QUORUM_SIGNED_MAC_MISMATCH_ERROR,
+  );
+  // Independent cross-check: restoring the same envelope again (fresh
+  // JSON round-trip; a config without the injected clock — counting
+  // without an expiry window never consults it) yields the same state.
+  const independentlyRestored = restoreSignedQuorumSnapshot(
+    { threshold: DEMO_QUORUM_THRESHOLD, signers: [...DEMO_QUORUM_SIGNERS] },
+    JSON.parse(JSON.stringify(quorumSignedEnvelope)),
+    DEMO_QUORUM_SIGNED_SECRET,
+  );
+  assert.equal(independentlyRestored.approvalCount(), 2);
+  assert.equal(independentlyRestored.hasQuorum(), true);
+  assert.deepEqual(independentlyRestored.approvals(), [
+    DEMO_QUORUM_SIGNERS[0],
+    DEMO_QUORUM_SIGNERS[1],
+  ]);
+  // And the same envelope under the wrong secret fails here too.
+  assert.throws(
+    () =>
+      restoreSignedQuorumSnapshot(
+        {
+          threshold: DEMO_QUORUM_THRESHOLD,
+          signers: [...DEMO_QUORUM_SIGNERS],
+        },
+        JSON.parse(JSON.stringify(quorumSignedEnvelope)),
+        DEMO_QUORUM_SIGNED_WRONG_SECRET,
+      ),
+    /Quorum: signed snapshot MAC mismatch/,
+  );
+});
+
+test("demo lines print the signed quorum snapshot segment after the dispute refund report", async () => {
+  const { lines } = await runDemo();
+  const text = lines.join("\n");
+
+  assert.ok(
+    text.includes(
+      "Signed quorum snapshot (HMAC envelope — a rewritten snapshot fails at restore):",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  quorum: ${DEMO_QUORUM_THRESHOLD}-of-${DEMO_QUORUM_SIGNERS.length} arbitrators (${DEMO_QUORUM_SIGNERS.join(", ")}) — ${DEMO_QUORUM_SIGNERS[0]} and ${DEMO_QUORUM_SIGNERS[1]} approved at ${DEMO_QUORUM_APPROVAL_ATS[0]} / ${DEMO_QUORUM_APPROVAL_ATS[1]}, quorum 2/${DEMO_QUORUM_THRESHOLD} — hasQuorum: true`,
+    ),
+  );
+  assert.match(
+    text,
+    /  exportSignedQuorumSnapshot\(\): v 1, mac [0-9a-f]{16}… \(64 lowercase hex chars, HMAC-SHA256 over the canonical snapshot under the demo secret — the secret is never printed or persisted\)/,
+  );
+  assert.ok(
+    text.includes(
+      `  tampered envelope rejected: one byte changed in the first approval's timestamp (${DEMO_QUORUM_APPROVAL_ATS[0]} -> 2026-03-07T12:00:00.001Z) throws "${DEMO_QUORUM_SIGNED_MAC_MISMATCH_ERROR}" — a rewritten vote fails before any snapshot parsing`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  original envelope restores: approvalCount 2/${DEMO_QUORUM_THRESHOLD} — hasQuorum: true, approvals [${DEMO_QUORUM_SIGNERS[0]}, ${DEMO_QUORUM_SIGNERS[1]}] identical to the sealed snapshot`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  expired envelope rejected: sealed with expiresAt ${DEMO_QUORUM_SIGNED_EXPIRES_AT}, restore at ${new Date(DEMO_QUORUM_SIGNED_EXPIRED_NOW_MS).toISOString()} throws "${DEMO_QUORUM_SIGNED_EXPIRED_ERROR}"`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  wrong secret rejected: restore under a different secret throws "${DEMO_QUORUM_SIGNED_MAC_MISMATCH_ERROR}" — a wrong key reads exactly like tampering`,
+    ),
+  );
+  // Position: after the dispute refund report, before the batch section.
+  const refundReportAt = text.indexOf("Settlement report (dispute refund):");
+  const signedAt = text.indexOf("Signed quorum snapshot (HMAC envelope");
+  const batchAt = text.indexOf(
+    "Batch settlement reports (batch -> per-item isolation -> summary):",
+  );
+  assert.ok(refundReportAt < signedAt && signedAt < batchAt);
+  // The secret is never printed anywhere in the output.
+  assert.equal(text.includes(DEMO_QUORUM_SIGNED_SECRET), false);
+});
+
+test("demo signed quorum snapshot segment is deterministic: two runs print byte-identical lines", async () => {
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf(
+        "Signed quorum snapshot (HMAC envelope — a rewritten snapshot fails at restore):",
+      ),
+      ls.indexOf(
+        "Batch settlement reports (batch -> per-item isolation -> summary):",
+      ) - 1,
+    );
+  const a = await runDemo();
+  const b = await runDemo();
+  const segA = segment(a.lines);
+  // Header + quorum line + export line + tamper line + restore line +
+  // expired line + wrong-secret line; every value is hand-pinned from
+  // the fixed quorum and secret, so no normalization is needed.
+  assert.equal(segA.length, 7);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(
+    a.quorumSignedEnvelope,
+    b.quorumSignedEnvelope,
   );
 });
 
