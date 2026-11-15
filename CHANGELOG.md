@@ -18,6 +18,17 @@ version changes.
 
 ### Added
 
+- Benchmark row for `Escrow.stateAt(time)` (2026-11-15, backlog
+  #1151): one measured op asks a fixed escrow carrying a 64-entry
+  hash-chained history (the golden 10,630 funded once, then 60
+  top-ups of 1, then SUBMIT_MILESTONE / VERIFY_PASS / RELEASE) what
+  state it was in at BASE + 31.5s and pins the hand-counted FUNDED
+  answer on every iteration, plus that the pure read leaves the
+  escrow RELEASED with its 64 entries untouched; the before-first
+  (CREATED) and after-last (RELEASED) answers and both inclusive
+  boundaries are pinned outside the timed loop. Measured ~46,671
+  ops/sec (21.43 µs/op) on a 2026-11-15 run.
+
 - Demo segment for time travel with `Escrow.stateAt(time)`
   (2026-11-14, backlog #1148): right after the signed quorum snapshot
   segment, a fresh escrow (DEMO-ESC-039) walks FUND -> SUBMIT_MILESTONE

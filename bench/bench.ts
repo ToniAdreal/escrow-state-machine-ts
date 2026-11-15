@@ -1593,6 +1593,19 @@
  *      id list (3 ids, in batch order) on every iteration, at fixture
  *      build time as well; the empty batch returning [] is pinned
  *      once, outside the timed loop.
+ *  90. time-travel read — `Escrow.stateAt(time)` over one fixed
+ *      64-entry hash-chained history (composition hand-counted in
+ *      the fixture comment below: the golden 10,630 funded once,
+ *      then 60 top-ups of 1, then SUBMIT_MILESTONE / VERIFY_PASS /
+ *      RELEASE). The #1134 read is a linear scan, so its cost grows
+ *      with history length — a support-desk "what state was this
+ *      escrow in at 15:00?" query had no throughput baseline at a
+ *      realistic log size. The query is a pure read, so the same
+ *      escrow is re-queried on every iteration and each result is
+ *      checked against the hand-pinned mid-history state on every
+ *      iteration, at fixture build time as well; the before-first
+ *      (CREATED) and after-last (RELEASED) answers, and both
+ *      inclusive boundaries, are pinned once, outside the timed loop.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -7188,6 +7201,96 @@ checkFilterIds(
   "unreconciledSettlements empty batch",
 );
 
+// stateAt fixture: one fixed 64-entry hash-chained history, built
+// by driving a real escrow — the #1134 time-travel read is a linear
+// scan, so its cost is history-length sensitive and the bench needs
+// a realistic log size. Composition, hand-counted (id
+// BENCH-STATEAT-001; every dispatch at BASE + i seconds, i = 0..63):
+//   seq 1      FUND 10630 (the golden deposit) -> FUNDED
+//   seq 2..61  sixty FUND top-ups of 1 -> FUNDED throughout
+//   seq 62     SUBMIT_MILESTONE -> MILESTONE_SUBMITTED
+//   seq 63     VERIFY_PASS -> VERIFIED
+//   seq 64     RELEASE -> RELEASED (terminal)
+// Hand-pinned expectations (NOT produced by the implementation):
+//   - mid query at BASE + 31.5s (between the seq-32 and seq-33 FUND
+//     entries) -> FUNDED;
+//   - a query before the first entry (BASE - 1s) -> CREATED;
+//   - a query exactly on the first entry (BASE) -> FUNDED: the
+//     boundary is inclusive;
+//   - a query exactly on the last entry (BASE + 63s) -> RELEASED;
+//   - a query after the last entry (BASE + 64s) -> RELEASED.
+// `stateAt` is a pure read, so the same escrow is re-queried on
+// every iteration; the fixture asserts the escrow's state and
+// history are untouched by the query.
+const STATE_AT_ESCROW_ID = "BENCH-STATEAT-001";
+const STATE_AT_TOP_UP_COUNT = 60;
+const STATE_AT_TOP_UP_AMOUNT = 1;
+const STATE_AT_MID_MS = BASE_MS + 31_500;
+const STATE_AT_MID = new Date(STATE_AT_MID_MS);
+const stateAtEscrow: Escrow = ((): Escrow => {
+  const escrow = new Escrow(STATE_AT_ESCROW_ID);
+  escrow.dispatch("FUND", undefined, DEPOSIT_AMOUNT, {
+    at: new Date(BASE_MS).toISOString(),
+  });
+  for (let i = 1; i <= STATE_AT_TOP_UP_COUNT; i++) {
+    escrow.dispatch("FUND", undefined, STATE_AT_TOP_UP_AMOUNT, {
+      at: new Date(BASE_MS + i * 1000).toISOString(),
+    });
+  }
+  escrow.dispatch("SUBMIT_MILESTONE", undefined, undefined, {
+    at: new Date(BASE_MS + 61_000).toISOString(),
+  });
+  escrow.dispatch("VERIFY_PASS", undefined, undefined, {
+    at: new Date(BASE_MS + 62_000).toISOString(),
+  });
+  escrow.dispatch("RELEASE", undefined, undefined, {
+    at: new Date(BASE_MS + 63_000).toISOString(),
+  });
+  if (escrow.state !== "RELEASED" || escrow.history.length !== 64) {
+    throw new Error("benchmark fixture failed: stateAt history shape");
+  }
+  if (!verifyHistoryChain(escrow.history)) {
+    throw new Error("benchmark fixture failed: stateAt history chain");
+  }
+  return escrow;
+})();
+function checkStateAt(
+  actual: EscrowState,
+  expected: EscrowState,
+  label: string,
+): void {
+  if (actual !== expected) {
+    throw new Error(
+      `benchmark self-check failed: stateAt ${label}: expected ${expected}, got ${actual}`,
+    );
+  }
+}
+checkStateAt(
+  stateAtEscrow.stateAt(STATE_AT_MID),
+  "FUNDED",
+  "mid-history query",
+);
+checkStateAt(
+  stateAtEscrow.stateAt(new Date(BASE_MS - 1000)),
+  "CREATED",
+  "before first entry",
+);
+checkStateAt(
+  stateAtEscrow.stateAt(new Date(BASE_MS)),
+  "FUNDED",
+  "on first entry (inclusive)",
+);
+checkStateAt(
+  stateAtEscrow.stateAt(new Date(BASE_MS + 63_000)),
+  "RELEASED",
+  "on last entry (inclusive)",
+);
+checkStateAt(
+  stateAtEscrow.stateAt(new Date(BASE_MS + 64_000)),
+  "RELEASED",
+  "after last entry",
+);
+
 // Deadline-warning fixture: one fixed mixed batch of 14 escrows,
 // screened by escrowsApproachingDeadline (the #840 helper, previously
 // unit-tested only, no throughput baseline) over a fixed 7-day window
@@ -12309,6 +12412,28 @@ function benchUnreconciledSettlements(): number {
   }, ITERATIONS);
 }
 
+function benchStateAt(): number {
+  return measure(() => {
+    // Per-iteration self-check: the mid-history query returns the
+    // hand-pinned FUNDED state, and the pure read leaves the escrow's
+    // terminal state and 64-entry history untouched (see the fixture
+    // above).
+    checkStateAt(
+      stateAtEscrow.stateAt(STATE_AT_MID),
+      "FUNDED",
+      "mid-history query",
+    );
+    if (
+      stateAtEscrow.state !== "RELEASED" ||
+      stateAtEscrow.history.length !== 64
+    ) {
+      throw new Error(
+        "benchmark self-check failed: stateAt query mutated the escrow",
+      );
+    }
+  }, ITERATIONS);
+}
+
 function benchEscrowsApproachingDeadline(): number {
   return measure(() => {
     checkWatchdogIds(
@@ -13612,6 +13737,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "escrowsByFilters (batch 60 escrows, 6 DISPUTED+carol+DISPUTE)", ops: benchEscrowsByFilters() },
   { path: "settlementAging (batch 10 escrows, 3/3/2/2 buckets)", ops: benchSettlementAging() },
   { path: "unreconciledSettlements (batch 10 escrows, 3 unreconciled)", ops: benchUnreconciledSettlements() },
+  { path: "stateAt (64-entry history, mid-history query)", ops: benchStateAt() },
   { path: "escrowsApproachingDeadline (batch 14 escrows, 6 approaching)", ops: benchEscrowsApproachingDeadline() },
   { path: "nextEscrowDeadline (batch 10 escrows, earliest 2026-06-03)", ops: benchNextEscrowDeadline() },
 ];
