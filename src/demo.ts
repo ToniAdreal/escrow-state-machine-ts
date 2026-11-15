@@ -48,7 +48,18 @@
  * sealed with a past `expiresAt` and a restore under the wrong
  * secret are each refused with their pinned errors — the
  * tamper-evident restart, all sides asserted outside the printing
- * against hand-pinned expectations. The demo closes with the
+ * against hand-pinned expectations. A time-travel segment then
+ * walks a fresh escrow through FUND -> SUBMIT_MILESTONE ->
+ * PARTIAL_RELEASE on fixed timestamps and asks `stateAt` what
+ * state it was in at five fixed moments — before the first entry
+ * (CREATED), exactly on the FUND entry (FUNDED: the boundary is
+ * inclusive), between SUBMIT_MILESTONE and PARTIAL_RELEASE
+ * (MILESTONE_SUBMITTED), exactly on the PARTIAL_RELEASE entry
+ * and after it (FUNDED both times) — with the module-level
+ * `stateAtFromHistory` agreeing on the raw log and an
+ * unparseable time refused with the pinned error, all sides
+ * asserted outside the printing against hand-pinned expectations.
+ * The demo closes with the
  * day-end batch pipeline over all three escrows: `buildSettlementReports`
  * builds one report per escrow with per-item error isolation (the
  * third escrow is still FUNDED, so it lands as `{escrowId, error}`
@@ -502,6 +513,7 @@ import {
   settleRelease,
   settlementAging,
   staleEscrows,
+  stateAtFromHistory,
   stateDiagram,
   summarizeSettlementReports,
   transitionTable,
@@ -685,6 +697,35 @@ export const DEMO_QUORUM_SIGNED_MAC_MISMATCH_ERROR =
 /** Error message of restoring the segment's expired envelope. */
 export const DEMO_QUORUM_SIGNED_EXPIRED_ERROR =
   `Quorum: signed snapshot envelope expired at ${DEMO_QUORUM_SIGNED_EXPIRES_AT}`;
+
+/**
+ * Fixed fixtures for the time-travel segment (backlog #1148): a
+ * fresh escrow (DEMO-ESC-039) walks FUND -> SUBMIT_MILESTONE ->
+ * PARTIAL_RELEASE on three fixed timestamps, and `stateAt` is asked
+ * at five fixed moments around them. The partial-release amount is a
+ * 1000 tranche of the golden 10630 deposit.
+ */
+export const DEMO_STATE_AT_ESCROW_ID = "DEMO-ESC-039";
+export const DEMO_STATE_AT_FUND_AT = "2026-03-10T09:00:00.000Z";
+export const DEMO_STATE_AT_SUBMIT_AT = "2026-03-10T10:00:00.000Z";
+export const DEMO_STATE_AT_PARTIAL_RELEASE_AT = "2026-03-10T11:00:00.000Z";
+export const DEMO_STATE_AT_PARTIAL_RELEASE_AMOUNT = 1000;
+/** One hour before the first entry: the escrow had not moved yet. */
+export const DEMO_STATE_AT_BEFORE_FUND = "2026-03-10T08:00:00.000Z";
+/** Halfway between SUBMIT_MILESTONE and PARTIAL_RELEASE. */
+export const DEMO_STATE_AT_MID_MILESTONE = "2026-03-10T10:30:00.000Z";
+/** One hour after the last entry: the current state. */
+export const DEMO_STATE_AT_AFTER_RELEASE = "2026-03-10T12:00:00.000Z";
+/** An unparseable query time, used to show `stateAt` failing fast. */
+export const DEMO_STATE_AT_INVALID_TIME = "not-a-date";
+/**
+ * Error message of asking `stateAt` for the unparseable time above:
+ * hand-pinned from the `invalid stateAt time: …` wording in
+ * `src/stateMachine.ts` and cross-checked against
+ * `test/stateAt.test.ts`.
+ */
+export const DEMO_STATE_AT_INVALID_TIME_ERROR =
+  "invalid stateAt time: expected a valid Date or ISO-8601 string, got not-a-date";
 
 /**
  * Third escrow for the closing batch section: funded with the same
@@ -2793,6 +2834,40 @@ export interface DemoResult {
    * reads exactly like tampering, and no quorum is produced.
    */
   quorumSignedWrongSecretError: string;
+  /**
+   * The time-travel segment's escrow ({@link DEMO_STATE_AT_ESCROW_ID}):
+   * FUND -> SUBMIT_MILESTONE -> PARTIAL_RELEASE at the fixed
+   * timestamps, ending FUNDED with 3 history entries — the release
+   * re-opens the escrow instead of settling it.
+   */
+  stateAtEscrow: Escrow;
+  /**
+   * `stateAt` answers on that escrow at the five fixed query
+   * moments: before the first entry (CREATED), exactly on the FUND
+   * entry (FUNDED — the boundary is inclusive), between
+   * SUBMIT_MILESTONE and PARTIAL_RELEASE (MILESTONE_SUBMITTED),
+   * exactly on the PARTIAL_RELEASE entry (FUNDED), and after the
+   * last entry (FUNDED, the current state).
+   */
+  stateAtBeforeFund: EscrowState;
+  stateAtAtFund: EscrowState;
+  stateAtMidMilestone: EscrowState;
+  stateAtAtPartialRelease: EscrowState;
+  stateAtAfterRelease: EscrowState;
+  /**
+   * The module-level `stateAtFromHistory` answer on the same
+   * escrow's raw history at {@link DEMO_STATE_AT_MID_MILESTONE}:
+   * MILESTONE_SUBMITTED — the no-instance query agrees with the
+   * instance query.
+   */
+  stateAtFromHistoryMidMilestone: EscrowState;
+  /**
+   * Error message of asking `stateAt` for
+   * {@link DEMO_STATE_AT_INVALID_TIME}: exactly
+   * {@link DEMO_STATE_AT_INVALID_TIME_ERROR} — an unparseable
+   * time fails fast instead of guessing a state.
+   */
+  stateAtInvalidTimeError: string;
   /** Third escrow, left FUNDED so the batch section has a failing item. */
   pendingEscrow: Escrow;
   /** Per-item batch results, in batch order (released, error, refunded). */
@@ -5315,6 +5390,98 @@ export async function runDemo(): Promise<DemoResult> {
     `  original envelope restores: approvalCount ${quorumSignedRestoredApprovalCount}/${DEMO_QUORUM_THRESHOLD} — hasQuorum: ${quorumSignedRestoredHasQuorum}, approvals [${quorumSignedRestoredApprovals.join(", ")}] identical to the sealed snapshot`,
     `  expired envelope rejected: sealed with expiresAt ${DEMO_QUORUM_SIGNED_EXPIRES_AT}, restore at ${new Date(DEMO_QUORUM_SIGNED_EXPIRED_NOW_MS).toISOString()} throws "${quorumSignedExpiredError}"`,
     `  wrong secret rejected: restore under a different secret throws "${quorumSignedWrongSecretError}" — a wrong key reads exactly like tampering`,
+  );
+
+  // --- Time travel: Escrow.stateAt(time) over a fixed audit history ---
+  // The audit trail is append-only, so any past moment's state is
+  // recoverable without rebuilding the escrow: `stateAt` answers the
+  // audit/support question ("what state was this escrow in yesterday
+  // at 15:00?") straight off the history. A FRESH escrow (its own
+  // id, its own fixed timestamps — the main escrow's chain is
+  // untouched) walks FUND -> SUBMIT_MILESTONE -> PARTIAL_RELEASE:
+  // the partial release pays a 1000 tranche and re-opens the escrow
+  // to FUNDED instead of settling it. Five fixed query moments pin
+  // the semantics: before the first entry the escrow had not moved
+  // yet (CREATED); exactly ON the FUND entry the boundary is
+  // inclusive, so the entry's effect is already visible (FUNDED);
+  // between SUBMIT_MILESTONE and PARTIAL_RELEASE the milestone is
+  // still pending (MILESTONE_SUBMITTED); exactly on the
+  // PARTIAL_RELEASE entry the escrow is back to FUNDED; after the
+  // last entry the answer is the current state (FUNDED). The
+  // module-level `stateAtFromHistory` is asked the same mid-milestone
+  // instant over the raw log — no Escrow instance at all — and must
+  // agree. An unparseable time is refused with the pinned error
+  // instead of guessing a state. Hand-pinned expectations, asserted
+  // HERE, outside the printing: a wrong answer at any moment, a
+  // disagreement between the two query forms, or a silently accepted
+  // bad time would fail the demo itself, not just a test. The clock
+  // never advances past the fixed fixtures, so zero network, zero
+  // randomness, and no wall clock enter the segment.
+  const stateAtEscrow = new Escrow(DEMO_STATE_AT_ESCROW_ID);
+  stateAtEscrow.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "sponsor",
+    at: DEMO_STATE_AT_FUND_AT,
+  });
+  stateAtEscrow.dispatch(
+    "SUBMIT_MILESTONE",
+    "Milestone submitted for review",
+    undefined,
+    { actor: "creator", at: DEMO_STATE_AT_SUBMIT_AT },
+  );
+  stateAtEscrow.dispatch(
+    "PARTIAL_RELEASE",
+    "First tranche released",
+    DEMO_STATE_AT_PARTIAL_RELEASE_AMOUNT,
+    { actor: "sponsor", at: DEMO_STATE_AT_PARTIAL_RELEASE_AT },
+  );
+  const stateAtBeforeFund = stateAtEscrow.stateAt(DEMO_STATE_AT_BEFORE_FUND);
+  const stateAtAtFund = stateAtEscrow.stateAt(DEMO_STATE_AT_FUND_AT);
+  const stateAtMidMilestone = stateAtEscrow.stateAt(
+    DEMO_STATE_AT_MID_MILESTONE,
+  );
+  const stateAtAtPartialRelease = stateAtEscrow.stateAt(
+    DEMO_STATE_AT_PARTIAL_RELEASE_AT,
+  );
+  const stateAtAfterRelease = stateAtEscrow.stateAt(
+    DEMO_STATE_AT_AFTER_RELEASE,
+  );
+  const stateAtFromHistoryMidMilestone = stateAtFromHistory(
+    stateAtEscrow.history,
+    DEMO_STATE_AT_MID_MILESTONE,
+  );
+  let stateAtInvalidTimeError = "";
+  try {
+    stateAtEscrow.stateAt(DEMO_STATE_AT_INVALID_TIME);
+  } catch (err) {
+    stateAtInvalidTimeError =
+      err instanceof Error ? err.message : String(err);
+  }
+  if (
+    stateAtEscrow.state !== "FUNDED" ||
+    stateAtEscrow.history.length !== 3 ||
+    stateAtBeforeFund !== "CREATED" ||
+    stateAtAtFund !== "FUNDED" ||
+    stateAtMidMilestone !== "MILESTONE_SUBMITTED" ||
+    stateAtAtPartialRelease !== "FUNDED" ||
+    stateAtAfterRelease !== "FUNDED" ||
+    stateAtFromHistoryMidMilestone !== "MILESTONE_SUBMITTED" ||
+    stateAtInvalidTimeError !== DEMO_STATE_AT_INVALID_TIME_ERROR
+  ) {
+    throw new Error(
+      "demo fixture broken: stateAt segment does not match the pinned shape (fresh escrow FUND -> SUBMIT_MILESTONE -> PARTIAL_RELEASE at fixed timestamps, ending FUNDED with 3 history entries; before the first entry CREATED, exactly on the FUND entry FUNDED, between SUBMIT_MILESTONE and PARTIAL_RELEASE MILESTONE_SUBMITTED, exactly on the PARTIAL_RELEASE entry FUNDED, after the last entry FUNDED; the module-level stateAtFromHistory agrees at the mid-milestone instant; an unparseable time throws the pinned invalid stateAt time error)",
+    );
+  }
+  lines.push(
+    "",
+    "Time travel (Escrow.stateAt — the state an escrow was in at a moment, read off the append-only audit history):",
+    `  ${DEMO_STATE_AT_ESCROW_ID}: FUND ${DEMO_STATE_AT_FUND_AT} -> SUBMIT_MILESTONE ${DEMO_STATE_AT_SUBMIT_AT} -> PARTIAL_RELEASE ${DEMO_STATE_AT_PARTIAL_RELEASE_AMOUNT} at ${DEMO_STATE_AT_PARTIAL_RELEASE_AT} (final state ${stateAtEscrow.state}, ${stateAtEscrow.history.length} history entries)`,
+    `  stateAt(${DEMO_STATE_AT_BEFORE_FUND}) = ${stateAtBeforeFund} — before the first entry, the escrow had not moved yet`,
+    `  stateAt(${DEMO_STATE_AT_FUND_AT}) = ${stateAtAtFund} — exactly on the FUND entry: the boundary is inclusive, the entry's effect is already visible`,
+    `  stateAt(${DEMO_STATE_AT_MID_MILESTONE}) = ${stateAtMidMilestone} — between SUBMIT_MILESTONE and PARTIAL_RELEASE`,
+    `  stateAt(${DEMO_STATE_AT_PARTIAL_RELEASE_AT}) = ${stateAtAtPartialRelease} — exactly on the PARTIAL_RELEASE entry: back to FUNDED, the release re-opens the escrow`,
+    `  stateAt(${DEMO_STATE_AT_AFTER_RELEASE}) = ${stateAtAfterRelease} — after the last entry, the current state`,
+    `  stateAtFromHistory(history, ${DEMO_STATE_AT_MID_MILESTONE}) = ${stateAtFromHistoryMidMilestone} — the same query over the raw log, no Escrow instance needed`,
+    `  stateAt("${DEMO_STATE_AT_INVALID_TIME}") throws "${stateAtInvalidTimeError}" — an unparseable time fails fast instead of guessing a state`,
   );
 
   // --- Batch settlement: one batch -> per-item reports -> one summary ---
@@ -11205,6 +11372,14 @@ export async function runDemo(): Promise<DemoResult> {
     quorumSignedRestoredApprovals,
     quorumSignedExpiredError,
     quorumSignedWrongSecretError,
+    stateAtEscrow,
+    stateAtBeforeFund,
+    stateAtAtFund,
+    stateAtMidMilestone,
+    stateAtAtPartialRelease,
+    stateAtAfterRelease,
+    stateAtFromHistoryMidMilestone,
+    stateAtInvalidTimeError,
     pendingEscrow,
     batchResults,
     batchSummary,

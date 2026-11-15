@@ -18,6 +18,22 @@ version changes.
 
 ### Added
 
+- Demo segment for time travel with `Escrow.stateAt(time)`
+  (2026-11-14, backlog #1148): right after the signed quorum snapshot
+  segment, a fresh escrow (DEMO-ESC-039) walks FUND -> SUBMIT_MILESTONE
+  -> PARTIAL_RELEASE on fixed timestamps and the demo asks `stateAt`
+  what state it was in at five fixed moments — before the first entry
+  (CREATED), exactly on the FUND entry (FUNDED: the boundary is
+  inclusive), between SUBMIT_MILESTONE and PARTIAL_RELEASE
+  (MILESTONE_SUBMITTED), exactly on the PARTIAL_RELEASE entry and after
+  it (FUNDED both times) — with the module-level `stateAtFromHistory`
+  agreeing on the raw log at the mid-milestone instant and an
+  unparseable time refused with the pinned `invalid stateAt time: …`
+  error. All sides are asserted outside the printing against
+  hand-pinned expectations, and the segment runs on fixed fixtures with
+  zero network, zero randomness, and no wall clock. 3 tests in
+  `test/demo.test.ts`.
+
 - Demo segment for HMAC-signed quorum snapshots (2026-11-14, backlog
   #1147): right after the dispute refund, a fresh 2-of-3 quorum at
   threshold is sealed with `exportSignedQuorumSnapshot` under a fixed

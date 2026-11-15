@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2162 tests, all local
+npm test   # 2165 tests, all local
 ```
 
 ## Quickstart
@@ -87,7 +87,15 @@ changed inside the snapshot is refused at restore with the pinned
 MAC-mismatch error, the untampered envelope restores at the identical
 2-of-2 count, and an envelope sealed with a past `expiresAt` and a
 restore under the wrong secret are each refused with their pinned
-errors — the tamper-evident restart. The demo closes with the day-end batch pipeline over all three
+errors — the tamper-evident restart. A time-travel segment then walks a
+fresh escrow through `FUND` → `SUBMIT_MILESTONE` → `PARTIAL_RELEASE` on
+fixed timestamps and asks `stateAt` what state it was in at five fixed
+moments — before the first entry (`CREATED`), exactly on the `FUND` entry
+(`FUNDED`: the boundary is inclusive), between `SUBMIT_MILESTONE` and
+`PARTIAL_RELEASE` (`MILESTONE_SUBMITTED`), exactly on the
+`PARTIAL_RELEASE` entry and after it (`FUNDED` both times) — with the
+module-level `stateAtFromHistory` agreeing on the raw log and an
+unparseable time refused with the pinned error. The demo closes with the day-end batch pipeline over all three
 escrows (a third escrow is left `FUNDED`): `buildSettlementReports`
 builds one report per escrow with per-item error isolation — the
 still-`FUNDED` escrow lands as `{escrowId, error}` in the middle of
@@ -1898,7 +1906,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2162 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2165 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

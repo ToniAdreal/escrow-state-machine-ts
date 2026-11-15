@@ -279,6 +279,16 @@ import {
   DEMO_STALE_FUND_AT,
   DEMO_STALE_MAX_AGE_MS,
   DEMO_STALE_NOW,
+  DEMO_STATE_AT_AFTER_RELEASE,
+  DEMO_STATE_AT_BEFORE_FUND,
+  DEMO_STATE_AT_ESCROW_ID,
+  DEMO_STATE_AT_FUND_AT,
+  DEMO_STATE_AT_INVALID_TIME,
+  DEMO_STATE_AT_INVALID_TIME_ERROR,
+  DEMO_STATE_AT_MID_MILESTONE,
+  DEMO_STATE_AT_PARTIAL_RELEASE_AMOUNT,
+  DEMO_STATE_AT_PARTIAL_RELEASE_AT,
+  DEMO_STATE_AT_SUBMIT_AT,
   DEMO_SUBSCRIBE_ESCROW_ID,
   DEMO_SUBSCRIBE_FUND_AT,
   DEMO_SUBSCRIBE_SUBMIT_AT,
@@ -368,6 +378,7 @@ import {
   restoreSignedQuorumSnapshot,
   settlePartialReleases,
   settleRelease,
+  stateAtFromHistory,
   stateDiagram,
   transitionTable,
   transitionTableJson,
@@ -1415,8 +1426,10 @@ test("demo signed quorum snapshot segment is deterministic: two runs print byte-
       ls.indexOf(
         "Signed quorum snapshot (HMAC envelope — a rewritten snapshot fails at restore):",
       ),
+      // Ends at the time-travel segment (#1148), which now follows
+      // this one — the blank line before it is the -1.
       ls.indexOf(
-        "Batch settlement reports (batch -> per-item isolation -> summary):",
+        "Time travel (Escrow.stateAt — the state an escrow was in at a moment, read off the append-only audit history):",
       ) - 1,
     );
   const a = await runDemo();
@@ -1430,6 +1443,147 @@ test("demo signed quorum snapshot segment is deterministic: two runs print byte-
   assert.deepEqual(
     a.quorumSignedEnvelope,
     b.quorumSignedEnvelope,
+  );
+});
+
+test("demo stateAt answers the five fixed moments and refuses an unparseable time", async () => {
+  const {
+    stateAtEscrow,
+    stateAtBeforeFund,
+    stateAtAtFund,
+    stateAtMidMilestone,
+    stateAtAtPartialRelease,
+    stateAtAfterRelease,
+    stateAtFromHistoryMidMilestone,
+    stateAtInvalidTimeError,
+  } = await runDemo();
+
+  // The segment's escrow: FUND -> SUBMIT_MILESTONE -> PARTIAL_RELEASE,
+  // ending FUNDED with 3 history entries — the release re-opens it.
+  assert.equal(stateAtEscrow.id, DEMO_STATE_AT_ESCROW_ID);
+  assert.equal(stateAtEscrow.state, "FUNDED");
+  assert.equal(stateAtEscrow.history.length, 3);
+  assert.deepEqual(
+    stateAtEscrow.history.map((entry) => entry.event),
+    ["FUND", "SUBMIT_MILESTONE", "PARTIAL_RELEASE"],
+  );
+  assert.equal(stateAtEscrow.history[2].amount, 1000);
+  // Before the first entry the escrow had not moved yet.
+  assert.equal(stateAtBeforeFund, "CREATED");
+  // Exactly on the FUND entry: the boundary is inclusive.
+  assert.equal(stateAtAtFund, "FUNDED");
+  // Between SUBMIT_MILESTONE and PARTIAL_RELEASE.
+  assert.equal(stateAtMidMilestone, "MILESTONE_SUBMITTED");
+  // Exactly on the PARTIAL_RELEASE entry, and after the last entry.
+  assert.equal(stateAtAtPartialRelease, "FUNDED");
+  assert.equal(stateAtAfterRelease, "FUNDED");
+  // The module-level query over the raw log agrees.
+  assert.equal(stateAtFromHistoryMidMilestone, "MILESTONE_SUBMITTED");
+  // An unparseable time fails fast with the pinned error.
+  assert.equal(
+    stateAtInvalidTimeError,
+    DEMO_STATE_AT_INVALID_TIME_ERROR,
+  );
+  // Independent cross-checks: the same instants queried directly on
+  // the returned escrow, including a Date object input, and the
+  // module-level form over a JSON round-tripped copy of the history.
+  assert.equal(
+    stateAtEscrow.stateAt(new Date(DEMO_STATE_AT_MID_MILESTONE)),
+    "MILESTONE_SUBMITTED",
+  );
+  assert.equal(
+    stateAtFromHistory(
+      JSON.parse(JSON.stringify(stateAtEscrow.history)),
+      DEMO_STATE_AT_BEFORE_FUND,
+    ),
+    "CREATED",
+  );
+  assert.throws(
+    () => stateAtEscrow.stateAt(DEMO_STATE_AT_INVALID_TIME),
+    /invalid stateAt time: expected a valid Date or ISO-8601 string, got not-a-date/,
+  );
+});
+
+test("demo lines print the stateAt segment after the signed quorum snapshot segment", async () => {
+  const { lines } = await runDemo();
+  const text = lines.join("\n");
+
+  assert.ok(
+    text.includes(
+      "Time travel (Escrow.stateAt — the state an escrow was in at a moment, read off the append-only audit history):",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_STATE_AT_ESCROW_ID}: FUND ${DEMO_STATE_AT_FUND_AT} -> SUBMIT_MILESTONE ${DEMO_STATE_AT_SUBMIT_AT} -> PARTIAL_RELEASE ${DEMO_STATE_AT_PARTIAL_RELEASE_AMOUNT} at ${DEMO_STATE_AT_PARTIAL_RELEASE_AT} (final state FUNDED, 3 history entries)`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  stateAt(${DEMO_STATE_AT_BEFORE_FUND}) = CREATED — before the first entry, the escrow had not moved yet`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  stateAt(${DEMO_STATE_AT_FUND_AT}) = FUNDED — exactly on the FUND entry: the boundary is inclusive, the entry's effect is already visible`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  stateAt(${DEMO_STATE_AT_MID_MILESTONE}) = MILESTONE_SUBMITTED — between SUBMIT_MILESTONE and PARTIAL_RELEASE`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  stateAt(${DEMO_STATE_AT_PARTIAL_RELEASE_AT}) = FUNDED — exactly on the PARTIAL_RELEASE entry: back to FUNDED, the release re-opens the escrow`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  stateAt(${DEMO_STATE_AT_AFTER_RELEASE}) = FUNDED — after the last entry, the current state`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  stateAtFromHistory(history, ${DEMO_STATE_AT_MID_MILESTONE}) = MILESTONE_SUBMITTED — the same query over the raw log, no Escrow instance needed`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  stateAt("${DEMO_STATE_AT_INVALID_TIME}") throws "${DEMO_STATE_AT_INVALID_TIME_ERROR}" — an unparseable time fails fast instead of guessing a state`,
+    ),
+  );
+  // Position: after the signed quorum snapshot segment, before the
+  // batch section.
+  const signedAt = text.indexOf("Signed quorum snapshot (HMAC envelope");
+  const stateAtAt = text.indexOf("Time travel (Escrow.stateAt");
+  const batchAt = text.indexOf(
+    "Batch settlement reports (batch -> per-item isolation -> summary):",
+  );
+  assert.ok(signedAt < stateAtAt && stateAtAt < batchAt);
+});
+
+test("demo stateAt segment is deterministic: two runs print byte-identical lines", async () => {
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf(
+        "Time travel (Escrow.stateAt — the state an escrow was in at a moment, read off the append-only audit history):",
+      ),
+      ls.indexOf(
+        "Batch settlement reports (batch -> per-item isolation -> summary):",
+      ) - 1,
+    );
+  const a = await runDemo();
+  const b = await runDemo();
+  const segA = segment(a.lines);
+  // Header + chain line + five stateAt lines + the module-level line
+  // + the invalid-time line; every value is hand-pinned from the
+  // fixed escrow and timestamps, so no normalization is needed.
+  assert.equal(segA.length, 9);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(
+    a.stateAtEscrow.history,
+    b.stateAtEscrow.history,
   );
 });
 
