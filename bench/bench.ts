@@ -1624,6 +1624,28 @@
  *      The #1137 envelope's seal/verify cost had no measured
  *      baseline. A tampered envelope and a wrong secret are pinned
  *      to throw the MAC-mismatch error once, outside the timed loop.
+ *  92. integer-cents fee calculation — `calculateDepositCents(inputs)`
+ *      over a fixed 3-shape corpus that is the exact cents mirror of
+ *      the dollar corpus in path 22 (the golden vector in cents, a
+ *      complexity-multiplier case, and a large-pool case; composition
+ *      and hand-computed `adjustedBaseFeeCents` / `depositCents`
+ *      expectations in the fixture comment below). This is the
+ *      settlement path's recommended deposit preview — integer cents
+ *      end to end, no float-dollar round-trip, one half-up rounding
+ *      of the adjusted base fee — previously visible only inside the
+ *      settlement numbers. Every timed iteration re-checks each
+ *      returned breakdown against its hand-written expectation, and
+ *      the ±0¢ agreement with the dollar `calculateDeposit` on the
+ *      same inputs is pinned once, outside the timed loop (the cents
+ *      expectations are exactly the dollar expectations × 100).
+ *      Negative and fractional-cent inputs, the 1e308-scale overflow
+ *      (multiplier and pool-plus-base shapes), and the zero-fee
+ *      boundary (all fees zero, deposit equals the pool) are pinned
+ *      once, outside the timed loop. Note: the implementation has no
+ *      `Number.MAX_SAFE_INTEGER` guard — 2^53-scale cent inputs are
+ *      accepted, not rejected; the overflow guard is the
+ *      non-finite-deposit check, so the out-of-loop pins use the
+ *      1e308 shapes the test suite pins, not a 2^53 boundary.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -1651,6 +1673,7 @@ import {
   buildSettlementWebhook,
   buildSettlementWebhooks,
   calculateDeposit,
+  calculateDepositCents,
   createQuorum,
   deliverSettlementWebhook,
   deliverSettlementWebhookToMany,
@@ -8950,6 +8973,184 @@ function checkCalculateDepositCorpus(): void {
 checkCalculateDepositCorpus();
 
 // ---------------------------------------------------------------------
+// calculateDepositCents fixture: a fixed 3-shape corpus that is the
+// exact cents mirror of the dollar corpus above (every money field
+// x100), built once outside the timed loop. Expectations are
+// hand-computed from the documented formula (adjustedBaseFeeCents =
+// roundHalfUp(baseFeeCents x complexityMultiplier); depositCents =
+// creatorPoolCents + adjustedBaseFeeCents - loyaltyDiscountCents +
+// oracleFeeCents) — written out as arithmetic here, never derived by
+// calling calculateDepositCents itself:
+//   1. golden vector in cents — pool 1,000,000, base 60,000,
+//      complexity 1.0, loyalty 3,000, oracle 6,000: adjusted =
+//      60,000 x 1.0 = 60,000; deposit = 1,000,000 + 60,000 - 3,000
+//      + 6,000 = 1,063,000.
+//   2. complexity != 1 — pool 500,000, base 80,000, complexity 1.5,
+//      loyalty 5,000, oracle 4,000: adjusted = 80,000 x 1.5 =
+//      120,000; deposit = 500,000 + 120,000 - 5,000 + 4,000 = 619,000.
+//   3. large pool — pool 100,000,000, base 250,000, complexity 2.25,
+//      loyalty 50,000, oracle 25,000: adjusted = 250,000 x 2.25 =
+//      562,500; deposit = 100,000,000 + 562,500 - 50,000 + 25,000 =
+//      100,537,500.
+// Each expectation is exactly the dollar corpus's expectation x100
+// (10,630 -> 1,063,000; 6,190 -> 619,000; 1,005,375 ->
+// 100,537,500), so the cents path agrees with the dollar path to
+// the cent on the same inputs. One bench pass runs the whole corpus
+// (all 3 shapes).
+// ---------------------------------------------------------------------
+const CALCULATE_DEPOSIT_CENTS_CASES: ReadonlyArray<{
+  inputs: Parameters<typeof calculateDepositCents>[0];
+  adjustedBaseFeeCents: number;
+  depositCents: number;
+}> = [
+  {
+    inputs: {
+      creatorPoolCents: 1000000,
+      baseFeeCents: 60000,
+      complexityMultiplier: 1.0,
+      loyaltyDiscountCents: 3000,
+      oracleFeeCents: 6000,
+    },
+    adjustedBaseFeeCents: 60000,
+    depositCents: 1063000,
+  },
+  {
+    inputs: {
+      creatorPoolCents: 500000,
+      baseFeeCents: 80000,
+      complexityMultiplier: 1.5,
+      loyaltyDiscountCents: 5000,
+      oracleFeeCents: 4000,
+    },
+    adjustedBaseFeeCents: 120000,
+    depositCents: 619000,
+  },
+  {
+    inputs: {
+      creatorPoolCents: 100000000,
+      baseFeeCents: 250000,
+      complexityMultiplier: 2.25,
+      loyaltyDiscountCents: 50000,
+      oracleFeeCents: 25000,
+    },
+    adjustedBaseFeeCents: 562500,
+    depositCents: 100537500,
+  },
+];
+
+function checkCalculateDepositCentsCorpus(): void {
+  for (const c of CALCULATE_DEPOSIT_CENTS_CASES) {
+    const got = calculateDepositCents(c.inputs);
+    if (
+      got.creatorPoolCents !== c.inputs.creatorPoolCents ||
+      got.baseFeeCents !== c.inputs.baseFeeCents ||
+      got.complexityMultiplier !== c.inputs.complexityMultiplier ||
+      got.loyaltyDiscountCents !== c.inputs.loyaltyDiscountCents ||
+      got.oracleFeeCents !== c.inputs.oracleFeeCents ||
+      got.adjustedBaseFeeCents !== c.adjustedBaseFeeCents ||
+      got.depositCents !== c.depositCents
+    ) {
+      throw new Error("benchmark self-check failed: calculateDepositCents");
+    }
+  }
+}
+// Pre-check outside the timed loop: the whole corpus computes to
+// its hand-computed expectations before any number is reported.
+checkCalculateDepositCentsCorpus();
+
+// One-time pins outside the timed loop:
+// (a) the ±0¢ agreement with the dollar path: running
+// calculateDeposit on the dollar mirror of each cents case gives
+// exactly the cents expectation / 100 (verified by a probe run
+// before this row was added — 10,630 -> 1,063,000; 6,190 ->
+// 619,000; 1,005,375 -> 100,537,500 — never derived inside the
+// timed loop).
+for (const [i, c] of CALCULATE_DEPOSIT_CENTS_CASES.entries()) {
+  const dollar = calculateDeposit({
+    creatorPool: c.inputs.creatorPoolCents / 100,
+    baseFee: c.inputs.baseFeeCents / 100,
+    complexityMultiplier: c.inputs.complexityMultiplier,
+    loyaltyDiscount: c.inputs.loyaltyDiscountCents / 100,
+    oracleFee: c.inputs.oracleFeeCents / 100,
+  });
+  if (
+    Math.round(dollar.deposit * 100) !== c.depositCents ||
+    Math.round(dollar.adjustedBaseFee * 100) !== c.adjustedBaseFeeCents
+  ) {
+    throw new Error(
+      `benchmark self-check failed: calculateDepositCents case ${i + 1} disagrees with calculateDeposit`,
+    );
+  }
+}
+// (b) rejection behaviour, unchanged by this row: a negative cent
+// input and a fractional-cent input fail fast with the exact
+// validation message; the 1e308-scale overflow shapes (a 1e308
+// multiplier, and a 1.7e308 pool plus a 1e308 base fee) fail fast
+// with the exact overflow message; the zero-fee boundary (all fees
+// zero) returns the pool as the deposit. Deliberately NOT pinned:
+// rejection at a 2^53-cent boundary — the implementation has no
+// MAX_SAFE_INTEGER guard (probe-verified: a 2^53 pool is accepted),
+// the overflow guard is the non-finite-deposit check.
+function expectCentsThrow(
+  inputs: Parameters<typeof calculateDepositCents>[0],
+  message: string,
+  where: string,
+): void {
+  let thrown: unknown;
+  try {
+    calculateDepositCents(inputs);
+  } catch (err) {
+    thrown = err;
+  }
+  if (!(thrown instanceof Error) || thrown.message !== message) {
+    throw new Error(
+      `benchmark self-check failed: calculateDepositCents ${where}: expected throw ${JSON.stringify(message)}, got ${thrown instanceof Error ? JSON.stringify(thrown.message) : "no throw"}`,
+    );
+  }
+}
+const CENTS_GOLDEN: Parameters<typeof calculateDepositCents>[0] = {
+  creatorPoolCents: 1000000,
+  baseFeeCents: 60000,
+  complexityMultiplier: 1.0,
+  loyaltyDiscountCents: 3000,
+  oracleFeeCents: 6000,
+};
+expectCentsThrow(
+  { ...CENTS_GOLDEN, creatorPoolCents: -1 },
+  "creatorPoolCents must be a finite non-negative integer number of cents",
+  "negative pool",
+);
+expectCentsThrow(
+  { ...CENTS_GOLDEN, creatorPoolCents: 10.5 },
+  "creatorPoolCents must be a finite non-negative integer number of cents",
+  "fractional pool",
+);
+expectCentsThrow(
+  { ...CENTS_GOLDEN, complexityMultiplier: 1e308 },
+  "deposit computation overflowed: inputs too large",
+  "1e308 multiplier overflow",
+);
+expectCentsThrow(
+  { ...CENTS_GOLDEN, creatorPoolCents: 1.7e308, baseFeeCents: 1e308 },
+  "deposit computation overflowed: inputs too large",
+  "huge pool plus huge base overflow",
+);
+{
+  const zeroFee = calculateDepositCents({
+    creatorPoolCents: 500000,
+    baseFeeCents: 0,
+    complexityMultiplier: 1.0,
+    loyaltyDiscountCents: 0,
+    oracleFeeCents: 0,
+  });
+  if (zeroFee.adjustedBaseFeeCents !== 0 || zeroFee.depositCents !== 500000) {
+    throw new Error(
+      "benchmark self-check failed: calculateDepositCents zero-fee boundary",
+    );
+  }
+}
+
+// ---------------------------------------------------------------------
 // dispatchArbitration fixture: a fixed DISPUTED escrow prefix and a
 // threshold-reached 5/9 quorum, both rebuilt on every iteration
 // because the dispatch mutates the escrow (see the header: the
@@ -12879,6 +13080,12 @@ function benchCalculateDeposit(): number {
   }, ITERATIONS);
 }
 
+function benchCalculateDepositCents(): number {
+  return measure(() => {
+    checkCalculateDepositCentsCorpus();
+  }, ITERATIONS);
+}
+
 function benchDispatchArbitration(): number {
   return measure(() => {
     checkDispatchArbitration();
@@ -14060,6 +14267,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "expireOverdueEscrows x subscribe (batch 100 escrows, 40 notifications)", ops: benchExpireOverdueEscrowsSubscribe() },
   { path: "allowedEvents (all 8 states)", ops: benchAllowedEvents() },
   { path: "calculateDeposit (3-shape corpus)", ops: benchCalculateDeposit() },
+  { path: "calculateDepositCents (3-shape corpus, integer cents)", ops: benchCalculateDepositCents() },
   { path: "dispatchArbitration (refund, rebuilt fixture)", ops: benchDispatchArbitration() },
   { path: "isOverdue (4-case corpus)", ops: benchIsOverdue() },
   { path: "setDeadline + clearDeadline (FUNDED escrow write cycle)", ops: benchDeadlineWriteCycle() },

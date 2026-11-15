@@ -18,6 +18,17 @@ version changes.
 
 ### Added
 
+- Benchmark row for `calculateDepositCents` (2026-11-15, backlog
+  #1156): one measured op runs the fixed 3-shape corpus (the golden
+  vector in cents, a complexity-1.5 case, and a large-pool case)
+  through `calculateDepositCents` and checks each returned
+  `adjustedBaseFeeCents` and `depositCents` against hand-computed
+  expectations on every iteration; the ±0¢ agreement with
+  `calculateDeposit` on the same inputs, the negative and
+  fractional-cent rejections, the 1e308-scale overflow rejections,
+  and the zero-fee boundary are pinned once, outside the timed
+  loop. Measured ~240,571 ops/sec (4.16 µs/op) on a 2026-11-15 run.
+
 - Benchmark row for the settlement webhook outbox `redrive` + redelivery
   (2026-11-15, backlog #1153): one measured op drives the settled
   report's own signed webhook event to the dead letter (3 failures at

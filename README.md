@@ -2319,6 +2319,18 @@ deposit 6,190), and a large-pool case (pool 1,000,000 / base
 5,625, deposit 1,005,375) — with each returned `adjustedBaseFee`
 and `deposit` checked against hand-computed expectations on
 every iteration), and
+integer-cents fee calculation (`calculateDepositCents` over the
+exact cents mirror of the same 3-shape corpus — the golden vector
+in cents (pool 1,000,000 / base 60,000 / complexity 1.0 / loyalty
+3,000 / oracle 6,000 → deposit 1,063,000), a complexity-1.5 case
+(pool 500,000 / base 80,000 / loyalty 5,000 / oracle 4,000 →
+adjusted 120,000, deposit 619,000), and a large-pool case (pool
+100,000,000 / base 250,000 / complexity 2.25 / loyalty 50,000 /
+oracle 25,000 → adjusted 562,500, deposit 100,537,500) — with
+each returned `adjustedBaseFeeCents` and `depositCents` checked
+against hand-computed expectations on every iteration, and the
+±0¢ agreement with `calculateDeposit` on the same inputs pinned
+once, outside the timed loop), and
 arbitration dispatch (`dispatchArbitration` with outcome
 `"refund"` over a DISPUTED escrow rebuilt from its fixed 2-entry
 history prefix via `Escrow.fromHistory` and a threshold-reached
@@ -2894,6 +2906,7 @@ One real run on 2026-11-04:
 | expireOverdueEscrows x subscribe (batch 100 escrows, 40 notifications) | ~652.4 ops/sec (1532.76 µs/op) |
 | allowedEvents (all 8 states) | ~1,284,779 ops/sec (0.78 µs/op) |
 | calculateDeposit (3-shape corpus) | ~354,341 ops/sec (2.82 µs/op) |
+| calculateDepositCents (3-shape corpus, integer cents) | ~240,571 ops/sec (4.16 µs/op) |
 | dispatchArbitration (refund, rebuilt fixture) | ~37,687 ops/sec (26.53 µs/op) |
 | isOverdue (4-case corpus) | ~1,332,227 ops/sec (0.75 µs/op) |
 | setDeadline + clearDeadline (FUNDED escrow write cycle) | ~386,044 ops/sec (2.59 µs/op) |
@@ -2929,7 +2942,7 @@ and the settlePartialRelease row above were measured on
 escrowsByEvent row above were measured on 2026-11-06 runs; the
 settlePartialReleases row above was measured on a 2026-11-08 run; the
 escrowsByFilters and settlementAging rows above were measured on a
-2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the signed-snapshot rows above were measured on a 2026-11-11 run; the diffSettlementReports row above was measured on a 2026-11-13 run; the renderSettlementReportsSummary and diffSettlementReportsSummaries rows above were measured on a 2026-11-13 run; the unreconciledSettlements row above was measured on a 2026-11-14 run; the stateAt row above was measured on a 2026-11-15 run; the quorum signed-snapshot round-trip row above was measured on a 2026-11-15 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
+2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the signed-snapshot rows above were measured on a 2026-11-11 run; the diffSettlementReports row above was measured on a 2026-11-13 run; the renderSettlementReportsSummary and diffSettlementReportsSummaries rows above were measured on a 2026-11-13 run; the unreconciledSettlements row above was measured on a 2026-11-14 run; the stateAt row above was measured on a 2026-11-15 run; the quorum signed-snapshot round-trip row above was measured on a 2026-11-15 run; the calculateDepositCents row above was measured on a 2026-11-15 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
 came in mixed under shared-host load, so refreshing the whole
 table would misreport changes in paths these additions never
 touched.
