@@ -2882,6 +2882,16 @@ statement — the signer id is bound into the bytes, so a signature
 for dao-1 can never verify as dao-2's. The five pinned
 expectations are checked once at fixture build, outside the timed
 loop.
+The new `truncateOutboxError` row measures the #1167 outbox
+error-truncation guard as a cost path: one measured op truncates a
+fixed 3-case corpus — a short error, one exactly at the
+1,024-character cap, and a 10 KB error — and pins every result byte
+for byte: the short and at-cap errors pass through unchanged with
+no marker, and the 10 KB error truncates to exactly 1,024
+characters, keeping its first 1,012 characters and ending with the
+`…[truncated]` marker. Outside the timed loop, the empty error
+passing through and an error one character over the cap truncating
+to exactly the cap with the marker are pinned.
 One real run on 2026-11-04:
 
 | path | throughput |
@@ -3006,6 +3016,7 @@ One real run on 2026-11-04:
 | formatMinorUnits x parseMinorUnits round-trip (12-vector corpus) | ~167,931 ops/sec (5.95 µs/op) |
 | quorum exportSignedQuorumSnapshot x restoreSignedQuorumSnapshot round-trip (7 approvals of 9, JSON round-trip) | ~4,377 ops/sec (228.48 µs/op) |
 | approvalStatement (5 of 9 signers, canonical statement bytes) | ~37,546 ops/sec (26.63 µs/op) |
+| truncateOutboxError (3-case corpus, short/at-cap/10 KB) | ~1,749,607 ops/sec (0.57 µs/op) |
 
 The two batch-filter rows, the escrowsApproachingDeadline row,
 and the settlePartialRelease row above were measured on
@@ -3013,7 +3024,7 @@ and the settlePartialRelease row above were measured on
 escrowsByEvent row above were measured on 2026-11-06 runs; the
 settlePartialReleases row above was measured on a 2026-11-08 run; the
 escrowsByFilters and settlementAging rows above were measured on a
-2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the signed-snapshot rows above were measured on a 2026-11-11 run; the diffSettlementReports row above was measured on a 2026-11-13 run; the renderSettlementReportsSummary and diffSettlementReportsSummaries rows above were measured on a 2026-11-13 run; the unreconciledSettlements row above was measured on a 2026-11-14 run; the stateAt row above was measured on a 2026-11-15 run; the stateAtFromHistory row above was measured on a 2026-11-15 run; the formatMinorUnits x parseMinorUnits round-trip row above was measured on a 2026-11-15 run; the quorum signed-snapshot round-trip row above was measured on a 2026-11-15 run; the calculateDepositCents row above was measured on a 2026-11-15 run; the escrowsBySettlementRef row above was measured on a 2026-11-15 run; the parseSettlementReportsSummaryCsv and parseSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the renderSettlementReportsSummaryCsv and renderSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the approvalStatement row above was measured on a 2026-11-15 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
+2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the signed-snapshot rows above were measured on a 2026-11-11 run; the diffSettlementReports row above was measured on a 2026-11-13 run; the renderSettlementReportsSummary and diffSettlementReportsSummaries rows above were measured on a 2026-11-13 run; the unreconciledSettlements row above was measured on a 2026-11-14 run; the stateAt row above was measured on a 2026-11-15 run; the stateAtFromHistory row above was measured on a 2026-11-15 run; the formatMinorUnits x parseMinorUnits round-trip row above was measured on a 2026-11-15 run; the quorum signed-snapshot round-trip row above was measured on a 2026-11-15 run; the calculateDepositCents row above was measured on a 2026-11-15 run; the escrowsBySettlementRef row above was measured on a 2026-11-15 run; the parseSettlementReportsSummaryCsv and parseSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the renderSettlementReportsSummaryCsv and renderSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the approvalStatement row above was measured on a 2026-11-15 run; the truncateOutboxError row above was measured on a 2026-11-15 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
 came in mixed under shared-host load, so refreshing the whole
 table would misreport changes in paths these additions never
 touched.

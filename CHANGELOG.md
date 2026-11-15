@@ -18,6 +18,16 @@ version changes.
 
 ### Added
 
+- Benchmark row for `truncateOutboxError` (2026-11-15, backlog
+  #1167): one measured op truncates a fixed 3-case corpus (a short
+  error, one exactly at the 1,024-character cap, and a 10 KB error)
+  and pins every result byte for byte — the short and at-cap errors
+  pass through unchanged with no marker, and the 10 KB error
+  truncates to exactly 1,024 characters, keeping its first 1,012
+  characters and ending with the `…[truncated]` marker. Measured
+  ~1,749,607 ops/sec (0.57 µs/op) on a 2026-11-15 run (Node
+  v24.22.1, AMD EPYC 9D25).
+
 - Benchmark row for `approvalStatement` (2026-11-15, backlog
   #1166): one measured op constructs the canonical approval
   statement bytes for each of the 5 approvers of the fixed 9-signer
