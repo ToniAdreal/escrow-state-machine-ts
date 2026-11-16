@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { createHmac } from "node:crypto";
+import { createHmac, generateKeyPairSync, sign } from "node:crypto";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -170,7 +170,9 @@ import {
   DEMO_QUORUM_SIGNED_EXPIRED_NOW_MS,
   DEMO_QUORUM_SIGNED_EXPIRES_AT,
   DEMO_QUORUM_SIGNED_MAC_MISMATCH_ERROR,
+  DEMO_QUORUM_SIGNED_NO_KEY_ERROR,
   DEMO_QUORUM_SIGNED_SECRET,
+  DEMO_QUORUM_SIGNED_WRONG_KEY_ERROR,
   DEMO_QUORUM_SIGNED_WRONG_SECRET,
   DEMO_QUORUM_THRESHOLD,
   DEMO_REVOKE_FIRST_AT,
@@ -368,6 +370,7 @@ import {
   GENESIS_PREV_HASH,
   SettlementEventDedupe,
   allowedEvents,
+  approvalStatement,
   assertNonNegativeMoney,
   buildSettlementWebhook,
   createQuorum,
@@ -1598,10 +1601,10 @@ test("demo signed quorum snapshot segment is deterministic: two runs print byte-
       ls.indexOf(
         "Signed quorum snapshot (HMAC envelope — a rewritten snapshot fails at restore):",
       ),
-      // Ends at the time-travel segment (#1148), which now follows
+      // Ends at the signed-approvals segment (#1193), which now follows
       // this one — the blank line before it is the -1.
       ls.indexOf(
-        "Time travel (Escrow.stateAt — the state an escrow was in at a moment, read off the append-only audit history):",
+        "Signed quorum approvals (approveSigned — a vote counts only after its Ed25519 signature verifies):",
       ) - 1,
     );
   const a = await runDemo();
@@ -1615,6 +1618,173 @@ test("demo signed quorum snapshot segment is deterministic: two runs print byte-
   assert.deepEqual(
     a.quorumSignedEnvelope,
     b.quorumSignedEnvelope,
+  );
+});
+
+test("demo signed quorum approvals verify each vote, refuse a wrong-key signature, and refuse an unregistered signer", async () => {
+  const {
+    quorumSignedApprovalCount,
+    quorumSignedApprovalHasQuorum,
+    quorumSignedApprovalLog,
+    quorumSignedApprovalWrongKeyError,
+    quorumSignedApprovalNoKeyError,
+  } = await runDemo();
+
+  // Both signature-verified votes counted, at threshold.
+  assert.equal(quorumSignedApprovalCount, 2);
+  assert.equal(quorumSignedApprovalHasQuorum, true);
+  // The log marks both votes verified, at the fixed approval timestamps.
+  assert.deepEqual(quorumSignedApprovalLog, [
+    {
+      signerId: DEMO_QUORUM_SIGNERS[0],
+      at: DEMO_QUORUM_APPROVAL_ATS[0],
+      verified: true,
+    },
+    {
+      signerId: DEMO_QUORUM_SIGNERS[1],
+      at: DEMO_QUORUM_APPROVAL_ATS[1],
+      verified: true,
+    },
+  ]);
+  // A signature made with the wrong key is refused with the pinned
+  // error and records nothing; a signer with no registered key is
+  // refused before any verification is attempted.
+  assert.equal(
+    quorumSignedApprovalWrongKeyError,
+    DEMO_QUORUM_SIGNED_WRONG_KEY_ERROR,
+  );
+  assert.equal(
+    quorumSignedApprovalNoKeyError,
+    DEMO_QUORUM_SIGNED_NO_KEY_ERROR,
+  );
+  // Independent cross-check: the same three calls against a fresh
+  // quorum built directly from the library, with its own key pairs —
+  // the pinned errors are the library's own words, not the demo's.
+  const keyPair = generateKeyPairSync("ed25519");
+  const wrongKeyPair = generateKeyPairSync("ed25519");
+  const quorum = createQuorum({
+    threshold: DEMO_QUORUM_THRESHOLD,
+    signers: [...DEMO_QUORUM_SIGNERS],
+    now: () => Date.parse(DEMO_QUORUM_APPROVAL_ATS[0]),
+    signerPublicKeys: {
+      [DEMO_QUORUM_SIGNERS[0]]: keyPair.publicKey,
+    },
+  });
+  quorum.approveSigned(
+    DEMO_QUORUM_SIGNERS[0],
+    sign(
+      null,
+      approvalStatement(DEMO_QUORUM_SIGNERS[0]),
+      keyPair.privateKey,
+    ),
+  );
+  assert.equal(quorum.approvalCount(), 1);
+  assert.deepEqual(quorum.approvalLog(), [
+    {
+      signerId: DEMO_QUORUM_SIGNERS[0],
+      at: DEMO_QUORUM_APPROVAL_ATS[0],
+      verified: true,
+    },
+  ]);
+  assert.throws(
+    () =>
+      quorum.approveSigned(
+        DEMO_QUORUM_SIGNERS[0],
+        sign(
+          null,
+          approvalStatement(DEMO_QUORUM_SIGNERS[0]),
+          wrongKeyPair.privateKey,
+        ),
+      ),
+    /quorum signature verification failed for signer "arb-1"/,
+  );
+  assert.equal(quorum.approvalCount(), 1);
+  assert.equal(quorum.approvalLog().length, 1);
+  assert.throws(
+    () =>
+      quorum.approveSigned(
+        DEMO_QUORUM_SIGNERS[1],
+        sign(
+          null,
+          approvalStatement(DEMO_QUORUM_SIGNERS[1]),
+          wrongKeyPair.privateKey,
+        ),
+      ),
+    /quorum approveSigned: no public key registered for signer "arb-2"/,
+  );
+  assert.equal(quorum.approvalCount(), 1);
+  assert.equal(quorum.approvalLog().length, 1);
+});
+
+test("demo lines print the signed quorum approvals segment after the signed quorum snapshot segment", async () => {
+  const { lines } = await runDemo();
+  const text = lines.join("\n");
+
+  assert.ok(
+    text.includes(
+      "Signed quorum approvals (approveSigned — a vote counts only after its Ed25519 signature verifies):",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  quorum: ${DEMO_QUORUM_THRESHOLD}-of-${DEMO_QUORUM_SIGNERS.length} arbitrators (${DEMO_QUORUM_SIGNERS.join(", ")}) — ${DEMO_QUORUM_SIGNERS[0]} and ${DEMO_QUORUM_SIGNERS[1]} registered Ed25519 public keys, ${DEMO_QUORUM_SIGNERS[2]} has none`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  approveSigned ${DEMO_QUORUM_SIGNERS[0]} quorum 1/${DEMO_QUORUM_THRESHOLD} — hasQuorum: false, log verified: [true]`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  approveSigned ${DEMO_QUORUM_SIGNERS[1]} (wrong key) rejected: ${DEMO_QUORUM_SIGNED_WRONG_KEY_ERROR} — no vote recorded (quorum still 1/${DEMO_QUORUM_THRESHOLD}, log still 1 entry)`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  approveSigned ${DEMO_QUORUM_SIGNERS[2]} (no key) rejected: ${DEMO_QUORUM_SIGNED_NO_KEY_ERROR}`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  approveSigned ${DEMO_QUORUM_SIGNERS[1]} quorum 2/${DEMO_QUORUM_THRESHOLD} — hasQuorum: true, log verified: [true, true]`,
+    ),
+  );
+  // Position: after the signed quorum snapshot segment, before the
+  // time-travel segment.
+  const signedSnapshotAt = text.indexOf(
+    "Signed quorum snapshot (HMAC envelope",
+  );
+  const signedApprovalsAt = text.indexOf(
+    "Signed quorum approvals (approveSigned",
+  );
+  const stateAtAt = text.indexOf("Time travel (Escrow.stateAt");
+  assert.ok(
+    signedSnapshotAt < signedApprovalsAt && signedApprovalsAt < stateAtAt,
+  );
+});
+
+test("demo signed quorum approvals segment is deterministic: two runs print byte-identical lines", async () => {
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf(
+        "Signed quorum approvals (approveSigned — a vote counts only after its Ed25519 signature verifies):",
+      ),
+      ls.indexOf(
+        "Time travel (Escrow.stateAt — the state an escrow was in at a moment, read off the append-only audit history):",
+      ) - 1,
+    );
+  const a = await runDemo();
+  const b = await runDemo();
+  const segA = segment(a.lines);
+  // Header + quorum line + valid-vote line + wrong-key line + no-key
+  // line + second-vote line; the key pairs are fresh on every run but
+  // never printed, so no normalization is needed.
+  assert.equal(segA.length, 6);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(
+    a.quorumSignedApprovalLog,
+    b.quorumSignedApprovalLog,
   );
 });
 

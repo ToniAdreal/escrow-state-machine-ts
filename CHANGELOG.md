@@ -18,6 +18,18 @@ version changes.
 
 ### Added
 
+- CLI demo gains a signed quorum approvals segment
+  (2026-11-16, backlog #1193): a fresh 2-of-3 quorum with Ed25519 public
+  keys registered for arb-1 and arb-2 collects votes with
+  `approveSigned()` — a valid signature counts and marks the log entry
+  `verified: true`, a signature made with the wrong key is refused and
+  records nothing, and arb-3, with no registered key, cannot use
+  `approveSigned()` at all. The key pairs are generated fresh on every
+  run and only the verdicts are printed, never a key or a signature.
+  `DemoResult` exposes the count, the quorum flag, the verified log, and
+  both pinned errors; three new demo tests pin the fixtures, the printed
+  lines, the segment order, and two-run byte-identical output.
+
 - CLI demo gains a `SettlementEventDedupe.has` read-only-probe segment
   (2026-11-16, backlog #1191): a fresh dedupe on the same fixed clock
   and 1-hour TTL as the receiver-dedupe segment probes one fixed id —

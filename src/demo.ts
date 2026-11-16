@@ -61,7 +61,16 @@
  * sealed with a past `expiresAt` and a restore under the wrong
  * secret are each refused with their pinned errors — the
  * tamper-evident restart, all sides asserted outside the printing
- * against hand-pinned expectations. A time-travel segment then
+ * against hand-pinned expectations. A signed-approvals segment then
+ * shows the other half of quorum trust: a fresh 2-of-3 quorum with
+ * Ed25519 public keys registered for two of the three arbitrators
+ * collects votes with `approveSigned()` — a valid signature counts
+ * and marks the log entry `verified: true`, a signature made with
+ * the wrong key is refused and records nothing, and the signer with
+ * no registered key cannot use `approveSigned()` at all — the key
+ * pairs are generated fresh on every run and only the verdicts are
+ * printed, never a key or a signature, so the output stays
+ * byte-identical. A time-travel segment then
  * walks a fresh escrow through FUND -> SUBMIT_MILESTONE ->
  * PARTIAL_RELEASE on fixed timestamps and asks `stateAt` what
  * state it was in at five fixed moments — before the first entry
@@ -470,7 +479,7 @@
  * byte-identical output.
  */
 
-import { createHmac } from "node:crypto";
+import { createHmac, generateKeyPairSync, sign } from "node:crypto";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { readmeDiagramInSync } from "./diagram.js";
@@ -482,6 +491,7 @@ import {
   actOnStaleEscrows,
   assertNonNegativeMoney,
   allowedEvents,
+  approvalStatement,
   buildSettlementReport,
   buildSettlementReports,
   buildSettlementWebhook,
@@ -744,6 +754,22 @@ export const DEMO_QUORUM_SIGNED_MAC_MISMATCH_ERROR =
 /** Error message of restoring the segment's expired envelope. */
 export const DEMO_QUORUM_SIGNED_EXPIRED_ERROR =
   `Quorum: signed snapshot envelope expired at ${DEMO_QUORUM_SIGNED_EXPIRES_AT}`;
+/**
+ * Error message of a signed-approvals `approveSigned()` call whose
+ * signature was made with a different key than the signer's
+ * registered public key (backlog #1193): the verification fails and
+ * nothing is recorded — the bad vote never counts, never lands in
+ * the log, and never consumes anything.
+ */
+export const DEMO_QUORUM_SIGNED_WRONG_KEY_ERROR =
+  `quorum signature verification failed for signer ${JSON.stringify(DEMO_QUORUM_SIGNERS[1])}`;
+/**
+ * Error message of a signed-approvals `approveSigned()` call by a
+ * signer with no registered public key (backlog #1193): the call is
+ * refused before any verification is attempted.
+ */
+export const DEMO_QUORUM_SIGNED_NO_KEY_ERROR =
+  `quorum approveSigned: no public key registered for signer ${JSON.stringify(DEMO_QUORUM_SIGNERS[2])}`;
 
 /**
  * Fixed fixtures for the time-travel segment (backlog #1148): a
@@ -2987,6 +3013,33 @@ export interface DemoResult {
    * reads exactly like tampering, and no quorum is produced.
    */
   quorumSignedWrongSecretError: string;
+  /**
+   * Counting state of the signed-approvals segment's quorum (a fresh
+   * 2-of-3, Ed25519 public keys registered for arb-1 and arb-2):
+   * both signature-verified votes counted, at threshold.
+   */
+  quorumSignedApprovalCount: number;
+  quorumSignedApprovalHasQuorum: boolean;
+  /**
+   * That quorum's approval log, in record order: both entries carry
+   * `verified: true` at the fixed approval timestamps — the only
+   * thing distinguishing a verified vote from an unverified claim
+   * in the log.
+   */
+  quorumSignedApprovalLog: ApprovalLogEntry[];
+  /**
+   * Error message of arb-2's `approveSigned()` with a signature made
+   * by a different key: exactly
+   * {@link DEMO_QUORUM_SIGNED_WRONG_KEY_ERROR} — the bad vote
+   * records nothing, so the count and the log are unchanged.
+   */
+  quorumSignedApprovalWrongKeyError: string;
+  /**
+   * Error message of arb-3's `approveSigned()` with no registered
+   * public key: exactly {@link DEMO_QUORUM_SIGNED_NO_KEY_ERROR} —
+   * refused before any verification is attempted.
+   */
+  quorumSignedApprovalNoKeyError: string;
   /**
    * The time-travel segment's escrow ({@link DEMO_STATE_AT_ESCROW_ID}):
    * FUND -> SUBMIT_MILESTONE -> PARTIAL_RELEASE at the fixed
@@ -5692,6 +5745,151 @@ export async function runDemo(): Promise<DemoResult> {
     `  original envelope restores: approvalCount ${quorumSignedRestoredApprovalCount}/${DEMO_QUORUM_THRESHOLD} — hasQuorum: ${quorumSignedRestoredHasQuorum}, approvals [${quorumSignedRestoredApprovals.join(", ")}] identical to the sealed snapshot`,
     `  expired envelope rejected: sealed with expiresAt ${DEMO_QUORUM_SIGNED_EXPIRES_AT}, restore at ${new Date(DEMO_QUORUM_SIGNED_EXPIRED_NOW_MS).toISOString()} throws "${quorumSignedExpiredError}"`,
     `  wrong secret rejected: restore under a different secret throws "${quorumSignedWrongSecretError}" — a wrong key reads exactly like tampering`,
+  );
+
+  // --- Signed quorum approvals: approveSigned() verifies each vote ---
+  // The envelope above protects a quorum's votes at rest; it says
+  // nothing about how a vote got in. A FRESH quorum (2-of-3, same
+  // signer ids as the dispute quorum, its own injected clock on the
+  // same fixed approval timestamps) registers Ed25519 public keys
+  // for arb-1 and arb-2 — arb-3 has none — and collects votes with
+  // `approveSigned()`: each signer signs the canonical statement
+  // `escrow-quorum:approve:<signerId>` (see the exported
+  // `approvalStatement()` helper). arb-1's valid signature counts
+  // and its log entry is marked `verified: true`; arb-2's signature
+  // made with a different key is refused with the pinned
+  // verification error and records nothing (count and log length
+  // unchanged); arb-3, with no registered key, cannot use
+  // `approveSigned()` at all and is refused with the pinned no-key
+  // error; arb-2's valid signature then counts and the quorum
+  // reaches threshold with both entries verified. The key pairs are
+  // generated fresh on every run (Ed25519, demo-only, outside any
+  // timing) — only the verification verdicts are printed, never a
+  // key or a signature, so the segment prints byte-identical lines
+  // on every run. Hand-pinned expectations, asserted HERE, outside
+  // the printing: a bad signature that counted, an unregistered
+  // signer that voted, or a missing `verified` flag would fail the
+  // demo itself, not just a test. The clock never advances past the
+  // fixed fixtures, so zero network, zero randomness, and no wall
+  // clock enter the segment.
+  let signedApprovalTick = 0;
+  const signedApprovalKeyPairs = {
+    [DEMO_QUORUM_SIGNERS[0]]: generateKeyPairSync("ed25519"),
+    [DEMO_QUORUM_SIGNERS[1]]: generateKeyPairSync("ed25519"),
+  };
+  const signedApprovalWrongKeyPair = generateKeyPairSync("ed25519");
+  const signedApprovalConfig: QuorumConfig = {
+    threshold: DEMO_QUORUM_THRESHOLD,
+    signers: [...DEMO_QUORUM_SIGNERS],
+    now: () =>
+      Date.parse(
+        DEMO_QUORUM_APPROVAL_ATS[
+          Math.min(
+            signedApprovalTick++,
+            DEMO_QUORUM_APPROVAL_ATS.length - 1,
+          )
+        ],
+      ),
+    signerPublicKeys: {
+      [DEMO_QUORUM_SIGNERS[0]]:
+        signedApprovalKeyPairs[DEMO_QUORUM_SIGNERS[0]].publicKey,
+      [DEMO_QUORUM_SIGNERS[1]]:
+        signedApprovalKeyPairs[DEMO_QUORUM_SIGNERS[1]].publicKey,
+    },
+  };
+  const signedApprovalQuorum = createQuorum(signedApprovalConfig);
+  signedApprovalQuorum.approveSigned(
+    DEMO_QUORUM_SIGNERS[0],
+    sign(
+      null,
+      approvalStatement(DEMO_QUORUM_SIGNERS[0]),
+      signedApprovalKeyPairs[DEMO_QUORUM_SIGNERS[0]].privateKey,
+    ),
+  );
+  const quorumSignedApprovalCountAfterFirst =
+    signedApprovalQuorum.approvalCount();
+  const quorumSignedApprovalLogAfterFirst =
+    signedApprovalQuorum.approvalLog();
+  let quorumSignedApprovalWrongKeyError = "";
+  try {
+    signedApprovalQuorum.approveSigned(
+      DEMO_QUORUM_SIGNERS[1],
+      sign(
+        null,
+        approvalStatement(DEMO_QUORUM_SIGNERS[1]),
+        signedApprovalWrongKeyPair.privateKey,
+      ),
+    );
+  } catch (err) {
+    quorumSignedApprovalWrongKeyError =
+      err instanceof Error ? err.message : String(err);
+  }
+  const quorumSignedApprovalCountAfterWrongKey =
+    signedApprovalQuorum.approvalCount();
+  const quorumSignedApprovalLogAfterWrongKey =
+    signedApprovalQuorum.approvalLog();
+  let quorumSignedApprovalNoKeyError = "";
+  try {
+    signedApprovalQuorum.approveSigned(
+      DEMO_QUORUM_SIGNERS[2],
+      sign(
+        null,
+        approvalStatement(DEMO_QUORUM_SIGNERS[2]),
+        signedApprovalWrongKeyPair.privateKey,
+      ),
+    );
+  } catch (err) {
+    quorumSignedApprovalNoKeyError =
+      err instanceof Error ? err.message : String(err);
+  }
+  signedApprovalQuorum.approveSigned(
+    DEMO_QUORUM_SIGNERS[1],
+    sign(
+      null,
+      approvalStatement(DEMO_QUORUM_SIGNERS[1]),
+      signedApprovalKeyPairs[DEMO_QUORUM_SIGNERS[1]].privateKey,
+    ),
+  );
+  const quorumSignedApprovalCount = signedApprovalQuorum.approvalCount();
+  const quorumSignedApprovalHasQuorum = signedApprovalQuorum.hasQuorum();
+  const quorumSignedApprovalLog = [...signedApprovalQuorum.approvalLog()];
+  if (
+    quorumSignedApprovalCountAfterFirst !== 1 ||
+    quorumSignedApprovalLogAfterFirst.length !== 1 ||
+    quorumSignedApprovalLogAfterFirst[0].verified !== true ||
+    quorumSignedApprovalWrongKeyError !==
+      DEMO_QUORUM_SIGNED_WRONG_KEY_ERROR ||
+    quorumSignedApprovalCountAfterWrongKey !== 1 ||
+    quorumSignedApprovalLogAfterWrongKey.length !== 1 ||
+    quorumSignedApprovalNoKeyError !== DEMO_QUORUM_SIGNED_NO_KEY_ERROR ||
+    quorumSignedApprovalCount !== DEMO_QUORUM_THRESHOLD ||
+    quorumSignedApprovalHasQuorum !== true ||
+    JSON.stringify(quorumSignedApprovalLog) !==
+      JSON.stringify([
+        {
+          signerId: DEMO_QUORUM_SIGNERS[0],
+          at: DEMO_QUORUM_APPROVAL_ATS[0],
+          verified: true,
+        },
+        {
+          signerId: DEMO_QUORUM_SIGNERS[1],
+          at: DEMO_QUORUM_APPROVAL_ATS[1],
+          verified: true,
+        },
+      ])
+  ) {
+    throw new Error(
+      "demo fixture broken: signed quorum approvals segment does not match the pinned shape (fresh 2-of-3 quorum with Ed25519 keys registered for arb-1 and arb-2, arb-3 unregistered; arb-1's valid signature counts with a verified log entry; arb-2's wrong-key signature is refused with the pinned verification error and records nothing; arb-3's approveSigned is refused with the pinned no-key error; arb-2's valid signature then counts and the quorum reaches threshold with both log entries verified at the fixed approval timestamps)",
+    );
+  }
+  lines.push(
+    "",
+    "Signed quorum approvals (approveSigned — a vote counts only after its Ed25519 signature verifies):",
+    `  quorum: ${DEMO_QUORUM_THRESHOLD}-of-${DEMO_QUORUM_SIGNERS.length} arbitrators (${DEMO_QUORUM_SIGNERS.join(", ")}) — ${DEMO_QUORUM_SIGNERS[0]} and ${DEMO_QUORUM_SIGNERS[1]} registered Ed25519 public keys, ${DEMO_QUORUM_SIGNERS[2]} has none`,
+    `  approveSigned ${DEMO_QUORUM_SIGNERS[0]} quorum ${quorumSignedApprovalCountAfterFirst}/${DEMO_QUORUM_THRESHOLD} — hasQuorum: false, log verified: [true]`,
+    `  approveSigned ${DEMO_QUORUM_SIGNERS[1]} (wrong key) rejected: ${quorumSignedApprovalWrongKeyError} — no vote recorded (quorum still ${quorumSignedApprovalCountAfterWrongKey}/${DEMO_QUORUM_THRESHOLD}, log still ${quorumSignedApprovalLogAfterWrongKey.length} entry)`,
+    `  approveSigned ${DEMO_QUORUM_SIGNERS[2]} (no key) rejected: ${quorumSignedApprovalNoKeyError}`,
+    `  approveSigned ${DEMO_QUORUM_SIGNERS[1]} quorum ${quorumSignedApprovalCount}/${DEMO_QUORUM_THRESHOLD} — hasQuorum: ${quorumSignedApprovalHasQuorum}, log verified: [${quorumSignedApprovalLog.map((entry) => String(entry.verified)).join(", ")}]`,
   );
 
   // --- Time travel: Escrow.stateAt(time) over a fixed audit history ---
@@ -11780,6 +11978,11 @@ export async function runDemo(): Promise<DemoResult> {
     quorumSignedRestoredApprovals,
     quorumSignedExpiredError,
     quorumSignedWrongSecretError,
+    quorumSignedApprovalCount,
+    quorumSignedApprovalHasQuorum,
+    quorumSignedApprovalLog,
+    quorumSignedApprovalWrongKeyError,
+    quorumSignedApprovalNoKeyError,
     stateAtEscrow,
     stateAtBeforeFund,
     stateAtAtFund,
