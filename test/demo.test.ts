@@ -39,6 +39,7 @@ import {
   DEMO_KEYED_BATCH_WRONG_KEY_ESCROW_ID,
   DEMO_DEDUPE_CLEAR_EVENT_ID,
   DEMO_DEDUPE_CLEAR_START_MS,
+  DEMO_DEDUPE_HAS_EVENT_ID,
   DEMO_DEPOSIT_CAP_ESCROW_ID,
   DEMO_DEPOSIT_CAP_FIRST_FUND_AMOUNT,
   DEMO_DEPOSIT_CAP_LOCKED_TOTAL,
@@ -1182,6 +1183,91 @@ test("demo lines print the receiver dedupe section", async () => {
   const dedupeAt = text.indexOf("Receiver dedupe (SettlementEventDedupe");
   const disputeAt = text.indexOf("Dispute branch (DISPUTE");
   assert.ok(webhookAt < dedupeAt && dedupeAt < disputeAt);
+});
+
+test("demo dedupe has probe asks without recording: unseen, then seen with stats untouched, then expired without renewal or revival", async () => {
+  const {
+    dedupeHasUnseen,
+    dedupeHasFirstRecord,
+    dedupeHasStatsAfterRecord,
+    dedupeHasSeen,
+    dedupeHasSeenAgain,
+    dedupeHasStatsAfterProbes,
+    dedupeHasExpired,
+    dedupeHasRerecord,
+    dedupeHasStatsFinal,
+    lines,
+  } = await runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned expectations — written from the documented `has()`
+  // semantics in src/webhooks.ts (the probe never mutates), never
+  // derived by calling `has` itself, and cross-checked against
+  // test/settlementEventDedupeHas.test.ts, which pins the same
+  // shapes directly on the store.
+  assert.equal(DEMO_DEDUPE_HAS_EVENT_ID, "evt_demo_dedupe_has_001");
+  assert.equal(dedupeHasUnseen, false);
+  assert.equal(dedupeHasFirstRecord, false);
+  assert.deepEqual(dedupeHasStatsAfterRecord, {
+    size: 1,
+    hits: 0,
+    misses: 1,
+    evictions: 0,
+  });
+  assert.equal(dedupeHasSeen, true);
+  assert.equal(dedupeHasSeenAgain, true);
+  // Both probes left the counters exactly where the recording put
+  // them — a probe neither records, nor refreshes, nor counts.
+  assert.deepEqual(dedupeHasStatsAfterProbes, {
+    size: 1,
+    hits: 0,
+    misses: 1,
+    evictions: 0,
+  });
+  // The clock advanced by exactly the TTL from the record time, so
+  // the id expired despite the two probes in between (no renewal),
+  // and the re-record after the expired probe still counts as new
+  // (no revival).
+  assert.equal(dedupeHasExpired, false);
+  assert.equal(dedupeHasRerecord, false);
+  assert.deepEqual(dedupeHasStatsFinal, {
+    size: 1,
+    hits: 0,
+    misses: 2,
+    evictions: 0,
+  });
+  // Every printed line verbatim, in order — the segment sits
+  // between the receiver-dedupe segment and the Retry-After
+  // segment, the check-before-verify half of the same webhook
+  // retry story.
+  assert.match(
+    text,
+    /Dedupe read-only probe \(SettlementEventDedupe\.has on a fixed clock\):/,
+  );
+  assert.ok(
+    text.includes(
+      `  has(${DEMO_DEDUPE_HAS_EVENT_ID}) before any record: false (unseen — the probe recorded nothing)`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  checkAndRecord(${DEMO_DEDUPE_HAS_EVENT_ID}): false (first sighting, recorded)`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  has(${DEMO_DEDUPE_HAS_EVENT_ID}): true (seen — and again: true); stats size 1, hits 0, misses 1, evictions 0 — unchanged by the probes`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  fixed clock +${DEMO_DEDUPE_TTL_MS} ms = TTL: has(${DEMO_DEDUPE_HAS_EVENT_ID}): false (expired — the probes did not renew the record); checkAndRecord: false (new again — the expired probe did not revive it)`,
+    ),
+  );
+  const dedupeAt = text.indexOf("Receiver dedupe (SettlementEventDedupe");
+  const probeAt = text.indexOf("Dedupe read-only probe (SettlementEventDedupe.has");
+  const retryAt = text.indexOf("Retry-After parsing (parseRetryAfter");
+  assert.ok(dedupeAt < probeAt && probeAt < retryAt);
 });
 
 test("demo shows Retry-After parsing: both hint forms normalize to milliseconds on a fixed clock", async () => {

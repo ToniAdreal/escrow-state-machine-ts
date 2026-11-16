@@ -29,7 +29,15 @@
  * that webhook's `eventId` through `SettlementEventDedupe` on a fixed
  * clock: the first delivery is new (booked), an immediate redelivery
  * is a duplicate (skipped), and after the clock advances by exactly
- * the TTL the same id counts as new again. The sender side then
+ * the TTL the same id counts as new again. The receiver side then
+ * probes that same story read-only: a fresh dedupe on the same fixed
+ * clock answers `has` on one fixed id — unseen before any record
+ * (and the record after still counts as first sighting), seen on
+ * both probes after the record with the counters untouched, and
+ * unseen again once the clock advances by exactly the TTL, the
+ * probes having renewed nothing and the expired probe having
+ * revived nothing — the check-before-verify probe a receiver runs
+ * before spending a signature verification. The sender side then
  * parses `Retry-After` hints with `parseRetryAfter` on the same
  * fixed clock: a fixed corpus (delay-seconds, a whitespace-padded
  * value, future and past HTTP-dates, a signed value, a garbage
@@ -593,6 +601,37 @@ export const DEMO_WEBHOOK_AT = "2026-03-06T08:17:00.000Z";
  */
 export const DEMO_DEDUPE_TTL_MS = 3_600_000;
 export const DEMO_DEDUPE_START_MS = Date.parse(DEMO_WEBHOOK_AT);
+
+/**
+ * Dedupe read-only-probe fixtures for the segment right after the
+ * receiver-dedupe segment: a fresh `SettlementEventDedupe` on the
+ * same fixed clock (starting at {@link DEMO_DEDUPE_START_MS}, the
+ * webhook's own `at`) and 1-hour TTL probes one fixed eventId.
+ * Hand-pinned expectations — written from the documented `has()`
+ * semantics in src/webhooks.ts (the probe never mutates: an unseen
+ * id is not recorded, a seen id's LRU recency is not refreshed,
+ * expired entries are treated as unseen without being reclaimed,
+ * and the observability counters are untouched), never derived by
+ * calling `has` itself, and cross-checked against
+ * test/settlementEventDedupeHas.test.ts, which pins the same
+ * shapes (unseen probe, seen probe, counters untouched, expiry at
+ * exactly the TTL, no revival):
+ * - `has` on the unseen id is `false`, and the following first
+ *   `checkAndRecord` is still `false` (the probe recorded nothing)
+ * - after the record, `stats()` reads exactly
+ *   `{size: 1, hits: 0, misses: 1, evictions: 0}`
+ * - two `has` probes then both read `true`, and `stats()` still
+ *   reads exactly `{size: 1, hits: 0, misses: 1, evictions: 0}`
+ *   (the probes moved nothing)
+ * - after the clock advances by exactly the TTL, `has` reads
+ *   `false` (the probes did not renew the record) and the
+ *   following `checkAndRecord` is still `false` (the expired
+ *   probe did not revive it), leaving `stats()` at exactly
+ *   `{size: 1, hits: 0, misses: 2, evictions: 0}`
+ * The clock advances only by exactly the TTL inside the segment,
+ * so no wall clock, randomness, or network enters it.
+ */
+export const DEMO_DEDUPE_HAS_EVENT_ID = "evt_demo_dedupe_has_001";
 
 /**
  * Fixed clock for the Retry-After parsing segment: the same instant
@@ -2809,6 +2848,57 @@ export interface DemoResult {
    * its stats read hits 1 / misses 2 / size 1.
    */
   webhookDedupe: SettlementEventDedupe;
+  /**
+   * Read-only `has` probe on the fixed id
+   * {@link DEMO_DEDUPE_HAS_EVENT_ID}, probed on a fresh dedupe
+   * before any record: `false` — the probe recorded nothing, so
+   * the first `checkAndRecord` after it still counts as a first
+   * sighting.
+   */
+  dedupeHasUnseen: boolean;
+  /**
+   * First `checkAndRecord` of the fixed id after the unseen probe:
+   * `false` — the probe did not pre-record it.
+   */
+  dedupeHasFirstRecord: boolean;
+  /**
+   * `stats()` of the probe dedupe captured right after the record:
+   * exactly `{size: 1, hits: 0, misses: 1, evictions: 0}` — the
+   * baseline the probes below must not move.
+   */
+  dedupeHasStatsAfterRecord: SettlementEventDedupeStats;
+  /**
+   * `has` on the fixed id after the record: `true` — seen, and
+   * the probe left the store untouched.
+   */
+  dedupeHasSeen: boolean;
+  /**
+   * A second `has` on the same id: still `true` — the probe does
+   * not consume the record.
+   */
+  dedupeHasSeenAgain: boolean;
+  /**
+   * `stats()` of the probe dedupe captured after both probes:
+   * still exactly `{size: 1, hits: 0, misses: 1, evictions: 0}` —
+   * the probes moved no counter.
+   */
+  dedupeHasStatsAfterProbes: SettlementEventDedupeStats;
+  /**
+   * `has` on the fixed id after the clock advances by exactly the
+   * TTL: `false` — the probes did not renew the record.
+   */
+  dedupeHasExpired: boolean;
+  /**
+   * `checkAndRecord` of the fixed id after the expired probe:
+   * `false` — the expired probe did not revive the record; the
+   * id counts as new again.
+   */
+  dedupeHasRerecord: boolean;
+  /**
+   * `stats()` of the probe dedupe captured after the re-record:
+   * exactly `{size: 1, hits: 0, misses: 2, evictions: 0}`.
+   */
+  dedupeHasStatsFinal: SettlementEventDedupeStats;
   /**
    * Sender-side `parseRetryAfter` results over the fixed corpus, in
    * corpus order, parsed against {@link DEMO_RETRY_AFTER_NOW_MS}:
@@ -5208,6 +5298,74 @@ export async function runDemo(): Promise<DemoResult> {
     `  delivery 2: eventId ${webhook.payload.eventId} — checkAndRecord: ${dedupeSecond} (duplicate, skip — no second booking)`,
     `  delivery 3 (fixed clock +${DEMO_DEDUPE_TTL_MS} ms = TTL): eventId ${webhook.payload.eventId} — checkAndRecord: ${dedupeAfterTtl} (new event again, TTL expired)`,
     `  dedupe stats: size ${dedupeStats.size}, hits ${dedupeStats.hits}, misses ${dedupeStats.misses}, evictions ${dedupeStats.evictions}`,
+  );
+
+  // --- Dedupe read-only probe: `has` asks without recording ---
+  // `checkAndRecord` is the consuming half of the receiver story:
+  // it books an id the moment it is seen, so probing an unverified
+  // delivery through it would turn a forged delivery into a recorded
+  // id and make the later genuine delivery look like a duplicate.
+  // `has` is the check-before-verify half: it answers whether an
+  // eventId was already recorded inside its TTL without recording
+  // anything, refreshing nothing, or touching the observability
+  // counters. A FRESH dedupe on the same fixed clock and 1-hour TTL
+  // as the receiver-dedupe segment above probes one fixed id:
+  // unseen before any record, first-seen on `checkAndRecord`, seen
+  // on both probes after (the counters read exactly as they did
+  // right after the recording — the probes moved nothing), and
+  // unseen again once the clock advances by exactly the TTL — the
+  // probes did not renew the record, and the expired probe did not
+  // revive it: a re-record after expiry still counts as new.
+  let dedupeHasNowMs = DEMO_DEDUPE_START_MS;
+  const dedupeHasDedupe = new SettlementEventDedupe({
+    ttlMs: DEMO_DEDUPE_TTL_MS,
+    now: () => dedupeHasNowMs,
+  });
+  const dedupeHasUnseen = dedupeHasDedupe.has(DEMO_DEDUPE_HAS_EVENT_ID);
+  const dedupeHasFirstRecord = dedupeHasDedupe.checkAndRecord(
+    DEMO_DEDUPE_HAS_EVENT_ID,
+  );
+  const dedupeHasStatsAfterRecord = dedupeHasDedupe.stats();
+  const dedupeHasSeen = dedupeHasDedupe.has(DEMO_DEDUPE_HAS_EVENT_ID);
+  const dedupeHasSeenAgain = dedupeHasDedupe.has(DEMO_DEDUPE_HAS_EVENT_ID);
+  const dedupeHasStatsAfterProbes = dedupeHasDedupe.stats();
+  dedupeHasNowMs += DEMO_DEDUPE_TTL_MS;
+  const dedupeHasExpired = dedupeHasDedupe.has(DEMO_DEDUPE_HAS_EVENT_ID);
+  const dedupeHasRerecord = dedupeHasDedupe.checkAndRecord(
+    DEMO_DEDUPE_HAS_EVENT_ID,
+  );
+  const dedupeHasStatsFinal = dedupeHasDedupe.stats();
+  if (
+    dedupeHasUnseen !== false ||
+    dedupeHasFirstRecord !== false ||
+    dedupeHasStatsAfterRecord.size !== 1 ||
+    dedupeHasStatsAfterRecord.hits !== 0 ||
+    dedupeHasStatsAfterRecord.misses !== 1 ||
+    dedupeHasStatsAfterRecord.evictions !== 0 ||
+    dedupeHasSeen !== true ||
+    dedupeHasSeenAgain !== true ||
+    dedupeHasStatsAfterProbes.size !== 1 ||
+    dedupeHasStatsAfterProbes.hits !== 0 ||
+    dedupeHasStatsAfterProbes.misses !== 1 ||
+    dedupeHasStatsAfterProbes.evictions !== 0 ||
+    dedupeHasExpired !== false ||
+    dedupeHasRerecord !== false ||
+    dedupeHasStatsFinal.size !== 1 ||
+    dedupeHasStatsFinal.hits !== 0 ||
+    dedupeHasStatsFinal.misses !== 2 ||
+    dedupeHasStatsFinal.evictions !== 0
+  ) {
+    throw new Error(
+      "demo fixture broken: SettlementEventDedupe read-only has probe does not match the pinned shape (unseen before any record, first sighting still new after the probe, both probes seen with stats untouched, expired after exactly the TTL, re-record still new)",
+    );
+  }
+  lines.push(
+    "",
+    "Dedupe read-only probe (SettlementEventDedupe.has on a fixed clock):",
+    `  has(${DEMO_DEDUPE_HAS_EVENT_ID}) before any record: ${dedupeHasUnseen} (unseen — the probe recorded nothing)`,
+    `  checkAndRecord(${DEMO_DEDUPE_HAS_EVENT_ID}): ${dedupeHasFirstRecord} (first sighting, recorded)`,
+    `  has(${DEMO_DEDUPE_HAS_EVENT_ID}): ${dedupeHasSeen} (seen — and again: ${dedupeHasSeenAgain}); stats size ${dedupeHasStatsAfterProbes.size}, hits ${dedupeHasStatsAfterProbes.hits}, misses ${dedupeHasStatsAfterProbes.misses}, evictions ${dedupeHasStatsAfterProbes.evictions} — unchanged by the probes`,
+    `  fixed clock +${DEMO_DEDUPE_TTL_MS} ms = TTL: has(${DEMO_DEDUPE_HAS_EVENT_ID}): ${dedupeHasExpired} (expired — the probes did not renew the record); checkAndRecord: ${dedupeHasRerecord} (new again — the expired probe did not revive it)`,
   );
 
   // --- Retry-After parsing: how the sender reads a 429 hint ---
@@ -11598,6 +11756,15 @@ export async function runDemo(): Promise<DemoResult> {
     webhookKeylessRequireEventId,
     webhookKeylessLegacy,
     webhookDedupe,
+    dedupeHasUnseen,
+    dedupeHasFirstRecord,
+    dedupeHasStatsAfterRecord,
+    dedupeHasSeen,
+    dedupeHasSeenAgain,
+    dedupeHasStatsAfterProbes,
+    dedupeHasExpired,
+    dedupeHasRerecord,
+    dedupeHasStatsFinal,
     retryAfterParsed,
     disputeEscrow,
     disputeReport,

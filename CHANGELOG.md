@@ -18,6 +18,18 @@ version changes.
 
 ### Added
 
+- CLI demo gains a `SettlementEventDedupe.has` read-only-probe segment
+  (2026-11-16, backlog #1191): a fresh dedupe on the same fixed clock
+  and 1-hour TTL as the receiver-dedupe segment probes one fixed id —
+  unseen before any record (and the record after still counts as first
+  sighting), seen on both probes after the record with `stats()` exactly
+  `{size: 1, hits: 0, misses: 1, evictions: 0}`, and unseen again once
+  the clock advances by exactly the TTL, the probes having renewed
+  nothing and the expired probe having revived nothing (the re-record
+  still counts as new). `DemoResult` exposes the probe verdicts and
+  both stats snapshots; one new demo test pins the fixtures, the
+  printed lines, and the segment order.
+
 - CLI demo gains a `verifySettlementWebhook` requireEventId segment
   (2026-11-16, backlog #1189): the keyed main webhook verifies under
   `{ secrets: [secret], requireEventId: true }`, while a twin with

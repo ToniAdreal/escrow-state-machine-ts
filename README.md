@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2202 tests, all local
+npm test   # 2203 tests, all local
 ```
 
 ## Quickstart
@@ -67,7 +67,14 @@ runs that webhook's `eventId` through `SettlementEventDedupe` on a
 fixed clock (1-hour TTL, starting at the webhook's `at`): the first
 delivery is new and booked, an immediate redelivery is a duplicate
 and skipped, and after the clock advances by exactly the TTL the
-same id counts as new again. The sender side then parses
+same id counts as new again. The receiver side then probes that
+same story read-only: a fresh dedupe on the same fixed clock answers
+`has` on one fixed id — unseen before any record (and the record
+after still counts as first sighting), seen on both probes after the
+record with the counters untouched, and unseen again once the clock
+advances by exactly the TTL, the probes having renewed nothing and
+the expired probe having revived nothing — the check-before-verify
+probe a receiver runs before spending a signature verification. The sender side then parses
 `Retry-After` hints with `parseRetryAfter` on the same fixed
 clock: a fixed corpus (delay-seconds, a whitespace-padded value,
 future and past HTTP-dates, a signed value, a garbage string,
@@ -1966,7 +1973,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2202 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2203 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
