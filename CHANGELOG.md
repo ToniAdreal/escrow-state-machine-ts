@@ -18,7 +18,20 @@ version changes.
 
 ### Added
 
-- CLI demo gains a signed quorum approvals segment
+- `SettlementEventDedupe.has` benchmark row (2026-11-16, backlog
+  #1196): one measured op probes exactly one of the three states in
+  rotation — a live hit, an unseen id, and the first id read at
+  exactly one TTL after its first sighting (expired, reached through
+  the explicit-`now` argument, never by moving the store's clock) —
+  over a fixed capacity-3 dedupe with 2 pre-recorded ids under a
+  fixed injected clock (60-second TTL), and pins the verdict on every
+  iteration; outside the timed loop, the three probe states are
+  pinned once, the stats snapshot is pinned identical before and
+  after probing, and a scratch dedupe pins that a probed unseen id
+  still records as a first sighting and a probed seen id still
+  reports a duplicate. Measured at ~6,353,926 ops/sec (0.16 µs/op)
+  on Node v24.22.1, linux/x64.
+
   (2026-11-16, backlog #1193): a fresh 2-of-3 quorum with Ed25519 public
   keys registered for arb-1 and arb-2 collects votes with
   `approveSigned()` — a valid signature counts and marks the log entry

@@ -2284,6 +2284,12 @@ and a persistent-500 retry-exhaustion error — failed after
 settlement event dedupe
 (`SettlementEventDedupe.checkAndRecord` duplicate hits cycling over
 1,000 pre-recorded `eventId`s under a fixed injected clock),
+settlement event dedupe read-only probe
+(`SettlementEventDedupe.has` probing a live hit, an unseen id, and an
+id read exactly one TTL after its first sighting in rotation over a
+fixed capacity-3 dedupe with 2 pre-recorded `eventId`s under a fixed
+injected clock, self-checked per iteration for the verdict, with
+non-consumption and unmoved stats pinned outside the timed loop),
 settlement event dedupe snapshot restore
 (`SettlementEventDedupe.restore` rebuilding a receiver-side dedupe
 from a persisted, JSON round-tripped snapshot of 1,000 entries
@@ -2969,6 +2975,17 @@ passing through and an error one character over the cap truncating
 to exactly the cap with the marker are pinned.
 The new `verifySettlementWebhook` requireEventId row measures the #1182 opt-in gate as a cost path: one measured op verifies the fixed signed webhook under `{ secrets: [secret], requireEventId: true }` — the signature is checked first and the payload's `eventId` is read only after a match — and pins `true` on every iteration. Outside the timed loop, a signed payload built the same way but with `eventId` stripped before signing is pinned to `false` under the gate and to `true` without the option, pinning the legacy signature-only behavior unchanged.
 The new `diffQuorumSnapshots` row measures the #1186 quorum-snapshot comparison as a cost path: one measured op diffs two snapshots of the fixed 9-signer / threshold-5 quorum carrying 7 recorded approvals — the after snapshot moves the threshold to 6 and swaps dao-9 for dao-10 while the approvals sit at the same fixed timestamps in both — and pins exactly the two charter keys (`thresholdChanged` 5 -> 6, `signersChanged`) with `approvalsChanged: false` on every iteration. Outside the timed loop, an identical pair is pinned to report exactly `{ approvalsChanged: false }`, the always-present master switch.
+The new `SettlementEventDedupe.has` row measures the #1176 read-only
+probe as a cost path: one measured op probes exactly one of the three
+states in rotation — a live hit, an unseen id, and the first id read
+at exactly one TTL after its first sighting (expired, reached through
+the explicit-`now` argument, never by moving the store's clock) — over
+a fixed capacity-3 dedupe with 2 pre-recorded ids under a fixed
+injected clock (60-second TTL), and pins the verdict on every
+iteration. Outside the timed loop, the three probe states are pinned
+once, the stats snapshot is pinned identical before and after probing,
+and a scratch dedupe pins that a probed unseen id still records as a
+first sighting and a probed seen id still reports a duplicate.
 One real run on 2026-11-04:
 
 | path | throughput |
@@ -3037,6 +3054,7 @@ One real run on 2026-11-04:
 | deliverSettlementWebhook (maxRetryDelayMs clamp, 429 hint) | ~436.3 ops/sec (2292.25 µs/op) |
 | deliverSettlementWebhook (timeoutMs timeout) | ~65.8 ops/sec (15190.18 µs/op) |
 | SettlementEventDedupe checkAndRecord (hit, 1k) | ~3,565,389 ops/sec (0.28 µs/op) |
+| SettlementEventDedupe.has (hit / unseen / expired, 2 recorded ids) | ~6,353,926 ops/sec (0.16 µs/op) |
 | SettlementEventDedupe.restore (1,000-entry snapshot) | ~4,623 ops/sec (216.31 µs/op) |
 | SettlementEventDedupe.exportSnapshot (1,000-entry snapshot) | ~21,476 ops/sec (46.56 µs/op) |
 | SettlementEventDedupe.clear (1,000 recorded ids, fresh fixture) | ~6,778 ops/sec (147.54 µs/op) |
@@ -3103,7 +3121,7 @@ and the settlePartialRelease row above were measured on
 escrowsByEvent row above were measured on 2026-11-06 runs; the
 settlePartialReleases row above was measured on a 2026-11-08 run; the
 escrowsByFilters and settlementAging rows above were measured on a
-2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the signed-snapshot rows above were measured on a 2026-11-11 run; the diffSettlementReports row above was measured on a 2026-11-13 run; the renderSettlementReportsSummary and diffSettlementReportsSummaries rows above were measured on a 2026-11-13 run; the unreconciledSettlements row above was measured on a 2026-11-14 run; the stateAt row above was measured on a 2026-11-15 run; the stateAtFromHistory row above was measured on a 2026-11-15 run; the formatMinorUnits x parseMinorUnits round-trip row above was measured on a 2026-11-15 run; the quorum signed-snapshot round-trip row above was measured on a 2026-11-15 run; the calculateDepositCents row above was measured on a 2026-11-15 run; the escrowsBySettlementRef row above was measured on a 2026-11-15 run; the parseSettlementReportsSummaryCsv and parseSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the renderSettlementReportsSummaryCsv and renderSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the approvalStatement row above was measured on a 2026-11-15 run; the truncateOutboxError row above was measured on a 2026-11-15 run; the verifySettlementWebhook requireEventId row above was measured on a 2026-11-16 run; the diffQuorumSnapshots row above was measured on a 2026-11-16 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
+2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the signed-snapshot rows above were measured on a 2026-11-11 run; the diffSettlementReports row above was measured on a 2026-11-13 run; the renderSettlementReportsSummary and diffSettlementReportsSummaries rows above were measured on a 2026-11-13 run; the unreconciledSettlements row above was measured on a 2026-11-14 run; the stateAt row above was measured on a 2026-11-15 run; the stateAtFromHistory row above was measured on a 2026-11-15 run; the formatMinorUnits x parseMinorUnits round-trip row above was measured on a 2026-11-15 run; the quorum signed-snapshot round-trip row above was measured on a 2026-11-15 run; the calculateDepositCents row above was measured on a 2026-11-15 run; the escrowsBySettlementRef row above was measured on a 2026-11-15 run; the parseSettlementReportsSummaryCsv and parseSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the renderSettlementReportsSummaryCsv and renderSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the approvalStatement row above was measured on a 2026-11-15 run; the truncateOutboxError row above was measured on a 2026-11-15 run; the verifySettlementWebhook requireEventId row above was measured on a 2026-11-16 run; the diffQuorumSnapshots row above was measured on a 2026-11-16 run; the SettlementEventDedupe.has row above was measured on a 2026-11-16 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
 came in mixed under shared-host load, so refreshing the whole
 table would misreport changes in paths these additions never
 touched.
