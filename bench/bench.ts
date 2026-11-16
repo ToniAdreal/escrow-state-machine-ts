@@ -1676,6 +1676,20 @@
  *      (the legacy signature-only behavior is unchanged). No network, no
  *      randomness, and no wall clock: the signed fixtures are built once
  *      from pinned secret / timestamp / eventId.
+ *  94. quorum snapshot comparison — `diffQuorumSnapshots(before, after)`
+ *      over a fixed pair of snapshots of the 9-signer / threshold-5
+ *      quorum carrying 7 recorded approvals (dao-1..dao-7, one second
+ *      apart on a stepped fixed clock): the #1175 helper's bench
+ *      counterpart — the charter check compares the threshold, the
+ *      signer set, and the approval set on every call, so the cost of
+ *      a governance-drift patrol pass over a full approval log had no
+ *      measured baseline. The after snapshot moves the threshold to 6
+ *      and swaps dao-9 for dao-10 while the 7 approvals sit at the
+ *      same fixed timestamps in both, so every timed iteration checks
+ *      the change-key set (exactly thresholdChanged + signersChanged
+ *      with approvalsChanged false); an identical pair reporting
+ *      `{ approvalsChanged: false }` is pinned once, outside the
+ *      timed loop. Pure comparison, no dispatch, no network.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -1711,6 +1725,7 @@ import {
   deliverSettlementWebhookToMany,
   depositAmountFromHistory,
   diffEscrowSnapshots,
+  diffQuorumSnapshots,
   diffSettlementReports,
   diffSettlementReportsSummaries,
   dispatchArbitration,
@@ -12869,6 +12884,98 @@ function benchDiffEscrowSnapshots(): number {
 }
 
 // ---------------------------------------------------------------------
+// diffQuorumSnapshots fixture: two snapshots of the same 9-signer
+// quorum shape under different charters — threshold 5 vs 6, one signer
+// swapped (dao-9 out, dao-10 in) — carrying the same 7 recorded
+// approvals (dao-1..dao-7, one second apart on a stepped fixed clock
+// starting at BASE_MS), so the diff reports exactly the two charter
+// keys and `approvalsChanged: false`. Built once, outside the timed
+// loop, via the same `createQuorum` + `approve` path the group-14
+// restore fixture uses; the diff itself is pure.
+// ---------------------------------------------------------------------
+const QUORUM_DIFF_THRESHOLD_BEFORE = 5;
+const QUORUM_DIFF_THRESHOLD_AFTER = 6;
+const QUORUM_DIFF_SIGNERS_BEFORE: readonly string[] = QUORUM_SIGNERS;
+const QUORUM_DIFF_SIGNERS_AFTER: readonly string[] = [
+  "dao-1",
+  "dao-2",
+  "dao-3",
+  "dao-4",
+  "dao-5",
+  "dao-6",
+  "dao-7",
+  "dao-8",
+  "dao-10",
+];
+const QUORUM_DIFF_APPROVAL_COUNT = 7;
+function buildQuorumDiffSnapshot(
+  threshold: number,
+  signers: readonly string[],
+): QuorumSnapshot {
+  let clockMs = BASE_MS;
+  const quorum = createQuorum({
+    threshold,
+    signers,
+    now: () => clockMs,
+  });
+  for (let i = 0; i < QUORUM_DIFF_APPROVAL_COUNT; i++) {
+    clockMs = BASE_MS + i * 1000;
+    quorum.approve(QUORUM_SIGNERS[i]);
+  }
+  return quorum.snapshot();
+}
+const QUORUM_DIFF_BEFORE = buildQuorumDiffSnapshot(
+  QUORUM_DIFF_THRESHOLD_BEFORE,
+  QUORUM_DIFF_SIGNERS_BEFORE,
+);
+const QUORUM_DIFF_AFTER = buildQuorumDiffSnapshot(
+  QUORUM_DIFF_THRESHOLD_AFTER,
+  QUORUM_DIFF_SIGNERS_AFTER,
+);
+
+function checkDiffQuorumSnapshots(
+  diff: ReturnType<typeof diffQuorumSnapshots>,
+): void {
+  const keys = Object.keys(diff).sort().join(",");
+  if (
+    keys !== "approvalsChanged,signersChanged,thresholdChanged" ||
+    diff.approvalsChanged !== false ||
+    diff.thresholdChanged?.from !== QUORUM_DIFF_THRESHOLD_BEFORE ||
+    diff.thresholdChanged?.to !== QUORUM_DIFF_THRESHOLD_AFTER ||
+    JSON.stringify(diff.signersChanged?.from) !==
+      JSON.stringify(QUORUM_DIFF_SIGNERS_BEFORE) ||
+    JSON.stringify(diff.signersChanged?.to) !==
+      JSON.stringify(QUORUM_DIFF_SIGNERS_AFTER)
+  ) {
+    throw new Error("benchmark self-check failed: diffQuorumSnapshots");
+  }
+}
+
+// Pre-checks outside timing: the timed shape itself is correct, and an
+// identical pair reports exactly `{ approvalsChanged: false }` — the
+// always-present master switch, never an empty object.
+checkDiffQuorumSnapshots(
+  diffQuorumSnapshots(QUORUM_DIFF_BEFORE, QUORUM_DIFF_AFTER),
+);
+if (
+  JSON.stringify(
+    diffQuorumSnapshots(QUORUM_DIFF_BEFORE, QUORUM_DIFF_BEFORE),
+  ) !== '{"approvalsChanged":false}'
+) {
+  throw new Error(
+    "benchmark self-check failed: diffQuorumSnapshots identical pair",
+  );
+}
+
+function benchDiffQuorumSnapshots(): number {
+  return measure(() => {
+    checkDiffQuorumSnapshots(
+      diffQuorumSnapshots(QUORUM_DIFF_BEFORE, QUORUM_DIFF_AFTER),
+    );
+  }, ITERATIONS);
+}
+
+// ---------------------------------------------------------------------
 // diffSettlementReports fixture: the module-scope golden released
 // `report` (500 bps) re-settled at 600 bps from the same history and
 // deposit — the same pair the demo's single-report diff segment pins
@@ -15094,6 +15201,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "summarizeSettlementReports (batch 4 results)", ops: benchSummarizeSettlementReports() },
   { path: "reconcileSettlements (3 reports, 3 ledger rows, 4 groups)", ops: benchReconcileSettlements() },
   { path: "diffEscrowSnapshots (23-entry history, 2 appended)", ops: benchDiffEscrowSnapshots() },
+  { path: "diffQuorumSnapshots (9 signers, threshold 5 vs 6, 7 approvals)", ops: benchDiffQuorumSnapshots() },
   { path: "diffSettlementReports (released report, 500 vs 600 bps)", ops: benchDiffSettlementReports() },
   { path: "renderSettlementReportsSummary (batch 4 summary)", ops: benchRenderSettlementReportsSummary() },
   { path: "renderSettlementReportsSummaryCsv (batch 4 summary)", ops: benchRenderSettlementReportsSummaryCsv() },

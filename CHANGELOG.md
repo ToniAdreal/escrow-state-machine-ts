@@ -18,6 +18,16 @@ version changes.
 
 ### Added
 
+- `diffQuorumSnapshots` benchmark row (2026-11-16, backlog #1186): one
+  measured op diffs two snapshots of the fixed 9-signer / threshold-5
+  quorum carrying 7 recorded approvals (dao-1..dao-7, one second apart
+  on a stepped fixed clock) — the after snapshot moves the threshold
+  to 6 and swaps dao-9 for dao-10 while the approvals sit at the same
+  fixed timestamps in both — and pins exactly the two charter keys
+  with `approvalsChanged: false` on every iteration; an identical pair
+  reporting exactly `{ approvalsChanged: false }` is pinned once,
+  outside the timed loop.
+
 - CLI demo gains a `diffQuorumSnapshots` quorum-snapshot-comparison
   segment (2026-11-16, backlog #1185): two snapshots of the same
   committee under different charters — threshold 3-of-5 vs 4-of-6
