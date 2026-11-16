@@ -18,6 +18,28 @@ version changes.
 
 ### Added
 
+- `diffQuorumSnapshots` quorum snapshot comparison (2026-11-16,
+  backlog #1175): a pure `diffQuorumSnapshots(a, b)` in the shape of
+  `diffEscrowSnapshots` — `thresholdChanged` / `signersChanged`
+  (compared as a set, so a pure reorder is not a change) /
+  `maxApprovalAgeMsChanged`, each with `from` / `to`, plus the
+  approval set as `approvalsAdded` / `approvalsRemoved` /
+  `approvalsModified` and an always-present `approvalsChanged`
+  master switch (identical snapshots diff to
+  `{ approvalsChanged: false }`). An approval's identity is its
+  signer id plus its timestamp, so an expired signer's re-approval
+  is exactly one added entry (the old entry stays in the trail) and
+  a late `verified` flag — `approveSigned()` upgrading a
+  still-counted approval in place — is exactly one modified entry,
+  never an add-plus-remove pair. Both inputs pass the same strict
+  shape validation `restoreQuorum` applies (minus the config match,
+  since the two snapshots may come from different configurations),
+  so a malformed snapshot throws `invalid quorum snapshot: …`
+  instead of being silently compared; the diff is pure and returns
+  detached copies. The shape validation is now one shared helper
+  used by both `restoreQuorum` and the diff, with `restoreQuorum`'s
+  error wording unchanged.
+
 - Opt-in `requireEventId` on `verifySettlementWebhook` (2026-11-16,
   backlog #1174): pass `{ secrets, requireEventId: true }` and a
   payload whose signature verifies but whose `eventId` is missing,

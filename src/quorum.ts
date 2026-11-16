@@ -553,42 +553,43 @@ const QUORUM_SNAPSHOT_FIELDS = new Set([
 ]);
 
 /**
- * Rebuild a quorum from a {@link QuorumSnapshot} produced by
- * `snapshot()` (typically after a `JSON.parse` of the persisted form),
- * restoring it under `config` — pass the same configuration the
- * snapshot was taken from; the restored quorum keeps counting on
- * `config.now` / `config.maxApprovalAgeMs`.
+ * Structural validation shared by {@link restoreQuorum} and
+ * {@link diffQuorumSnapshots} (backlog #1175): the shape bar a
+ * {@link QuorumSnapshot} must clear before anything trusts it —
+ * a plain object, no unknown top-level field, `v` exactly `1`, a
+ * threshold that is an integer ≥ 1 and no larger than the signer
+ * count, a non-empty signer list of unique non-empty ids, an
+ * optional `maxApprovalAgeMs` that is a positive finite number when
+ * present, and an approvals array whose entries are exactly
+ * `{ signerId, at }` plus an optional `evidence` and an optional
+ * `verified: true`, name a signer from the snapshot's own signer
+ * list, carry a canonical-ISO timestamp, carry an `evidence` that
+ * is present but not a non-empty string or is longer than
+ * {@link MAX_EVIDENCE_LENGTH} characters, carry a `verified` that
+ * is present but not `true`, are exact duplicates of an earlier
+ * entry (same signer, same timestamp), or are out of record order
+ * (timestamps must be non-decreasing). Every problem throws
+ * `invalid quorum snapshot: …` with the same wording
+ * `restoreQuorum` has always used, so a caller cannot tell the two
+ * paths apart by their failures.
  *
- * The snapshot is untrusted data and is validated strictly; every
- * problem throws `invalid quorum snapshot: …`:
- *  - not a plain object, an unknown top-level field, or `v` other
- *    than `1`
- *  - `threshold`, the `signers` set, or `maxApprovalAgeMs` differing
- *    from `config` (restoring under a different counting rule would
- *    silently re-interpret approvals collected under another one)
- *  - an approval entry that is not exactly `{ signerId, at }` plus
- *    an optional `evidence` and an optional `verified: true`, names an
- *    unknown signer, carries a non-canonical-ISO timestamp, carries an
- *    `evidence` that is present but not a non-empty string or is
- *    longer than {@link MAX_EVIDENCE_LENGTH} characters, carries a
- *    `verified` that is present but not `true` (a snapshot never
- *    records `verified: false` — unverified entries omit the key),
- *    is an exact duplicate of an earlier entry (same signer, same
- *    timestamp), or is out of record order (timestamps must be
- *    non-decreasing, the same bar this repo's snapshot parsers set)
+ * What this deliberately does NOT check is the config match:
+ * whether the threshold / signer set / expiry window equal a given
+ * {@link QuorumConfig} — that is `restoreQuorum`'s job, after this
+ * returns. A diff compares two snapshots that may have been taken
+ * under different configurations (that is the point of diffing
+ * them), so it must not demand they match any one config.
  *
- * A signer may legitimately appear several times with *different*
- * timestamps (re-approval after expiry appends a fresh entry), so
- * only exact duplicates are rejected. Expiry keeps counting from each
- * entry's original timestamp: restoring never refreshes an approval's
- * age, so an approval that had expired when the snapshot was taken is
- * still expired after the restore.
+ * Returns a detached, sanitized copy: the snapshot's own values in
+ * canonical field order, safe to compare or to hand to
+ * `buildQuorum` after the config checks.
  */
-export function restoreQuorum(
-  config: QuorumConfig,
-  snapshot: unknown
-): Quorum {
-  assertValidConfig(config);
+function validateQuorumSnapshotShape(snapshot: unknown): {
+  threshold: number;
+  signers: string[];
+  maxApprovalAgeMs: number | undefined;
+  approvals: ApprovalLogEntry[];
+} {
   const fail = (detail: string): never => {
     throw new Error(`invalid quorum snapshot: ${detail}`);
   };
@@ -607,10 +608,15 @@ export function restoreQuorum(
     fail(
       `unsupported snapshot version ${String(record.v)} (expected 1)`
     );
-  if (record.threshold !== config.threshold)
+  if (
+    typeof record.threshold !== "number" ||
+    !Number.isInteger(record.threshold) ||
+    record.threshold < 1
+  )
     fail(
-      `threshold ${String(record.threshold)} does not match config threshold ${config.threshold}`
+      `threshold must be an integer ≥ 1, got ${JSON.stringify(record.threshold)}`
     );
+  const threshold = record.threshold as number;
   if (!Array.isArray(record.signers))
     fail("signers must be an array of signer ids");
   const snapshotSigners = record.signers as unknown[];
@@ -623,19 +629,27 @@ export function restoreQuorum(
       fail(`signer id duplicated: ${JSON.stringify(signer)}`);
     snapshotSignerSet.add(signer);
   }
-  const configSignerSet = new Set<string>(config.signers);
-  if (
-    snapshotSignerSet.size !== configSignerSet.size ||
-    [...snapshotSignerSet].some((s) => !configSignerSet.has(s))
-  )
-    fail("signers do not match config signers");
-  if (record.maxApprovalAgeMs !== config.maxApprovalAgeMs)
+  if (snapshotSigners.length === 0)
+    fail("signers must be a non-empty array of signer ids");
+  if (threshold > snapshotSigners.length)
     fail(
-      `maxApprovalAgeMs ${String(record.maxApprovalAgeMs)} does not match config maxApprovalAgeMs ${String(config.maxApprovalAgeMs)}`
+      `threshold ${threshold} exceeds signer count ${snapshotSigners.length}`
     );
+  let maxApprovalAgeMs: number | undefined;
+  if (record.maxApprovalAgeMs !== undefined) {
+    if (
+      typeof record.maxApprovalAgeMs !== "number" ||
+      !Number.isFinite(record.maxApprovalAgeMs) ||
+      record.maxApprovalAgeMs <= 0
+    )
+      fail(
+        `maxApprovalAgeMs must be a positive finite number, got ${JSON.stringify(record.maxApprovalAgeMs)}`
+      );
+    maxApprovalAgeMs = record.maxApprovalAgeMs as number;
+  }
   if (!Array.isArray(record.approvals)) fail("approvals must be an array");
   const rawApprovals = record.approvals as unknown[];
-  const entries: TimedApproval[] = [];
+  const approvals: ApprovalLogEntry[] = [];
   const seenPairs = new Set<string>();
   let prevMs = -Infinity;
   for (let i = 0; i < rawApprovals.length; i++) {
@@ -656,7 +670,7 @@ export function restoreQuorum(
     if (typeof entry.signerId !== "string" || entry.signerId.length === 0)
       fail(`${tag}: signerId must be a non-empty string`);
     const signerId = entry.signerId as string;
-    if (!configSignerSet.has(signerId))
+    if (!snapshotSignerSet.has(signerId))
       fail(`${tag}: unknown signer ${JSON.stringify(signerId)}`);
     if (!isCanonicalIso(entry.at))
       fail(
@@ -688,14 +702,243 @@ export function restoreQuorum(
     if (atMs < prevMs)
       fail(`${tag}: approvals must be in non-decreasing timestamp order`);
     prevMs = atMs;
-    entries.push({
+    approvals.push({
       signerId,
-      atMs,
+      at,
       ...(evidence !== undefined ? { evidence } : {}),
       ...(verified === true ? { verified: true as const } : {}),
     });
   }
+  return {
+    threshold,
+    signers: [...(snapshotSigners as string[])],
+    maxApprovalAgeMs,
+    approvals,
+  };
+}
+
+/**
+ * Rebuild a quorum from a {@link QuorumSnapshot} produced by
+ * `snapshot()` (typically after a `JSON.parse` of the persisted form),
+ * restoring it under `config` — pass the same configuration the
+ * snapshot was taken from; the restored quorum keeps counting on
+ * `config.now` / `config.maxApprovalAgeMs`.
+ *
+ * The snapshot is untrusted data and is validated strictly; every
+ * problem throws `invalid quorum snapshot: …`:
+ *  - not a plain object, an unknown top-level field, or `v` other
+ *    than `1`
+ *  - `threshold`, the `signers` set, or `maxApprovalAgeMs` differing
+ *    from `config` (restoring under a different counting rule would
+ *    silently re-interpret approvals collected under another one)
+ *  - an approval entry that is not exactly `{ signerId, at }` plus
+ *    an optional `evidence` and an optional `verified: true`, names an
+ *    unknown signer, carries a non-canonical-ISO timestamp, carries an
+ *    `evidence` that is present but not a non-empty string or is
+ *    longer than {@link MAX_EVIDENCE_LENGTH} characters, carries a
+ *    `verified` that is present but not `true` (a snapshot never
+ *    records `verified: false` — unverified entries omit the key),
+ *    is an exact duplicate of an earlier entry (same signer, same
+ *    timestamp), or is out of record order (timestamps must be
+ *    non-decreasing, the same bar this repo's snapshot parsers set)
+ *
+ * A signer may legitimately appear several times with *different*
+ * timestamps (re-approval after expiry appends a fresh entry), so
+ * only exact duplicates are rejected. Expiry keeps counting from each
+ * entry's original timestamp: restoring never refreshes an approval's
+ * age, so an approval that had expired when the snapshot was taken is
+ * still expired after the restore.
+ *
+ * The structural half of this validation lives in
+ * {@link validateQuorumSnapshotShape} (shared with
+ * {@link diffQuorumSnapshots}); this function adds only the
+ * config-match checks on top of it.
+ */
+export function restoreQuorum(
+  config: QuorumConfig,
+  snapshot: unknown
+): Quorum {
+  assertValidConfig(config);
+  const validated = validateQuorumSnapshotShape(snapshot);
+  const fail = (detail: string): never => {
+    throw new Error(`invalid quorum snapshot: ${detail}`);
+  };
+  if (validated.threshold !== config.threshold)
+    fail(
+      `threshold ${validated.threshold} does not match config threshold ${config.threshold}`
+    );
+  const configSignerSet = new Set<string>(config.signers);
+  const snapshotSignerSet = new Set<string>(validated.signers);
+  if (
+    snapshotSignerSet.size !== configSignerSet.size ||
+    [...snapshotSignerSet].some((s) => !configSignerSet.has(s))
+  )
+    fail("signers do not match config signers");
+  if (validated.maxApprovalAgeMs !== config.maxApprovalAgeMs)
+    fail(
+      `maxApprovalAgeMs ${String(validated.maxApprovalAgeMs)} does not match config maxApprovalAgeMs ${String(config.maxApprovalAgeMs)}`
+    );
+  const entries: TimedApproval[] = validated.approvals.map((e) => ({
+    signerId: e.signerId,
+    atMs: Date.parse(e.at),
+    ...(e.evidence !== undefined ? { evidence: e.evidence } : {}),
+    ...(e.verified === true ? { verified: true as const } : {}),
+  }));
   return buildQuorum(config, entries);
+}
+
+/**
+ * Structured difference between two quorum snapshots. Only keys
+ * that actually changed are present, except `approvalsChanged`,
+ * which is always present as the master switch — so two identical
+ * snapshots diff to `{ approvalsChanged: false }`, not to `{}` (the
+ * one deliberate departure from {@link EscrowSnapshotDiff}, whose
+ * empty object is the identical case there).
+ *
+ * `approvalsAdded` / `approvalsRemoved` carry detached copies of
+ * the entries that moved, in snapshot order; `approvalsModified`
+ * carries the `b` version of an entry whose identity is unchanged
+ * but whose content moved.
+ */
+export interface QuorumSnapshotDiff {
+  /** Threshold moved (e.g. a 2-of-5 quorum re-chartered to 3-of-5). */
+  thresholdChanged?: { from: number; to: number };
+  /**
+   * Signer set moved (a signer added or removed). Compared as a
+   * set: `signers` is config order, not meaning, so a pure
+   * reordering is not a change. `from` / `to` keep each snapshot's
+   * own order.
+   */
+  signersChanged?: { from: string[]; to: string[] };
+  /**
+   * Expiry window moved (set, cleared, or changed value). Absent on
+   * either side means "no window", so `undefined` -> a number is a
+   * change, not a no-op.
+   */
+  maxApprovalAgeMsChanged?: {
+    from: number | undefined;
+    to: number | undefined;
+  };
+  /** Approval entries present in `b` but not in `a`. */
+  approvalsAdded?: ApprovalLogEntry[];
+  /** Approval entries present in `a` but not in `b`. */
+  approvalsRemoved?: ApprovalLogEntry[];
+  /**
+   * Entries present in both snapshots under the same identity but
+   * with different content. In practice this is the in-place
+   * `verified` upgrade: `approveSigned()` on a still-counted
+   * approval flips its flag without appending a new entry, so the
+   * entry's identity (signer + timestamp) is unchanged while the
+   * snapshot moved — reporting it as an add plus a remove would
+   * double-count one vote's proof arriving late. The `b` version
+   * is reported.
+   */
+  approvalsModified?: ApprovalLogEntry[];
+  /**
+   * Master switch: true when any approval moved — added, removed,
+   * or modified. Always present, so a caller can branch on this
+   * one field without probing the three lists.
+   */
+  approvalsChanged: boolean;
+}
+
+/**
+ * Compare two snapshots of a quorum and report what changed
+ * between them — the governance-audit question ("who voted since
+ * the last snapshot I stored, did the threshold move, was anyone
+ * revoked?") without hand-written field compares that disagree
+ * about what counts as an approval change.
+ *
+ * Dimensions compared, and only these: `threshold`, the `signers`
+ * set, `maxApprovalAgeMs`, and the approval set. Only `v` is
+ * deliberately not reported: the version is schema metadata, not
+ * quorum state.
+ *
+ * An approval's identity is its signer id plus its timestamp
+ * (`signerId` + `at`): the audit trail is append-only except for
+ * revokes, so identity is stable across snapshots. That makes the
+ * three approval cases fall out exactly once each: a fresh approval
+ * is one added entry; a revoke removes the signer's entries; an
+ * expired signer's re-approval appends a fresh entry while the old
+ * one stays in the trail, so it is one added entry, not an
+ * add-plus-remove pair; and an in-place `verified` upgrade (same
+ * identity, flag flipped) is one modified entry, never an
+ * add-plus-remove pair.
+ *
+ * Both inputs are validated first through the same strict shape
+ * bar {@link restoreQuorum} applies (minus the config match — the
+ * two snapshots may have been taken under different
+ * configurations, that is the point of diffing them): a bad
+ * snapshot throws `invalid quorum snapshot: …` instead of being
+ * silently compared, and a malformed entry on either side fails
+ * the whole diff.
+ *
+ * Pure: reads both snapshots, never mutates them, and the
+ * returned entries are detached copies. This is a comparison, not
+ * a lineage check — it does not verify that `b`'s log could have
+ * been produced from `a`'s by legal approve/revoke steps (a quorum
+ * log legitimately shrinks on revoke, so there is no append-only
+ * invariant to enforce the way
+ * {@link diffEscrowSnapshots} enforces one for escrow history);
+ * run a snapshot through `restoreQuorum` when the input itself is
+ * untrusted.
+ *
+ *   const before = quorum.snapshot();
+ *   quorum.approve("dao-3");
+ *   diffQuorumSnapshots(before, quorum.snapshot());
+ *   // { approvalsAdded: [{ signerId: "dao-3", at: "…" }],
+ *   //   approvalsChanged: true }
+ */
+export function diffQuorumSnapshots(
+  a: QuorumSnapshot,
+  b: QuorumSnapshot,
+): QuorumSnapshotDiff {
+  const va = validateQuorumSnapshotShape(a);
+  const vb = validateQuorumSnapshotShape(b);
+  const diff: QuorumSnapshotDiff = { approvalsChanged: false };
+  if (va.threshold !== vb.threshold) {
+    diff.thresholdChanged = { from: va.threshold, to: vb.threshold };
+  }
+  const signerKey = (signers: readonly string[]): string =>
+    JSON.stringify([...new Set(signers)].sort());
+  if (signerKey(va.signers) !== signerKey(vb.signers)) {
+    diff.signersChanged = { from: [...va.signers], to: [...vb.signers] };
+  }
+  if (va.maxApprovalAgeMs !== vb.maxApprovalAgeMs) {
+    diff.maxApprovalAgeMsChanged = {
+      from: va.maxApprovalAgeMs,
+      to: vb.maxApprovalAgeMs,
+    };
+  }
+  // Approval identity is signer + timestamp; content is the whole
+  // entry (evidence / verified). Same identity with different
+  // content is a modification, never an add-plus-remove pair.
+  const approvalKey = (e: ApprovalLogEntry): string =>
+    `${e.signerId}\u0000${e.at}`;
+  const sameEntry = (x: ApprovalLogEntry, y: ApprovalLogEntry): boolean =>
+    x.signerId === y.signerId &&
+    x.at === y.at &&
+    x.evidence === y.evidence &&
+    x.verified === y.verified;
+  const aByKey = new Map(va.approvals.map((e) => [approvalKey(e), e]));
+  const bByKey = new Map(vb.approvals.map((e) => [approvalKey(e), e]));
+  const added: ApprovalLogEntry[] = [];
+  const removed: ApprovalLogEntry[] = [];
+  const modified: ApprovalLogEntry[] = [];
+  for (const [key, entry] of bByKey) {
+    const before = aByKey.get(key);
+    if (before === undefined) added.push({ ...entry });
+    else if (!sameEntry(before, entry)) modified.push({ ...entry });
+  }
+  for (const [key, entry] of aByKey) {
+    if (!bByKey.has(key)) removed.push({ ...entry });
+  }
+  if (added.length > 0) diff.approvalsAdded = added;
+  if (removed.length > 0) diff.approvalsRemoved = removed;
+  if (modified.length > 0) diff.approvalsModified = modified;
+  diff.approvalsChanged =
+    added.length > 0 || removed.length > 0 || modified.length > 0;
+  return diff;
 }
 
 /**

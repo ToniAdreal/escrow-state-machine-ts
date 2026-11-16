@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2177 tests, all local
+npm test   # 2189 tests, all local
 ```
 
 ## Quickstart
@@ -944,7 +944,24 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   export format, not a built-in store, and restored approvals are
   still caller-persisted data: a restored `verified` flag was not
   re-verified on restore (the public keys live in the config, never
-  in the snapshot). There is still no key management and no DAO
+  in the snapshot). Two stored snapshots can be compared without
+  hand-written field compares: `diffQuorumSnapshots(a, b)` reports
+  only what moved — `thresholdChanged` / `signersChanged` (compared
+  as a set, so a pure reorder is not a change) /
+  `maxApprovalAgeMsChanged` (each with `from` / `to`), the approval
+  set as `approvalsAdded` / `approvalsRemoved` / `approvalsModified`,
+  and an always-present `approvalsChanged` master switch (identical
+  snapshots diff to `{ approvalsChanged: false }`). An approval's
+  identity is its signer id plus its timestamp, so an expired
+  signer's re-approval is exactly one added entry (the old entry
+  stays in the trail) and a late `verified` flag — `approveSigned()`
+  upgrading a still-counted approval in place — is exactly one
+  modified entry, never an add-plus-remove pair. Both inputs pass
+  the same strict shape validation `restoreQuorum` applies (minus
+  the config match, since the two snapshots may come from different
+  configurations), so a malformed snapshot throws instead of being
+  silently compared; the diff is pure and returns detached copies.
+  There is still no key management and no DAO
   governance in this repo — recording approvals is a caller trust
   decision for plain `approve()` votes, exactly like `VERIFY_PASS`,
   while `approveSigned()` votes carry a verified Ed25519 signature
@@ -1934,7 +1951,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2177 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2189 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

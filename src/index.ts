@@ -74,6 +74,7 @@ export type {
 export {
   createQuorum,
   restoreQuorum,
+  diffQuorumSnapshots,
   approvalStatement,
   exportSignedQuorumSnapshot,
   restoreSignedQuorumSnapshot,
@@ -82,6 +83,7 @@ export type {
   Quorum,
   QuorumConfig,
   QuorumSnapshot,
+  QuorumSnapshotDiff,
   ApprovalLogEntry,
   QuorumSignedSnapshotEnvelope,
   QuorumExportSignedSnapshotOptions,
