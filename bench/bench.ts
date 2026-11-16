@@ -1659,6 +1659,23 @@
  *      accepted, not rejected; the overflow guard is the
  *      non-finite-deposit check, so the out-of-loop pins use the
  *      1e308 shapes the test suite pins, not a 2^53 boundary.
+ *  93. settlement webhook requireEventId gate — `verifySettlementWebhook`
+ *      with `{ secrets: [secret], requireEventId: true }` over the fixed
+ *      webhook fixture (signed at the fixed `WEBHOOK_NOW` with the fixed
+ *      `WEBHOOK_EVENT_ID`, so the payload carries a usable dedupe key)
+ *      on every iteration, checked to return exactly `true` on every
+ *      iteration. This is the steady-state receiver cost of the opt-in
+ *      event-id presence gate: the signature is checked first and the
+ *      payload's `eventId` is read only after a match (a string body is
+ *      JSON-parsed for it), a cost the plain, rotation, and freshness
+ *      verify rows never exercise (none sets the gate). Outside the
+ *      timed loop, a signed payload built the same way but with
+ *      `eventId` stripped before signing is pinned to return `false`
+ *      under the gate (fail-closed: a verified signature with no dedupe
+ *      key is refused) and to still return `true` without the option
+ *      (the legacy signature-only behavior is unchanged). No network, no
+ *      randomness, and no wall clock: the signed fixtures are built once
+ *      from pinned secret / timestamp / eventId.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -1670,6 +1687,7 @@
  *
  * Run: `npm run bench`
  */
+import { createHmac } from "node:crypto";
 import { cpus } from "node:os";
 import {
   createServer,
@@ -1799,6 +1817,10 @@ const WEBHOOK_MAX_FUTURE_SKEW_MS = 300_000;
 const WEBHOOK_MAX_FUTURE_SKEW_NOW_MS = BASE_MS + 60_000 - 120_000;
 const WEBHOOK_MAX_FUTURE_SKEW_ILLEGAL_ERROR =
   "cannot verify settlement webhook: maxFutureSkewMs must be a finite non-negative number, got -1";
+const WEBHOOK_REQUIRE_EVENT_ID_OPTS = {
+  secrets: [WEBHOOK_SECRET],
+  requireEventId: true,
+};
 const DELIVERY_ABORTED_ERROR = "webhook delivery aborted";
 const DELIVERY_BAD_SIGNAL_ERROR =
   "cannot deliver settlement webhook: signal must be an AbortSignal, got bench-not-a-signal";
@@ -2517,6 +2539,53 @@ try {
 if (webhookMaxFutureSkewIllegalError !== WEBHOOK_MAX_FUTURE_SKEW_ILLEGAL_ERROR) {
   throw new Error(
     "benchmark fixture failed: webhook maxFutureSkewMs illegal error mismatch",
+  );
+}
+// RequireEventId gate fixture checks, outside the timed loop: the main
+// webhook above was built at WEBHOOK_NOW with WEBHOOK_EVENT_ID, so
+// under { secrets, requireEventId: true } it must verify. A second
+// fixture is the same payload with `eventId` stripped and re-signed
+// over the keyless bytes (bench-side signer, same "sha256=" HMAC form
+// as the library): it must return false under the gate — a verified
+// signature with no dedupe key is refused — and still verify without
+// the option, pinning the legacy signature-only behavior unchanged.
+if (
+  !verifySettlementWebhook(
+    webhookBody,
+    webhook.signature,
+    WEBHOOK_REQUIRE_EVENT_ID_OPTS,
+  )
+) {
+  throw new Error("benchmark fixture failed: webhook requireEventId verify");
+}
+const { eventId: _benchDroppedEventId, ...webhookPayloadNoEventId } =
+  webhook.payload;
+const webhookKeylessBody = JSON.stringify(webhookPayloadNoEventId);
+const webhookKeylessSignature =
+  "sha256=" +
+  createHmac("sha256", WEBHOOK_SECRET)
+    .update(webhookKeylessBody, "utf8")
+    .digest("hex");
+if (
+  verifySettlementWebhook(
+    webhookKeylessBody,
+    webhookKeylessSignature,
+    WEBHOOK_REQUIRE_EVENT_ID_OPTS,
+  )
+) {
+  throw new Error(
+    "benchmark fixture failed: webhook requireEventId keyless must be false",
+  );
+}
+if (
+  !verifySettlementWebhook(
+    webhookKeylessBody,
+    webhookKeylessSignature,
+    WEBHOOK_SECRET,
+  )
+) {
+  throw new Error(
+    "benchmark fixture failed: webhook keyless without requireEventId must verify",
   );
 }
 const ndjsonEscrow = runNdjsonLifecycle();
@@ -11513,6 +11582,22 @@ function benchVerifySettlementWebhookMaxFutureSkew(): number {
   }, ITERATIONS);
 }
 
+function benchVerifySettlementWebhookRequireEventId(): number {
+  return measure(() => {
+    if (
+      verifySettlementWebhook(
+        webhookBody,
+        webhook.signature,
+        WEBHOOK_REQUIRE_EVENT_ID_OPTS,
+      ) !== true
+    ) {
+      throw new Error(
+        "benchmark self-check failed: verifySettlementWebhook requireEventId",
+      );
+    }
+  }, ITERATIONS);
+}
+
 function benchParseRetryAfter(): number {
   return measure(() => {
     checkRetryAfterCorpus();
@@ -15023,6 +15108,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "verifySettlementWebhook (secrets rotation, 2 candidates)", ops: benchVerifySettlementWebhookSecretsRotation() },
   { path: "verifySettlementWebhook (maxAgeMs freshness window)", ops: benchVerifySettlementWebhookMaxAge() },
   { path: "verifySettlementWebhook (maxFutureSkewMs future-skew window)", ops: benchVerifySettlementWebhookMaxFutureSkew() },
+  { path: "verifySettlementWebhook (requireEventId gate)", ops: benchVerifySettlementWebhookRequireEventId() },
   { path: "verifySettlementWebhook x SettlementEventDedupe receiver flow", ops: benchVerifySettlementWebhookDedupe() },
   { path: "parseRetryAfter (11-value corpus)", ops: benchParseRetryAfter() },
   { path: "historyToNdjson (8 entries)", ops: benchHistoryToNdjson() },

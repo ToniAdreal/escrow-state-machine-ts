@@ -18,6 +18,14 @@ version changes.
 
 ### Added
 
+- `verifySettlementWebhook` requireEventId benchmark row (2026-11-16,
+  backlog #1182): one measured op verifies the fixed signed webhook
+  under `{ secrets: [secret], requireEventId: true }` and pins `true`
+  on every iteration; outside the timed loop, a signed payload with
+  `eventId` stripped before signing is pinned to `false` under the
+  gate and to `true` without the option, pinning the legacy
+  signature-only behavior unchanged.
+
 - Read-only `SettlementEventDedupe.has(eventId, now?)` probe (2026-11-16,
   backlog #1176): returns `true` when the `eventId` was recorded within
   the TTL and `false` otherwise, without recording anything — a receiver

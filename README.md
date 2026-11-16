@@ -2948,6 +2948,7 @@ characters, keeping its first 1,012 characters and ending with the
 `…[truncated]` marker. Outside the timed loop, the empty error
 passing through and an error one character over the cap truncating
 to exactly the cap with the marker are pinned.
+The new `verifySettlementWebhook` requireEventId row measures the #1182 opt-in gate as a cost path: one measured op verifies the fixed signed webhook under `{ secrets: [secret], requireEventId: true }` — the signature is checked first and the payload's `eventId` is read only after a match — and pins `true` on every iteration. Outside the timed loop, a signed payload built the same way but with `eventId` stripped before signing is pinned to `false` under the gate and to `true` without the option, pinning the legacy signature-only behavior unchanged.
 One real run on 2026-11-04:
 
 | path | throughput |
@@ -2990,6 +2991,7 @@ One real run on 2026-11-04:
 | verifySettlementWebhook (secrets rotation, 2 candidates) | ~32,942 ops/sec (30.36 µs/op) |
 | verifySettlementWebhook (maxAgeMs freshness window) | ~29,237 ops/sec (34.20 µs/op) |
 | verifySettlementWebhook (maxFutureSkewMs future-skew window) | ~35,555 ops/sec (28.13 µs/op) |
+| verifySettlementWebhook (requireEventId gate) | ~91,527 ops/sec (10.93 µs/op) |
 | verifySettlementWebhook x SettlementEventDedupe receiver flow | ~10,651 ops/sec (93.89 µs/op) |
 | parseRetryAfter (11-value corpus) | ~163,274 ops/sec (6.12 µs/op) |
 | historyToNdjson (8 entries) | ~12,639 ops/sec (79.12 µs/op) |
@@ -3080,7 +3082,7 @@ and the settlePartialRelease row above were measured on
 escrowsByEvent row above were measured on 2026-11-06 runs; the
 settlePartialReleases row above was measured on a 2026-11-08 run; the
 escrowsByFilters and settlementAging rows above were measured on a
-2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the signed-snapshot rows above were measured on a 2026-11-11 run; the diffSettlementReports row above was measured on a 2026-11-13 run; the renderSettlementReportsSummary and diffSettlementReportsSummaries rows above were measured on a 2026-11-13 run; the unreconciledSettlements row above was measured on a 2026-11-14 run; the stateAt row above was measured on a 2026-11-15 run; the stateAtFromHistory row above was measured on a 2026-11-15 run; the formatMinorUnits x parseMinorUnits round-trip row above was measured on a 2026-11-15 run; the quorum signed-snapshot round-trip row above was measured on a 2026-11-15 run; the calculateDepositCents row above was measured on a 2026-11-15 run; the escrowsBySettlementRef row above was measured on a 2026-11-15 run; the parseSettlementReportsSummaryCsv and parseSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the renderSettlementReportsSummaryCsv and renderSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the approvalStatement row above was measured on a 2026-11-15 run; the truncateOutboxError row above was measured on a 2026-11-15 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
+2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the signed-snapshot rows above were measured on a 2026-11-11 run; the diffSettlementReports row above was measured on a 2026-11-13 run; the renderSettlementReportsSummary and diffSettlementReportsSummaries rows above were measured on a 2026-11-13 run; the unreconciledSettlements row above was measured on a 2026-11-14 run; the stateAt row above was measured on a 2026-11-15 run; the stateAtFromHistory row above was measured on a 2026-11-15 run; the formatMinorUnits x parseMinorUnits round-trip row above was measured on a 2026-11-15 run; the quorum signed-snapshot round-trip row above was measured on a 2026-11-15 run; the calculateDepositCents row above was measured on a 2026-11-15 run; the escrowsBySettlementRef row above was measured on a 2026-11-15 run; the parseSettlementReportsSummaryCsv and parseSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the renderSettlementReportsSummaryCsv and renderSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the approvalStatement row above was measured on a 2026-11-15 run; the truncateOutboxError row above was measured on a 2026-11-15 run; the verifySettlementWebhook requireEventId row above was measured on a 2026-11-16 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
 came in mixed under shared-host load, so refreshing the whole
 table would misreport changes in paths these additions never
 touched.
