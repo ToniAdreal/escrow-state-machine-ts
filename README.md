@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2189 tests, all local
+npm test   # 2200 tests, all local
 ```
 
 ## Quickstart
@@ -1145,7 +1145,18 @@ Illegal configuration (`ttlMs` not a positive finite number,
 empty, non-string, or overlong (longer than `MAX_EVENT_ID_LENGTH`)
 `eventId` throws instead of silently passing.
 `size` and `stats()` (`{ size, hits, misses, evictions }`) expose
-observability, and `clear()` resets both. Honest limit: the store is
+observability, and `clear()` resets both. For a read-only question —
+"have I seen this `eventId`?" asked before the signature is verified,
+e.g. for logging or metrics — use `has(eventId, now?)`: it returns
+`true` when the id was recorded within the TTL and `false` otherwise,
+without recording anything, so a forged delivery probed before
+verification cannot make the later genuine delivery look like a
+duplicate. It never refreshes LRU recency, never reclaims expired
+entries, and never moves the `hits`/`misses`/`evictions` counters; an
+expired id reads `false` (the TTL boundary matches `checkAndRecord`),
+and an empty, non-string, or overlong `eventId` throws the same way.
+An explicit `now` (milliseconds since the epoch) overrides the
+injected clock for that one probe. Honest limit: the store is
 single-process and in-memory only — two receiver processes cannot see
 each other's records, so a multi-process receiver must deduplicate
 over shared storage (a database unique constraint, Redis, …) instead.
@@ -1951,7 +1962,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2189 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2200 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
