@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2165 tests, all local
+npm test   # 2177 tests, all local
 ```
 
 ## Quickstart
@@ -1407,6 +1407,34 @@ two-sided freshness window. Left unset, `maxFutureSkewMs` changes
 nothing — far-future timestamps still pass, exactly as before — and
 neither bound replaces deduplication on `eventId`.
 
+A signed payload can still arrive without an `eventId` — the type
+says it is required, but a raw string body bypasses the type layer,
+and a keyless notification that verifies leaves a receiver that
+deduplicates on `eventId` with no key (the dedupe step either crashes
+or silently skips, and replay detection is defeated while the
+signature looks fine). Pass `requireEventId: true` to close that gap:
+
+```ts
+const ok = verifySettlementWebhook(rawBody, receivedSignature, {
+  secrets: [process.env.WEBHOOK_SECRET!],
+  requireEventId: true,
+});
+// => false when the signature is valid but the payload carries no
+//    non-empty string eventId
+```
+
+It runs only after the signature matches — a forged signature still
+fails on the signature comparison, never on this gate — and a missing,
+non-string, or empty `eventId` (or an unparseable string body) fails
+closed as `false`, never throws. A non-boolean value throws the same
+style of configuration error as the other options. It composes with
+the freshness window: both gates must pass. The sending side is
+unaffected — `buildSettlementWebhook` always issues an `eventId`, and
+`deliverSettlementWebhookToMany` verifies per endpoint with the
+sender's own options, never this receiver-side requirement — so
+enabling it only hardens receivers. Defaults to `false`: without it,
+a keyless payload verifies on its signature alone, exactly as before.
+
 Delivery is handled by `deliverSettlementWebhook(url, webhook, options)` —
 still zero runtime dependencies (Node ≥ 20 global `fetch`):
 
@@ -1906,7 +1934,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2165 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2177 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

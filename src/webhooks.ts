@@ -171,6 +171,21 @@ export interface VerifyWebhookOptions {
    */
   maxFutureSkewMs?: number;
   /**
+   * Require the payload to carry a non-empty `eventId` (opt-in). When
+   * `true`, a payload whose signature verifies but whose `eventId` is
+   * missing, not a string, or an empty string returns `false`
+   * (fail-closed): a receiver that deduplicates on `eventId`
+   * (`SettlementEventDedupe`) has no key to deduplicate on otherwise,
+   * and a signed-but-keyless notification would silently defeat replay
+   * detection. A string body that does not parse as JSON fails the
+   * same way, never throws. The check runs only after the signature
+   * matches, so a forged signature still fails on the signature
+   * comparison and never reaches this gate. Defaults to `false`
+   * (legacy behavior: a keyless payload verifies on its signature
+   * alone).
+   */
+  requireEventId?: boolean;
+  /**
    * "Now" for the freshness check, as epoch milliseconds. Defaults to
    * `Date.now()`; inject a fixed value in tests for determinism.
    */
@@ -554,6 +569,17 @@ export function buildSettlementWebhooks(
  * `maxFutureSkewMs` is unset, far-future timestamps still pass exactly
  * as before. Freshness is defense-in-depth only: receivers MUST still
  * deduplicate on `eventId`.
+ *
+ * Event-id presence (opt-in): pass `{ secrets, requireEventId: true }`.
+ * The signature is checked FIRST; only when it matches is the payload's
+ * `eventId` read (a string body is JSON-parsed for it) — a missing,
+ * non-string, or empty `eventId` then returns `false`, and an
+ * unparseable string body fails the same way, never throws. A forged
+ * signature still fails on the signature comparison, and never reaches
+ * this gate. Without the option, a signed-but-keyless payload verifies
+ * on its signature alone (legacy behavior), leaving a receiver that
+ * deduplicates on `eventId` with no key — which is exactly the gap
+ * this option closes.
  */
 export function verifySettlementWebhook(
   body: string | SettlementWebhookPayload,
@@ -617,6 +643,16 @@ export function verifySettlementWebhook(
       )}`,
     );
   }
+  const requireEventId = isOptionsForm
+    ? ((secretOrOptions as VerifyWebhookOptions).requireEventId ?? false)
+    : false;
+  if (typeof requireEventId !== "boolean") {
+    throw new Error(
+      `cannot verify settlement webhook: requireEventId must be a boolean, got ${String(
+        requireEventId,
+      )}`,
+    );
+  }
   const now = isOptionsForm
     ? ((secretOrOptions as VerifyWebhookOptions).now ?? Date.now())
     : Date.now();
@@ -645,10 +681,42 @@ export function verifySettlementWebhook(
     }
   }
   if (!signatureMatches) return false;
+  // The eventId gate is orthogonal to secret rotation and freshness and
+  // runs only after the signature matched: forgeries fail above, never here.
+  if (requireEventId && !payloadHasEventId(body)) return false;
   // Freshness is orthogonal to secret rotation and runs only after the
   // signature matched: forgeries fail above, never here.
   if (maxAgeMs === undefined && maxFutureSkewMs === undefined) return true;
   return payloadFreshEnough(body, maxAgeMs, maxFutureSkewMs, now);
+}
+
+/**
+ * Fail-closed `eventId` presence gate for the opt-in `requireEventId`
+ * check.
+ *
+ * String bodies are JSON-parsed to read `eventId`; unparseable bodies,
+ * a missing key, a non-string value, or an empty string all return
+ * `false` (never throw). The signature is already verified by the
+ * caller, so this only answers "is there a usable dedupe key".
+ */
+function payloadHasEventId(
+  body: string | SettlementWebhookPayload,
+): boolean {
+  let eventId: unknown;
+  if (typeof body === "string") {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(body);
+    } catch {
+      return false;
+    }
+    // A JSON string's `.eventId` is undefined; `typeof` below rejects
+    // it before anything else. Same for null/numbers.
+    eventId = (parsed as { eventId?: unknown } | null)?.eventId;
+  } else {
+    eventId = body.eventId;
+  }
+  return typeof eventId === "string" && eventId.length > 0;
 }
 
 /**

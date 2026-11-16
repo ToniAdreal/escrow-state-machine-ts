@@ -18,6 +18,21 @@ version changes.
 
 ### Added
 
+- Opt-in `requireEventId` on `verifySettlementWebhook` (2026-11-16,
+  backlog #1174): pass `{ secrets, requireEventId: true }` and a
+  payload whose signature verifies but whose `eventId` is missing,
+  not a string, or an empty string fails closed as `false` instead of
+  verifying on its signature alone — a signed-but-keyless notification
+  previously left a receiver deduplicating on `eventId` with no key,
+  silently defeating replay detection. The gate runs only after the
+  signature matches (a forged signature still fails on the signature
+  comparison), an unparseable string body fails the same way and never
+  throws, a non-boolean value throws a caller configuration error, and
+  it composes with the `maxAgeMs` / `maxFutureSkewMs` freshness window
+  (both gates must pass). Defaults to `false`, so the legacy behavior
+  is unchanged unless the option is enabled. The sending side is
+  unaffected: `buildSettlementWebhook` always issues an `eventId`.
+
 - Benchmark row for `truncateOutboxError` (2026-11-15, backlog
   #1167): one measured op truncates a fixed 3-case corpus (a short
   error, one exactly at the 1,024-character cap, and a 10 KB error)
