@@ -157,6 +157,13 @@ import {
   DEMO_QUORUM_EVIDENCE_REF,
   DEMO_QUORUM_EVIDENCE_SECOND_AT,
   DEMO_QUORUM_SIGNERS,
+  DEMO_QUORUM_DIFF_APPROVAL_ATS,
+  DEMO_QUORUM_DIFF_MAX_AGE_AFTER_MS,
+  DEMO_QUORUM_DIFF_MAX_AGE_BEFORE_MS,
+  DEMO_QUORUM_DIFF_SIGNERS_AFTER,
+  DEMO_QUORUM_DIFF_SIGNERS_BEFORE,
+  DEMO_QUORUM_DIFF_THRESHOLD_AFTER,
+  DEMO_QUORUM_DIFF_THRESHOLD_BEFORE,
   DEMO_QUORUM_SIGNED_EXPIRED_ERROR,
   DEMO_QUORUM_SIGNED_EXPIRED_NOW_MS,
   DEMO_QUORUM_SIGNED_EXPIRES_AT,
@@ -9359,13 +9366,13 @@ test("demo shows snapshot comparison: diffEscrowSnapshots reports the state chan
 test("demo snapshot-comparison segment is deterministic: two runs print byte-identical snapshot lines", async () => {
   const header =
     "Snapshot comparison (diffEscrowSnapshots between two snapshots of one escrow):";
-  const outboxHeader =
-    "Webhook outbox (SettlementWebhookOutbox: failed deliveries stay pending, then dead-letter):";
-  // The snapshot section is followed by the webhook-outbox section,
-  // so it runs from the blank line before its header to the blank
-  // line before the outbox header.
+  const quorumDiffHeader =
+    "Quorum snapshot comparison (diffQuorumSnapshots between two snapshots of one quorum):";
+  // The snapshot section is followed by the quorum-snapshot-
+  // comparison section, so it runs from the blank line before its
+  // header to the blank line before the quorum header.
   const segment = (ls: string[]) =>
-    ls.slice(ls.indexOf(header) - 1, ls.indexOf(outboxHeader) - 1);
+    ls.slice(ls.indexOf(header) - 1, ls.indexOf(quorumDiffHeader) - 1);
   const a = await runDemo();
   const b = await runDemo();
   // Blank + header + change line + identical line + rejection
@@ -9377,6 +9384,97 @@ test("demo snapshot-comparison segment is deterministic: two runs print byte-ide
   assert.deepEqual(a.snapshotDiff, b.snapshotDiff);
   assert.deepEqual(a.snapshotDiffIdentical, b.snapshotDiffIdentical);
   assert.equal(a.snapshotDiffCrossIdError, b.snapshotDiffCrossIdError);
+});
+
+test("demo shows quorum snapshot comparison: diffQuorumSnapshots reports the charter drift with approvals unchanged, and { approvalsChanged: false } for identical snapshots", async () => {
+  const { quorumSnapshotDiff, quorumSnapshotDiffIdentical, lines } =
+    await runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned fixtures: 3-of-5 with a 1-hour window vs 4-of-5
+  // with arb-6 added and a 2-hour window; the same two votes at
+  // the same fixed timestamps in both snapshots.
+  assert.deepEqual(DEMO_QUORUM_DIFF_SIGNERS_BEFORE, [
+    "arb-1",
+    "arb-2",
+    "arb-3",
+    "arb-4",
+    "arb-5",
+  ]);
+  assert.deepEqual(DEMO_QUORUM_DIFF_SIGNERS_AFTER, [
+    "arb-1",
+    "arb-2",
+    "arb-3",
+    "arb-4",
+    "arb-5",
+    "arb-6",
+  ]);
+  assert.equal(DEMO_QUORUM_DIFF_THRESHOLD_BEFORE, 3);
+  assert.equal(DEMO_QUORUM_DIFF_THRESHOLD_AFTER, 4);
+  assert.equal(DEMO_QUORUM_DIFF_MAX_AGE_BEFORE_MS, 3_600_000);
+  assert.equal(DEMO_QUORUM_DIFF_MAX_AGE_AFTER_MS, 7_200_000);
+  assert.deepEqual(DEMO_QUORUM_DIFF_APPROVAL_ATS, [
+    "2026-03-14T09:00:00.000Z",
+    "2026-03-14T09:05:00.000Z",
+  ]);
+
+  // Exactly the three charter keys, and no approval key: the
+  // charter moved, no vote did.
+  assert.deepEqual(quorumSnapshotDiff.thresholdChanged, {
+    from: 3,
+    to: 4,
+  });
+  assert.deepEqual(quorumSnapshotDiff.signersChanged, {
+    from: ["arb-1", "arb-2", "arb-3", "arb-4", "arb-5"],
+    to: ["arb-1", "arb-2", "arb-3", "arb-4", "arb-5", "arb-6"],
+  });
+  assert.deepEqual(quorumSnapshotDiff.maxApprovalAgeMsChanged, {
+    from: 3_600_000,
+    to: 7_200_000,
+  });
+  assert.equal(quorumSnapshotDiff.approvalsChanged, false);
+  assert.equal(quorumSnapshotDiff.approvalsAdded, undefined);
+  assert.equal(quorumSnapshotDiff.approvalsRemoved, undefined);
+  assert.equal(quorumSnapshotDiff.approvalsModified, undefined);
+  // The identical pair reports the always-present master switch,
+  // not the empty object diffEscrowSnapshots returns.
+  assert.deepEqual(quorumSnapshotDiffIdentical, {
+    approvalsChanged: false,
+  });
+
+  // The printed section follows the escrow snapshot-comparison
+  // segment and precedes the webhook-outbox segment.
+  const header =
+    "Quorum snapshot comparison (diffQuorumSnapshots between two snapshots of one quorum):";
+  assert.ok(
+    text.indexOf(header) >
+      text.indexOf(
+        "Snapshot comparison (diffEscrowSnapshots between two snapshots of one escrow):",
+      ),
+    "quorum-snapshot-comparison segment must follow the snapshot-comparison segment",
+  );
+  assert.ok(
+    text.indexOf(header) <
+      text.indexOf(
+        "Webhook outbox (SettlementWebhookOutbox: failed deliveries stay pending, then dead-letter):",
+      ),
+    "quorum-snapshot-comparison segment must precede the webhook-outbox segment",
+  );
+  assert.ok(
+    text.includes(
+      "  3-of-5 -> 4-of-6: thresholdChanged 3 -> 4, signersChanged arb-1, arb-2, arb-3, arb-4, arb-5 -> arb-1, arb-2, arb-3, arb-4, arb-5, arb-6 (arb-6 added), maxApprovalAgeMsChanged 3600000 -> 7200000",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  approvals unchanged: approvalsChanged: false — no vote moved, only the charter did",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  identical snapshots: { approvalsChanged: false } — the master switch is always present",
+    ),
+  );
 });
 
 test("demo shows webhook outbox: three 500s dead-letter the pair, one failure then 200 clears the recovered pair", async () => {

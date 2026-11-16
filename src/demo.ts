@@ -478,6 +478,7 @@ import {
   deliverSettlementWebhookToMany,
   depositAmountFromHistory,
   diffEscrowSnapshots,
+  diffQuorumSnapshots,
   diffSettlementReports,
   dispatchArbitration,
   expiredEscrows,
@@ -539,6 +540,7 @@ import {
   type QuorumConfig,
   type QuorumSignedSnapshotEnvelope,
   type QuorumSnapshot,
+  type QuorumSnapshotDiff,
   type ReconcileSettlementsResult,
   type RefundSettlement,
   type Settlement,
@@ -2462,6 +2464,41 @@ export const DEMO_SNAPSHOT_DIFF_FUND_AT = "2026-03-14T09:00:00.000Z";
 export const DEMO_SNAPSHOT_DIFF_SUBMIT_AT = "2026-03-14T10:00:00.000Z";
 
 /**
+ * Quorum-snapshot-comparison fixtures (backlog #1185): two snapshots
+ * of the same committee taken under different charters — threshold
+ * 3-of-5 vs 4-of-5, one signer added (arb-6), and the approval
+ * expiry window doubled — while the votes themselves are identical
+ * (arb-1 and arb-2 at the same fixed timestamps in both), so the
+ * diff reports exactly the three charter keys and
+ * `approvalsChanged: false`. All timestamps fixed; the printed lines
+ * carry thresholds, signer ids, and window milliseconds only, so no
+ * wall clock enters the output.
+ */
+export const DEMO_QUORUM_DIFF_SIGNERS_BEFORE = [
+  "arb-1",
+  "arb-2",
+  "arb-3",
+  "arb-4",
+  "arb-5",
+];
+export const DEMO_QUORUM_DIFF_SIGNERS_AFTER = [
+  "arb-1",
+  "arb-2",
+  "arb-3",
+  "arb-4",
+  "arb-5",
+  "arb-6",
+];
+export const DEMO_QUORUM_DIFF_THRESHOLD_BEFORE = 3;
+export const DEMO_QUORUM_DIFF_THRESHOLD_AFTER = 4;
+export const DEMO_QUORUM_DIFF_MAX_AGE_BEFORE_MS = 3_600_000;
+export const DEMO_QUORUM_DIFF_MAX_AGE_AFTER_MS = 7_200_000;
+export const DEMO_QUORUM_DIFF_APPROVAL_ATS = [
+  "2026-03-14T09:00:00.000Z",
+  "2026-03-14T09:05:00.000Z",
+];
+
+/**
  * Partial-release settlement-report fixtures (backlog #945): a
  * still-FUNDED escrow on the golden deposit, reported on the same
  * first 4,252 tranche the partial-release segment settles, so the
@@ -4367,6 +4404,23 @@ export interface DemoResult {
    * negative example, never a demo failure.
    */
   snapshotDiffCrossIdError: string;
+  /**
+   * `diffQuorumSnapshots(before, after)` on the quorum-comparison
+   * segment's two snapshots: exactly `thresholdChanged` 3 -> 4,
+   * `signersChanged` (arb-6 added to arb-1..arb-5), and
+   * `maxApprovalAgeMsChanged` 3600000 -> 7200000 — the same two
+   * approvals (arb-1, arb-2) at the same fixed timestamps in both
+   * snapshots, so no approval key appears and `approvalsChanged`
+   * reads false: the charter moved, no vote did.
+   */
+  quorumSnapshotDiff: QuorumSnapshotDiff;
+  /**
+   * `diffQuorumSnapshots(after, after)` on the same snapshot:
+   * `{ approvalsChanged: false }` — the master switch is always
+   * present, so an identical pair reports that one key instead of
+   * the empty object `diffEscrowSnapshots` returns.
+   */
+  quorumSnapshotDiffIdentical: QuorumSnapshotDiff;
   /**
    * The webhook-outbox ledger after the demo's dead-letter run:
    * the billing endpoint's failure record for the main webhook's
@@ -10744,6 +10798,100 @@ export async function runDemo(): Promise<DemoResult> {
     `  cross-escrow diff rejected: ${snapshotDiffCrossIdError}`,
   );
 
+  // --- Quorum snapshot comparison: governance drift between two snapshots ---
+  // The escrow comparison above answers "what moved in one escrow's
+  // evolution"; this one answers the governance-audit question "what
+  // changed in the committee since the last snapshot I stored".
+  // Two quorums collect the SAME two votes — arb-1 and arb-2 at the
+  // same fixed timestamps — but under different charters: the first
+  // is 3-of-5 with a 1-hour approval window, the second is 4-of-5
+  // with arb-6 added and a 2-hour window. The diff therefore
+  // reports exactly the three charter keys (thresholdChanged,
+  // signersChanged, maxApprovalAgeMsChanged) and `approvalsChanged:
+  // false` — the charter moved, no vote did. The negative control
+  // rides along: diffing a snapshot against itself reports
+  // `{ approvalsChanged: false }`, not `{}` — the master switch is
+  // always present, the one deliberate departure from
+  // `diffEscrowSnapshots`. Hand-pinned expectations, asserted HERE,
+  // outside the printing: a diff that missed a charter key, or
+  // reported a vote that never moved, would fail the demo itself,
+  // not just a test. Zero network, zero randomness, no wall clock.
+  let quorumDiffBeforeTick = 0;
+  const quorumDiffBefore = createQuorum({
+    threshold: DEMO_QUORUM_DIFF_THRESHOLD_BEFORE,
+    signers: [...DEMO_QUORUM_DIFF_SIGNERS_BEFORE],
+    maxApprovalAgeMs: DEMO_QUORUM_DIFF_MAX_AGE_BEFORE_MS,
+    now: () =>
+      Date.parse(
+        DEMO_QUORUM_DIFF_APPROVAL_ATS[
+          Math.min(
+            quorumDiffBeforeTick++,
+            DEMO_QUORUM_DIFF_APPROVAL_ATS.length - 1,
+          )
+        ],
+      ),
+  });
+  quorumDiffBefore.approve(DEMO_QUORUM_DIFF_SIGNERS_BEFORE[0]);
+  quorumDiffBefore.approve(DEMO_QUORUM_DIFF_SIGNERS_BEFORE[1]);
+  const quorumDiffBeforeSnapshot = quorumDiffBefore.snapshot();
+  let quorumDiffAfterTick = 0;
+  const quorumDiffAfter = createQuorum({
+    threshold: DEMO_QUORUM_DIFF_THRESHOLD_AFTER,
+    signers: [...DEMO_QUORUM_DIFF_SIGNERS_AFTER],
+    maxApprovalAgeMs: DEMO_QUORUM_DIFF_MAX_AGE_AFTER_MS,
+    now: () =>
+      Date.parse(
+        DEMO_QUORUM_DIFF_APPROVAL_ATS[
+          Math.min(
+            quorumDiffAfterTick++,
+            DEMO_QUORUM_DIFF_APPROVAL_ATS.length - 1,
+          )
+        ],
+      ),
+  });
+  quorumDiffAfter.approve(DEMO_QUORUM_DIFF_SIGNERS_AFTER[0]);
+  quorumDiffAfter.approve(DEMO_QUORUM_DIFF_SIGNERS_AFTER[1]);
+  const quorumDiffAfterSnapshot = quorumDiffAfter.snapshot();
+  const quorumSnapshotDiff = diffQuorumSnapshots(
+    quorumDiffBeforeSnapshot,
+    quorumDiffAfterSnapshot,
+  );
+  const quorumSnapshotDiffIdentical = diffQuorumSnapshots(
+    quorumDiffAfterSnapshot,
+    quorumDiffAfterSnapshot,
+  );
+  if (
+    quorumSnapshotDiff.thresholdChanged?.from !==
+      DEMO_QUORUM_DIFF_THRESHOLD_BEFORE ||
+    quorumSnapshotDiff.thresholdChanged?.to !==
+      DEMO_QUORUM_DIFF_THRESHOLD_AFTER ||
+    JSON.stringify(quorumSnapshotDiff.signersChanged?.from) !==
+      JSON.stringify(DEMO_QUORUM_DIFF_SIGNERS_BEFORE) ||
+    JSON.stringify(quorumSnapshotDiff.signersChanged?.to) !==
+      JSON.stringify(DEMO_QUORUM_DIFF_SIGNERS_AFTER) ||
+    quorumSnapshotDiff.maxApprovalAgeMsChanged?.from !==
+      DEMO_QUORUM_DIFF_MAX_AGE_BEFORE_MS ||
+    quorumSnapshotDiff.maxApprovalAgeMsChanged?.to !==
+      DEMO_QUORUM_DIFF_MAX_AGE_AFTER_MS ||
+    quorumSnapshotDiff.approvalsChanged !== false ||
+    quorumSnapshotDiff.approvalsAdded !== undefined ||
+    quorumSnapshotDiff.approvalsRemoved !== undefined ||
+    quorumSnapshotDiff.approvalsModified !== undefined ||
+    Object.keys(quorumSnapshotDiffIdentical).length !== 1 ||
+    quorumSnapshotDiffIdentical.approvalsChanged !== false
+  ) {
+    throw new Error(
+      "demo fixture broken: diffQuorumSnapshots segment does not match the pinned shape (3-of-5 -> 4-of-5 with arb-6 added and maxApprovalAgeMs 3600000 -> 7200000, same two approvals at the same timestamps so approvalsChanged is false, identical pair { approvalsChanged: false })",
+    );
+  }
+  lines.push(
+    "",
+    "Quorum snapshot comparison (diffQuorumSnapshots between two snapshots of one quorum):",
+    `  ${DEMO_QUORUM_DIFF_THRESHOLD_BEFORE}-of-${DEMO_QUORUM_DIFF_SIGNERS_BEFORE.length} -> ${DEMO_QUORUM_DIFF_THRESHOLD_AFTER}-of-${DEMO_QUORUM_DIFF_SIGNERS_AFTER.length}: thresholdChanged ${DEMO_QUORUM_DIFF_THRESHOLD_BEFORE} -> ${DEMO_QUORUM_DIFF_THRESHOLD_AFTER}, signersChanged ${DEMO_QUORUM_DIFF_SIGNERS_BEFORE.join(", ")} -> ${DEMO_QUORUM_DIFF_SIGNERS_AFTER.join(", ")} (arb-6 added), maxApprovalAgeMsChanged ${DEMO_QUORUM_DIFF_MAX_AGE_BEFORE_MS} -> ${DEMO_QUORUM_DIFF_MAX_AGE_AFTER_MS}`,
+    `  approvals unchanged: approvalsChanged: false — no vote moved, only the charter did`,
+    `  identical snapshots: { approvalsChanged: false } — the master switch is always present`,
+  );
+
   // --- Webhook outbox: failed deliveries stay pending, then dead-letter ---
   // The delivery segments so far prove the signature and the retry
   // path, but none ever shows what happens to a delivery that keeps
@@ -11607,6 +11755,8 @@ export async function runDemo(): Promise<DemoResult> {
     snapshotDiff,
     snapshotDiffIdentical,
     snapshotDiffCrossIdError,
+    quorumSnapshotDiff,
+    quorumSnapshotDiffIdentical,
     outbox,
     outboxPendingAfterTwo,
     outboxDeadAfterTwo,

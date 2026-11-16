@@ -18,6 +18,17 @@ version changes.
 
 ### Added
 
+- CLI demo gains a `diffQuorumSnapshots` quorum-snapshot-comparison
+  segment (2026-11-16, backlog #1185): two snapshots of the same
+  committee under different charters — threshold 3-of-5 vs 4-of-6
+  with arb-6 added and `maxApprovalAgeMs` doubled from 3600000 to
+  7200000 — diff to exactly the three charter keys with
+  `approvalsChanged: false`, since the same two approvals sit at the
+  same fixed timestamps in both; an identical pair reports
+  `{ approvalsChanged: false }`, the always-present master switch.
+  `DemoResult` exposes both diffs; one new demo test pins the
+  fixtures, the printed lines, and the segment order.
+
 - `verifySettlementWebhook` requireEventId benchmark row (2026-11-16,
   backlog #1182): one measured op verifies the fixed signed webhook
   under `{ secrets: [secret], requireEventId: true }` and pins `true`
