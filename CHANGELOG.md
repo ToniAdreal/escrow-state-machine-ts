@@ -32,6 +32,21 @@ version changes.
   reports a duplicate. Measured at ~6,353,926 ops/sec (0.16 µs/op)
   on Node v24.22.1, linux/x64.
 
+- CLI demo adds a dedupe signed snapshot segment (2026-11-16, backlog
+  #1198): a fresh `SettlementEventDedupe` on the same fixed clock and
+  1-hour TTL as the read-only-probe segment records two fixed
+  `eventId`s, seals them with `exportSignedSnapshot()` under a fixed
+  demo-only secret, and the envelope is round-tripped through JSON —
+  a detached copy with one byte changed in the first entry's
+  `seenAtMs` is refused by `restoreSignedSnapshot()` with the pinned
+  MAC-mismatch error, while the untampered envelope restores with the
+  observability counters at zero, the `has` probe reading both ids as
+  seen and an unseen id as new without recording anything, and a final
+  `checkAndRecord` pass confirming both ids still read as duplicates
+  and the unseen id as new. Only the envelope version, the first 16
+  hex chars of the MAC, and the entry count are printed — never the
+  secret, never the full MAC, never the full entries.
+
   (2026-11-16, backlog #1193): a fresh 2-of-3 quorum with Ed25519 public
   keys registered for arb-1 and arb-2 collects votes with
   `approveSigned()` — a valid signature counts and marks the log entry

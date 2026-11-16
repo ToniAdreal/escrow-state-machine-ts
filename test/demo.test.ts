@@ -51,6 +51,10 @@ import {
   DEMO_DEDUPE_CAPACITY_INVALID_MAX_ENTRIES_ERROR,
   DEMO_DEDUPE_CAPACITY_MAX_ENTRIES,
   DEMO_DEDUPE_CAPACITY_START_MS,
+  DEMO_DEDUPE_SIGNED_EVENT_IDS,
+  DEMO_DEDUPE_SIGNED_MAC_MISMATCH_ERROR,
+  DEMO_DEDUPE_SIGNED_SECRET,
+  DEMO_DEDUPE_SIGNED_UNSEEN_EVENT_ID,
   DEMO_DEDUPE_SNAPSHOT_ENTRIES,
   DEMO_DEDUPE_SNAPSHOT_EVENT_IDS,
   DEMO_DEDUPE_SNAPSHOT_START_MS,
@@ -1271,6 +1275,154 @@ test("demo dedupe has probe asks without recording: unseen, then seen with stats
   const probeAt = text.indexOf("Dedupe read-only probe (SettlementEventDedupe.has");
   const retryAt = text.indexOf("Retry-After parsing (parseRetryAfter");
   assert.ok(dedupeAt < probeAt && probeAt < retryAt);
+});
+
+test("demo dedupe signed snapshot seals the ids across a restart: tamper refused, restore keeps the window closed", async () => {
+  const {
+    dedupeSignedSnapshotSource,
+    dedupeSignedSnapshotFirst,
+    dedupeSignedSnapshotDuplicate,
+    dedupeSignedSnapshot,
+    dedupeSignedSnapshotTamperedError,
+    dedupeSignedSnapshotRestored,
+    dedupeSignedSnapshotStatsAfterRestore,
+    dedupeSignedSnapshotHasSeen,
+    dedupeSignedSnapshotHasUnseen,
+    dedupeSignedSnapshotStatsAfterHas,
+    dedupeSignedSnapshotRestoredSeen,
+    dedupeSignedSnapshotRestoredUnseen,
+    lines,
+  } = await runDemo();
+  const text = lines.join("\n");
+  const startMs = Date.parse(DEMO_WEBHOOK_AT);
+
+  // Hand-pinned expectations — written from the signed snapshot
+  // docs in src/webhooks.ts (the envelope is integrity protection
+  // only, counters restart at zero, a tampered entry fails the
+  // MAC before any snapshot parsing), never derived by calling
+  // the signed snapshot pair itself, and cross-checked against
+  // test/settlementEventDedupeSignedSnapshot.test.ts, which pins
+  // the same shapes directly on the store.
+  assert.deepEqual(DEMO_DEDUPE_SIGNED_EVENT_IDS, [
+    "evt_demo_dedupe_signed_001",
+    "evt_demo_dedupe_signed_002",
+  ]);
+  assert.equal(
+    DEMO_DEDUPE_SIGNED_UNSEEN_EVENT_ID,
+    "evt_demo_dedupe_signed_003",
+  );
+  assert.equal(
+    DEMO_DEDUPE_SIGNED_MAC_MISMATCH_ERROR,
+    "SettlementEventDedupe: signed snapshot MAC mismatch: the snapshot was tampered with or the secret is wrong",
+  );
+  assert.deepEqual(dedupeSignedSnapshotFirst, [false, false]);
+  assert.deepEqual(dedupeSignedSnapshotDuplicate, [true, true]);
+  assert.equal(dedupeSignedSnapshot.v, 1);
+  assert.match(dedupeSignedSnapshot.mac, /^[0-9a-f]{64}$/);
+  assert.deepEqual(dedupeSignedSnapshot.snapshot, {
+    v: 1,
+    entries: [
+      [DEMO_DEDUPE_SIGNED_EVENT_IDS[0], startMs],
+      [DEMO_DEDUPE_SIGNED_EVENT_IDS[1], startMs],
+    ],
+  });
+  // The envelope carries no secret: only the version, the
+  // snapshot, and the MAC travel with it.
+  assert.deepEqual(Object.keys(dedupeSignedSnapshot).sort(), [
+    "mac",
+    "snapshot",
+    "v",
+  ]);
+  assert.equal(
+    JSON.stringify(dedupeSignedSnapshot).includes(
+      DEMO_DEDUPE_SIGNED_SECRET,
+    ),
+    false,
+  );
+  assert.equal(
+    dedupeSignedSnapshotTamperedError,
+    DEMO_DEDUPE_SIGNED_MAC_MISMATCH_ERROR,
+  );
+  // The restored store counts from zero, but the recorded ids
+  // travelled with the envelope.
+  assert.deepEqual(dedupeSignedSnapshotStatsAfterRestore, {
+    size: 2,
+    hits: 0,
+    misses: 0,
+    evictions: 0,
+  });
+  assert.deepEqual(dedupeSignedSnapshotHasSeen, [true, true]);
+  assert.equal(dedupeSignedSnapshotHasUnseen, false);
+  // Both probes left the counters exactly where the restore put
+  // them — a probe neither records, nor refreshes, nor counts.
+  assert.deepEqual(dedupeSignedSnapshotStatsAfterHas, {
+    size: 2,
+    hits: 0,
+    misses: 0,
+    evictions: 0,
+  });
+  assert.deepEqual(dedupeSignedSnapshotRestoredSeen, [true, true]);
+  assert.equal(dedupeSignedSnapshotRestoredUnseen, false);
+  assert.equal(dedupeSignedSnapshotRestored.size, 3);
+  // Independent cross-check: the source dedupe is untouched by
+  // the export and the restore — both ids still read as
+  // duplicates there too, so the envelope is a copy, not a move.
+  assert.equal(dedupeSignedSnapshotSource.size, 2);
+  assert.equal(
+    dedupeSignedSnapshotSource.checkAndRecord(
+      DEMO_DEDUPE_SIGNED_EVENT_IDS[0],
+    ),
+    true,
+  );
+  assert.equal(
+    dedupeSignedSnapshotSource.checkAndRecord(
+      DEMO_DEDUPE_SIGNED_EVENT_IDS[1],
+    ),
+    true,
+  );
+  // Every printed line verbatim, in order — the segment sits
+  // between the read-only-probe segment and the Retry-After
+  // segment, the sealed half of the same receiver-dedupe story.
+  // Only the first 16 hex chars of the MAC are printed, never
+  // the secret, never the full MAC, never the full entries.
+  assert.match(
+    text,
+    /Dedupe signed snapshot \(SettlementEventDedupe exportSignedSnapshot \/ restoreSignedSnapshot across a restart\):/,
+  );
+  assert.ok(
+    text.includes(
+      `  source dedupe (fixed clock ${DEMO_WEBHOOK_AT}, TTL ${DEMO_DEDUPE_TTL_MS} ms): eventId ${DEMO_DEDUPE_SIGNED_EVENT_IDS[0]} — checkAndRecord: false (new event), again: true (duplicate); eventId ${DEMO_DEDUPE_SIGNED_EVENT_IDS[1]} — checkAndRecord: false (new event), again: true (duplicate)`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  exportSignedSnapshot(): v 1, mac ${dedupeSignedSnapshot.mac.slice(0, 16)}… (64 lowercase hex chars, HMAC-SHA256 over the canonical snapshot under the demo secret — the secret is never printed or persisted), 2 entries`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  tampered envelope rejected: one byte changed in the first entry's seenAtMs (${startMs} -> ${startMs + 1}) throws "${DEMO_DEDUPE_SIGNED_MAC_MISMATCH_ERROR}" — a rewritten entry fails before any snapshot parsing`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  after JSON round-trip + SettlementEventDedupe.restoreSignedSnapshot(): stats size 2, hits 0, misses 0, evictions 0 — counters restart at zero, the recorded ids do not",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  restored dedupe: has(${DEMO_DEDUPE_SIGNED_EVENT_IDS[0]}): true, has(${DEMO_DEDUPE_SIGNED_EVENT_IDS[1]}): true, has(${DEMO_DEDUPE_SIGNED_UNSEEN_EVENT_ID}): false — probes record nothing, stats still size 2, hits 0, misses 0, evictions 0`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  restored dedupe: eventId ${DEMO_DEDUPE_SIGNED_EVENT_IDS[0]} — checkAndRecord: true (duplicate — the signed restore did not reopen the dedupe window); eventId ${DEMO_DEDUPE_SIGNED_EVENT_IDS[1]} — checkAndRecord: true (duplicate); eventId ${DEMO_DEDUPE_SIGNED_UNSEEN_EVENT_ID} — checkAndRecord: false (new event, recorded)`,
+    ),
+  );
+  const probeAt = text.indexOf("Dedupe read-only probe (SettlementEventDedupe.has");
+  const signedAt = text.indexOf("Dedupe signed snapshot (SettlementEventDedupe exportSignedSnapshot");
+  const retryAt = text.indexOf("Retry-After parsing (parseRetryAfter");
+  assert.ok(probeAt < signedAt && signedAt < retryAt);
 });
 
 test("demo shows Retry-After parsing: both hint forms normalize to milliseconds on a fixed clock", async () => {

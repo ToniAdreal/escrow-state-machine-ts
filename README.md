@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2206 tests, all local
+npm test   # 2207 tests, all local
 ```
 
 ## Quickstart
@@ -74,7 +74,14 @@ after still counts as first sighting), seen on both probes after the
 record with the counters untouched, and unseen again once the clock
 advances by exactly the TTL, the probes having renewed nothing and
 the expired probe having revived nothing — the check-before-verify
-probe a receiver runs before spending a signature verification. The sender side then parses
+probe a receiver runs before spending a signature verification. The receiver side then seals that
+same story: a fresh dedupe on the same fixed clock records two fixed ids, exports them with
+`exportSignedSnapshot()` under a fixed demo-only secret, and the envelope is round-tripped through
+JSON — a detached copy with one byte changed in the first entry's `seenAtMs` is refused by
+`restoreSignedSnapshot()` with the pinned MAC-mismatch error, while the untampered envelope
+restores with the counters at zero, the `has` probe reading both ids as seen and an unseen id as
+new without recording anything, and a final `checkAndRecord` pass confirming both ids still read
+as duplicates and the unseen id as new — the signed restore does not reopen the dedupe window. The sender side then parses
 `Retry-After` hints with `parseRetryAfter` on the same fixed
 clock: a fixed corpus (delay-seconds, a whitespace-padded value,
 future and past HTTP-dates, a signed value, a garbage string,
@@ -1981,7 +1988,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2206 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2207 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
