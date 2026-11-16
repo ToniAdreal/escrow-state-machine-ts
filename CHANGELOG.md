@@ -18,6 +18,15 @@ version changes.
 
 ### Added
 
+- CLI demo gains a `verifySettlementWebhook` requireEventId segment
+  (2026-11-16, backlog #1189): the keyed main webhook verifies under
+  `{ secrets: [secret], requireEventId: true }`, while a twin with
+  `eventId` stripped and re-signed over the keyless bytes is refused
+  under the gate and still verifies with the option off, pinning the
+  legacy signature-only behavior. `DemoResult` exposes all three
+  verdicts; one new demo test pins the fixtures, the printed lines,
+  and the segment order.
+
 - `diffQuorumSnapshots` benchmark row (2026-11-16, backlog #1186): one
   measured op diffs two snapshots of the fixed 9-signer / threshold-5
   quorum carrying 7 recorded approvals (dao-1..dao-7, one second apart

@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHmac } from "node:crypto";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -1054,6 +1055,84 @@ test("demo lines print the webhook secret rotation section", async () => {
   const rotationAt = text.indexOf("Webhook secret rotation (verifySettlementWebhook");
   const dedupeAt = text.indexOf("Receiver dedupe (SettlementEventDedupe");
   assert.ok(freshnessAt < rotationAt && rotationAt < dedupeAt);
+});
+
+test("demo shows webhook requireEventId gate: keyed passes, keyless refused under the gate and still verifies legacy", async () => {
+  const {
+    webhook,
+    webhookKeyedRequireEventId,
+    webhookKeylessRequireEventId,
+    webhookKeylessLegacy,
+    lines,
+  } = await runDemo();
+
+  // The three verdicts: the keyed main webhook passes the gate,
+  // the keyless twin is refused under it, and the same twin still
+  // verifies with the option off (legacy signature-only behavior).
+  assert.equal(webhookKeyedRequireEventId, true);
+  assert.equal(webhookKeylessRequireEventId, false);
+  assert.equal(webhookKeylessLegacy, true);
+
+  // Independent re-verification: rebuild the keyless twin by hand
+  // (strip eventId, re-sign over the keyless bytes) and check the
+  // same three verdicts without trusting the demo's locals.
+  const body = JSON.stringify(webhook.payload);
+  const gateOpts = {
+    secrets: [DEMO_WEBHOOK_SECRET],
+    requireEventId: true,
+  };
+  assert.equal(
+    verifySettlementWebhook(body, webhook.signature, gateOpts),
+    true,
+  );
+  const { eventId: _testDroppedEventId, ...keylessPayload } =
+    webhook.payload;
+  const keylessBody = JSON.stringify(keylessPayload);
+  assert.notEqual(keylessBody, body);
+  assert.ok(!keylessBody.includes(DEMO_WEBHOOK_EVENT_ID));
+  const keylessSignature =
+    "sha256=" +
+    createHmac("sha256", DEMO_WEBHOOK_SECRET)
+      .update(keylessBody, "utf8")
+      .digest("hex");
+  assert.equal(
+    verifySettlementWebhook(keylessBody, keylessSignature, gateOpts),
+    false,
+  );
+  assert.equal(
+    verifySettlementWebhook(
+      keylessBody,
+      keylessSignature,
+      DEMO_WEBHOOK_SECRET,
+    ),
+    true,
+  );
+
+  // Printed lines, verbatim, in order between rotation and dedupe.
+  const text = lines.join("\n");
+  assert.match(
+    text,
+    /Webhook eventId gate \(verifySettlementWebhook requireEventId on the main webhook\):/,
+  );
+  assert.ok(
+    text.includes(
+      `  with eventId (${DEMO_WEBHOOK_EVENT_ID}), requireEventId: true — verifySettlementWebhook: true (the dedupe key is present, so the gate passes)`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  without eventId (same payload, eventId stripped, re-signed), requireEventId: true — verifySettlementWebhook: false (signature valid, but no key to deduplicate on — fail-closed)",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  without eventId, requireEventId off (legacy) — verifySettlementWebhook: true (verifies on its signature alone — the old behavior the gate closes)",
+    ),
+  );
+  const rotationAt = text.indexOf("Webhook secret rotation (verifySettlementWebhook");
+  const gateAt = text.indexOf("Webhook eventId gate (verifySettlementWebhook");
+  const dedupeAt = text.indexOf("Receiver dedupe (SettlementEventDedupe");
+  assert.ok(rotationAt < gateAt && gateAt < dedupeAt);
 });
 
 test("demo receiver dedupe counts the main webhook eventId new, duplicate, then new after the TTL", async () => {

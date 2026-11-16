@@ -20,7 +20,12 @@
  * too, a twin signed with an unrelated secret is refused (`false`,
  * no throw — all-mismatch fails closed), and an empty `secrets`
  * array throws the pinned configuration error instead of silently
- * passing. The receiver side then runs
+ * passing. That same webhook is then re-verified under the opt-in
+ * `requireEventId` gate: the keyed payload passes, while a twin
+ * with `eventId` stripped and re-signed over the keyless bytes is
+ * refused even though its signature is valid — and still verifies
+ * with the option off, pinning the legacy signature-only behavior.
+ * The receiver side then runs
  * that webhook's `eventId` through `SettlementEventDedupe` on a fixed
  * clock: the first delivery is new (booked), an immediate redelivery
  * is a duplicate (skipped), and after the clock advances by exactly
@@ -457,6 +462,7 @@
  * byte-identical output.
  */
 
+import { createHmac } from "node:crypto";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { readmeDiagramInSync } from "./diagram.js";
@@ -2778,6 +2784,26 @@ export interface DemoResult {
    */
   webhookRotationEmptySecretsError: string;
   /**
+   * `requireEventId` verdict on the main webhook (which carries
+   * {@link DEMO_WEBHOOK_EVENT_ID}) under
+   * `{ secrets: [DEMO_WEBHOOK_SECRET], requireEventId: true }`:
+   * `true` — the dedupe key is present, so the gate passes.
+   */
+  webhookKeyedRequireEventId: boolean;
+  /**
+   * `requireEventId` verdict on a twin of the main webhook with
+   * `eventId` stripped and re-signed over the keyless bytes under
+   * the same options: `false` — the signature is valid, but there
+   * is no key to deduplicate on, so the gate refuses fail-closed.
+   */
+  webhookKeylessRequireEventId: boolean;
+  /**
+   * Legacy verdict on that same keyless twin with the option off
+   * (plain secret): `true` — it verifies on its signature alone,
+   * the old behavior the gate closes.
+   */
+  webhookKeylessLegacy: boolean;
+  /**
    * Receiver-side dedupe store after the demo's three deliveries of
    * the main webhook's `eventId` (new, duplicate, new-after-TTL):
    * its stats read hits 1 / misses 2 / size 1.
@@ -5089,6 +5115,70 @@ export async function runDemo(): Promise<DemoResult> {
     `  signed with the new secret (identical payload, same fixed at / eventId): verifySettlementWebhook { secrets: [new, old] }: ${webhookRotationNewVerified} (the rotated-in secret verifies too)`,
     `  signed with an unrelated secret: verifySettlementWebhook { secrets: [new, old] }: ${webhookRotationUnrelatedVerified} (no candidate matches — fail-closed, returns false without throwing)`,
     `  empty candidate set: verifySettlementWebhook { secrets: [] } throws "${webhookRotationEmptySecretsError}" (a caller configuration error, never a silent pass)`,
+  );
+
+  // --- Webhook eventId gate: the opt-in requireEventId check ---
+  // The signature check above proves authenticity, and rotation
+  // proves the receiver tolerates a secret roll — but neither
+  // proves the notification carries a dedupe key. A signed payload
+  // can arrive without an `eventId`: the type says it is required,
+  // but a raw string body bypasses the type layer, and a keyless
+  // notification that verifies leaves a receiver that deduplicates
+  // on `eventId` with no key — replay detection silently defeated
+  // while the signature looks fine. The opt-in `requireEventId`
+  // gate closes that gap: it runs only after the signature
+  // matches, so a forged signature still fails on the comparison
+  // and never reaches the gate. The main webhook carries its fixed
+  // `eventId`, so it passes under the gate. The keyless twin is
+  // the identical payload with `eventId` stripped and re-signed
+  // over the keyless bytes (demo-side signer, the same `sha256=`
+  // HMAC form the library uses — `buildSettlementWebhook` always
+  // attaches an `eventId`, so no library call can build it): it
+  // is refused under the gate and still verifies with the option
+  // off, pinning the legacy signature-only behavior. All three
+  // verdicts are asserted outside the printing.
+  const webhookRequireEventIdOpts = {
+    secrets: [DEMO_WEBHOOK_SECRET],
+    requireEventId: true,
+  };
+  const webhookKeyedRequireEventId = verifySettlementWebhook(
+    webhookBody,
+    webhook.signature,
+    webhookRequireEventIdOpts,
+  );
+  const { eventId: _demoDroppedEventId, ...webhookKeylessPayload } =
+    webhook.payload;
+  const webhookKeylessBody = JSON.stringify(webhookKeylessPayload);
+  const webhookKeylessSignature =
+    "sha256=" +
+    createHmac("sha256", DEMO_WEBHOOK_SECRET)
+      .update(webhookKeylessBody, "utf8")
+      .digest("hex");
+  const webhookKeylessRequireEventId = verifySettlementWebhook(
+    webhookKeylessBody,
+    webhookKeylessSignature,
+    webhookRequireEventIdOpts,
+  );
+  const webhookKeylessLegacy = verifySettlementWebhook(
+    webhookKeylessBody,
+    webhookKeylessSignature,
+    DEMO_WEBHOOK_SECRET,
+  );
+  if (
+    webhookKeyedRequireEventId !== true ||
+    webhookKeylessRequireEventId !== false ||
+    webhookKeylessLegacy !== true
+  ) {
+    throw new Error(
+      "demo fixture broken: webhook requireEventId gate does not match the pinned shape (the keyed main webhook verifies under { secrets, requireEventId: true }, the keyless twin is refused under the gate, and the same keyless twin still verifies with the option off)",
+    );
+  }
+  lines.push(
+    "",
+    "Webhook eventId gate (verifySettlementWebhook requireEventId on the main webhook):",
+    `  with eventId (${DEMO_WEBHOOK_EVENT_ID}), requireEventId: true — verifySettlementWebhook: ${webhookKeyedRequireEventId} (the dedupe key is present, so the gate passes)`,
+    `  without eventId (same payload, eventId stripped, re-signed), requireEventId: true — verifySettlementWebhook: ${webhookKeylessRequireEventId} (signature valid, but no key to deduplicate on — fail-closed)`,
+    `  without eventId, requireEventId off (legacy) — verifySettlementWebhook: ${webhookKeylessLegacy} (verifies on its signature alone — the old behavior the gate closes)`,
   );
 
   // --- Receiver dedupe: the same eventId delivered three times ---
@@ -11504,6 +11594,9 @@ export async function runDemo(): Promise<DemoResult> {
     webhookRotationNewVerified,
     webhookRotationUnrelatedVerified,
     webhookRotationEmptySecretsError,
+    webhookKeyedRequireEventId,
+    webhookKeylessRequireEventId,
+    webhookKeylessLegacy,
     webhookDedupe,
     retryAfterParsed,
     disputeEscrow,

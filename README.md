@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2201 tests, all local
+npm test   # 2202 tests, all local
 ```
 
 ## Quickstart
@@ -58,7 +58,11 @@ altered by 1, which fails verification (the stored hash no longer
 recomputes), while the escrow's own history stays untouched — then builds the signed
 settlement webhook for the released escrow (fixed `eventId`/`at`,
 demo-only secret printed in `src/demo.ts` — not a real credential)
-and verifies it the way a receiver would. The receiver side then
+and verifies it the way a receiver would. It then re-verifies that
+webhook under `requireEventId: true` — the keyed payload passes,
+while a twin with `eventId` stripped and re-signed is refused even
+though its signature is valid, and still verifies with the option
+off (the legacy signature-only behavior). The receiver side then
 runs that webhook's `eventId` through `SettlementEventDedupe` on a
 fixed clock (1-hour TTL, starting at the webhook's `at`): the first
 delivery is new and booked, an immediate redelivery is a duplicate
@@ -1962,7 +1966,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2201 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2202 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
