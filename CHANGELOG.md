@@ -18,6 +18,19 @@ version changes.
 
 ### Added
 
+- `retrySettlementWebhookOutbox` benchmark row (2026-11-17, backlog
+  #1206): one measured op runs the whole two-round retry loop over
+  a fresh outbox with three pending pairs (one recorded 500 failure
+  each) and a stub `deliverOne` that answers 500 on a pair's first
+  re-delivery and 200 on its second (`maxRounds: 2, backoffMs: 0,
+  jitterMs: 0`, fixed clock), pinning the summary (attempted 6,
+  acknowledged 3, still pending 0, dead letter 0), the stub's six
+  calls in order, and the empty ledger on every iteration; outside
+  the timed loop, a `dryRun: true` rehearsal is pinned to leave the
+  ledger untouched and a dead-lettered pair is pinned to never be
+  re-delivered. Measured at ~876.2 ops/sec (1141.33 µs/op) on Node
+  v24.22.1, linux/x64.
+
 - CLI demo adds a webhook-outbox retry segment (2026-11-17, backlog
   #1205): on a fresh outbox with one pair pending at attempts 1,
   `retrySettlementWebhookOutbox` runs with a stub `deliverOne`
