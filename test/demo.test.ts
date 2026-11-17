@@ -332,6 +332,16 @@ import {
   DEMO_VERIFY_EVIDENCE_REF,
   DEMO_VERIFY_EVIDENCE_SUBMIT_AT,
   DEMO_VERIFY_EVIDENCE_VERIFY_AT,
+  DEMO_VISIT_BUDGET_CAP,
+  DEMO_VISIT_BUDGET_DEFAULT_ESCROW_ID,
+  DEMO_VISIT_BUDGET_DEFAULT_HISTORY_LENGTH,
+  DEMO_VISIT_BUDGET_DEFAULT_LOCKED_TOTAL,
+  DEMO_VISIT_BUDGET_DEFAULT_VISITS,
+  DEMO_VISIT_BUDGET_ERROR,
+  DEMO_VISIT_BUDGET_ESCROW_ID,
+  DEMO_VISIT_BUDGET_FUND_AMOUNT,
+  DEMO_VISIT_BUDGET_LOCKED_AFTER_ROUNDS,
+  DEMO_VISIT_BUDGET_TRANCHE,
   DEMO_WEBHOOK_AT,
   DEMO_WEBHOOK_EVENT_ID,
   DEMO_WEBHOOK_FRESHNESS_BOUNDARY_NOW_MS,
@@ -5344,7 +5354,7 @@ test("demo deposit cap segment is deterministic: two runs print byte-identical c
     ls.slice(
       ls.indexOf("Deposit cap (maxDeposit risk control):"),
       ls.indexOf(
-        "Subscription notifications (Escrow.subscribe on a branch escrow):",
+        "State visit budget (maxVisitsByState caps re-entries into a state — the budget counts total visits, not re-entries):",
       ) - 1,
     );
   const a = await runDemo();
@@ -5361,6 +5371,155 @@ test("demo deposit cap segment is deterministic: two runs print byte-identical c
   assert.equal(
     a.depositCapEscrow.history.length,
     b.depositCapEscrow.history.length,
+  );
+});
+
+test("demo shows the state visit budget: a FUNDED budget of 2 spends one visit on FUND and one on the first milestone round, the second round's PARTIAL_RELEASE is rejected with the pinned error and zero residue, and an unbudgeted control passes all three rounds", async () => {
+  const a = await runDemo();
+  const b = await runDemo();
+  const {
+    visitBudgetEscrow,
+    visitBudgetCap,
+    visitBudgetVisits,
+    visitBudgetLockedAfterReject,
+    visitBudgetError,
+    visitBudgetStateAfterReject,
+    visitBudgetHistoryLengthAfterReject,
+    visitBudgetDefaultEscrow,
+    visitBudgetDefaultVisits,
+    visitBudgetDefaultLockedTotal,
+    visitBudgetDefaultHistoryLength,
+    lines,
+  } = a;
+  const text = lines.join("\n");
+
+  // Hand-pinned expectations — written out here from the documented
+  // visit-budget semantics in src/stateMachine.ts (the budget counts
+  // total visits: the initial state's visit plus one per history
+  // entry landing there), never derived by constructing the budgeted
+  // escrow to produce them. test/stateVisitBudget.test.ts pins the
+  // same semantics independently (initial visit counts, second
+  // re-entry blocked, zero residue).
+  assert.equal(DEMO_VISIT_BUDGET_ESCROW_ID, "demo-visit-budget");
+  assert.equal(DEMO_VISIT_BUDGET_CAP, 2);
+  assert.equal(DEMO_VISIT_BUDGET_FUND_AMOUNT, 10000);
+  assert.equal(DEMO_VISIT_BUDGET_TRANCHE, 100);
+  assert.equal(
+    DEMO_VISIT_BUDGET_ERROR,
+    "state visit budget exhausted: FUNDED already visited 2 of 2 times",
+  );
+  assert.equal(DEMO_VISIT_BUDGET_LOCKED_AFTER_ROUNDS, 9900);
+  assert.equal(
+    DEMO_VISIT_BUDGET_DEFAULT_ESCROW_ID,
+    "demo-visit-budget-default",
+  );
+  assert.equal(DEMO_VISIT_BUDGET_DEFAULT_VISITS, 4);
+  assert.equal(DEMO_VISIT_BUDGET_DEFAULT_LOCKED_TOTAL, 9700);
+  assert.equal(DEMO_VISIT_BUDGET_DEFAULT_HISTORY_LENGTH, 7);
+
+  // The demo asserts the same things internally (a guard that
+  // silently passed a third FUNDED entry would fail the demo
+  // itself); the DemoResult fields echo the segment's outcome.
+  assert.equal(visitBudgetEscrow.id, DEMO_VISIT_BUDGET_ESCROW_ID);
+  assert.equal(visitBudgetCap, DEMO_VISIT_BUDGET_CAP);
+  assert.equal(visitBudgetVisits, 2);
+  assert.equal(
+    visitBudgetLockedAfterReject,
+    DEMO_VISIT_BUDGET_LOCKED_AFTER_ROUNDS,
+  );
+  assert.equal(visitBudgetError, DEMO_VISIT_BUDGET_ERROR);
+  assert.equal(visitBudgetStateAfterReject, "MILESTONE_SUBMITTED");
+  assert.equal(visitBudgetHistoryLengthAfterReject, 4);
+  // Zero residue: the refused PARTIAL_RELEASE is the fifth dispatch
+  // in the segment, but history holds only the four accepted ones.
+  const releaseEntries = visitBudgetEscrow.history.filter(
+    (entry) => entry.event === "PARTIAL_RELEASE",
+  );
+  assert.equal(releaseEntries.length, 1);
+  assert.equal(releaseEntries[0].amount, 100);
+  assert.equal(
+    visitBudgetDefaultEscrow.id,
+    DEMO_VISIT_BUDGET_DEFAULT_ESCROW_ID,
+  );
+  assert.equal(visitBudgetDefaultEscrow.state, "FUNDED");
+  assert.equal(visitBudgetDefaultVisits, DEMO_VISIT_BUDGET_DEFAULT_VISITS);
+  assert.equal(
+    visitBudgetDefaultLockedTotal,
+    DEMO_VISIT_BUDGET_DEFAULT_LOCKED_TOTAL,
+  );
+  assert.equal(
+    visitBudgetDefaultHistoryLength,
+    DEMO_VISIT_BUDGET_DEFAULT_HISTORY_LENGTH,
+  );
+
+  // The segment follows the deposit-cap segment (the sister risk
+  // control: locked-total cap vs per-state visit cap) and precedes
+  // the subscription segment; it prints its lines verbatim.
+  const budgetAt = text.indexOf(
+    "State visit budget (maxVisitsByState caps re-entries into a state — the budget counts total visits, not re-entries):",
+  );
+  assert.ok(
+    budgetAt > text.indexOf("Deposit cap (maxDeposit risk control):"),
+    "visit-budget segment must follow the deposit-cap segment",
+  );
+  assert.ok(
+    budgetAt <
+      text.indexOf(
+        "Subscription notifications (Escrow.subscribe on a branch escrow):",
+      ),
+    "visit-budget segment must precede the subscription segment",
+  );
+  for (const line of [
+    "Escrow demo-visit-budget: CREATED",
+    "  FUND               CREATED             -> FUNDED  (sponsor)",
+    "  SUBMIT_MILESTONE   FUNDED              -> MILESTONE_SUBMITTED  (creator)",
+    "  PARTIAL_RELEASE    MILESTONE_SUBMITTED -> FUNDED  (sponsor)",
+    "  FUNDED visits: 2 of 2 used (demo sets maxVisitsByState: { FUNDED: 2 }; the first FUND spent 1, this milestone round spent the second)",
+    "  SUBMIT_MILESTONE   FUNDED              -> MILESTONE_SUBMITTED  (creator)",
+    '  second round PARTIAL_RELEASE -> rejected: "state visit budget exhausted: FUNDED already visited 2 of 2 times"; state after rejection: MILESTONE_SUBMITTED, history entries: 4, locked: 9900 (nothing was appended — the gate is fail-fast, checked before the audit entry is written)',
+    "Escrow demo-visit-budget-default: CREATED",
+    "  default escrow demo-visit-budget-default (no maxVisitsByState — the library default is unlimited): 3 milestone rounds all pass, state FUNDED, FUNDED visits: 4, history entries: 7, locked: 9700",
+  ]) {
+    assert.ok(text.includes(line), `missing visit-budget line: ${line}`);
+  }
+
+  // Determinism: two runs print byte-identical visit-budget lines
+  // and report identical DemoResult fields — every value is derived
+  // from the fixed fixtures alone (timestamps injected), so no
+  // normalization is needed.
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf(
+        "State visit budget (maxVisitsByState caps re-entries into a state — the budget counts total visits, not re-entries):",
+      ),
+      ls.indexOf(
+        "Subscription notifications (Escrow.subscribe on a branch escrow):",
+      ) - 1,
+    );
+  assert.deepEqual(segment(a.lines), segment(b.lines));
+  assert.equal(b.visitBudgetCap, a.visitBudgetCap);
+  assert.equal(b.visitBudgetVisits, a.visitBudgetVisits);
+  assert.equal(
+    b.visitBudgetLockedAfterReject,
+    a.visitBudgetLockedAfterReject,
+  );
+  assert.equal(b.visitBudgetError, a.visitBudgetError);
+  assert.equal(
+    b.visitBudgetStateAfterReject,
+    a.visitBudgetStateAfterReject,
+  );
+  assert.equal(
+    b.visitBudgetHistoryLengthAfterReject,
+    a.visitBudgetHistoryLengthAfterReject,
+  );
+  assert.equal(b.visitBudgetDefaultVisits, a.visitBudgetDefaultVisits);
+  assert.equal(
+    b.visitBudgetDefaultLockedTotal,
+    a.visitBudgetDefaultLockedTotal,
+  );
+  assert.equal(
+    b.visitBudgetDefaultHistoryLength,
+    a.visitBudgetDefaultHistoryLength,
   );
 });
 

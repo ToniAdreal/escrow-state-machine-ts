@@ -18,6 +18,20 @@ version changes.
 
 ### Added
 
+- CLI demo adds a state visit budget segment (2026-11-17, backlog
+  #1203): a branch escrow with `maxVisitsByState: { FUNDED: 2 }`
+  spends one FUNDED visit on the first FUND and the second on the
+  first milestone round's PARTIAL_RELEASE back to FUNDED, so the
+  second round's PARTIAL_RELEASE is refused with the pinned
+  `state visit budget exhausted: FUNDED already visited 2 of 2 times`
+  error and leaves state, history, and the locked total (9900)
+  untouched, while a control escrow with no budget runs the same
+  three milestone rounds and every one passes (FUNDED visited 4
+  times, history 7 entries, locked 9700). The segment prints the
+  budget value and the `visitCount` read at each step, and the demo
+  test asserts the structure, the printed lines, and byte-identical
+  output across two runs.
+
 - `approveSigned` benchmark row (2026-11-16, backlog
   #1200): one measured op collects all five pre-signed Ed25519 votes
   to the threshold on a fresh 5-of-5 quorum (dao-1..dao-5, key pairs

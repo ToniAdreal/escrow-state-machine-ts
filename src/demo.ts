@@ -527,6 +527,7 @@ import {
   parseSettlementReportCsv,
   parseSettlementReportJson,
   reconcileSettlements,
+  releasedAmountFromHistory,
   renderReport,
   renderReportCsv,
   renderReportJson,
@@ -1528,6 +1529,70 @@ export const DEMO_DEPOSIT_CAP_OVERFUND_ERROR =
 export const DEMO_DEPOSIT_CAP_TOPUP_AT = "2026-03-10T09:02:00.000Z";
 export const DEMO_DEPOSIT_CAP_TOPUP_AMOUNT = 1000;
 export const DEMO_DEPOSIT_CAP_LOCKED_TOTAL = 10000;
+
+/**
+ * State-visit-budget fixtures for the closing segment: the sister
+ * control to the deposit cap above — a per-instance constructor
+ * configuration, not a boundary shape check.
+ * `EscrowOptions.maxVisitsByState` caps how many times the escrow
+ * may ENTER each listed state — total visits, not re-entries on top
+ * of the first visit. The count is derived from the append-only
+ * history (the initial state's visit plus one per history entry
+ * landing there), so a FUNDED budget of 2 is already half spent by
+ * the first FUND, the first milestone round's PARTIAL_RELEASE back
+ * to FUNDED spends the second, and the second round's
+ * PARTIAL_RELEASE is refused with the pinned error and appends
+ * nothing. Hand-pinned expectations — written from the documented
+ * semantics in src/stateMachine.ts (visit-budget block) and
+ * cross-checked against test/stateVisitBudget.test.ts, never
+ * derived by running the budget check itself:
+ * - a branch escrow ("demo-visit-budget") constructed with
+ *   maxVisitsByState { FUNDED: 2 }
+ * - FUND 10000 (initial funding) is accepted: state FUNDED,
+ *   history length 1, FUNDED visited 1 of 2, locked 10000
+ * - SUBMIT_MILESTONE + PARTIAL_RELEASE 100 (first milestone
+ *   round) is accepted: state FUNDED, history length 3,
+ *   FUNDED visited 2 of 2, locked 9900
+ * - SUBMIT_MILESTONE (second milestone) is accepted: state
+ *   MILESTONE_SUBMITTED, history length 4
+ * - PARTIAL_RELEASE 100 (second round) is rejected with exactly
+ *   {@link DEMO_VISIT_BUDGET_ERROR}: state stays
+ *   MILESTONE_SUBMITTED, history stays at length 4, locked
+ *   stays 9900
+ * - a control escrow ("demo-visit-budget-default") with no budget
+ *   runs the same three milestone rounds: all pass, state FUNDED,
+ *   history length 7, FUNDED visited 4 times, locked 9700
+ * All dispatch timestamps are injected so the printed audit trail
+ * stays byte-identical across runs. The segment is pure: no
+ * network, no randomness, no wall clock.
+ */
+export const DEMO_VISIT_BUDGET_ESCROW_ID = "demo-visit-budget";
+export const DEMO_VISIT_BUDGET_CAP = 2;
+export const DEMO_VISIT_BUDGET_FUND_AT = "2026-03-10T09:10:00.000Z";
+export const DEMO_VISIT_BUDGET_FUND_AMOUNT = 10000;
+export const DEMO_VISIT_BUDGET_TRANCHE = 100;
+export const DEMO_VISIT_BUDGET_FIRST_SUBMIT_AT =
+  "2026-03-10T09:11:00.000Z";
+export const DEMO_VISIT_BUDGET_FIRST_RELEASE_AT =
+  "2026-03-10T09:12:00.000Z";
+export const DEMO_VISIT_BUDGET_SECOND_SUBMIT_AT =
+  "2026-03-10T09:13:00.000Z";
+export const DEMO_VISIT_BUDGET_SECOND_RELEASE_AT =
+  "2026-03-10T09:14:00.000Z";
+export const DEMO_VISIT_BUDGET_ERROR =
+  "state visit budget exhausted: FUNDED already visited 2 of 2 times";
+export const DEMO_VISIT_BUDGET_LOCKED_AFTER_ROUNDS = 9900;
+export const DEMO_VISIT_BUDGET_DEFAULT_ESCROW_ID =
+  "demo-visit-budget-default";
+export const DEMO_VISIT_BUDGET_DEFAULT_FUND_AT =
+  "2026-03-10T09:10:00.000Z";
+export const DEMO_VISIT_BUDGET_DEFAULT_THIRD_SUBMIT_AT =
+  "2026-03-10T09:15:00.000Z";
+export const DEMO_VISIT_BUDGET_DEFAULT_THIRD_RELEASE_AT =
+  "2026-03-10T09:16:00.000Z";
+export const DEMO_VISIT_BUDGET_DEFAULT_VISITS = 4;
+export const DEMO_VISIT_BUDGET_DEFAULT_LOCKED_TOTAL = 9700;
+export const DEMO_VISIT_BUDGET_DEFAULT_HISTORY_LENGTH = 7;
 
 /**
  * Subscription fixtures for the closing segment: one further
@@ -3611,6 +3676,84 @@ export interface DemoResult {
    * test/maxDeposit.test.ts.
    */
   depositCapOverfundError: string;
+  /**
+   * The closing state-visit-budget segment's branch escrow
+   * ({@link DEMO_VISIT_BUDGET_ESCROW_ID}, `maxVisitsByState`
+   * pinned at `{ FUNDED: DEMO_VISIT_BUDGET_CAP }`), after the
+   * fixed dispatches ran: MILESTONE_SUBMITTED with 4 history
+   * entries — the second round's PARTIAL_RELEASE was refused
+   * by the budget and left no audit residue.
+   */
+  visitBudgetEscrow: Escrow;
+  /**
+   * The FUNDED visit budget of the segment:
+   * {@link DEMO_VISIT_BUDGET_CAP} — the first FUND spent one
+   * visit, the first milestone round spent the second.
+   */
+  visitBudgetCap: number;
+  /**
+   * `visitCount("FUNDED")` on {@link DemoResult.visitBudgetEscrow}
+   * after the segment: 2 of 2 — the budget is spent, which is why
+   * the second round's PARTIAL_RELEASE was refused.
+   */
+  visitBudgetVisits: number;
+  /**
+   * Locked total on {@link DemoResult.visitBudgetEscrow} after the
+   * segment: {@link DEMO_VISIT_BUDGET_LOCKED_AFTER_ROUNDS} — the
+   * single accepted tranche (100) came off the 10000 funding, and
+   * the rejected attempt contributed nothing.
+   */
+  visitBudgetLockedAfterReject: number;
+  /**
+   * The exact error message the rejected second-round
+   * PARTIAL_RELEASE threw ({@link DEMO_VISIT_BUDGET_ERROR}),
+   * hand-pinned from the documented visit-budget wording in
+   * src/stateMachine.ts and cross-checked against
+   * test/stateVisitBudget.test.ts.
+   */
+  visitBudgetError: string;
+  /**
+   * State of {@link DemoResult.visitBudgetEscrow} after the
+   * rejected PARTIAL_RELEASE: MILESTONE_SUBMITTED — the second
+   * round's SUBMIT_MILESTONE had already landed there, and the
+   * refusal changed nothing.
+   */
+  visitBudgetStateAfterReject: EscrowState;
+  /**
+   * History length of {@link DemoResult.visitBudgetEscrow} after
+   * the rejected PARTIAL_RELEASE: 4 — FUND, SUBMIT_MILESTONE,
+   * PARTIAL_RELEASE, SUBMIT_MILESTONE; the refused dispatch
+   * appended nothing.
+   */
+  visitBudgetHistoryLengthAfterReject: number;
+  /**
+   * The closing state-visit-budget segment's control escrow
+   * ({@link DEMO_VISIT_BUDGET_DEFAULT_ESCROW_ID}, no budget),
+   * after the same three milestone rounds ran: FUNDED with 7
+   * history entries — the library default is unlimited.
+   */
+  visitBudgetDefaultEscrow: Escrow;
+  /**
+   * `visitCount("FUNDED")` on
+   * {@link DemoResult.visitBudgetDefaultEscrow} after the segment:
+   * {@link DEMO_VISIT_BUDGET_DEFAULT_VISITS} — the first FUND
+   * plus one re-entry per milestone round, uncapped.
+   */
+  visitBudgetDefaultVisits: number;
+  /**
+   * Locked total on {@link DemoResult.visitBudgetDefaultEscrow}
+   * after the segment:
+   * {@link DEMO_VISIT_BUDGET_DEFAULT_LOCKED_TOTAL} — three
+   * accepted tranches of 100 came off the 10000 funding.
+   */
+  visitBudgetDefaultLockedTotal: number;
+  /**
+   * History length of {@link DemoResult.visitBudgetDefaultEscrow}
+   * after the segment:
+   * {@link DEMO_VISIT_BUDGET_DEFAULT_HISTORY_LENGTH} — FUND plus
+   * two entries per milestone round, three rounds.
+   */
+  visitBudgetDefaultHistoryLength: number;
   /**
    * The closing segment's branch escrow
    * ({@link DEMO_SUBSCRIBE_ESCROW_ID}), after all three fixed
@@ -8067,6 +8210,218 @@ export async function runDemo(): Promise<DemoResult> {
     `  rejected: FUND ${DEMO_DEPOSIT_CAP_OVERFUND_AMOUNT} -> "${depositCapOverfundError}" — history unchanged, locked still ${DEMO_DEPOSIT_CAP_FIRST_FUND_AMOUNT}`,
     `  accepted: FUND ${DEMO_DEPOSIT_CAP_TOPUP_AMOUNT} -> locked ${depositCapLockedTotal} (exactly on cap passes, cent-precision comparison)`,
   );
+
+  // --- State visit budget (maxVisitsByState risk control, closing) ---
+  // The sister control to the deposit cap above: the cap bounds the
+  // locked total, the budget bounds how many times the escrow may
+  // ENTER a state. A branch escrow is constructed with
+  // maxVisitsByState { FUNDED: 2 }, so the first FUND already spends
+  // one visit (the budget counts total visits, not re-entries on top
+  // of the first visit — the initial state's visit is counted, see
+  // test/stateVisitBudget.test.ts), the first milestone round's
+  // PARTIAL_RELEASE back to FUNDED spends the second, and the second
+  // round's PARTIAL_RELEASE is refused with the pinned error and
+  // appends nothing — the refused attempt leaves zero history
+  // residue and moves neither the state nor the locked total,
+  // mirroring the deposit cap's exhaustion semantics. A control
+  // escrow with no budget runs the same three milestone rounds and
+  // every one passes: the library default is unlimited, so the cap
+  // above is a demo policy choice, not a built-in limit. All
+  // dispatches are asserted HERE, outside the printing, against the
+  // hand-pinned fixtures above: a guard that silently passed a third
+  // FUNDED entry, or whose error wording drifted, would fail the demo
+  // itself, not just a test. The segment is pure: no network, no
+  // randomness, no wall clock (dispatch timestamps injected).
+  const visitBudgetEscrow = new Escrow(DEMO_VISIT_BUDGET_ESCROW_ID, {
+    maxVisitsByState: { FUNDED: DEMO_VISIT_BUDGET_CAP },
+  });
+  lines.push(
+    "",
+    "State visit budget (maxVisitsByState caps re-entries into a state — the budget counts total visits, not re-entries):",
+  );
+  lines.push(`Escrow ${visitBudgetEscrow.id}: ${visitBudgetEscrow.state}`);
+  for (const [event, note, amount, at, actor] of [
+    [
+      "FUND",
+      "Initial funding",
+      DEMO_VISIT_BUDGET_FUND_AMOUNT,
+      DEMO_VISIT_BUDGET_FUND_AT,
+      "sponsor",
+    ],
+    [
+      "SUBMIT_MILESTONE",
+      "First milestone",
+      undefined,
+      DEMO_VISIT_BUDGET_FIRST_SUBMIT_AT,
+      "creator",
+    ],
+    [
+      "PARTIAL_RELEASE",
+      "First tranche released",
+      DEMO_VISIT_BUDGET_TRANCHE,
+      DEMO_VISIT_BUDGET_FIRST_RELEASE_AT,
+      "sponsor",
+    ],
+  ] as const) {
+    const from = visitBudgetEscrow.state;
+    const to = visitBudgetEscrow.dispatch(event, note, amount, {
+      actor,
+      at,
+    });
+    lines.push(`  ${event.padEnd(18)} ${from.padEnd(19)} -> ${to}  (${actor})`);
+  }
+  const visitBudgetVisits = visitBudgetEscrow.visitCount("FUNDED");
+  if (visitBudgetVisits !== DEMO_VISIT_BUDGET_CAP) {
+    throw new Error(
+      `demo fixture broken: visit-budget escrow FUNDED visit count is not 2 of 2 after the first milestone round (got ${visitBudgetVisits})`,
+    );
+  }
+  lines.push(
+    `  FUNDED visits: 2 of 2 used (demo sets maxVisitsByState: { FUNDED: ${DEMO_VISIT_BUDGET_CAP} }; the first FUND spent 1, this milestone round spent the second)`,
+  );
+  // The second milestone round starts fine — MILESTONE_SUBMITTED is
+  // unbudgeted — but the PARTIAL_RELEASE that would re-enter FUNDED
+  // a third time is the dispatch the budget stops.
+  const visitBudgetSecondSubmitFrom = visitBudgetEscrow.state;
+  const visitBudgetSecondSubmitTo = visitBudgetEscrow.dispatch(
+    "SUBMIT_MILESTONE",
+    "Second milestone",
+    undefined,
+    { actor: "creator", at: DEMO_VISIT_BUDGET_SECOND_SUBMIT_AT },
+  );
+  lines.push(
+    `  ${"SUBMIT_MILESTONE".padEnd(18)} ${visitBudgetSecondSubmitFrom.padEnd(19)} -> ${visitBudgetSecondSubmitTo}  (creator)`,
+  );
+  let visitBudgetError = "";
+  let visitBudgetRejected = false;
+  try {
+    visitBudgetEscrow.dispatch(
+      "PARTIAL_RELEASE",
+      "Second tranche released",
+      DEMO_VISIT_BUDGET_TRANCHE,
+      { actor: "sponsor", at: DEMO_VISIT_BUDGET_SECOND_RELEASE_AT },
+    );
+  } catch (err) {
+    visitBudgetRejected = true;
+    visitBudgetError = err instanceof Error ? err.message : String(err);
+  }
+  if (!visitBudgetRejected) {
+    throw new Error(
+      "demo fixture broken: second round PARTIAL_RELEASE past the visit budget was expected to throw",
+    );
+  }
+  if (visitBudgetError !== DEMO_VISIT_BUDGET_ERROR) {
+    throw new Error(
+      `demo fixture broken: second round PARTIAL_RELEASE rejected with unexpected message: ${visitBudgetError}`,
+    );
+  }
+  const visitBudgetStateAfterReject = visitBudgetEscrow.state;
+  const visitBudgetHistoryLengthAfterReject =
+    visitBudgetEscrow.history.length;
+  const visitBudgetLockedAfterReject =
+    depositAmountFromHistory(visitBudgetEscrow.history) -
+    releasedAmountFromHistory(visitBudgetEscrow.history);
+  if (
+    visitBudgetStateAfterReject !== "MILESTONE_SUBMITTED" ||
+    visitBudgetHistoryLengthAfterReject !== 4 ||
+    visitBudgetLockedAfterReject !== DEMO_VISIT_BUDGET_LOCKED_AFTER_ROUNDS
+  ) {
+    throw new Error(
+      `demo fixture broken: visit-budget rejection left the escrow at ${visitBudgetStateAfterReject} with ${visitBudgetHistoryLengthAfterReject} history entries and locked ${visitBudgetLockedAfterReject} (expected MILESTONE_SUBMITTED, 4, 9900)`,
+    );
+  }
+  lines.push(
+    `  second round PARTIAL_RELEASE -> rejected: "${visitBudgetError}"; state after rejection: ${visitBudgetStateAfterReject}, history entries: ${visitBudgetHistoryLengthAfterReject}, locked: ${visitBudgetLockedAfterReject} (nothing was appended — the gate is fail-fast, checked before the audit entry is written)`,
+  );
+  // The same three milestone rounds without a budget all pass: the
+  // library default is unlimited, so the cap above is a demo policy
+  // choice, not a built-in limit.
+  const visitBudgetDefaultEscrow = new Escrow(
+    DEMO_VISIT_BUDGET_DEFAULT_ESCROW_ID,
+  );
+  lines.push(
+    `Escrow ${visitBudgetDefaultEscrow.id}: ${visitBudgetDefaultEscrow.state}`,
+  );
+  for (const [event, note, amount, at, actor] of [
+    [
+      "FUND",
+      "Initial funding",
+      DEMO_VISIT_BUDGET_FUND_AMOUNT,
+      DEMO_VISIT_BUDGET_DEFAULT_FUND_AT,
+      "sponsor",
+    ],
+    [
+      "SUBMIT_MILESTONE",
+      "First milestone",
+      undefined,
+      DEMO_VISIT_BUDGET_FIRST_SUBMIT_AT,
+      "creator",
+    ],
+    [
+      "PARTIAL_RELEASE",
+      "First tranche released",
+      DEMO_VISIT_BUDGET_TRANCHE,
+      DEMO_VISIT_BUDGET_FIRST_RELEASE_AT,
+      "sponsor",
+    ],
+    [
+      "SUBMIT_MILESTONE",
+      "Second milestone",
+      undefined,
+      DEMO_VISIT_BUDGET_SECOND_SUBMIT_AT,
+      "creator",
+    ],
+    [
+      "PARTIAL_RELEASE",
+      "Second tranche released",
+      DEMO_VISIT_BUDGET_TRANCHE,
+      DEMO_VISIT_BUDGET_SECOND_RELEASE_AT,
+      "sponsor",
+    ],
+    [
+      "SUBMIT_MILESTONE",
+      "Third milestone",
+      undefined,
+      DEMO_VISIT_BUDGET_DEFAULT_THIRD_SUBMIT_AT,
+      "creator",
+    ],
+    [
+      "PARTIAL_RELEASE",
+      "Third tranche released",
+      DEMO_VISIT_BUDGET_TRANCHE,
+      DEMO_VISIT_BUDGET_DEFAULT_THIRD_RELEASE_AT,
+      "sponsor",
+    ],
+  ] as const) {
+    const from = visitBudgetDefaultEscrow.state;
+    const to = visitBudgetDefaultEscrow.dispatch(event, note, amount, {
+      actor,
+      at,
+    });
+    lines.push(`  ${event.padEnd(18)} ${from.padEnd(19)} -> ${to}  (${actor})`);
+  }
+  const visitBudgetDefaultVisits =
+    visitBudgetDefaultEscrow.visitCount("FUNDED");
+  const visitBudgetDefaultLockedTotal =
+    depositAmountFromHistory(visitBudgetDefaultEscrow.history) -
+    releasedAmountFromHistory(visitBudgetDefaultEscrow.history);
+  const visitBudgetDefaultHistoryLength =
+    visitBudgetDefaultEscrow.history.length;
+  if (
+    visitBudgetDefaultEscrow.state !== "FUNDED" ||
+    visitBudgetDefaultVisits !== DEMO_VISIT_BUDGET_DEFAULT_VISITS ||
+    visitBudgetDefaultLockedTotal !==
+      DEMO_VISIT_BUDGET_DEFAULT_LOCKED_TOTAL ||
+    visitBudgetDefaultHistoryLength !==
+      DEMO_VISIT_BUDGET_DEFAULT_HISTORY_LENGTH
+  ) {
+    throw new Error(
+      `demo fixture broken: default (unbudgeted) escrow ended at ${visitBudgetDefaultEscrow.state} with ${visitBudgetDefaultVisits} FUNDED visits, locked ${visitBudgetDefaultLockedTotal}, ${visitBudgetDefaultHistoryLength} history entries (expected FUNDED, 4, 9700, 7)`,
+    );
+  }
+  lines.push(
+    `  default escrow ${visitBudgetDefaultEscrow.id} (no maxVisitsByState — the library default is unlimited): 3 milestone rounds all pass, state ${visitBudgetDefaultEscrow.state}, FUNDED visits: ${visitBudgetDefaultVisits}, history entries: ${visitBudgetDefaultHistoryLength}, locked: ${visitBudgetDefaultLockedTotal}`,
+  );
   // dispatch() appends to the audit history and then fans out to
   // subscribers: the seam a reconciliation or notification side
   // wires into. A branch escrow carries one fixed collecting
@@ -12352,6 +12707,17 @@ export async function runDemo(): Promise<DemoResult> {
     depositCapEscrow,
     depositCapLockedTotal,
     depositCapOverfundError,
+    visitBudgetEscrow,
+    visitBudgetCap: DEMO_VISIT_BUDGET_CAP,
+    visitBudgetVisits,
+    visitBudgetLockedAfterReject,
+    visitBudgetError,
+    visitBudgetStateAfterReject,
+    visitBudgetHistoryLengthAfterReject,
+    visitBudgetDefaultEscrow,
+    visitBudgetDefaultVisits,
+    visitBudgetDefaultLockedTotal,
+    visitBudgetDefaultHistoryLength,
     subscribeEscrow,
     subscribeNotifications,
     subscribeMatchesHistory,
