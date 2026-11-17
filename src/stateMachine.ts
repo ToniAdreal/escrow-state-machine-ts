@@ -2860,6 +2860,40 @@ export class Escrow {
   }
 
   /**
+   * How many more times the escrow may enter a state before the
+   * `maxVisitsByState` budget for it is spent — read-only, derived
+   * from the same history-derived count the visit-budget check reads:
+   * `Math.max(0, budget - _stateVisitCount(state))`, so it reaches 0
+   * exactly when dispatch would throw
+   * `state visit budget exhausted: …` naming the same numbers. A
+   * state with no budget configured reads `Infinity` (unlimited is
+   * not uncounted — {@link visitCount} still steps). Note the
+   * initial visit already counts: a budget of 1 for a state the
+   * escrow already passed through — including its starting state —
+   * reads 0. Throws `invalid remaining visits: unknown state …` on
+   * an unknown state, with the same fail-fast bar {@link visitCount}
+   * applies — a misspelled state is a caller bug, not an infinite
+   * budget. Pure read, and needs no new snapshot field: the budget
+   * and the count both derive from the snapshot envelope and the
+   * history, so `toJSON()` / `fromJSON()` and `fromHistory()`
+   * preserve it automatically. Mirrors the dataquest lifecycle's
+   * `remainingVisits`, with one deliberate difference: this escrow
+   * rejects a 0 visit budget at construction (budgets must be
+   * positive integers), so a 0 remaining can only be reached by
+   * spending, never by configuring.
+   */
+  remainingVisits(state: EscrowState): number {
+    if (!ESCROW_STATES.has(state)) {
+      throw new Error(
+        `invalid remaining visits: unknown state ${String(state)}`,
+      );
+    }
+    const budget = this._maxVisitsByState.get(state);
+    if (budget === undefined) return Infinity;
+    return Math.max(0, budget - this._stateVisitCount(state));
+  }
+
+  /**
    * The history-derived visit count (see {@link visitCount}): 1 for
    * the initial state — the first history entry's `from`, or the
    * current state when the history is still empty — plus 1 per history

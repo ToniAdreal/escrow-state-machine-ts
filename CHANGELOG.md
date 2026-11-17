@@ -18,6 +18,25 @@ version changes.
 
 ### Added
 
+- `remainingVisits(state)` budget-remaining read-only API (2026-11-17,
+  backlog #1211): `Math.max(0, budget - visitCount(state))` from the
+  same history-derived count the dispatch-time visit-budget check
+  reads, `Infinity` for an unbudgeted state, 0 exactly when the next
+  dispatch into that state would throw `state visit budget exhausted:
+  …` with the same numbers, and `invalid remaining visits: unknown
+  state …` on a misspelled state (same fail-fast bar as
+  `visitCount`); pure read, no new snapshot field, so `toJSON()` /
+  `fromJSON()` and `fromHistory()` preserve it automatically. One
+  deliberate difference from the dataquest port: a 0 visit budget is
+  rejected at construction (budgets must be positive integers), so 0
+  remaining is only ever reached by spending. 12 new tests in
+  `test/remainingVisits.test.ts` (initial remaining, step-down to
+  exhaustion with matching error numbers, Infinity without a budget,
+  budget 1 on an already-passed state, budget 1 on a never-visited
+  state, 0-budget construction rejection, unknown-state throw,
+  snapshot and fromHistory preservation, read purity,
+  `max(0, budget - visitCount)` agreement, fromJSON budget override).
+
 - `retrySettlementWebhookOutbox` benchmark row (2026-11-17, backlog
   #1206): one measured op runs the whole two-round retry loop over
   a fresh outbox with three pending pairs (one recorded 500 failure

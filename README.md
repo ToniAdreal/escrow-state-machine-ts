@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2209 tests, all local
+npm test   # 2221 tests, all local
 ```
 
 ## Quickstart
@@ -440,7 +440,13 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   entirely; a bare history carries no budget, so
   `Escrow.fromHistory(id, history, { maxVisitsByState })` is the way
   to re-attach it there. Read the count any time with
-  `escrow.visitCount(state)` (unknown states throw). Honest limit:
+  `escrow.visitCount(state)` (unknown states throw), and the
+  remaining entries with `escrow.remainingVisits(state)` — the same
+  count subtracted from the budget, clamped at 0, `Infinity` for an
+  unbudgeted state, and the same unknown-state throw. A 0 remaining
+  means the next dispatch into that state is rejected, and the
+  `state visit budget exhausted: …` error names the same used and
+  budget numbers. Honest limit:
   the budget caps re-entry into a state, not total history length,
   and a budget of 1 on `CREATED` does not block the first `FUND`
   (no edge re-enters `CREATED`).
@@ -1992,7 +1998,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2209 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2221 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
