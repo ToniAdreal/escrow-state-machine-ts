@@ -1727,6 +1727,26 @@
  *      is pinned to throw the exact verification error and record
  *      nothing. No network, no randomness in the measured path,
  *      and no wall clock: the quorum clock is fixed.
+ *  97. state visit budget dispatch — `dispatch()` on a fixed
+ *      escrow with `maxVisitsByState: { FUNDED: 2 }`: FUND of
+ *      10,000 at BASE (FUNDED visited 1 of 2), then one milestone
+ *      round — SUBMIT_MILESTONE at BASE + 1s and PARTIAL_RELEASE
+ *      of 100 at BASE + 2s back to FUNDED (2 of 2). One measured
+ *      op is the whole round trip on a fresh escrow (the rebuild
+ *      cost is inside the timed region, as in the maxDeposit row),
+ *      and self-checks the FUNDED state, `visitCount("FUNDED")`
+ *      stepping to 2, and the three pinned history entries on
+ *      every iteration. Outside the timed loop, a second round's
+ *      PARTIAL_RELEASE is pinned to throw the exact
+ *      `state visit budget exhausted: FUNDED already visited 2 of
+ *      2 times` error and leave state and history unchanged, an
+ *      escrow without the budget is pinned to run three rounds
+ *      unimpeded (FUNDED visited 4 times), and a
+ *      `toJSON()` / `fromJSON()` round-trip is pinned to keep the
+ *      budget and the used count (the restored escrow still
+ *      refuses the third re-entry with the same error). No
+ *      network, no randomness, and no wall clock: every dispatch
+ *      timestamp is fixed.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -14822,6 +14842,212 @@ function benchMaxDeposit(): number {
   }, ITERATIONS);
 }
 
+// ---------------------------------------------------------------------
+// maxVisitsByState fixture: a budgeted escrow (FUNDED budget 2)
+// funded once and driven through one milestone round on fixed
+// timestamps — FUND of 10,000 at BASE (FUNDED visited 1 of 2),
+// SUBMIT_MILESTONE at BASE + 1s, PARTIAL_RELEASE of 100 at
+// BASE + 2s back to FUNDED (2 of 2, 3 entries). Hand-pinned
+// expectations — written from the documented budget semantics in
+// src/stateMachine.ts (a visit is 1 for the initial state plus 1
+// per history entry landing in that state, so the count is
+// history-derived; the check runs after the transition-legality,
+// RBAC, and amount / deposit-cap checks and before anything is
+// appended or any idempotency key is consumed, so a rejected
+// dispatch leaves no trace; the budget itself rides the
+// toJSON()/fromJSON() snapshot), cross-checked against
+// test/stateVisitBudget.test.ts and the demo's visit-budget
+// segment (backlog #1203), never derived by calling the budgeted
+// dispatch itself:
+//   - the timed round trip returns FUNDED, the history holds
+//     exactly 3 entries — seq 1 / FUND / CREATED -> FUNDED /
+//     10,000 at BASE, seq 2 / SUBMIT_MILESTONE / FUNDED ->
+//     MILESTONE_SUBMITTED at BASE + 1s, seq 3 / PARTIAL_RELEASE /
+//     MILESTONE_SUBMITTED -> FUNDED / 100 at BASE + 2s — and
+//     visitCount("FUNDED") steps to exactly 2;
+//   - outside the timed loop, a second round's PARTIAL_RELEASE
+//     throws exactly MAX_VISITS_EXHAUSTED_ERROR and leaves state
+//     (MILESTONE_SUBMITTED) and history (4 entries, the first 3
+//     byte-identical to the timed fixture) unchanged;
+//   - an escrow constructed without maxVisitsByState runs three
+//     full milestone rounds unimpeded (FUNDED visited 4 times,
+//     history 7 entries);
+//   - a toJSON()/fromJSON() round-trip of the timed fixture keeps
+//     the budget and the used count: the restored escrow reports
+//     visitCount("FUNDED") 2 with a byte-identical history, and
+//     its next re-entry still throws the same pinned error and
+//     leaves no trace.
+// The budgeted escrow is rebuilt on every iteration because
+// dispatch mutates it; the rebuild cost is inside the timed
+// region. Fixed timestamps, no network, no randomness, no wall
+// clock.
+// ---------------------------------------------------------------------
+const MAX_VISITS_BUDGET = 2;
+const MAX_VISITS_FUND_AMOUNT = 10000;
+const MAX_VISITS_TRANCHE = 100;
+const MAX_VISITS_EXHAUSTED_ERROR =
+  "state visit budget exhausted: FUNDED already visited 2 of 2 times";
+
+function runVisitBudgetRound(): Escrow {
+  const escrow = new Escrow("BENCH-VISITS-001", {
+    maxVisitsByState: { FUNDED: MAX_VISITS_BUDGET },
+  });
+  escrow.dispatch("FUND", undefined, MAX_VISITS_FUND_AMOUNT, {
+    at: new Date(BASE_MS).toISOString(),
+  });
+  escrow.dispatch("SUBMIT_MILESTONE", undefined, undefined, {
+    at: new Date(BASE_MS + 1000).toISOString(),
+  });
+  const state = escrow.dispatch(
+    "PARTIAL_RELEASE",
+    undefined,
+    MAX_VISITS_TRANCHE,
+    {
+      at: new Date(BASE_MS + 2000).toISOString(),
+    },
+  );
+  if (state !== "FUNDED") {
+    throw new Error("benchmark self-check failed: maxVisitsByState");
+  }
+  return escrow;
+}
+
+function checkVisitBudgetRound(escrow: Escrow, where: string): void {
+  const [first, second, third] = escrow.history;
+  if (
+    escrow.state !== "FUNDED" ||
+    escrow.visitCount("FUNDED") !== MAX_VISITS_BUDGET ||
+    escrow.history.length !== 3 ||
+    first.seq !== 1 ||
+    first.event !== "FUND" ||
+    first.from !== "CREATED" ||
+    first.to !== "FUNDED" ||
+    first.amount !== MAX_VISITS_FUND_AMOUNT ||
+    first.at !== new Date(BASE_MS).toISOString() ||
+    second.seq !== 2 ||
+    second.event !== "SUBMIT_MILESTONE" ||
+    second.from !== "FUNDED" ||
+    second.to !== "MILESTONE_SUBMITTED" ||
+    second.at !== new Date(BASE_MS + 1000).toISOString() ||
+    third.seq !== 3 ||
+    third.event !== "PARTIAL_RELEASE" ||
+    third.from !== "MILESTONE_SUBMITTED" ||
+    third.to !== "FUNDED" ||
+    third.amount !== MAX_VISITS_TRANCHE ||
+    third.at !== new Date(BASE_MS + 2000).toISOString()
+  ) {
+    throw new Error(`benchmark self-check failed: ${where}`);
+  }
+}
+
+// Outside the timed loop: the second round's re-entry throws the
+// pinned budget error and leaves no residue.
+{
+  const budgeted = runVisitBudgetRound();
+  const historyBefore = historyToNdjson(budgeted.history);
+  budgeted.dispatch("SUBMIT_MILESTONE", undefined, undefined, {
+    at: new Date(BASE_MS + 3000).toISOString(),
+  });
+  let budgetError = "";
+  try {
+    budgeted.dispatch("PARTIAL_RELEASE", undefined, MAX_VISITS_TRANCHE, {
+      at: new Date(BASE_MS + 4000).toISOString(),
+    });
+  } catch (err) {
+    budgetError = err instanceof Error ? err.message : String(err);
+  }
+  if (
+    budgetError !== MAX_VISITS_EXHAUSTED_ERROR ||
+    budgeted.state !== "MILESTONE_SUBMITTED" ||
+    budgeted.history.length !== 4 ||
+    historyToNdjson(budgeted.history.slice(0, 3)) !== historyBefore
+  ) {
+    throw new Error(
+      "benchmark fixture failed: maxVisitsByState exhaustion mismatch",
+    );
+  }
+}
+// Outside the timed loop: no budget configured, three full
+// milestone rounds run unimpeded.
+{
+  const unbudgeted = new Escrow("BENCH-VISITS-UNBUDGETED");
+  unbudgeted.dispatch("FUND", undefined, MAX_VISITS_FUND_AMOUNT, {
+    at: new Date(BASE_MS).toISOString(),
+  });
+  for (let round = 0; round < 3; round += 1) {
+    unbudgeted.dispatch("SUBMIT_MILESTONE", undefined, undefined, {
+      at: new Date(BASE_MS + (round * 2 + 1) * 1000).toISOString(),
+    });
+    unbudgeted.dispatch("PARTIAL_RELEASE", undefined, MAX_VISITS_TRANCHE, {
+      at: new Date(BASE_MS + (round * 2 + 2) * 1000).toISOString(),
+    });
+  }
+  if (
+    unbudgeted.state !== "FUNDED" ||
+    unbudgeted.visitCount("FUNDED") !== 4 ||
+    unbudgeted.history.length !== 7
+  ) {
+    throw new Error(
+      "benchmark fixture failed: maxVisitsByState unbudgeted mismatch",
+    );
+  }
+}
+// Outside the timed loop: a snapshot round-trip keeps the budget
+// and the used count, and the restored escrow still refuses the
+// third re-entry with the same error and no trace.
+{
+  const budgeted = runVisitBudgetRound();
+  const restored = Escrow.fromJSON(budgeted.toJSON());
+  if (
+    restored.state !== "FUNDED" ||
+    restored.visitCount("FUNDED") !== MAX_VISITS_BUDGET ||
+    restored.history.length !== 3 ||
+    historyToNdjson(restored.history) !== historyToNdjson(budgeted.history)
+  ) {
+    throw new Error(
+      "benchmark fixture failed: maxVisitsByState snapshot mismatch",
+    );
+  }
+  restored.dispatch("SUBMIT_MILESTONE", undefined, undefined, {
+    at: new Date(BASE_MS + 3000).toISOString(),
+  });
+  const historyBefore = historyToNdjson(restored.history);
+  let budgetError = "";
+  try {
+    restored.dispatch("PARTIAL_RELEASE", undefined, MAX_VISITS_TRANCHE, {
+      at: new Date(BASE_MS + 4000).toISOString(),
+    });
+  } catch (err) {
+    budgetError = err instanceof Error ? err.message : String(err);
+  }
+  // Read the state through a plain string: the snapshot check above
+  // already narrowed restored.state to "FUNDED" for the compiler,
+  // and the rejection must move it to MILESTONE_SUBMITTED.
+  const stateAfterReject: string = restored.state;
+  if (
+    budgetError !== MAX_VISITS_EXHAUSTED_ERROR ||
+    stateAfterReject !== "MILESTONE_SUBMITTED" ||
+    historyToNdjson(restored.history) !== historyBefore
+  ) {
+    throw new Error(
+      "benchmark fixture failed: maxVisitsByState snapshot budget mismatch",
+    );
+  }
+}
+// Pre-check outside timing: the timed shape itself is correct.
+checkVisitBudgetRound(runVisitBudgetRound(), "maxVisitsByState fixture");
+
+function benchDispatchMaxVisitsByState(): number {
+  return measure(() => {
+    // Fresh budgeted escrow per iteration: dispatch mutates the
+    // escrow, so no budgeted escrow can be reused across calls.
+    // The fixture rebuild cost is inside the timed region.
+    // Per-iteration self-check: state, visitCount stepping to 2,
+    // and the three pinned history entries (see the fixture above).
+    checkVisitBudgetRound(runVisitBudgetRound(), "maxVisitsByState");
+  }, ITERATIONS);
+}
+
 
 // ---------------------------------------------------------------------
 // expectedSeq fixture: an escrow driven on fixed timestamps to
@@ -15609,6 +15835,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "parseEscrowHistory (4 entries, JSON text)", ops: benchParseEscrowHistory() },
   { path: "requireVerifyEvidence VERIFY_PASS (evidence gate)", ops: benchRequireVerifyEvidence() },
   { path: "maxDeposit FUND (deposit cap, funds to cap)", ops: benchMaxDeposit() },
+  { path: "dispatch maxVisitsByState (visit budget, 2 FUNDED visits)", ops: benchDispatchMaxVisitsByState() },
   { path: "dispatch expectedSeq (optimistic concurrency)", ops: benchExpectedSeq() },
   { path: "dispatch idempotencyKey (key hit/miss)", ops: benchDispatchIdempotencyKey() },
   { path: "dispatch rolePolicy (moderator arbitrate, contributor rejected)", ops: benchDispatchRolePolicy() },

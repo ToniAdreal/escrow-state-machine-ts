@@ -18,6 +18,23 @@ version changes.
 
 ### Added
 
+- `dispatch maxVisitsByState` benchmark row (2026-11-17, backlog
+  #1204): one measured op drives a fresh budgeted escrow
+  (`maxVisitsByState: { FUNDED: 2 }`, rebuilt on every iteration
+  because dispatch mutates it) through one milestone round — FUND
+  10,000 at BASE, SUBMIT_MILESTONE at BASE + 1s, PARTIAL_RELEASE
+  of 100 at BASE + 2s back to FUNDED — and pins the FUNDED state,
+  `visitCount("FUNDED")` stepping to 2, and the three pinned history
+  entries on every iteration; outside the timed loop, a second
+  round's PARTIAL_RELEASE is pinned to throw the exact `state visit
+  budget exhausted: FUNDED already visited 2 of 2 times` error and
+  leave state and history unchanged, an escrow without the budget
+  runs three rounds unimpeded (FUNDED visited 4 times, history 7
+  entries), and a `toJSON()`/`fromJSON()` round-trip keeps the
+  budget and the used count so the restored escrow still refuses the
+  third re-entry with the same error. Measured at ~39,700 ops/sec
+  (25.19 µs/op) on Node v24.22.1, linux/x64.
+
 - CLI demo adds a state visit budget segment (2026-11-17, backlog
   #1203): a branch escrow with `maxVisitsByState: { FUNDED: 2 }`
   spends one FUNDED visit on the first FUND and the second on the

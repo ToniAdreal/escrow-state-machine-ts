@@ -2585,6 +2585,21 @@ amount pinned to stay uncapped even at the cap — it carries
 no money and contributes nothing to the locked total — and
 an escrow without the option pinned to keep the pre-cap
 behavior), and
+state-visit-budget dispatch (`dispatch()` on a fresh escrow —
+`maxVisitsByState: { FUNDED: 2 }` — rebuilt on every iteration
+because dispatch mutates it, funded 10,000 at BASE and driven
+through one milestone round — SUBMIT_MILESTONE at BASE + 1s and
+PARTIAL_RELEASE of 100 at BASE + 2s back to FUNDED — with the
+FUNDED state, `visitCount("FUNDED")` stepping to 2, and the three
+pinned history entries checked on every iteration, and outside
+the timed loop a second round's PARTIAL_RELEASE pinned to throw
+the exact `state visit budget exhausted: FUNDED already visited 2
+of 2 times` error and to leave state and history unchanged entry
+for entry, an escrow without the budget pinned to run three rounds
+unimpeded (FUNDED visited 4 times, history 7 entries), and a
+`toJSON()`/`fromJSON()` round-trip pinned to keep the budget and
+the used count so the restored escrow still refuses the third
+re-entry with the same error and no trace), and
 optimistic-concurrency dispatch (`dispatch("VERIFY_PASS")` with
 `expectedSeq: 2` on a fresh escrow — rebuilt on every iteration
 because dispatch mutates it, driven FUND → SUBMIT_MILESTONE on
@@ -3115,6 +3130,7 @@ One real run on 2026-11-04:
 | parseEscrowHistory (4 entries, JSON text) | ~11,915 ops/sec (83.93 µs/op) |
 | requireVerifyEvidence VERIFY_PASS (evidence gate) | ~44,494 ops/sec (22.48 µs/op) |
 | maxDeposit FUND (deposit cap, funds to cap) | ~60,005 ops/sec (16.67 µs/op) |
+| dispatch maxVisitsByState (visit budget, 2 FUNDED visits) | ~39,700 ops/sec (25.19 µs/op) |
 | dispatch expectedSeq (optimistic concurrency) | ~35,245 ops/sec (28.37 µs/op) |
 | dispatch idempotencyKey (key hit/miss) | ~48,143 ops/sec (20.77 µs/op) |
 | dispatch rolePolicy (moderator arbitrate, contributor rejected) | ~5,966 ops/sec (167.61 µs/op) |
@@ -3142,7 +3158,7 @@ and the settlePartialRelease row above were measured on
 escrowsByEvent row above were measured on 2026-11-06 runs; the
 settlePartialReleases row above was measured on a 2026-11-08 run; the
 escrowsByFilters and settlementAging rows above were measured on a
-2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the signed-snapshot rows above were measured on a 2026-11-11 run; the diffSettlementReports row above was measured on a 2026-11-13 run; the renderSettlementReportsSummary and diffSettlementReportsSummaries rows above were measured on a 2026-11-13 run; the unreconciledSettlements row above was measured on a 2026-11-14 run; the stateAt row above was measured on a 2026-11-15 run; the stateAtFromHistory row above was measured on a 2026-11-15 run; the formatMinorUnits x parseMinorUnits round-trip row above was measured on a 2026-11-15 run; the quorum signed-snapshot round-trip row above was measured on a 2026-11-15 run; the calculateDepositCents row above was measured on a 2026-11-15 run; the escrowsBySettlementRef row above was measured on a 2026-11-15 run; the parseSettlementReportsSummaryCsv and parseSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the renderSettlementReportsSummaryCsv and renderSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the approvalStatement row above was measured on a 2026-11-15 run; the truncateOutboxError row above was measured on a 2026-11-15 run; the verifySettlementWebhook requireEventId row above was measured on a 2026-11-16 run; the diffQuorumSnapshots row above was measured on a 2026-11-16 run; the SettlementEventDedupe.has row above was measured on a 2026-11-16 run; the approveSigned row above was measured on a 2026-11-16 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
+2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the signed-snapshot rows above were measured on a 2026-11-11 run; the diffSettlementReports row above was measured on a 2026-11-13 run; the renderSettlementReportsSummary and diffSettlementReportsSummaries rows above were measured on a 2026-11-13 run; the unreconciledSettlements row above was measured on a 2026-11-14 run; the stateAt row above was measured on a 2026-11-15 run; the stateAtFromHistory row above was measured on a 2026-11-15 run; the formatMinorUnits x parseMinorUnits round-trip row above was measured on a 2026-11-15 run; the quorum signed-snapshot round-trip row above was measured on a 2026-11-15 run; the calculateDepositCents row above was measured on a 2026-11-15 run; the escrowsBySettlementRef row above was measured on a 2026-11-15 run; the parseSettlementReportsSummaryCsv and parseSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the renderSettlementReportsSummaryCsv and renderSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the approvalStatement row above was measured on a 2026-11-15 run; the truncateOutboxError row above was measured on a 2026-11-15 run; the verifySettlementWebhook requireEventId row above was measured on a 2026-11-16 run; the diffQuorumSnapshots row above was measured on a 2026-11-16 run; the SettlementEventDedupe.has row above was measured on a 2026-11-16 run; the approveSigned row above was measured on a 2026-11-16 run; the dispatch maxVisitsByState row above was measured on a 2026-11-17 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
 came in mixed under shared-host load, so refreshing the whole
 table would misreport changes in paths these additions never
 touched.
