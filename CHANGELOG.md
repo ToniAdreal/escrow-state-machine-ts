@@ -18,6 +18,17 @@ version changes.
 
 ### Added
 
+- `parseMinorUnits` / `formatMinorUnits` seeded property / fuzz tests
+  (2026-11-17, backlog #1216): new `test/parseMinorUnitsFuzz.test.ts`
+  mirrors the dataquest sibling (#1215) with the same seed 20261117
+  (mulberry32) — 525 random safe integers round-trip
+  (`parse(format(n)) === n`, never `-0`, formatted string checked
+  against an independent BigInt oracle), 228 random strict decimal
+  strings parsed to hand-computed minor units, 240 random bad strings
+  (3 decimals, thousands separators, scientific notation, empty,
+  non-numeric, over-safe-range integers) all rejected with a clear
+  error, plus same-seed determinism. 4 new tests (2235 → 2239).
+
 - `remainingApprovals()` quorum remaining-votes read-only API
   (2026-11-17, backlog #1213): `Math.max(0, threshold -
   approvalCount())` from the same counted set the other counting
