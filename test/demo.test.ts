@@ -224,6 +224,9 @@ import {
   DEMO_OUTBOX_RECOVERED_EVENT_ID,
   DEMO_OUTBOX_REDRIVE_NOW,
   DEMO_OUTBOX_REDRIVE_PENDING_ERROR,
+  DEMO_OUTBOX_RETRY_DRYRUN_EVENT_ID,
+  DEMO_OUTBOX_RETRY_EVENT_ID,
+  DEMO_OUTBOX_RETRY_NOW,
   DEMO_LIMITS_ACTOR_ERROR,
   DEMO_LIMITS_AT_LIMIT_ACTOR,
   DEMO_LIMITS_AT_LIMIT_ESCROW_ID,
@@ -10331,6 +10334,146 @@ test("demo shows webhook outbox redrive: dead-lettered pair returns to pending, 
   );
 });
 
+test("demo shows webhook outbox retry: runner re-delivers the pending pair (500 then 200) and a dry run rehearses without touching the ledger", async () => {
+  const a = await runDemo();
+  const b = await runDemo();
+  const {
+    outboxRetryOutbox,
+    outboxRetrySummary,
+    outboxRetryDeliverCalls,
+    outboxRetryPendingAfterLive,
+    outboxRetryDeadAfterLive,
+    outboxRetryDryRunSummary,
+    outboxRetryDryRunPendingAfter,
+    lines,
+  } = a;
+  const text = lines.join("\n");
+
+  // Hand-pinned fixtures: the retry pair is its own fixed eventId
+  // on the billing endpoint, on a fixed later clock than the
+  // redrive's 13:30; the dry-run pair is a second fixed eventId.
+  assert.equal(DEMO_OUTBOX_RETRY_EVENT_ID, "evt_demo_outbox_003");
+  assert.equal(DEMO_OUTBOX_RETRY_NOW, "2026-03-08T14:00:00.000Z");
+  assert.equal(DEMO_OUTBOX_RETRY_DRYRUN_EVENT_ID, "evt_demo_outbox_004");
+
+  // The live run re-delivered the one pending pair twice: the
+  // first re-delivery failed (500, recorded, attempts 2) and the
+  // second succeeded (200, acknowledged) — attempted 2,
+  // acknowledged 1, still pending 0, dead letter 0, never
+  // aborted, and no wouldRetry on a live summary.
+  assert.deepEqual(outboxRetrySummary, {
+    attempted: 2,
+    acknowledged: 1,
+    stillPending: 0,
+    deadLettered: 0,
+    aborted: false,
+  });
+  assert.deepEqual(outboxRetryDeliverCalls, [
+    {
+      endpoint: DEMO_OUTBOX_ENDPOINT,
+      eventId: DEMO_OUTBOX_RETRY_EVENT_ID,
+      ok: false,
+    },
+    {
+      endpoint: DEMO_OUTBOX_ENDPOINT,
+      eventId: DEMO_OUTBOX_RETRY_EVENT_ID,
+      ok: true,
+    },
+  ]);
+  assert.deepEqual(outboxRetryPendingAfterLive, []);
+  assert.deepEqual(outboxRetryDeadAfterLive, []);
+
+  // The dry run rehearsed a second pending pair and changed
+  // nothing: attempted 0, acknowledged 0, still pending 1, dead
+  // letter 0, wouldRetry listing exactly that pair — and the
+  // ledger still holds it at attempts 1 with the pinned error.
+  assert.deepEqual(outboxRetryDryRunSummary, {
+    attempted: 0,
+    acknowledged: 0,
+    stillPending: 1,
+    deadLettered: 0,
+    aborted: false,
+    wouldRetry: [
+      {
+        endpoint: DEMO_OUTBOX_ENDPOINT,
+        eventId: DEMO_OUTBOX_RETRY_DRYRUN_EVENT_ID,
+        wouldRetry: true,
+      },
+    ],
+  });
+  assert.deepEqual(outboxRetryDryRunPendingAfter, [
+    {
+      endpoint: DEMO_OUTBOX_ENDPOINT,
+      eventId: DEMO_OUTBOX_RETRY_DRYRUN_EVENT_ID,
+      attempts: 1,
+      lastError: DEMO_OUTBOX_DEAD_LAST_ERROR,
+      lastAt: Date.parse(DEMO_OUTBOX_RETRY_NOW),
+    },
+  ]);
+  // The dry run never called the stub again, and the exposed
+  // ledger is the live one the segment used.
+  assert.equal(outboxRetryDeliverCalls.length, 2);
+  assert.deepEqual(
+    outboxRetryOutbox.pending(),
+    outboxRetryDryRunPendingAfter,
+  );
+  assert.deepEqual(outboxRetryOutbox.deadLetter(), []);
+
+  // The printed section follows the redrive segment and precedes
+  // the caller-string-length-limits segment that closes the demo.
+  const header =
+    "Webhook outbox retry (retrySettlementWebhookOutbox: the opt-in retry loop over the pending ledger):";
+  assert.ok(
+    text.indexOf(header) >
+      text.indexOf(
+        "Webhook outbox redrive (SettlementWebhookOutbox.redrive: the dead letter comes back to pending):",
+      ),
+    "webhook-outbox-retry segment must follow the webhook-outbox-redrive segment",
+  );
+  assert.ok(
+    text.indexOf(header) <
+      text.indexOf(
+        "Caller string length limits (caller-supplied identifiers are capped, never truncated):",
+      ),
+    "webhook-outbox-retry segment must precede the caller-string-length-limits segment",
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_OUTBOX_ENDPOINT} — event ${DEMO_OUTBOX_RETRY_EVENT_ID}: 1 recorded failure (pending, attempts 1), then the retry runner with maxRounds 2, backoffMs 0, jitterMs 0`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  round 1: re-delivery 500 — recorded, attempts 2; round 2: re-delivery 200 — acknowledged; summary attempted 2, acknowledged 1, still pending 0, dead letter 0",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  dry run rehearsal on event ${DEMO_OUTBOX_RETRY_DRYRUN_EVENT_ID}: 1 pending pair, wouldRetry 1 — attempted 0, acknowledged 0, ledger unchanged (pending 1, attempts 1)`,
+    ),
+  );
+
+  // Determinism: two runs print byte-identical retry lines and
+  // report identical DemoResult fields — every value derives from
+  // the fixed fixtures alone, so no normalization is needed.
+  const retryHeader =
+    "Webhook outbox retry (retrySettlementWebhookOutbox: the opt-in retry loop over the pending ledger):";
+  const limitsHeader =
+    "Caller string length limits (caller-supplied identifiers are capped, never truncated):";
+  const segment = (ls: string[]) =>
+    ls.slice(ls.indexOf(retryHeader) - 1, ls.indexOf(limitsHeader) - 1);
+  const segA = segment(a.lines);
+  assert.equal(segA.length, 5);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(b.outboxRetrySummary, a.outboxRetrySummary);
+  assert.deepEqual(b.outboxRetryDeliverCalls, a.outboxRetryDeliverCalls);
+  assert.deepEqual(b.outboxRetryDryRunSummary, a.outboxRetryDryRunSummary);
+  assert.deepEqual(
+    b.outboxRetryDryRunPendingAfter,
+    a.outboxRetryDryRunPendingAfter,
+  );
+});
+
 test("demo webhook-outbox segment is deterministic: two runs print byte-identical outbox lines", async () => {
   const header =
     "Webhook outbox (SettlementWebhookOutbox: failed deliveries stay pending, then dead-letter):";
@@ -10361,13 +10504,13 @@ test("demo webhook-outbox segment is deterministic: two runs print byte-identica
 test("demo webhook-outbox-redrive segment is deterministic: two runs print byte-identical redrive lines", async () => {
   const header =
     "Webhook outbox redrive (SettlementWebhookOutbox.redrive: the dead letter comes back to pending):";
-  const limitsHeader =
-    "Caller string length limits (caller-supplied identifiers are capped, never truncated):";
-  // The redrive section is followed by the caller-string-length-limits
-  // section that now closes the demo, so it runs from the blank line
-  // before its header to the blank line before the limits header.
+  const retryHeader =
+    "Webhook outbox retry (retrySettlementWebhookOutbox: the opt-in retry loop over the pending ledger):";
+  // The redrive section is followed by the retry section, so it
+  // runs from the blank line before its header to the blank line
+  // before the retry header.
   const segment = (ls: string[]) =>
-    ls.slice(ls.indexOf(header) - 1, ls.indexOf(limitsHeader) - 1);
+    ls.slice(ls.indexOf(header) - 1, ls.indexOf(retryHeader) - 1);
   const a = await runDemo();
   const b = await runDemo();
   // Blank + header + redriven line + pending-rejection line +

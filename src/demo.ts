@@ -533,6 +533,7 @@ import {
   renderReportJson,
   restoreQuorum,
   restoreSignedQuorumSnapshot,
+  retrySettlementWebhookOutbox,
   settlePartialRelease,
   settlePartialReleases,
   settleRefund,
@@ -574,6 +575,7 @@ import {
   type SettlementEventDedupeSnapshot,
   type SettlementEventDedupeStats,
   type SettlementWebhookOutboxEntry,
+  type SettlementWebhookOutboxRetrySummary,
   type SettlementReport,
   type SettlementReportCsv,
   type SettlementReportDiff,
@@ -2772,6 +2774,14 @@ export const DEMO_UNRECONCILED_ARB_AT = "2026-03-09T13:00:00.000Z";
  *   `lastAt` stamped with the redrive time; redriving it again
  *   while pending throws the pinned error, and one scripted 200
  *   clears the pair — the ledger ends pending 0, dead letter 0.
+ * - the retry runner is then shown on its own fresh ledger
+ *   (backlog #1205): one pair fails once (pending, attempts 1),
+ *   the stub `deliverOne` answers 500 on the first re-delivery
+ *   and 200 on the second, so with `maxRounds: 2` the runner's
+ *   summary reports attempted 2, acknowledged 1, still pending 0,
+ *   dead letter 0; a `dryRun: true` rehearsal over a second
+ *   pending pair reports wouldRetry 1 with attempted 0 and
+ *   acknowledged 0 and leaves the ledger untouched.
  * All timestamps fixed; the printed lines carry the endpoint,
  * eventIds, and counts only, so no wall clock enters the output.
  */
@@ -2786,6 +2796,9 @@ export const DEMO_OUTBOX_RECOVERED_AT = "2026-03-08T13:00:00.000Z";
 export const DEMO_OUTBOX_REDRIVE_NOW = "2026-03-08T13:30:00.000Z";
 export const DEMO_OUTBOX_REDRIVE_PENDING_ERROR =
   "SettlementWebhookOutbox: cannot redrive a pending pair (only dead-lettered pairs can be redriven)";
+export const DEMO_OUTBOX_RETRY_EVENT_ID = "evt_demo_outbox_003";
+export const DEMO_OUTBOX_RETRY_NOW = "2026-03-08T14:00:00.000Z";
+export const DEMO_OUTBOX_RETRY_DRYRUN_EVENT_ID = "evt_demo_outbox_004";
 
 /**
  * Caller-string-length-limits fixtures (backlog #1069): the five
@@ -4976,6 +4989,53 @@ export interface DemoResult {
    * empty — the dead letter is fully drained.
    */
   outboxDeadAfterRedrive: SettlementWebhookOutboxEntry[];
+  /**
+   * The retry segment's own ledger (backlog #1205): a fresh
+   * `SettlementWebhookOutbox` the runner re-delivers from, so
+   * the retry story never disturbs the main outbox's drained
+   * ledger above.
+   */
+  outboxRetryOutbox: SettlementWebhookOutbox;
+  /**
+   * The live run's summary: attempted 2 (one failed
+   * re-delivery, one successful), acknowledged 1, still
+   * pending 0, dead letter 0 — the pair is cleared by its 200.
+   */
+  outboxRetrySummary: SettlementWebhookOutboxRetrySummary;
+  /**
+   * The stub `deliverOne` calls the live run made, in order:
+   * first `{ endpoint, eventId, ok: false }` (the scripted
+   * 500), then `{ endpoint, eventId, ok: true }` (the scripted
+   * 200). The dry run below adds none.
+   */
+  outboxRetryDeliverCalls: Array<{
+    endpoint: string;
+    eventId: string;
+    ok: boolean;
+  }>;
+  /**
+   * `outboxRetryOutbox.pending()` right after the live run:
+   * empty — the retried pair was acknowledged.
+   */
+  outboxRetryPendingAfterLive: SettlementWebhookOutboxEntry[];
+  /**
+   * `outboxRetryOutbox.deadLetter()` right after the live run:
+   * empty — no pair exhausted its retries.
+   */
+  outboxRetryDeadAfterLive: SettlementWebhookOutboxEntry[];
+  /**
+   * The dry-run rehearsal's summary: attempted 0,
+   * acknowledged 0, still pending 1, dead letter 0, with
+   * `wouldRetry` listing the one pending pair — the rehearsal
+   * delivers nothing and writes nothing.
+   */
+  outboxRetryDryRunSummary: SettlementWebhookOutboxRetrySummary;
+  /**
+   * `outboxRetryOutbox.pending()` after the dry run: still
+   * exactly the rehearsed pair — attempts 1, `lastError` the
+   * exact delivery error — the dry run changed nothing.
+   */
+  outboxRetryDryRunPendingAfter: SettlementWebhookOutboxEntry[];
   /**
    * The caller-string-length-limits segment's branch escrow
    * ({@link DEMO_LIMITS_ESCROW_ID}), after its single
@@ -12297,6 +12357,138 @@ export async function runDemo(): Promise<DemoResult> {
     `  redelivery after the fix: 200 on the first attempt — the success cleared the pair; ledger ends pending 0, dead letter 0`,
   );
 
+  // --- Webhook outbox retry: the opt-in retry loop over the pending ledger ---
+  // The outbox and redrive segments above show the ledger and the
+  // human's way back from the dead letter, but neither ever runs
+  // the retry loop itself: `retrySettlementWebhookOutbox` is the
+  // opt-in runner that re-delivers whatever is pending, so callers
+  // do not hand-write the loop (and its two easiest mistakes:
+  // retrying a dead letter, forgetting to clear a pair after a
+  // success). Here it runs on its own fresh outbox — the main
+  // outbox's ledger is already drained — with one pair that failed
+  // once (pending, attempts 1): the stub `deliverOne` answers
+  // 500 on the first re-delivery and 200 on the second, so with
+  // `maxRounds: 2, backoffMs: 0, jitterMs: 0` the first round
+  // records a second failure (attempts 2, still retryable) and
+  // the second round's 200 acknowledges the pair — the summary
+  // reports attempted 2, acknowledged 1, still pending 0, dead
+  // letter 0. A `dryRun: true` rehearsal then runs over a second
+  // pending pair (its own fixed eventId, one recorded failure):
+  // it reports wouldRetry 1 with attempted 0 and acknowledged 0
+  // and leaves the ledger untouched — the pair is still pending
+  // at attempts 1 afterwards, and the stub was never called
+  // again. Hand-pinned expectations, asserted HERE, outside the
+  // printing: both summaries' exact counts, the stub's two calls
+  // in order (false then true), the empty ledger after the live
+  // run, and the untouched dry-run pair. Zero network, zero real
+  // waiting (`backoffMs: 0`, and the runner's clock is the fixed
+  // retry clock), no wall clock.
+  const outboxRetryNowMs = Date.parse(DEMO_OUTBOX_RETRY_NOW);
+  const outboxRetryOutbox = new SettlementWebhookOutbox({
+    maxAttempts: DEMO_OUTBOX_MAX_ATTEMPTS,
+    now: () => outboxRetryNowMs,
+  });
+  outboxRetryOutbox.recordAttempt({
+    endpoint: DEMO_OUTBOX_ENDPOINT,
+    eventId: DEMO_OUTBOX_RETRY_EVENT_ID,
+    ok: false,
+    status: 500,
+    error: DEMO_OUTBOX_DEAD_LAST_ERROR,
+    at: outboxRetryNowMs,
+  });
+  const outboxRetryDeliverCalls: Array<{
+    endpoint: string;
+    eventId: string;
+    ok: boolean;
+  }> = [];
+  const outboxRetryDeliverOne = async (
+    endpoint: string,
+    eventId: string,
+  ): Promise<boolean> => {
+    // The endpoint is down on the first re-delivery (the scripted
+    // 500) and back on the second (the scripted 200): a pair fails
+    // at most once per call, so the per-pair call count decides.
+    const priorCalls = outboxRetryDeliverCalls.filter(
+      (call) => call.eventId === eventId,
+    ).length;
+    const ok = priorCalls >= 1;
+    outboxRetryDeliverCalls.push({ endpoint, eventId, ok });
+    return ok;
+  };
+  const outboxRetrySummary = await retrySettlementWebhookOutbox(
+    outboxRetryOutbox,
+    outboxRetryDeliverOne,
+    {
+      maxRounds: 2,
+      backoffMs: 0,
+      jitterMs: 0,
+      now: () => outboxRetryNowMs,
+    },
+  );
+  const outboxRetryPendingAfterLive = outboxRetryOutbox.pending();
+  const outboxRetryDeadAfterLive = outboxRetryOutbox.deadLetter();
+  outboxRetryOutbox.recordAttempt({
+    endpoint: DEMO_OUTBOX_ENDPOINT,
+    eventId: DEMO_OUTBOX_RETRY_DRYRUN_EVENT_ID,
+    ok: false,
+    status: 500,
+    error: DEMO_OUTBOX_DEAD_LAST_ERROR,
+    at: outboxRetryNowMs,
+  });
+  const outboxRetryDryRunSummary = await retrySettlementWebhookOutbox(
+    outboxRetryOutbox,
+    outboxRetryDeliverOne,
+    { dryRun: true, backoffMs: 0, jitterMs: 0, now: () => outboxRetryNowMs },
+  );
+  const outboxRetryDryRunPendingAfter = outboxRetryOutbox.pending();
+  if (
+    outboxRetrySummary.attempted !== 2 ||
+    outboxRetrySummary.acknowledged !== 1 ||
+    outboxRetrySummary.stillPending !== 0 ||
+    outboxRetrySummary.deadLettered !== 0 ||
+    outboxRetrySummary.aborted !== false ||
+    outboxRetrySummary.wouldRetry !== undefined ||
+    outboxRetryDeliverCalls.length !== 2 ||
+    outboxRetryDeliverCalls[0]?.endpoint !== DEMO_OUTBOX_ENDPOINT ||
+    outboxRetryDeliverCalls[0]?.eventId !== DEMO_OUTBOX_RETRY_EVENT_ID ||
+    outboxRetryDeliverCalls[0]?.ok !== false ||
+    outboxRetryDeliverCalls[1]?.endpoint !== DEMO_OUTBOX_ENDPOINT ||
+    outboxRetryDeliverCalls[1]?.eventId !== DEMO_OUTBOX_RETRY_EVENT_ID ||
+    outboxRetryDeliverCalls[1]?.ok !== true ||
+    outboxRetryPendingAfterLive.length !== 0 ||
+    outboxRetryDeadAfterLive.length !== 0 ||
+    outboxRetryDryRunSummary.attempted !== 0 ||
+    outboxRetryDryRunSummary.acknowledged !== 0 ||
+    outboxRetryDryRunSummary.stillPending !== 1 ||
+    outboxRetryDryRunSummary.deadLettered !== 0 ||
+    outboxRetryDryRunSummary.aborted !== false ||
+    outboxRetryDryRunSummary.wouldRetry?.length !== 1 ||
+    outboxRetryDryRunSummary.wouldRetry[0]?.endpoint !==
+      DEMO_OUTBOX_ENDPOINT ||
+    outboxRetryDryRunSummary.wouldRetry[0]?.eventId !==
+      DEMO_OUTBOX_RETRY_DRYRUN_EVENT_ID ||
+    outboxRetryDryRunSummary.wouldRetry[0]?.wouldRetry !== true ||
+    outboxRetryDryRunPendingAfter.length !== 1 ||
+    outboxRetryDryRunPendingAfter[0]?.endpoint !== DEMO_OUTBOX_ENDPOINT ||
+    outboxRetryDryRunPendingAfter[0]?.eventId !==
+      DEMO_OUTBOX_RETRY_DRYRUN_EVENT_ID ||
+    outboxRetryDryRunPendingAfter[0]?.attempts !== 1 ||
+    outboxRetryDryRunPendingAfter[0]?.lastError !==
+      DEMO_OUTBOX_DEAD_LAST_ERROR ||
+    outboxRetryDryRunPendingAfter[0]?.lastAt !== outboxRetryNowMs
+  ) {
+    throw new Error(
+      "demo fixture broken: webhook outbox retry segment does not match the pinned shape (live run attempted 2, acknowledged 1, still pending 0, dead letter 0 with the stub answering 500 then 200; dry run wouldRetry 1 with attempted 0, acknowledged 0 and the rehearsed pair still pending at attempts 1)",
+    );
+  }
+  lines.push(
+    "",
+    "Webhook outbox retry (retrySettlementWebhookOutbox: the opt-in retry loop over the pending ledger):",
+    `  ${DEMO_OUTBOX_ENDPOINT} — event ${DEMO_OUTBOX_RETRY_EVENT_ID}: 1 recorded failure (pending, attempts 1), then the retry runner with maxRounds 2, backoffMs 0, jitterMs 0`,
+    `  round 1: re-delivery 500 — recorded, attempts 2; round 2: re-delivery 200 — acknowledged; summary attempted 2, acknowledged 1, still pending 0, dead letter 0`,
+    `  dry run rehearsal on event ${DEMO_OUTBOX_RETRY_DRYRUN_EVENT_ID}: 1 pending pair, wouldRetry 1 — attempted 0, acknowledged 0, ledger unchanged (pending 1, attempts 1)`,
+  );
+
   // --- Caller string length limits: caller-supplied short identifiers (final closing) ---
   // The five caps the library enforces on caller-supplied short
   // identifiers — dispatch `actor` (256), webhook `eventId`
@@ -12902,6 +13094,13 @@ export async function runDemo(): Promise<DemoResult> {
     outboxRedriveFetchCalls: outboxRedriveCalls.length,
     outboxPendingAfterRedrive,
     outboxDeadAfterRedrive,
+    outboxRetryOutbox,
+    outboxRetrySummary,
+    outboxRetryDeliverCalls,
+    outboxRetryPendingAfterLive,
+    outboxRetryDeadAfterLive,
+    outboxRetryDryRunSummary,
+    outboxRetryDryRunPendingAfter,
     limitsEscrow,
     limitsActorError,
     limitsEventIdError,
