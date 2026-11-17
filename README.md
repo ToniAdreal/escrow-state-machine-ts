@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2221 tests, all local
+npm test   # 2235 tests, all local
 ```
 
 ## Quickstart
@@ -938,7 +938,12 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   window (boundary inclusive) they stop counting toward the threshold —
   `hasQuorum()` can fall back to false — but they stay in `approvalLog()`,
   and re-approving records a fresh timestamp; revoking an expired
-  approval is allowed and removes its entries. `src/arbitration.ts` wires the two together:
+  approval is allowed and removes its entries. A caller that needs to
+  show how many votes are still missing reads `remainingApprovals()` —
+  `Math.max(0, threshold - approvalCount())` from the same counted set,
+  so expired approvals are excluded automatically and it reads 0 exactly
+  when `hasQuorum()` is true; it is a pure read and needs no new snapshot
+  field, so `snapshot()` / `restoreQuorum()` preserve it. `src/arbitration.ts` wires the two together:
   `dispatchArbitration(escrow, quorum, outcome)` refuses to dispatch until
   `hasQuorum()` is true and auto-records `quorum <approvals>/<threshold> [signer, …]`
   in the audit note — the counted signers, in approval-time order,
@@ -1998,7 +2003,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2221 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2235 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

@@ -18,6 +18,25 @@ version changes.
 
 ### Added
 
+- `remainingApprovals()` quorum remaining-votes read-only API
+  (2026-11-17, backlog #1213): `Math.max(0, threshold -
+  approvalCount())` from the same counted set the other counting
+  views read, so it starts at the threshold, steps down one per
+  counted approval, reads 0 exactly when `hasQuorum()` is true and
+  never goes negative past the threshold; expired approvals are
+  excluded automatically while staying in `approvalLog()`, so a
+  caller no longer has to subtract by hand and risk getting the
+  expiry semantics wrong. Pure read, no new snapshot field, so
+  `snapshot()` / `restoreQuorum()` preserve it automatically
+  (restoring at a later clock ages approvals from their original
+  timestamps). 14 new tests in `test/remainingApprovals.test.ts`
+  (initial remaining, step-down to the `hasQuorum()` flip point,
+  past-threshold 0, duplicate-approve no-op, revoke and re-approve,
+  expiry rise with log intact, re-approve after expiry, inclusive
+  expiry boundary, threshold 1, snapshot round-trip, restore at a
+  later clock, read purity, `threshold - approvalCount()`
+  agreement at every step, signature-verified vote counts).
+
 - `remainingVisits(state)` budget-remaining read-only API (2026-11-17,
   backlog #1211): `Math.max(0, budget - visitCount(state))` from the
   same history-derived count the dispatch-time visit-budget check

@@ -41,9 +41,10 @@
  * dispatchArbitration(escrow, quorum, "release");
  * ```
  *
- * `hasQuorum()` / `approvalCount()` stay available for read-only
- * pre-checks (UI gating, logging) where no dispatch is intended — but
- * they are not a substitute for the gate when dispatching.
+ * `hasQuorum()` / `approvalCount()` / `remainingApprovals()` stay
+ * available for read-only pre-checks (UI gating, logging) where no
+ * dispatch is intended — but they are not a substitute for the gate
+ * when dispatching.
  */
 
 import { createHmac, KeyObject, timingSafeEqual, verify } from "node:crypto";
@@ -72,11 +73,12 @@ export interface QuorumConfig {
   now?: () => number;
   /**
    * Optional approval expiry window, in milliseconds. When set, the
-   * counting views (`hasQuorum` / `approvalCount` / `approvals`) only
-   * count an approval while its age — measured on the `now` clock — is
-   * at most this window (the boundary is inclusive, matching this repo's
-   * other freshness windows: an approval exactly `maxApprovalAgeMs` old
-   * still counts). Expiry never deletes anything: `approvalLog()` keeps
+   * counting views (`hasQuorum` / `approvalCount` / `approvals` /
+   * `remainingApprovals`) only count an approval while its age —
+   * measured on the `now` clock — is at most this window (the
+   * boundary is inclusive, matching this repo's other freshness
+   * windows: an approval exactly `maxApprovalAgeMs` old still
+   * counts). Expiry never deletes anything: `approvalLog()` keeps
    * the full audit trail including expired entries. An expired signer
    * can `approve()` again, which records a fresh timestamp (appended to
    * the log) and restores their count. A clock reading earlier than an
@@ -259,6 +261,21 @@ export interface Quorum {
   hasQuorum(): boolean;
   /** Number of distinct counted approvals (expired ones excluded). */
   approvalCount(): number;
+  /**
+   * How many more counted approvals are still needed to reach the
+   * threshold — read-only, derived from the same counted set
+   * {@link approvalCount} reads: `Math.max(0, threshold -
+   * approvalCount())`, so it is 0 exactly when {@link hasQuorum} is
+   * true, never negative (extra approvals past the threshold still
+   * read 0), and expired approvals are excluded automatically. A
+   * caller that shows "3 of 5 votes in, 2 to go" can read this
+   * directly instead of subtracting — the subtraction is easy to get
+   * wrong once expiry is in play, because expired approvals stay in
+   * `approvalLog()` while no longer counting. Pure read: it needs no
+   * new snapshot field, so `snapshot()` / {@link restoreQuorum}
+   * preserve it automatically.
+   */
+  remainingApprovals(): number;
   /**
    * Signer ids whose approvals currently count, ordered by each signer's
    * latest approval. Expired approvals are excluded.
@@ -505,6 +522,9 @@ function buildQuorum(
     },
     approvalCount(): number {
       return countedApprovals().length;
+    },
+    remainingApprovals(): number {
+      return Math.max(0, threshold - countedApprovals().length);
     },
     approvals(): readonly string[] {
       return countedApprovals().map((e) => e.signerId);
