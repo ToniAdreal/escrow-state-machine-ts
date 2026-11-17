@@ -1710,6 +1710,23 @@
  *      unseen id still records as a first sighting and a probed
  *      seen id still reports a duplicate. No network, no
  *      randomness, and no wall clock: the probe clock is fixed.
+ *  96. quorum signed approval — `approveSigned()` on a fixed
+ *      5-signer / threshold-5 quorum with Ed25519 public keys
+ *      registered for all five signers (dao-1..dao-5, the same
+ *      signers the statement row covers): the key pairs are
+ *      generated once, outside the timed loop, and each signer's
+ *      canonical statement is pre-signed once with its own key.
+ *      One measured op builds a fresh quorum from that fixed
+ *      config and collects all five signed votes to the threshold,
+ *      calling `hasQuorum()` after each vote — the Ed25519
+ *      verification + counting + verified-log cost every
+ *      arbitration vote pays. The timed path self-checks the
+ *      threshold, the count of 5, and that every audit-log entry
+ *      carries `verified: true` on every iteration. Outside the
+ *      timed loop, a signature made with the wrong signer's key
+ *      is pinned to throw the exact verification error and record
+ *      nothing. No network, no randomness in the measured path,
+ *      and no wall clock: the quorum clock is fixed.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -1721,7 +1738,7 @@
  *
  * Run: `npm run bench`
  */
-import { createHmac } from "node:crypto";
+import { createHmac, generateKeyPairSync, sign } from "node:crypto";
 import { cpus } from "node:os";
 import {
   createServer,
@@ -14048,6 +14065,154 @@ function benchApprovalStatement(): number {
   }, ITERATIONS);
 }
 
+// Quorum signed-approval fixture (backlog #1200): the fixed 5-of-5
+// quorum behind the `approveSigned` row — the same five approvers
+// (dao-1..dao-5) the statement row covers, with Ed25519 public keys
+// registered for all of them. The key pairs are generated once, at
+// module load (outside the timed loop), and each signer's canonical
+// statement is pre-signed once with its own private key; no key or
+// signature is ever generated inside the timed region. Key bytes are
+// the one non-deterministic input here — Ed25519 verification cost
+// is key-independent and no asserted value depends on them, exactly
+// like the CLI demo's fresh-per-run keys (backlog #1193) — so the
+// measured numbers stay reproducible across runs.
+const APPROVE_SIGNED_SIGNERS: readonly string[] = APPROVAL_STATEMENT_SIGNERS;
+const APPROVE_SIGNED_THRESHOLD = 5;
+const APPROVE_SIGNED_KEYS = APPROVE_SIGNED_SIGNERS.map(() =>
+  generateKeyPairSync("ed25519"),
+);
+const APPROVE_SIGNED_PUBLIC_KEYS: Record<
+  string,
+  import("node:crypto").KeyObject
+> = Object.fromEntries(
+  APPROVE_SIGNED_SIGNERS.map((id, i) => [
+    id,
+    APPROVE_SIGNED_KEYS[i].publicKey,
+  ]),
+);
+const APPROVE_SIGNED_SIGNATURES: readonly Buffer[] =
+  APPROVE_SIGNED_SIGNERS.map((id, i) =>
+    sign(null, approvalStatement(id), APPROVE_SIGNED_KEYS[i].privateKey),
+  );
+if (
+  APPROVE_SIGNED_SIGNERS.length !== APPROVE_SIGNED_THRESHOLD ||
+  APPROVE_SIGNED_KEYS.length !== APPROVE_SIGNED_THRESHOLD ||
+  APPROVE_SIGNED_SIGNATURES.length !== APPROVE_SIGNED_THRESHOLD
+) {
+  throw new Error(
+    "benchmark fixture failed: approveSigned signer corpus size",
+  );
+}
+
+/**
+ * One deterministic 5-of-5 signed quorum accumulation: a fresh
+ * quorum on a fixed injected clock, collecting each signer's
+ * pre-signed vote in order until the threshold is reached, checking
+ * `hasQuorum()` after each vote — the signed mirror of
+ * `runQuorumToThreshold`.
+ */
+function runSignedQuorumToThreshold(): Quorum {
+  const quorum = createQuorum({
+    threshold: APPROVE_SIGNED_THRESHOLD,
+    signers: APPROVE_SIGNED_SIGNERS,
+    signerPublicKeys: APPROVE_SIGNED_PUBLIC_KEYS,
+    now: () => BASE_MS,
+  });
+  for (let i = 0; i < APPROVE_SIGNED_THRESHOLD; i++) {
+    quorum.approveSigned(
+      APPROVE_SIGNED_SIGNERS[i],
+      APPROVE_SIGNED_SIGNATURES[i],
+    );
+    quorum.hasQuorum();
+  }
+  return quorum;
+}
+
+function checkSignedQuorum(quorum: Quorum, label: string): void {
+  // Per-iteration self-check: the threshold is reached, exactly
+  // the five signers count, the approvals list them in vote order,
+  // and every audit-log entry carries `verified: true` — the
+  // signature proof the arbitration path relies on.
+  if (
+    !quorum.hasQuorum() ||
+    quorum.approvalCount() !== APPROVE_SIGNED_THRESHOLD
+  ) {
+    throw new Error(
+      `benchmark self-check failed (${label}): approveSigned to threshold`,
+    );
+  }
+  const approvals = quorum.approvals();
+  if (
+    approvals.length !== APPROVE_SIGNED_THRESHOLD ||
+    !approvals.every((id, i) => id === APPROVE_SIGNED_SIGNERS[i])
+  ) {
+    throw new Error(
+      `benchmark self-check failed (${label}): approveSigned approvals order`,
+    );
+  }
+  const log = quorum.approvalLog();
+  if (
+    log.length !== APPROVE_SIGNED_THRESHOLD ||
+    !log.every((entry) => entry.verified === true)
+  ) {
+    throw new Error(
+      `benchmark self-check failed (${label}): approveSigned log not verified`,
+    );
+  }
+}
+checkSignedQuorum(runSignedQuorumToThreshold(), "fixture build");
+
+function checkApproveSignedWrongKeySignature(): void {
+  // Wrong-key rejection, pinned once outside the timed loop: a
+  // signature over dao-1's statement made with dao-2's key must
+  // throw the exact verification error and record nothing. This is
+  // the mutation guard for the row — if the verify gate ever stops
+  // rejecting, this check fails the bench at startup.
+  const probe = createQuorum({
+    threshold: APPROVE_SIGNED_THRESHOLD,
+    signers: APPROVE_SIGNED_SIGNERS,
+    signerPublicKeys: APPROVE_SIGNED_PUBLIC_KEYS,
+    now: () => BASE_MS,
+  });
+  const wrongKeySignature = sign(
+    null,
+    approvalStatement(APPROVE_SIGNED_SIGNERS[0]),
+    APPROVE_SIGNED_KEYS[1].privateKey,
+  );
+  let threw: unknown = null;
+  try {
+    probe.approveSigned(APPROVE_SIGNED_SIGNERS[0], wrongKeySignature);
+  } catch (error) {
+    threw = error;
+  }
+  if (
+    !(threw instanceof Error) ||
+    threw.message !==
+      `quorum signature verification failed for signer ${JSON.stringify(APPROVE_SIGNED_SIGNERS[0])}`
+  ) {
+    throw new Error(
+      "benchmark self-check failed (fixture build): approveSigned wrong-key signature was accepted",
+    );
+  }
+  if (probe.approvalCount() !== 0 || probe.approvalLog().length !== 0) {
+    throw new Error(
+      "benchmark self-check failed (fixture build): approveSigned wrong-key signature recorded a vote",
+    );
+  }
+}
+checkApproveSignedWrongKeySignature();
+
+function benchApproveSignedToThreshold(): number {
+  return measure(() => {
+    // One measured op collects all five pre-signed votes to the
+    // threshold on a fresh quorum and pins the count plus the
+    // verified log — the Ed25519 verification + counting cost
+    // every arbitration vote pays. Keys and signatures are fixed
+    // fixtures; only the quorum is rebuilt per iteration.
+    checkSignedQuorum(runSignedQuorumToThreshold(), "timed loop");
+  }, ITERATIONS);
+}
+
 // Outbox error-truncation fixture (backlog #1167): a fixed 3-case
 // corpus for `truncateOutboxError`, the pure guard `recordAttempt`
 // runs before a `lastError` enters the failure ledger. Hand-written
@@ -15462,6 +15627,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "escrowsApproachingDeadline (batch 14 escrows, 6 approaching)", ops: benchEscrowsApproachingDeadline() },
   { path: "nextEscrowDeadline (batch 10 escrows, earliest 2026-06-03)", ops: benchNextEscrowDeadline() },
   { path: "approvalStatement (5 of 9 signers, canonical statement bytes)", ops: benchApprovalStatement() },
+  { path: "approveSigned (5 of 5 signers, Ed25519 verify to threshold)", ops: benchApproveSignedToThreshold() },
   { path: "truncateOutboxError (3-case corpus, short/at-cap/10 KB)", ops: benchTruncateOutboxError() },
 ];
 

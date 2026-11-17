@@ -18,6 +18,17 @@ version changes.
 
 ### Added
 
+- `approveSigned` benchmark row (2026-11-16, backlog
+  #1200): one measured op collects all five pre-signed Ed25519 votes
+  to the threshold on a fresh 5-of-5 quorum (dao-1..dao-5, key pairs
+  generated once outside the timed loop, each signer's canonical
+  statement pre-signed once) and pins the count of 5, the approvals
+  in vote order, and every audit-log entry marked `verified: true`
+  on every iteration; outside the timed loop, a signature made with
+  the wrong signer's key is pinned to throw the exact verification
+  error and record nothing. Measured at ~1,113 ops/sec (898.26 µs/op)
+  on Node v24.22.1, linux/x64.
+
 - `SettlementEventDedupe.has` benchmark row (2026-11-16, backlog
   #1196): one measured op probes exactly one of the three states in
   rotation — a live hit, an unseen id, and the first id read at

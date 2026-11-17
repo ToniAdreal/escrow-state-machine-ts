@@ -2993,6 +2993,19 @@ iteration. Outside the timed loop, the three probe states are pinned
 once, the stats snapshot is pinned identical before and after probing,
 and a scratch dedupe pins that a probed unseen id still records as a
 first sighting and a probed seen id still reports a duplicate.
+The new `approveSigned` row measures the #1200 quorum signed
+approval as a cost path: one measured op builds a fresh 5-of-5
+quorum (dao-1..dao-5, Ed25519 public keys registered for all five)
+and collects all five pre-signed votes to the threshold, calling
+`hasQuorum()` after each vote, and pins the count of 5, the
+approvals in vote order, and every audit-log entry marked
+`verified: true` on every iteration. The key pairs are generated
+once, outside the timed loop, and each signer's canonical statement
+is pre-signed once with its own key, so the timed region pays only
+the Ed25519 verification + counting cost every arbitration vote
+pays. Outside the timed loop, a signature made with the wrong
+signer's key is pinned to throw the exact verification error and
+record nothing.
 One real run on 2026-11-04:
 
 | path | throughput |
@@ -3121,6 +3134,7 @@ One real run on 2026-11-04:
 | quorum exportSignedQuorumSnapshot x restoreSignedQuorumSnapshot round-trip (7 approvals of 9, JSON round-trip) | ~4,377 ops/sec (228.48 µs/op) |
 | approvalStatement (5 of 9 signers, canonical statement bytes) | ~37,546 ops/sec (26.63 µs/op) |
 | truncateOutboxError (3-case corpus, short/at-cap/10 KB) | ~1,749,607 ops/sec (0.57 µs/op) |
+| approveSigned (5 of 5 signers, Ed25519 verify to threshold) | ~1,113 ops/sec (898.26 µs/op) |
 
 The two batch-filter rows, the escrowsApproachingDeadline row,
 and the settlePartialRelease row above were measured on
@@ -3128,7 +3142,7 @@ and the settlePartialRelease row above were measured on
 escrowsByEvent row above were measured on 2026-11-06 runs; the
 settlePartialReleases row above was measured on a 2026-11-08 run; the
 escrowsByFilters and settlementAging rows above were measured on a
-2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the signed-snapshot rows above were measured on a 2026-11-11 run; the diffSettlementReports row above was measured on a 2026-11-13 run; the renderSettlementReportsSummary and diffSettlementReportsSummaries rows above were measured on a 2026-11-13 run; the unreconciledSettlements row above was measured on a 2026-11-14 run; the stateAt row above was measured on a 2026-11-15 run; the stateAtFromHistory row above was measured on a 2026-11-15 run; the formatMinorUnits x parseMinorUnits round-trip row above was measured on a 2026-11-15 run; the quorum signed-snapshot round-trip row above was measured on a 2026-11-15 run; the calculateDepositCents row above was measured on a 2026-11-15 run; the escrowsBySettlementRef row above was measured on a 2026-11-15 run; the parseSettlementReportsSummaryCsv and parseSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the renderSettlementReportsSummaryCsv and renderSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the approvalStatement row above was measured on a 2026-11-15 run; the truncateOutboxError row above was measured on a 2026-11-15 run; the verifySettlementWebhook requireEventId row above was measured on a 2026-11-16 run; the diffQuorumSnapshots row above was measured on a 2026-11-16 run; the SettlementEventDedupe.has row above was measured on a 2026-11-16 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
+2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the signed-snapshot rows above were measured on a 2026-11-11 run; the diffSettlementReports row above was measured on a 2026-11-13 run; the renderSettlementReportsSummary and diffSettlementReportsSummaries rows above were measured on a 2026-11-13 run; the unreconciledSettlements row above was measured on a 2026-11-14 run; the stateAt row above was measured on a 2026-11-15 run; the stateAtFromHistory row above was measured on a 2026-11-15 run; the formatMinorUnits x parseMinorUnits round-trip row above was measured on a 2026-11-15 run; the quorum signed-snapshot round-trip row above was measured on a 2026-11-15 run; the calculateDepositCents row above was measured on a 2026-11-15 run; the escrowsBySettlementRef row above was measured on a 2026-11-15 run; the parseSettlementReportsSummaryCsv and parseSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the renderSettlementReportsSummaryCsv and renderSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the approvalStatement row above was measured on a 2026-11-15 run; the truncateOutboxError row above was measured on a 2026-11-15 run; the verifySettlementWebhook requireEventId row above was measured on a 2026-11-16 run; the diffQuorumSnapshots row above was measured on a 2026-11-16 run; the SettlementEventDedupe.has row above was measured on a 2026-11-16 run; the approveSigned row above was measured on a 2026-11-16 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
 came in mixed under shared-host load, so refreshing the whole
 table would misreport changes in paths these additions never
 touched.
