@@ -14,7 +14,7 @@ under `## [Unreleased]` below (with its date and commit hash once pushed);
 move those lines into a versioned section only when `package.json`'s
 version changes.
 
-## [Unreleased]
+## [0.2.0] - 2026-11-18
 
 ### Added
 

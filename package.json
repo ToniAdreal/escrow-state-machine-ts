@@ -1,6 +1,6 @@
 {
   "name": "@toniadreal/escrow-state-machine-ts",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Deterministic escrow fund-release state machine + fee calculator (reproduced from the ALLWEB3 portfolio case study)",
   "keywords": [
     "escrow",
