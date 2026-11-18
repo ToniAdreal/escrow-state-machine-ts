@@ -38,7 +38,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createHmac, generateKeyPairSync, sign } from "node:crypto";
+import { createHmac, generateKeyPairSync, sign, type KeyObject } from "node:crypto";
 import {
   approvalStatement,
   createQuorum,
@@ -69,23 +69,26 @@ function clock() {
   };
 }
 
+/** ed25519 pairs generated with no export options are KeyObjects at runtime. */
+type Ed25519KeyPair = { publicKey: KeyObject; privateKey: KeyObject };
+
 function keyPairs() {
-  const keys = new Map<string, ReturnType<typeof generateKeyPairSync>>();
+  const keys = new Map<string, Ed25519KeyPair>();
   for (const signerId of SIGNERS)
     keys.set(signerId, generateKeyPairSync("ed25519"));
   return keys;
 }
 
 function signApproval(
-  pair: ReturnType<typeof generateKeyPairSync>,
+  pair: Ed25519KeyPair,
   signerId: string,
 ): Buffer {
   return sign(null, approvalStatement(signerId), pair.privateKey);
 }
 
 function publicKeys(
-  keys: Map<string, ReturnType<typeof generateKeyPairSync>>,
-): Record<string, ReturnType<typeof generateKeyPairSync>["publicKey"]> {
+  keys: Map<string, Ed25519KeyPair>,
+): Record<string, KeyObject> {
   return Object.fromEntries(
     [...keys.entries()].map(([id, pair]) => [id, pair.publicKey]),
   );
