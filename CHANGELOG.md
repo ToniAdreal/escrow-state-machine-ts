@@ -18,6 +18,22 @@ version changes.
 
 ### Added
 
+- `SettlementWebhookOutbox.stats()` benchmark row (2026-11-18,
+  backlog #1221): `bench/bench.ts` gains a `stats()` row over a fixed
+  3-pair ledger (2 pending at 1 and 2 attempts, 1 dead-lettered at 3,
+  one acknowledged pair cleared) with the snapshot pinned to
+  `{ size: 3, pending: 2, deadLettered: 1, totalAttempts: 6 }` on every
+  iteration — measured ~3,309,567 ops/sec (0.30 µs/op) on this run
+  (Node v24.22.1, AMD EPYC 9D25, machine-local, not a guarantee) —
+  plus outside-the-timed-loop probes pinning the pure-read shape
+  (pending / dead-letter lists byte-identical before and after the
+  call, a mutated detached snapshot leaving a re-read unchanged, an
+  empty outbox reporting all-zero stats) and the redrive step to
+  `{ size: 3, pending: 3, deadLettered: 0, totalAttempts: 3 }`. README
+  Benchmarks table, prose, and run-date note refreshed with the real
+  run; a broken count expectation was verified to fail the bench at
+  the stats probe (exit 1) before restoring.
+
 - `parseMinorUnits` / `formatMinorUnits` seeded property / fuzz tests
   (2026-11-17, backlog #1216): new `test/parseMinorUnitsFuzz.test.ts`
   mirrors the dataquest sibling (#1215) with the same seed 20261117

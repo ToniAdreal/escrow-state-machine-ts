@@ -1498,14 +1498,19 @@
  *      well.
  *  84. settlement webhook outbox — `SettlementWebhookOutbox` (the
  *      failure ledger a gateway keeps for its settlement webhooks),
- *      eight rows over a fixed outbox (`maxAttempts: 3`, injected
+ *      nine rows over a fixed outbox (`maxAttempts: 3`, injected
  *      fixed clock — see the outbox fixture below): recording one
  *      failure per fresh `(endpoint, eventId)` pair (`recordAttempt`
  *      with the pinned 500 error), driving one pair through the
  *      3-failure dead-letter boundary, listing the pending and
  *      dead-lettered pairs (`pending()` / `deadLetter()` over a
  *      fixed 1,000-pair ledger: 700 pending, 300 dead-lettered),
- *      acknowledging a pending pair clear (`acknowledge`),
+ *      acknowledging a pending pair clear (`acknowledge`), reading
+ *      the observability snapshot (`stats()`) of a fixed 3-pair
+ *      ledger — 2 pending at 1 and 2 attempts, 1 dead-lettered at
+ *      3, one acknowledged pair cleared — with the snapshot pinned
+ *      to `{ size: 3, pending: 2, deadLettered: 1, totalAttempts: 6 }`
+ *      on every iteration,
  *      exporting that 1,000-pair ledger (`exportSnapshot`),
  *      restoring it from its JSON round-tripped form (`restore`),
  *      and redriving one dead-lettered pair (the settled report's
@@ -1528,7 +1533,14 @@
  *      boundary and list rows), while the full entry-for-entry
  *      ledger comparison runs once, outside the timed loop, and
  *      malformed snapshots are pinned to be rejected by `restore`
- *      once, outside the timed loop. No network, no randomness,
+ *      once, outside the timed loop. The `stats()` pure-read probe
+ *      (the pending / dead-letter lists byte-identical before and
+ *      after the call, a mutated detached snapshot leaving a
+ *      re-read unchanged, an empty outbox reporting all-zero stats)
+ *      and the redrive step (one dead-lettered pair back to pending,
+ *      the counts stepping to `{ size: 3, pending: 3,
+ *      deadLettered: 0, totalAttempts: 3 }`) run once, outside the
+ *      timed loop. No network, no randomness,
  *      and no wall clock: the clock is injected and fixed.
  *  85. signed-snapshot envelopes — `exportSignedSnapshot` /
  *      `restoreSignedSnapshot` on all three HMAC-SHA256 signed
@@ -6026,6 +6038,125 @@ const OUTBOX_NOW_MS = BASE_MS + 480_000;
 const OUTBOX_ENDPOINT = "https://billing.example.com/hooks/settlement";
 const OUTBOX_ERROR = "server responded with status 500";
 const OUTBOX_MAX_ATTEMPTS = 3;
+
+// Outbox-stats fixture (backlog #1221): a fixed
+// `SettlementWebhookOutbox` under the same injected fixed clock the
+// other outbox rows use (`maxAttempts: 3`, so the dead-letter
+// boundary is the third consecutive failure), holding exactly three
+// tracked pairs:
+//   - `bench-stats-evt-001` on OUTBOX_ENDPOINT, failed once: pending
+//     at 1 attempt;
+//   - `bench-stats-evt-002` on OUTBOX_ENDPOINT, failed twice: pending
+//     at 2 attempts;
+//   - `bench-stats-evt-003` on a second endpoint, failed three times:
+//     dead-lettered at 3 attempts (the cap).
+// A fourth pair, `bench-stats-evt-004`, failed once and was then
+// acknowledged, so it is cleared and contributes nothing — the
+// fixture pins that a delivered pair leaves the ledger. The clock
+// never advances, so every `lastAt` is OUTBOX_NOW_MS.
+// Hand-written expectation — written out here from the script above
+// and cross-checked against the outbox stats test, never derived by
+// calling `stats()` itself: the snapshot is exactly
+// `{ size: 3, pending: 2, deadLettered: 1, totalAttempts: 6 }`, and
+// the `size` getter agrees. `stats()` is a pure read, so the timed
+// loop reuses this one fixture — no rebuild.
+const OUTBOX_STATS_ENDPOINT_B =
+  "https://ledger.example.com/hooks/settlement";
+const OUTBOX_STATS_EXPECTED = {
+  size: 3,
+  pending: 2,
+  deadLettered: 1,
+  totalAttempts: 6,
+};
+const outboxStats = new SettlementWebhookOutbox({
+  maxAttempts: OUTBOX_MAX_ATTEMPTS,
+  now: () => OUTBOX_NOW_MS,
+});
+function recordOutboxStatsFailure(
+  endpoint: string,
+  eventId: string,
+  times: number,
+): void {
+  for (let i = 0; i < times; i++) {
+    outboxStats.recordAttempt({
+      endpoint,
+      eventId,
+      ok: false,
+      status: 500,
+      error: OUTBOX_ERROR,
+    });
+  }
+}
+recordOutboxStatsFailure(OUTBOX_ENDPOINT, "bench-stats-evt-001", 1);
+recordOutboxStatsFailure(OUTBOX_ENDPOINT, "bench-stats-evt-002", 2);
+recordOutboxStatsFailure(OUTBOX_STATS_ENDPOINT_B, "bench-stats-evt-003", 3);
+recordOutboxStatsFailure(OUTBOX_ENDPOINT, "bench-stats-evt-004", 1);
+outboxStats.acknowledge(OUTBOX_ENDPOINT, "bench-stats-evt-004");
+function checkOutboxStats(where: string): void {
+  const snapshot = outboxStats.stats();
+  if (
+    snapshot.size !== OUTBOX_STATS_EXPECTED.size ||
+    snapshot.pending !== OUTBOX_STATS_EXPECTED.pending ||
+    snapshot.deadLettered !== OUTBOX_STATS_EXPECTED.deadLettered ||
+    snapshot.totalAttempts !== OUTBOX_STATS_EXPECTED.totalAttempts ||
+    outboxStats.size !== OUTBOX_STATS_EXPECTED.size
+  ) {
+    throw new Error(
+      `benchmark ${where} failed: SettlementWebhookOutbox stats`,
+    );
+  }
+}
+// Fixture validation (outside the timed loop): the full snapshot
+// matches the hand-written expectation above.
+checkOutboxStats("fixture");
+// Detached-copy check (outside the timed loop): mutating a
+// returned snapshot — rewriting every field — leaves a re-read
+// unchanged.
+{
+  const detached = outboxStats.stats();
+  detached.size = 999;
+  detached.pending = 999;
+  detached.deadLettered = 999;
+  detached.totalAttempts = 999;
+  checkOutboxStats("fixture");
+}
+// Pure-read check (outside the timed loop): the pending /
+// dead-letter lists are byte-identical before and after a `stats()`
+// call, and two calls agree.
+{
+  const pendingBefore = JSON.stringify(outboxStats.pending());
+  const deadBefore = JSON.stringify(outboxStats.deadLetter());
+  const first = outboxStats.stats();
+  const second = outboxStats.stats();
+  if (
+    JSON.stringify(outboxStats.pending()) !== pendingBefore ||
+    JSON.stringify(outboxStats.deadLetter()) !== deadBefore ||
+    JSON.stringify(first) !== JSON.stringify(second)
+  ) {
+    throw new Error(
+      "benchmark fixture failed: SettlementWebhookOutbox stats moved the ledger",
+    );
+  }
+}
+// Empty-store check (outside the timed loop): an outbox that has
+// recorded nothing reports all-zero stats.
+{
+  const empty = new SettlementWebhookOutbox({
+    maxAttempts: OUTBOX_MAX_ATTEMPTS,
+    now: () => OUTBOX_NOW_MS,
+  });
+  const emptyStats = empty.stats();
+  if (
+    empty.size !== 0 ||
+    emptyStats.size !== 0 ||
+    emptyStats.pending !== 0 ||
+    emptyStats.deadLettered !== 0 ||
+    emptyStats.totalAttempts !== 0
+  ) {
+    throw new Error("benchmark fixture failed: empty outbox stats shape");
+  }
+}
+
 
 // Record fixture: one shared outbox; every timed iteration records
 // a failure for a fresh `(endpoint, eventId)` pair, so the ledger
@@ -12314,6 +12445,38 @@ function benchSettlementEventDedupeStats(): number {
   }, ITERATIONS);
 }
 
+function benchSettlementWebhookOutboxStats(): number {
+  const ops = measure(() => {
+    checkOutboxStats("self-check");
+  }, ITERATIONS);
+  // Post-loop validation (outside the timed loop): redrive the one
+  // dead-lettered pair at a fixed later clock — it returns to
+  // pending with its attempts reset to 0, so the counts step to
+  // `{ size: 3, pending: 3, deadLettered: 0, totalAttempts: 3 }` —
+  // then re-fail it three times to restore the fixture's pinned
+  // composition (the re-failures land at the fixed clock, so every
+  // `lastAt` is OUTBOX_NOW_MS again).
+  outboxStats.redrive(OUTBOX_STATS_ENDPOINT_B, "bench-stats-evt-003", {
+    now: OUTBOX_NOW_MS + 60_000,
+  });
+  const afterRedrive = outboxStats.stats();
+  if (
+    afterRedrive.size !== 3 ||
+    afterRedrive.pending !== 3 ||
+    afterRedrive.deadLettered !== 0 ||
+    afterRedrive.totalAttempts !== 3 ||
+    outboxStats.deadLetter().length !== 0 ||
+    outboxStats.pending().length !== 3
+  ) {
+    throw new Error(
+      "benchmark self-check failed: SettlementWebhookOutbox stats redrive step",
+    );
+  }
+  recordOutboxStatsFailure(OUTBOX_STATS_ENDPOINT_B, "bench-stats-evt-003", 3);
+  checkOutboxStats("self-check");
+  return ops;
+}
+
 function benchSettlementWebhookOutboxRecord(): number {
   const ops = measure(() => {
     checkOutboxRecord("self-check");
@@ -16032,6 +16195,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "SettlementWebhookOutbox restore (1,000-pair snapshot, JSON round-trip)", ops: benchSettlementWebhookOutboxRestore() },
   { path: "SettlementWebhookOutbox redrive + redelivery (dead-lettered pair, fake fetch 200 first attempt)", ops: await benchSettlementWebhookOutboxRedrive() },
   { path: "retrySettlementWebhookOutbox (3 pending pairs, 500→200, maxRounds 2)", ops: await benchRetrySettlementWebhookOutbox() },
+  { path: "SettlementWebhookOutbox.stats (3 tracked pairs, 2 pending + 1 dead-lettered)", ops: benchSettlementWebhookOutboxStats() },
   { path: "SettlementEventDedupe exportSignedSnapshot (1,000-entry snapshot)", ops: benchSettlementEventDedupeExportSignedSnapshot() },
   { path: "SettlementEventDedupe restoreSignedSnapshot (1,000-entry snapshot, JSON round-trip)", ops: benchSettlementEventDedupeRestoreSignedSnapshot() },
   { path: "Escrow exportSignedSnapshot (4-entry history)", ops: benchEscrowExportSignedSnapshot() },
