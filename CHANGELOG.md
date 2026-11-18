@@ -18,6 +18,24 @@ version changes.
 
 ### Added
 
+- `history` getter defensive-copy benchmark row (2026-11-18,
+  backlog #1238): `bench/bench.ts` gains a `get history()` row over
+  the fixed 64-entry RELEASED escrow the `stateAt` row measures
+  (BENCH-STATEAT-001, FUND of the golden 10,630 plus 60 top-ups of
+  1, then SUBMIT_MILESTONE / VERIFY_PASS / RELEASE) — measured
+  ~21,058 ops/sec (47.49 µs/op) on this run (Node v24.22.1, AMD
+  EPYC 9D25, machine-local, not a guarantee), one timed pass per
+  getter call with exactly 64 entries, seq 1..64, a frozen array of
+  frozen entries, byte-identical content, and no shared entry
+  references across consecutive calls checked on every iteration —
+  plus outside-the-timed-loop probes pinning push / splice /
+  entry-field-write rejection, a mutated detached copy leaving the
+  internal history untouched, and `verifyHistoryChain` still true
+  afterwards (the same assertions the historyFreeze unit tests
+  pin). README Benchmarks table + narrative updated; a broken
+  entry-count expectation was verified to fail the bench at the
+  row's probe before restoring.
+
 - CLI demo integer-cents fee segment (2026-11-18,
   backlog #1236): `src/demo.ts` gains a `calculateDepositCents`
   section inside the fee breakdown — the golden vector (1,063,000¢)

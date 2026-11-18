@@ -3094,6 +3094,19 @@ the Ed25519 verification + counting cost every arbitration vote
 pays. Outside the timed loop, a signature made with the wrong
 signer's key is pinned to throw the exact verification error and
 record nothing.
+The new `history getter` row measures the #1238 defensive-copy read
+cost as a cost path: one measured op is a single `get history()`
+call on the fixed 64-entry RELEASED escrow the `stateAt` row
+measures (BENCH-STATEAT-001: FUND of the golden 10,630, 60 top-ups
+of 1, then SUBMIT_MILESTONE / VERIFY_PASS / RELEASE), and pins
+exactly 64 entries, seq 1..64, a frozen array of frozen entries,
+content byte-identical to the fixture baseline, and consecutive
+calls never sharing entry references, on every iteration. Outside
+the timed loop, a push, a splice, and an entry-field write on the
+returned snapshot are pinned to throw, a detached copy mutated
+off-timer leaves the internal history untouched, and the escrow's
+own hash chain still verifies — the same assertions the
+historyFreeze unit tests pin.
 One real run on 2026-11-04:
 
 | path | throughput |
@@ -3229,6 +3242,7 @@ One real run on 2026-11-04:
 | approvalStatement (5 of 9 signers, canonical statement bytes) | ~37,546 ops/sec (26.63 µs/op) |
 | truncateOutboxError (3-case corpus, short/at-cap/10 KB) | ~1,749,607 ops/sec (0.57 µs/op) |
 | approveSigned (5 of 5 signers, Ed25519 verify to threshold) | ~1,113 ops/sec (898.26 µs/op) |
+| history getter (defensive copy, 64 entries) | ~21,058 ops/sec (47.49 µs/op) |
 
 The two batch-filter rows, the escrowsApproachingDeadline row,
 and the settlePartialRelease row above were measured on
@@ -3236,7 +3250,7 @@ and the settlePartialRelease row above were measured on
 escrowsByEvent row above were measured on 2026-11-06 runs; the
 settlePartialReleases row above was measured on a 2026-11-08 run; the
 escrowsByFilters and settlementAging rows above were measured on a
-2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the signed-snapshot rows above were measured on a 2026-11-11 run; the diffSettlementReports row above was measured on a 2026-11-13 run; the renderSettlementReportsSummary and diffSettlementReportsSummaries rows above were measured on a 2026-11-13 run; the unreconciledSettlements row above was measured on a 2026-11-14 run; the stateAt row above was measured on a 2026-11-15 run; the stateAtFromHistory row above was measured on a 2026-11-15 run; the formatMinorUnits x parseMinorUnits round-trip row above was measured on a 2026-11-15 run; the quorum signed-snapshot round-trip row above was measured on a 2026-11-15 run; the calculateDepositCents row above was measured on a 2026-11-15 run; the escrowsBySettlementRef row above was measured on a 2026-11-15 run; the parseSettlementReportsSummaryCsv and parseSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the renderSettlementReportsSummaryCsv and renderSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the approvalStatement row above was measured on a 2026-11-15 run; the truncateOutboxError row above was measured on a 2026-11-15 run; the verifySettlementWebhook requireEventId row above was measured on a 2026-11-16 run; the diffQuorumSnapshots row above was measured on a 2026-11-16 run; the SettlementEventDedupe.has row above was measured on a 2026-11-16 run; the approveSigned row above was measured on a 2026-11-16 run; the dispatch maxVisitsByState row above was measured on a 2026-11-17 run; the retrySettlementWebhookOutbox row above was measured on a 2026-11-17 run; the SettlementWebhookOutbox.stats row above was measured on a 2026-11-18 run; the quorum remainingApprovals row above was measured on a 2026-11-18 run; the remainingVisits row above was measured on a 2026-11-18 run; the policy snapshot round-trip row above was measured on a 2026-11-18 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
+2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the signed-snapshot rows above were measured on a 2026-11-11 run; the diffSettlementReports row above was measured on a 2026-11-13 run; the renderSettlementReportsSummary and diffSettlementReportsSummaries rows above were measured on a 2026-11-13 run; the unreconciledSettlements row above was measured on a 2026-11-14 run; the stateAt row above was measured on a 2026-11-15 run; the stateAtFromHistory row above was measured on a 2026-11-15 run; the formatMinorUnits x parseMinorUnits round-trip row above was measured on a 2026-11-15 run; the quorum signed-snapshot round-trip row above was measured on a 2026-11-15 run; the calculateDepositCents row above was measured on a 2026-11-15 run; the escrowsBySettlementRef row above was measured on a 2026-11-15 run; the parseSettlementReportsSummaryCsv and parseSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the renderSettlementReportsSummaryCsv and renderSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the approvalStatement row above was measured on a 2026-11-15 run; the truncateOutboxError row above was measured on a 2026-11-15 run; the verifySettlementWebhook requireEventId row above was measured on a 2026-11-16 run; the diffQuorumSnapshots row above was measured on a 2026-11-16 run; the SettlementEventDedupe.has row above was measured on a 2026-11-16 run; the approveSigned row above was measured on a 2026-11-16 run; the dispatch maxVisitsByState row above was measured on a 2026-11-17 run; the retrySettlementWebhookOutbox row above was measured on a 2026-11-17 run; the SettlementWebhookOutbox.stats row above was measured on a 2026-11-18 run; the quorum remainingApprovals row above was measured on a 2026-11-18 run; the remainingVisits row above was measured on a 2026-11-18 run; the policy snapshot round-trip row above was measured on a 2026-11-18 run; the history getter row above was measured on a 2026-11-18 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
 came in mixed under shared-host load, so refreshing the whole
 table would misreport changes in paths these additions never
 touched.

@@ -1783,6 +1783,23 @@
  *      pinned to never be re-delivered (only the pending pair is
  *      retried, the dead letter stays at attempts 3). No network, no
  *      randomness, and no wall clock: the clock is injected and fixed.
+ *  99. history getter (defensive copy, 64 entries) — `get history()`
+ *      on the fixed 64-entry RELEASED escrow the `stateAt` row
+ *      measures: one measured op is a single getter call, self-checked
+ *      on every iteration for exactly 64 entries, seq 1..64, a frozen
+ *      array of frozen entries, content byte-identical to the fixture
+ *      baseline, and consecutive calls never sharing entry references.
+ *      The O(n) copy + per-entry `Object.freeze` tax the
+ *      audit-immutability guarantee costs on every read was previously
+ *      invisible inside the subscribe / replay / snapshot rows, which
+ *      never isolated the getter itself. Outside the timed loop, a
+ *      push, a splice, and an entry-field write on the returned
+ *      snapshot are pinned to throw, a detached copy mutated
+ *      off-timer leaves the internal history untouched, and the
+ *      escrow's own hash chain still verifies (`verifyHistoryChain`
+ *      true) afterwards — the same assertions the historyFreeze unit
+ *      tests pin. No network, no randomness, and no wall clock: the
+ *      fixture is built once on fixed timestamps.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -8523,6 +8540,132 @@ checkStateAtFromHistory(
   "FUNDED",
   "mid-history query after tamper check",
 );
+
+// ---------------------------------------------------------------------
+// history getter (defensive copy, 64 entries): `get history()` returns
+// a frozen array of frozen entry copies on every call — the O(n) copy
+// + per-entry Object.freeze the audit-immutability guarantee costs on
+// every read. The fixture is the same fixed 64-entry hash-chained
+// history the #1151 `stateAt` row measures (BENCH-STATEAT-001:
+// FUND of the golden 10,630 at BASE, 60 top-ups of 1, then
+// SUBMIT_MILESTONE / VERIFY_PASS / RELEASE, ending RELEASED) —
+// reusing that escrow keeps the two rows on one log instead of
+// building a second 64-entry escrow, and matches the dataquest
+// precedent (#539, "history getter (defensive copy, 64 entries)")
+// at the same 64-entry scale. The frozen shape, frozen entries,
+// exact content, and reference independence of consecutive
+// snapshots are pinned by the checks below.
+const HISTORY_GETTER_ENTRY_COUNT = 64;
+const historyGetterEscrow = stateAtEscrow;
+// Content baseline frozen at fixture build: every timed iteration
+// compares its fresh snapshot against this JSON. Reference
+// independence is checked across consecutive timed calls (the
+// previous snapshot's first entry must never be the same object
+// as this call's), so a getter that returned shared entry
+// references would fail here even though the content matched.
+const HISTORY_GETTER_JSON = JSON.stringify(historyGetterEscrow.history);
+let historyGetterPreviousSnapshot: readonly EscrowHistoryEntry[] | null =
+  null;
+function checkHistoryGetter(where: string): void {
+  const snapshot = historyGetterEscrow.history;
+  if (snapshot.length !== HISTORY_GETTER_ENTRY_COUNT) {
+    throw new Error(
+      `benchmark self-check failed: ${where}: history length ${snapshot.length}, expected ${HISTORY_GETTER_ENTRY_COUNT}`,
+    );
+  }
+  const first = snapshot[0];
+  const last = snapshot[snapshot.length - 1];
+  if (
+    first === undefined ||
+    last === undefined ||
+    first.seq !== 1 ||
+    last.seq !== HISTORY_GETTER_ENTRY_COUNT
+  ) {
+    throw new Error(
+      `benchmark self-check failed: ${where}: seq range ${first?.seq}..${last?.seq}, expected 1..${HISTORY_GETTER_ENTRY_COUNT}`,
+    );
+  }
+  if (!Object.isFrozen(snapshot)) {
+    throw new Error(
+      `benchmark self-check failed: ${where}: snapshot array not frozen`,
+    );
+  }
+  for (const entry of snapshot) {
+    if (!Object.isFrozen(entry)) {
+      throw new Error(
+        `benchmark self-check failed: ${where}: entry seq ${entry.seq} not frozen`,
+      );
+    }
+  }
+  if (JSON.stringify(snapshot) !== HISTORY_GETTER_JSON) {
+    throw new Error(
+      `benchmark self-check failed: ${where}: snapshot content drift`,
+    );
+  }
+  if (
+    historyGetterPreviousSnapshot !== null &&
+    snapshot[0] === historyGetterPreviousSnapshot[0]
+  ) {
+    throw new Error(
+      `benchmark self-check failed: ${where}: consecutive snapshots share entry references`,
+    );
+  }
+  historyGetterPreviousSnapshot = snapshot;
+}
+function benchHistoryGetter(): number {
+  return measure(() => {
+    // Shared fixture escrow per iteration: the getter never mutates,
+    // so no rebuild is needed. Per-iteration self-check: exactly 64
+    // frozen entries, seq 1..64, content byte-identical to the
+    // fixture baseline, and consecutive calls never share entry
+    // references (see the history-getter fixture above).
+    checkHistoryGetter("history getter");
+  }, ITERATIONS);
+}
+// Off-timer hardening, run once at fixture build: a push, a splice,
+// and an entry-field write on the returned snapshot all throw; a
+// detached copy mutated off-timer leaves the internal history
+// untouched; and the escrow's own hash chain still verifies.
+{
+  const probe = historyGetterEscrow.history;
+  const expectThrow = (fn: () => void, what: string): void => {
+    let threw = false;
+    try {
+      fn();
+    } catch {
+      threw = true;
+    }
+    if (!threw) {
+      throw new Error(
+        `benchmark fixture failed: history getter ${what} must throw`,
+      );
+    }
+  };
+  expectThrow(
+    () => (probe as unknown as EscrowHistoryEntry[]).push(probe[0]!),
+    "push",
+  );
+  expectThrow(
+    () => (probe as unknown as EscrowHistoryEntry[]).splice(0, 1),
+    "splice",
+  );
+  expectThrow(
+    () => ((probe[0] as { note?: string }).note = "forged"),
+    "entry-field write",
+  );
+  const detached = historyGetterEscrow.history.map((e) => ({ ...e }));
+  detached[0]!.note = "forged";
+  if (
+    historyGetterEscrow.history.length !== HISTORY_GETTER_ENTRY_COUNT ||
+    historyGetterEscrow.history[0]?.note === "forged" ||
+    historyGetterEscrow.state !== "RELEASED" ||
+    !verifyHistoryChain(historyGetterEscrow.history)
+  ) {
+    throw new Error(
+      "benchmark fixture failed: history getter probe mutated the escrow",
+    );
+  }
+}
 
 // Deadline-warning fixture: one fixed mixed batch of 14 escrows,
 // screened by escrowsApproachingDeadline (the #840 helper, previously
@@ -16883,6 +17026,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "approvalStatement (5 of 9 signers, canonical statement bytes)", ops: benchApprovalStatement() },
   { path: "approveSigned (5 of 5 signers, Ed25519 verify to threshold)", ops: benchApproveSignedToThreshold() },
   { path: "truncateOutboxError (3-case corpus, short/at-cap/10 KB)", ops: benchTruncateOutboxError() },
+  { path: "history getter (defensive copy, 64 entries)", ops: benchHistoryGetter() },
 ];
 
 console.log("path                                              throughput");
