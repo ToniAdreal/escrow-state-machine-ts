@@ -2284,6 +2284,14 @@ dao-2 pinned at its own boundary on the way, with
 re-approving to restore the quorum with the log grown to
 7; the fully-expired log retention and the re-approval's
 fresh timestamp are pinned once, outside the timed loop),
+quorum remainingApprovals (`remainingApprovals()` reading the
+"votes to go" on a fixed pinned 2-of-3 quorum with one vote
+in — pinned to 1 on every iteration, with the pure-read
+shape (two reads agreeing and the approval log byte-identical
+before and after a call) and the threshold-reached 0, the
+past-threshold still-0, the revoke-raises-it-again step, and
+the fresh-quorum full-threshold read pinned once outside the
+timed loop),
 settlement webhook fan-out delivery (`deliverSettlementWebhookToMany`
 to 4 endpoints through a fake global `fetch` — zero network, so the
 number measures fan-out overhead only),
@@ -3098,6 +3106,7 @@ One real run on 2026-11-04:
 | quorum snapshot export (7 approvals of 9) | ~17,326 ops/sec (57.72 µs/op) |
 | quorum revoke cycle (5 of 9, revoke + re-approve) | ~38,923 ops/sec (25.69 µs/op) |
 | quorum maxApprovalAgeMs expiry (5 of 9, 60s window) | ~14,537 ops/sec (68.79 µs/op) |
+| quorum remainingApprovals (2 of 3, 1 approval, 1 to go) | ~369,061 ops/sec (2.71 µs/op) |
 | deliverSettlementWebhookToMany (4 endpoints) | ~5,128 ops/sec (195.02 µs/op) |
 | deliverSettlementWebhookToMany (fan-out x SettlementEventDedupe receiver flow) | ~2,208 ops/sec (452.85 µs/op) |
 | deliverSettlementWebhookToMany (fan-out x secrets rotation x SettlementEventDedupe receiver flow) | ~1,223 ops/sec (817.45 µs/op) |
@@ -3184,7 +3193,7 @@ and the settlePartialRelease row above were measured on
 escrowsByEvent row above were measured on 2026-11-06 runs; the
 settlePartialReleases row above was measured on a 2026-11-08 run; the
 escrowsByFilters and settlementAging rows above were measured on a
-2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the signed-snapshot rows above were measured on a 2026-11-11 run; the diffSettlementReports row above was measured on a 2026-11-13 run; the renderSettlementReportsSummary and diffSettlementReportsSummaries rows above were measured on a 2026-11-13 run; the unreconciledSettlements row above was measured on a 2026-11-14 run; the stateAt row above was measured on a 2026-11-15 run; the stateAtFromHistory row above was measured on a 2026-11-15 run; the formatMinorUnits x parseMinorUnits round-trip row above was measured on a 2026-11-15 run; the quorum signed-snapshot round-trip row above was measured on a 2026-11-15 run; the calculateDepositCents row above was measured on a 2026-11-15 run; the escrowsBySettlementRef row above was measured on a 2026-11-15 run; the parseSettlementReportsSummaryCsv and parseSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the renderSettlementReportsSummaryCsv and renderSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the approvalStatement row above was measured on a 2026-11-15 run; the truncateOutboxError row above was measured on a 2026-11-15 run; the verifySettlementWebhook requireEventId row above was measured on a 2026-11-16 run; the diffQuorumSnapshots row above was measured on a 2026-11-16 run; the SettlementEventDedupe.has row above was measured on a 2026-11-16 run; the approveSigned row above was measured on a 2026-11-16 run; the dispatch maxVisitsByState row above was measured on a 2026-11-17 run; the retrySettlementWebhookOutbox row above was measured on a 2026-11-17 run; the SettlementWebhookOutbox.stats row above was measured on a 2026-11-18 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
+2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the signed-snapshot rows above were measured on a 2026-11-11 run; the diffSettlementReports row above was measured on a 2026-11-13 run; the renderSettlementReportsSummary and diffSettlementReportsSummaries rows above were measured on a 2026-11-13 run; the unreconciledSettlements row above was measured on a 2026-11-14 run; the stateAt row above was measured on a 2026-11-15 run; the stateAtFromHistory row above was measured on a 2026-11-15 run; the formatMinorUnits x parseMinorUnits round-trip row above was measured on a 2026-11-15 run; the quorum signed-snapshot round-trip row above was measured on a 2026-11-15 run; the calculateDepositCents row above was measured on a 2026-11-15 run; the escrowsBySettlementRef row above was measured on a 2026-11-15 run; the parseSettlementReportsSummaryCsv and parseSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the renderSettlementReportsSummaryCsv and renderSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the approvalStatement row above was measured on a 2026-11-15 run; the truncateOutboxError row above was measured on a 2026-11-15 run; the verifySettlementWebhook requireEventId row above was measured on a 2026-11-16 run; the diffQuorumSnapshots row above was measured on a 2026-11-16 run; the SettlementEventDedupe.has row above was measured on a 2026-11-16 run; the approveSigned row above was measured on a 2026-11-16 run; the dispatch maxVisitsByState row above was measured on a 2026-11-17 run; the retrySettlementWebhookOutbox row above was measured on a 2026-11-17 run; the SettlementWebhookOutbox.stats row above was measured on a 2026-11-18 run; the quorum remainingApprovals row above was measured on a 2026-11-18 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
 came in mixed under shared-host load, so refreshing the whole
 table would misreport changes in paths these additions never
 touched.

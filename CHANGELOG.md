@@ -18,6 +18,17 @@ version changes.
 
 ### Added
 
+- `remainingApprovals()` quorum remaining-votes benchmark row (2026-11-18,
+  backlog #1226): `bench/bench.ts` gains a `remainingApprovals()` row over a
+  fixed pinned 2-of-3 quorum with one vote in — measured ~369,061 ops/sec
+  (2.71 µs/op) on this run (Node v24.22.1, AMD EPYC 9D25, machine-local,
+  not a guarantee) — plus outside-the-timed-loop probes pinning the
+  threshold-reached 0, the past-threshold still-0, the revoke-raises-it-again
+  step, and the fresh-quorum full-threshold read. README Benchmarks table,
+  prose, and run-date note refreshed with the real run; a broken remaining
+  expectation was verified to fail the bench at the fixture probe (exit 1)
+  before restoring.
+
 - `SettlementWebhookOutbox.stats()` benchmark row (2026-11-18,
   backlog #1221): `bench/bench.ts` gains a `stats()` row over a fixed
   3-pair ledger (2 pending at 1 and 2 attempts, 1 dead-lettered at 3,

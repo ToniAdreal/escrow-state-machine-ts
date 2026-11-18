@@ -43,6 +43,13 @@
  *      `hasQuorum()` after each vote. This is the pre-check
  *      `dispatchArbitration` runs before any arbitration dispatch, so
  *      its per-vote accumulation cost is on the arbitration hot path.
+ *      A companion row reads `remainingApprovals()` on a fixed pinned
+ *      2-of-3 quorum with one vote in — the "votes to go" a multi-sig
+ *      UI shows before the threshold is reached — pinned to 1 on
+ *      every iteration, with the threshold-reached 0, the
+ *      past-threshold still-0, the revoke-raises-it-again step, and
+ *      the fresh-quorum full-threshold read pinned once, outside the
+ *      timed loop.
  *   8. settlement webhook fan-out delivery —
  *      `deliverSettlementWebhookToMany()` to 4 fixed endpoints, each
  *      with its own signing secret, through a fake `fetch` installed
@@ -3078,6 +3085,128 @@ runQuorumApprovalExpiry();
   ) {
     throw new Error(
       "benchmark fixture failed: quorum expiry probe (re-approval)",
+    );
+  }
+}
+
+// ---------------------------------------------------------------------
+// Quorum remaining-approvals fixture (backlog #1226): a fixed pinned
+// 2-of-3 quorum with exactly one counted approval — dao-1 approved at
+// the fixed injected clock, dao-2 and dao-3 not yet — so
+// `remainingApprovals()` reads 1, the "1 to go" a multi-sig UI shows
+// before the threshold is reached. `remainingApprovals()` is a pure
+// read (`Math.max(0, threshold - approvalCount())` from the same
+// counted set `approvalCount()` reads), so the one fixture is reused
+// on every iteration. Hand-written expectation — written from the
+// documented semantics in src/quorum.ts, never derived by calling
+// `remainingApprovals()` itself (cross-checked against
+// test/remainingApprovals.test.ts): remaining 1, count 1, no quorum.
+// ---------------------------------------------------------------------
+const REMAINING_APPROVALS_THRESHOLD = 2;
+const REMAINING_APPROVALS_SIGNERS: readonly string[] =
+  QUORUM_SIGNERS.slice(0, 3);
+const REMAINING_APPROVALS_EXPECTED = 1;
+const remainingApprovalsQuorum = createQuorum({
+  threshold: REMAINING_APPROVALS_THRESHOLD,
+  signers: REMAINING_APPROVALS_SIGNERS,
+  now: () => BASE_MS,
+});
+remainingApprovalsQuorum.approve(REMAINING_APPROVALS_SIGNERS[0]);
+function checkRemainingApprovals(where: string): void {
+  // One measured op is exactly one `remainingApprovals()` call; the
+  // count / quorum cross-checks live in the fixture validation below,
+  // not in the timed region.
+  const remaining = remainingApprovalsQuorum.remainingApprovals();
+  if (remaining !== REMAINING_APPROVALS_EXPECTED) {
+    throw new Error(
+      `benchmark ${where} failed: quorum remainingApprovals`,
+    );
+  }
+}
+// Fixture validation (outside the timed loop): the pinned quorum
+// reads 1 remaining, 1 counted approval, no quorum, the one approval
+// recorded in the log at the pinned timestamp.
+if (
+  remainingApprovalsQuorum.approvalCount() !== 1 ||
+  remainingApprovalsQuorum.hasQuorum() !== false ||
+  remainingApprovalsQuorum.approvals().length !== 1 ||
+  remainingApprovalsQuorum.approvals()[0] !==
+    REMAINING_APPROVALS_SIGNERS[0] ||
+  remainingApprovalsQuorum.approvalLog().length !== 1 ||
+  remainingApprovalsQuorum.approvalLog()[0].signerId !==
+    REMAINING_APPROVALS_SIGNERS[0] ||
+  remainingApprovalsQuorum.approvalLog()[0].at !==
+    "2026-01-01T00:00:00.000Z"
+) {
+  throw new Error(
+    "benchmark fixture failed: quorum remainingApprovals shape",
+  );
+}
+checkRemainingApprovals("fixture");
+// Pure-read check (outside the timed loop): two reads agree and the
+// approval log is byte-identical before and after a call.
+{
+  const logBefore = JSON.stringify(
+    remainingApprovalsQuorum.approvalLog(),
+  );
+  const first = remainingApprovalsQuorum.remainingApprovals();
+  const second = remainingApprovalsQuorum.remainingApprovals();
+  if (
+    first !== REMAINING_APPROVALS_EXPECTED ||
+    second !== REMAINING_APPROVALS_EXPECTED ||
+    JSON.stringify(remainingApprovalsQuorum.approvalLog()) !== logBefore
+  ) {
+    throw new Error(
+      "benchmark fixture failed: quorum remainingApprovals moved the quorum",
+    );
+  }
+}
+// Threshold / revoke / fresh-quorum probes (outside the timed loop,
+// never timed): reaching the threshold reads 0 — and stays 0 for
+// approvals past the threshold, never negative; revoking one vote
+// raises it again and re-approving lowers it back; a fresh quorum
+// reads the full threshold.
+{
+  const probe = createQuorum({
+    threshold: REMAINING_APPROVALS_THRESHOLD,
+    signers: REMAINING_APPROVALS_SIGNERS,
+    now: () => BASE_MS,
+  });
+  if (probe.remainingApprovals() !== REMAINING_APPROVALS_THRESHOLD) {
+    throw new Error(
+      "benchmark fixture failed: fresh quorum remainingApprovals shape",
+    );
+  }
+  probe.approve(REMAINING_APPROVALS_SIGNERS[0]);
+  probe.approve(REMAINING_APPROVALS_SIGNERS[1]);
+  if (
+    probe.remainingApprovals() !== 0 ||
+    probe.hasQuorum() !== true
+  ) {
+    throw new Error(
+      "benchmark fixture failed: quorum remainingApprovals at threshold",
+    );
+  }
+  // Revoke while exactly at the threshold: one counted vote leaves,
+  // so the remaining rises to 1 and the quorum drops below threshold.
+  // (A third approval would still count, so the past-threshold pin
+  // below runs after the re-approval, not before the revoke.)
+  probe.revoke(REMAINING_APPROVALS_SIGNERS[1]);
+  if (probe.remainingApprovals() !== 1 || probe.hasQuorum() !== false) {
+    throw new Error(
+      "benchmark fixture failed: quorum remainingApprovals after revoke",
+    );
+  }
+  probe.approve(REMAINING_APPROVALS_SIGNERS[1]);
+  if (probe.remainingApprovals() !== 0) {
+    throw new Error(
+      "benchmark fixture failed: quorum remainingApprovals after re-approve",
+    );
+  }
+  probe.approve(REMAINING_APPROVALS_SIGNERS[2]);
+  if (probe.remainingApprovals() !== 0) {
+    throw new Error(
+      "benchmark fixture failed: quorum remainingApprovals past threshold",
     );
   }
 }
@@ -12191,6 +12320,17 @@ function benchQuorumApprovalExpiry(): number {
   }, ITERATIONS);
 }
 
+function benchQuorumRemainingApprovals(): number {
+  const ops = measure(() => {
+    checkRemainingApprovals("self-check");
+  }, ITERATIONS);
+  // Post-loop validation (outside the timed loop): the fixture is a
+  // pure read, so it still reads the pinned 1 — re-run the check to
+  // prove the timed loop moved nothing.
+  checkRemainingApprovals("self-check");
+  return ops;
+}
+
 async function benchDeliverSettlementWebhookToMany(): Promise<number> {
   return measureAsync(async () => {
     await runFanout();
@@ -16167,6 +16307,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "quorum snapshot export (7 approvals of 9)", ops: benchQuorumSnapshotExport() },
   { path: "quorum revoke cycle (5 of 9, revoke + re-approve)", ops: benchQuorumRevokeCycle() },
   { path: "quorum maxApprovalAgeMs expiry (5 of 9, 60s window)", ops: benchQuorumApprovalExpiry() },
+  { path: "quorum remainingApprovals (2 of 3, 1 approval, 1 to go)", ops: benchQuorumRemainingApprovals() },
   { path: "deliverSettlementWebhookToMany (4 endpoints)", ops: await benchDeliverSettlementWebhookToMany() },
   { path: "deliverSettlementWebhookToMany (fan-out x SettlementEventDedupe receiver flow)", ops: await benchDeliverSettlementWebhookToManyDedupe() },
   { path: "deliverSettlementWebhookToMany (fan-out x secrets rotation x SettlementEventDedupe receiver flow)", ops: await benchDeliverSettlementWebhookToManyRotationDedupe() },
