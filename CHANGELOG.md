@@ -18,6 +18,21 @@ version changes.
 
 ### Added
 
+- CLI demo settlement-reference-filter segment (2026-11-18,
+  backlog #1233): `src/demo.ts` gains a
+  `escrowsBySettlementRef` section over the seven-escrow
+  day-end batch — DEMO-ESC-037 and DEMO-SETTLEMENT-REF-02
+  share wire-2026-03-09-001 (one transfer settling two
+  escrows), DEMO-SETTLEMENT-REF-03 alone carries
+  wire-2026-03-10-002, an unknown ref reads [], and
+  `escrowsByFilters` with the `settlementRef` axis agrees
+  with the single-axis selector; the escrow released without
+  a ref and the arbitration-released escrow match no ref, and
+  all calls are pure. README demo section and test counts
+  2241 → 2243; two new demo tests (section + determinism),
+  and a broken shared-ref expectation was verified to fail
+  the new test at the demo guard before restoring.
+
 - `Escrow.fromJSON` policy snapshot round-trip benchmark row
   (2026-11-18, backlog #1231): `bench/bench.ts` gains a
   `toJSON()` + JSON text + `fromJSON()` row over a fixed

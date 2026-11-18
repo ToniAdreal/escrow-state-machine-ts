@@ -215,6 +215,18 @@ import {
   DEMO_REMAINING_VISITS_FUND_AT,
   DEMO_REMAINING_VISITS_SECOND_RELEASE_AT,
   DEMO_REMAINING_VISITS_SECOND_SUBMIT_AT,
+  DEMO_SETTLEMENT_REF_NO_MATCH,
+  DEMO_SETTLEMENT_REF_OTHER,
+  DEMO_SETTLEMENT_REF_OTHER_FUND_AT,
+  DEMO_SETTLEMENT_REF_OTHER_ID,
+  DEMO_SETTLEMENT_REF_OTHER_RELEASE_AT,
+  DEMO_SETTLEMENT_REF_OTHER_SUBMIT_AT,
+  DEMO_SETTLEMENT_REF_OTHER_VERIFY_PASS_AT,
+  DEMO_SETTLEMENT_REF_SHARED_FUND_AT,
+  DEMO_SETTLEMENT_REF_SHARED_ID,
+  DEMO_SETTLEMENT_REF_SHARED_RELEASE_AT,
+  DEMO_SETTLEMENT_REF_SHARED_SUBMIT_AT,
+  DEMO_SETTLEMENT_REF_SHARED_VERIFY_PASS_AT,
   DEMO_UNRECONCILED_ARB_ID,
   DEMO_UNRECONCILED_REF_ID,
   DEMO_UNRECONCILED_REF_SETTLEMENT_REF,
@@ -9557,13 +9569,209 @@ test("demo shows combined filter + settlement aging: escrowsByFilters intersects
   );
 });
 
+test("demo shows settlement-reference filter: escrowsBySettlementRef slices the day-end batch by transfer, escrowsByFilters agrees on the settlementRef axis, and an unknown ref reads empty", async () => {
+  const {
+    settlementRefEscrows,
+    settlementRefSharedSelectedIds,
+    settlementRefOtherSelectedIds,
+    settlementRefFiltersSelectedIds,
+    settlementRefNoMatchEmpty,
+    lines,
+  } = await runDemo();
+
+  // Hand-pinned fixture shape: the day-end batch (main released
+  // without a ref, pending still FUNDED, dispute REFUNDED, DEMO-ESC-037
+  // released with wire-2026-03-09-001, DEMO-ESC-038 released by
+  // arbitration) plus two escrows driven here — DEMO-SETTLEMENT-REF-02
+  // sharing DEMO-ESC-037's ref, DEMO-SETTLEMENT-REF-03 on its own ref.
+  assert.equal(DEMO_SETTLEMENT_REF_SHARED_ID, "DEMO-SETTLEMENT-REF-02");
+  assert.equal(
+    DEMO_SETTLEMENT_REF_SHARED_FUND_AT,
+    "2026-03-08T09:00:00.000Z",
+  );
+  assert.equal(
+    DEMO_SETTLEMENT_REF_SHARED_SUBMIT_AT,
+    "2026-03-08T10:00:00.000Z",
+  );
+  assert.equal(
+    DEMO_SETTLEMENT_REF_SHARED_VERIFY_PASS_AT,
+    "2026-03-08T11:00:00.000Z",
+  );
+  assert.equal(
+    DEMO_SETTLEMENT_REF_SHARED_RELEASE_AT,
+    "2026-03-08T12:00:00.000Z",
+  );
+  assert.equal(DEMO_SETTLEMENT_REF_OTHER_ID, "DEMO-SETTLEMENT-REF-03");
+  assert.equal(DEMO_SETTLEMENT_REF_OTHER, "wire-2026-03-10-002");
+  assert.equal(
+    DEMO_SETTLEMENT_REF_OTHER_FUND_AT,
+    "2026-03-08T09:00:00.000Z",
+  );
+  assert.equal(
+    DEMO_SETTLEMENT_REF_OTHER_SUBMIT_AT,
+    "2026-03-08T10:00:00.000Z",
+  );
+  assert.equal(
+    DEMO_SETTLEMENT_REF_OTHER_VERIFY_PASS_AT,
+    "2026-03-08T11:00:00.000Z",
+  );
+  assert.equal(
+    DEMO_SETTLEMENT_REF_OTHER_RELEASE_AT,
+    "2026-03-08T12:00:00.000Z",
+  );
+  assert.equal(DEMO_SETTLEMENT_REF_NO_MATCH, "wire-2026-03-11-999");
+
+  assert.deepEqual(
+    settlementRefEscrows.map((e) => e.id),
+    [
+      DEMO_ESCROW_ID,
+      DEMO_PENDING_ESCROW_ID,
+      DEMO_DISPUTE_ESCROW_ID,
+      DEMO_UNRECONCILED_REF_ID,
+      DEMO_UNRECONCILED_ARB_ID,
+      DEMO_SETTLEMENT_REF_SHARED_ID,
+      DEMO_SETTLEMENT_REF_OTHER_ID,
+    ],
+  );
+  assert.deepEqual(
+    settlementRefEscrows.map((e) => e.state),
+    [
+      "RELEASED",
+      "FUNDED",
+      "REFUNDED",
+      "RELEASED",
+      "RELEASED",
+      "RELEASED",
+      "RELEASED",
+    ],
+  );
+  assert.deepEqual(
+    settlementRefEscrows.map((e) => e.history.length),
+    [4, 1, 4, 4, 4, 4, 4],
+  );
+  assert.deepEqual(settlementRefSharedSelectedIds, [
+    DEMO_UNRECONCILED_REF_ID,
+    DEMO_SETTLEMENT_REF_SHARED_ID,
+  ]);
+  assert.deepEqual(settlementRefOtherSelectedIds, [
+    DEMO_SETTLEMENT_REF_OTHER_ID,
+  ]);
+  assert.deepEqual(
+    settlementRefFiltersSelectedIds,
+    settlementRefSharedSelectedIds,
+  );
+  assert.equal(settlementRefNoMatchEmpty, true);
+
+  const text = lines.join("\n");
+  const header =
+    "Settlement-reference filter (escrowsBySettlementRef over the day-end batch):";
+  assert.ok(
+    text.indexOf(header) >
+      text.indexOf(
+        "Combined filter + settlement aging (escrowsByFilters / settlementAging over a mixed batch):",
+      ),
+    "settlement-reference-filter segment must follow the combined-filter segment",
+  );
+  assert.ok(
+    text.indexOf("Refund settlement (settleRefund on a refunded escrow):") >
+      text.indexOf(header),
+    "refund-settlement segment must follow the settlement-reference-filter segment",
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_UNRECONCILED_REF_ID}: RELEASED with settlementRef ${DEMO_UNRECONCILED_REF_SETTLEMENT_REF} — the first escrow settled under this transfer`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_SETTLEMENT_REF_SHARED_ID}: RELEASED with the same settlementRef ${DEMO_UNRECONCILED_REF_SETTLEMENT_REF} — one transfer can settle several escrows`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  ${DEMO_SETTLEMENT_REF_OTHER_ID}: RELEASED with settlementRef ${DEMO_SETTLEMENT_REF_OTHER} — a different transfer, a different slice`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  escrowsBySettlementRef(batch, "${DEMO_UNRECONCILED_REF_SETTLEMENT_REF}"): ${DEMO_UNRECONCILED_REF_ID}, ${DEMO_SETTLEMENT_REF_SHARED_ID} (2 escrows) — the shared ref selects both escrows in input order`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  escrowsBySettlementRef(batch, "${DEMO_SETTLEMENT_REF_OTHER}"): ${DEMO_SETTLEMENT_REF_OTHER_ID} (1 escrow)`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  escrowsByFilters(batch, { settlementRef: "${DEMO_UNRECONCILED_REF_SETTLEMENT_REF}" }): ${DEMO_UNRECONCILED_REF_ID}, ${DEMO_SETTLEMENT_REF_SHARED_ID} — the combined filter's settlementRef axis agrees with the single-axis selector`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  no match: escrowsBySettlementRef(batch, "${DEMO_SETTLEMENT_REF_NO_MATCH}") returns [] — an unknown ref is an empty list, not an error`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  never matches: ${DEMO_ESCROW_ID} released without a ref and ${DEMO_UNRECONCILED_ARB_ID} released by arbitration (ARBITRATE_RELEASE) — no RELEASE entry, no ref, so neither slice claims them`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  pure: the calls dispatched nothing — all seven escrows keep their state and history length`,
+    ),
+  );
+});
+
+test("demo settlement-reference-filter segment is deterministic: two runs print byte-identical settlement-ref lines", async () => {
+  const header =
+    "Settlement-reference filter (escrowsBySettlementRef over the day-end batch):";
+  const refundHeader =
+    "Refund settlement (settleRefund on a refunded escrow):";
+  // The settlement-ref section runs from its header to the
+  // refund-settlement header that follows it (backlog #1233
+  // inserts the section between the combined-filter and
+  // refund-settlement segments).
+  const segment = (ls: string[]) =>
+    ls.slice(ls.indexOf(header), ls.indexOf(refundHeader) - 1);
+  const a = await runDemo();
+  const b = await runDemo();
+  // Header + 3 member verdicts + shared + other + filters +
+  // no-match + never-matches + purity; every printed value is
+  // derived from the pinned fixtures alone, so no normalization
+  // is needed.
+  const segA = segment(a.lines);
+  assert.equal(segA.length, 10);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(
+    a.settlementRefEscrows.map((e) => e.id),
+    b.settlementRefEscrows.map((e) => e.id),
+  );
+  assert.deepEqual(
+    a.settlementRefSharedSelectedIds,
+    b.settlementRefSharedSelectedIds,
+  );
+  assert.deepEqual(
+    a.settlementRefOtherSelectedIds,
+    b.settlementRefOtherSelectedIds,
+  );
+  assert.deepEqual(
+    a.settlementRefFiltersSelectedIds,
+    b.settlementRefFiltersSelectedIds,
+  );
+  assert.equal(a.settlementRefNoMatchEmpty, b.settlementRefNoMatchEmpty);
+});
+
 test("demo combined-filter + settlement-aging segment is deterministic: two runs print byte-identical aging lines", async () => {
   const header =
     "Combined filter + settlement aging (escrowsByFilters / settlementAging over a mixed batch):";
   const refundHeader =
-    "Refund settlement (settleRefund on a refunded escrow):";
+    "Settlement-reference filter (escrowsBySettlementRef over the day-end batch):";
   // The aging section runs from its header to the
-  // refund-settlement header that follows it.
+  // settlement-reference-filter header that follows it (backlog
+  // #1233 inserts the settlement-ref segment between the aging
+  // and refund-settlement segments).
   const segment = (ls: string[]) =>
     ls.slice(ls.indexOf(header), ls.indexOf(refundHeader) - 1);
   const a = await runDemo();

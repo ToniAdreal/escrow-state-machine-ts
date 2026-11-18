@@ -514,6 +514,7 @@ import {
   escrowsByActor,
   escrowsByEvent,
   escrowsByFilters,
+  escrowsBySettlementRef,
   escrowsByState,
   historyFromNdjson,
   historyToNdjson,
@@ -1290,6 +1291,53 @@ export const DEMO_AGING_MID_FUND_AT = "2026-02-25T09:00:00.000Z";
 export const DEMO_AGING_FRESH_ID = "DEMO-AGING-03";
 export const DEMO_AGING_FRESH_FUND_AT = "2026-03-05T09:00:00.000Z";
 export const DEMO_AGING_UNFUNDED_ID = "DEMO-AGING-04";
+
+/**
+ * Settlement-reference-filter fixtures (backlog #1233): two
+ * further escrows released under settlement references, screened
+ * together with the day-end batch the unreconciled segment
+ * already built (`unreconciledBatch`: DEMO-ESC-001 released
+ * without a ref, DEMO-ESC-003 still FUNDED, DEMO-ESC-002
+ * REFUNDED, DEMO-ESC-037 released with ref
+ * wire-2026-03-09-001, DEMO-ESC-038 released by arbitration).
+ * Hand-computed expectations:
+ * - DEMO-SETTLEMENT-REF-02: FUND as "sponsor", SUBMIT_MILESTONE
+ *   as "creator", VERIFY_PASS as "oracle", RELEASE as "oracle"
+ *   carrying the SAME ref as DEMO-ESC-037
+ *   (wire-2026-03-09-001) — one payout batch, one bank transfer,
+ *   settling two escrows, so the shared-ref slice is
+ *   DEMO-ESC-037 and DEMO-SETTLEMENT-REF-02, in input order.
+ * - DEMO-SETTLEMENT-REF-03: the same path, RELEASE carrying a
+ *   DIFFERENT ref (wire-2026-03-10-002) — the only member of
+ *   that slice.
+ * - A ref that matches nothing (wire-2026-03-11-999) reads an
+ *   empty array, not an error; `escrowsByFilters` with the
+ *   `settlementRef` axis agrees with the single-axis selector
+ *   on the shared ref; DEMO-ESC-001 (released without a ref)
+ *   and DEMO-ESC-038 (ARBITRATE_RELEASE, no RELEASE entry at
+ *   all) match no ref. All dispatches use fixed-literal
+ *   timestamps (no wall clock, no network).
+ */
+export const DEMO_SETTLEMENT_REF_SHARED_ID = "DEMO-SETTLEMENT-REF-02";
+export const DEMO_SETTLEMENT_REF_SHARED_FUND_AT =
+  "2026-03-08T09:00:00.000Z";
+export const DEMO_SETTLEMENT_REF_SHARED_SUBMIT_AT =
+  "2026-03-08T10:00:00.000Z";
+export const DEMO_SETTLEMENT_REF_SHARED_VERIFY_PASS_AT =
+  "2026-03-08T11:00:00.000Z";
+export const DEMO_SETTLEMENT_REF_SHARED_RELEASE_AT =
+  "2026-03-08T12:00:00.000Z";
+export const DEMO_SETTLEMENT_REF_OTHER_ID = "DEMO-SETTLEMENT-REF-03";
+export const DEMO_SETTLEMENT_REF_OTHER = "wire-2026-03-10-002";
+export const DEMO_SETTLEMENT_REF_OTHER_FUND_AT =
+  "2026-03-08T09:00:00.000Z";
+export const DEMO_SETTLEMENT_REF_OTHER_SUBMIT_AT =
+  "2026-03-08T10:00:00.000Z";
+export const DEMO_SETTLEMENT_REF_OTHER_VERIFY_PASS_AT =
+  "2026-03-08T11:00:00.000Z";
+export const DEMO_SETTLEMENT_REF_OTHER_RELEASE_AT =
+  "2026-03-08T12:00:00.000Z";
+export const DEMO_SETTLEMENT_REF_NO_MATCH = "wire-2026-03-11-999";
 
 /**
  * Stale-patrol fixtures (backlog #506): five further escrows screened
@@ -4906,6 +4954,43 @@ export interface DemoResult {
    * Age in whole days of {@link DemoResult.agingOldestId}: 36.
    */
   agingOldestAgeDays: number;
+  /**
+   * The settlement-reference screening batch, in screening
+   * order: the day-end batch the unreconciled segment already
+   * built (DEMO-ESC-001, DEMO-ESC-003, DEMO-ESC-002,
+   * DEMO-ESC-037, DEMO-ESC-038) plus the two further escrows
+   * this segment drives (DEMO-SETTLEMENT-REF-02 sharing
+   * DEMO-ESC-037's ref, DEMO-SETTLEMENT-REF-03 on its own ref).
+   */
+  settlementRefEscrows: Escrow[];
+  /**
+   * The ids `escrowsBySettlementRef` selects from the
+   * settlement-reference batch for the shared ref
+   * wire-2026-03-09-001: DEMO-ESC-037 and
+   * DEMO-SETTLEMENT-REF-02, in input order — one transfer
+   * settling two escrows.
+   */
+  settlementRefSharedSelectedIds: string[];
+  /**
+   * The ids `escrowsBySettlementRef` selects from the
+   * settlement-reference batch for the other ref
+   * wire-2026-03-10-002: DEMO-SETTLEMENT-REF-03 alone.
+   */
+  settlementRefOtherSelectedIds: string[];
+  /**
+   * The ids `escrowsByFilters` selects from the same batch
+   * for { settlementRef: "wire-2026-03-09-001" }: identical
+   * to {@link DemoResult.settlementRefSharedSelectedIds} —
+   * the combined filter's settlementRef axis agrees with the
+   * single-axis selector.
+   */
+  settlementRefFiltersSelectedIds: string[];
+  /**
+   * True when `escrowsBySettlementRef` for the never-matching
+   * ref wire-2026-03-11-999 returns [] — an unknown ref is an
+   * empty list, not an error.
+   */
+  settlementRefNoMatchEmpty: boolean;
   /**
    * The refund-settlement escrow (DEMO-ESC-028): walked to REFUNDED
    * on its own via quorum arbitration, so the `settleRefund`
@@ -11861,6 +11946,154 @@ export async function runDemo(): Promise<DemoResult> {
     `  pure: the calls dispatched nothing — all four escrows keep their state and history length`,
   );
 
+  // --- Settlement-reference filter: escrowsBySettlementRef over the day-end batch ---
+  // The single-axis filters above slice by state, actor, and
+  // event; the settlement-reference lens answers the reconciliation
+  // question — "which escrows did this one transfer settle" — and
+  // the demo shows it on the day-end batch the unreconciled
+  // segment already built, extended with two further escrows
+  // driven here on the same fixed RELEASE path (see the fixture
+  // comment above for the hand-computed verdict on each member).
+  // Only a RELEASE entry counts, so the escrow released without
+  // a ref and the arbitration-released escrow match no ref at
+  // all, and one ref may settle several escrows, so the shared
+  // ref selects two. The section also cross-checks the combined
+  // filter's `settlementRef` axis against the single-axis
+  // selector, and reads an unknown ref as an empty list. All
+  // calls are pure: they dispatch nothing and mutate no escrow,
+  // and the section asserts that (states and history lengths
+  // identical before and after the calls).
+  const settlementRefShared = new Escrow(DEMO_SETTLEMENT_REF_SHARED_ID);
+  settlementRefShared.dispatch(
+    "FUND",
+    "Deposit locked (wire received)",
+    10630,
+    { actor: "sponsor", at: DEMO_SETTLEMENT_REF_SHARED_FUND_AT },
+  );
+  settlementRefShared.dispatch(
+    "SUBMIT_MILESTONE",
+    "Deliverable URLs + IPFS metadata hash",
+    undefined,
+    { actor: "creator", at: DEMO_SETTLEMENT_REF_SHARED_SUBMIT_AT },
+  );
+  settlementRefShared.dispatch(
+    "VERIFY_PASS",
+    "KPIs met — verification passed",
+    undefined,
+    { actor: "oracle", at: DEMO_SETTLEMENT_REF_SHARED_VERIFY_PASS_AT },
+  );
+  settlementRefShared.dispatch(
+    "RELEASE",
+    "Milestone accepted — release",
+    undefined,
+    {
+      actor: "oracle",
+      at: DEMO_SETTLEMENT_REF_SHARED_RELEASE_AT,
+      settlementRef: DEMO_UNRECONCILED_REF_SETTLEMENT_REF,
+    },
+  );
+  const settlementRefOther = new Escrow(DEMO_SETTLEMENT_REF_OTHER_ID);
+  settlementRefOther.dispatch(
+    "FUND",
+    "Deposit locked (wire received)",
+    10630,
+    { actor: "sponsor", at: DEMO_SETTLEMENT_REF_OTHER_FUND_AT },
+  );
+  settlementRefOther.dispatch(
+    "SUBMIT_MILESTONE",
+    "Deliverable URLs + IPFS metadata hash",
+    undefined,
+    { actor: "creator", at: DEMO_SETTLEMENT_REF_OTHER_SUBMIT_AT },
+  );
+  settlementRefOther.dispatch(
+    "VERIFY_PASS",
+    "KPIs met — verification passed",
+    undefined,
+    { actor: "oracle", at: DEMO_SETTLEMENT_REF_OTHER_VERIFY_PASS_AT },
+  );
+  settlementRefOther.dispatch(
+    "RELEASE",
+    "Milestone accepted — release",
+    undefined,
+    {
+      actor: "oracle",
+      at: DEMO_SETTLEMENT_REF_OTHER_RELEASE_AT,
+      settlementRef: DEMO_SETTLEMENT_REF_OTHER,
+    },
+  );
+  const settlementRefEscrows = [
+    ...unreconciledBatch,
+    settlementRefShared,
+    settlementRefOther,
+  ];
+  const settlementRefStatesBefore = settlementRefEscrows.map(
+    (e) => e.state,
+  );
+  const settlementRefHistoryLengthsBefore = settlementRefEscrows.map(
+    (e) => e.history.length,
+  );
+  const settlementRefSharedSelected = escrowsBySettlementRef(
+    settlementRefEscrows,
+    DEMO_UNRECONCILED_REF_SETTLEMENT_REF,
+  );
+  const settlementRefOtherSelected = escrowsBySettlementRef(
+    settlementRefEscrows,
+    DEMO_SETTLEMENT_REF_OTHER,
+  );
+  const settlementRefFiltersSelected = escrowsByFilters(
+    settlementRefEscrows,
+    { settlementRef: DEMO_UNRECONCILED_REF_SETTLEMENT_REF },
+  );
+  const settlementRefNoMatchSelected = escrowsBySettlementRef(
+    settlementRefEscrows,
+    DEMO_SETTLEMENT_REF_NO_MATCH,
+  );
+  if (
+    settlementRefSharedSelected.map((e) => e.id).join(",") !==
+      [
+        DEMO_UNRECONCILED_REF_ID,
+        DEMO_SETTLEMENT_REF_SHARED_ID,
+      ].join(",") ||
+    settlementRefOtherSelected.map((e) => e.id).join(",") !==
+      DEMO_SETTLEMENT_REF_OTHER_ID ||
+    settlementRefFiltersSelected.map((e) => e.id).join(",") !==
+      settlementRefSharedSelected.map((e) => e.id).join(",") ||
+    settlementRefNoMatchSelected.length !== 0 ||
+    settlementRefEscrows.some(
+      (e, i) =>
+        e.state !== settlementRefStatesBefore[i] ||
+        e.history.length !== settlementRefHistoryLengthsBefore[i],
+    )
+  ) {
+    throw new Error(
+      "demo fixture broken: escrowsBySettlementRef settlement-reference batch does not match the pinned shape (shared ref wire-2026-03-09-001 selects DEMO-ESC-037 and DEMO-SETTLEMENT-REF-02; other ref wire-2026-03-10-002 selects DEMO-SETTLEMENT-REF-03 alone; escrowsByFilters { settlementRef } agrees with the single-axis selector; unknown ref wire-2026-03-11-999 returns []; the calls must dispatch nothing and change no state or history length)",
+    );
+  }
+  const settlementRefSharedSelectedIds = settlementRefSharedSelected.map(
+    (e) => e.id,
+  );
+  const settlementRefOtherSelectedIds = settlementRefOtherSelected.map(
+    (e) => e.id,
+  );
+  const settlementRefFiltersSelectedIds = settlementRefFiltersSelected.map(
+    (e) => e.id,
+  );
+  const settlementRefNoMatchEmpty =
+    settlementRefNoMatchSelected.length === 0;
+  lines.push(
+    "",
+    "Settlement-reference filter (escrowsBySettlementRef over the day-end batch):",
+    `  ${DEMO_UNRECONCILED_REF_ID}: RELEASED with settlementRef ${DEMO_UNRECONCILED_REF_SETTLEMENT_REF} — the first escrow settled under this transfer`,
+    `  ${DEMO_SETTLEMENT_REF_SHARED_ID}: RELEASED with the same settlementRef ${DEMO_UNRECONCILED_REF_SETTLEMENT_REF} — one transfer can settle several escrows`,
+    `  ${DEMO_SETTLEMENT_REF_OTHER_ID}: RELEASED with settlementRef ${DEMO_SETTLEMENT_REF_OTHER} — a different transfer, a different slice`,
+    `  escrowsBySettlementRef(batch, "${DEMO_UNRECONCILED_REF_SETTLEMENT_REF}"): ${settlementRefSharedSelectedIds.join(", ")} (${settlementRefSharedSelectedIds.length} escrows) — the shared ref selects both escrows in input order`,
+    `  escrowsBySettlementRef(batch, "${DEMO_SETTLEMENT_REF_OTHER}"): ${settlementRefOtherSelectedIds.join(", ")} (${settlementRefOtherSelectedIds.length} escrow)`,
+    `  escrowsByFilters(batch, { settlementRef: "${DEMO_UNRECONCILED_REF_SETTLEMENT_REF}" }): ${settlementRefFiltersSelectedIds.join(", ")} — the combined filter's settlementRef axis agrees with the single-axis selector`,
+    `  no match: escrowsBySettlementRef(batch, "${DEMO_SETTLEMENT_REF_NO_MATCH}") returns [] — an unknown ref is an empty list, not an error`,
+    `  never matches: ${DEMO_ESCROW_ID} released without a ref and ${DEMO_UNRECONCILED_ARB_ID} released by arbitration (ARBITRATE_RELEASE) — no RELEASE entry, no ref, so neither slice claims them`,
+    `  pure: the calls dispatched nothing — all seven escrows keep their state and history length`,
+  );
+
   // --- Refund settlement: settleRefund on a REFUNDED escrow ---
   // The dispute branch above settles its refund through the report
   // layer only; the pure `settleRefund` helper itself never got a
@@ -13469,6 +13702,11 @@ export async function runDemo(): Promise<DemoResult> {
     agingResult,
     agingOldestId,
     agingOldestAgeDays,
+    settlementRefEscrows,
+    settlementRefSharedSelectedIds,
+    settlementRefOtherSelectedIds,
+    settlementRefFiltersSelectedIds,
+    settlementRefNoMatchEmpty,
     refundEscrow,
     refundSettlement,
     partialReleaseGross,
