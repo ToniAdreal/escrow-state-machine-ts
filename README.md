@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2239 tests, all local
+npm test   # 2240 tests, all local
 ```
 
 ## Quickstart
@@ -92,8 +92,10 @@ exponential backoff (on a 429 the parsed hint, clamped by
 `maxRetryDelayMs`, sets the wait before the next attempt).
 A second escrow then walks
 the dispute branch: `VERIFY_FAIL` into `DISPUTED`, a 2-of-3 arbitrator
-quorum collected vote by vote — after the first vote the quorum is
-snapshotted, round-tripped through JSON, and restored with
+quorum collected vote by vote — `remainingApprovals()` is read before
+the first vote, after it, and at threshold (2 → 1 → 0, collected +
+remaining = threshold at each step) — after the first vote the quorum
+is snapshotted, round-tripped through JSON, and restored with
 `restoreQuorum` at the identical 1-of-2 count (the arbitration-restart
 path), a below-threshold `dispatchArbitration`
 attempt is refused with the escrow untouched — and the reached quorum
@@ -2003,7 +2005,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2239 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2240 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

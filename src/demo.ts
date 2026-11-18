@@ -46,12 +46,14 @@
  * or absent values yield `undefined`, the caller's cue to fall
  * back to exponential backoff. A second escrow then walks the
  * dispute branch: VERIFY_FAIL lands it in DISPUTED, a 2-of-3 arbitrator
- * quorum is collected vote by vote — after the first vote the quorum
- * is snapshotted, round-tripped through JSON, and restored with
- * `restoreQuorum` at the identical count (the arbitration-restart
- * path), with one below-threshold arbitration attempt refused
- * without touching the escrow — and the reached quorum refunds the
- * sponsor in full (REFUNDED), closing with
+ * quorum is collected vote by vote — `remainingApprovals()` is read
+ * before the first vote, after it, and at threshold (2 → 1 → 0,
+ * collected + remaining = threshold at each step) — after the first
+ * vote the quorum is snapshotted, round-tripped through JSON, and
+ * restored with `restoreQuorum` at the identical count (the
+ * arbitration-restart path), with one below-threshold arbitration
+ * attempt refused without touching the escrow — and the reached
+ * quorum refunds the sponsor in full (REFUNDED), closing with
  * that escrow's refund settlement report. Right after the refund, a
  * fresh 2-of-3 quorum at threshold is sealed into an HMAC-signed
  * snapshot envelope with `exportSignedQuorumSnapshot`: a detached
@@ -3157,6 +3159,23 @@ export interface DemoResult {
    */
   disputeQuorum: Quorum;
   /**
+   * `remainingApprovals()` of the dispute quorum before its first
+   * vote: 2 — nothing collected yet, the whole threshold still
+   * missing. Cross-checked in the demo as collected (0) +
+   * remaining (2) = threshold (2).
+   */
+  quorumRemainingBeforeFirstVote: number;
+  /**
+   * `remainingApprovals()` of the dispute quorum after its first
+   * vote: 1 — one of two collected, one still missing.
+   */
+  quorumRemainingAfterFirstVote: number;
+  /**
+   * `remainingApprovals()` of the dispute quorum once the second
+   * vote reaches the threshold: 0 — the quorum is complete.
+   */
+  quorumRemainingAtThreshold: number;
+  /**
    * Snapshot of the dispute quorum taken after its first approval
    * (1 of 2), before the simulated restart — plain JSON, `v: 1`,
    * carrying the one recorded approval at its fixed timestamp.
@@ -5998,12 +6017,51 @@ export async function runDemo(): Promise<DemoResult> {
     lines.push(`  ${event.padEnd(18)} ${from.padEnd(19)} -> ${to}  (${actor})`);
   }
 
+  // Remaining approvals: the number a multi-sig UI shows before the
+  // next vote is cast. Read before the first vote, after it, and at
+  // threshold — collected + remaining always equals the threshold,
+  // and each reading is hand-pinned to its exact value.
+  const quorumRemainingBeforeFirstVote = disputeQuorum.remainingApprovals();
+  if (quorumRemainingBeforeFirstVote !== DEMO_QUORUM_THRESHOLD) {
+    throw new Error(
+      "demo fixture broken: dispute quorum remaining approvals are not the full threshold before the first vote",
+    );
+  }
+  if (
+    disputeQuorum.approvalCount() + quorumRemainingBeforeFirstVote !==
+    DEMO_QUORUM_THRESHOLD
+  ) {
+    throw new Error(
+      "demo fixture broken: dispute quorum collected + remaining do not add up to the threshold before the first vote",
+    );
+  }
+  lines.push(
+    `  remaining approvals before first vote: ${quorumRemainingBeforeFirstVote} (collected ${disputeQuorum.approvalCount()} + remaining ${quorumRemainingBeforeFirstVote} = threshold ${DEMO_QUORUM_THRESHOLD})`,
+  );
+
   // First vote: 1/2, below threshold. The arbitration attempt must be
   // refused with the explicit quorum error and leave no trace: same
   // state, same history length before and after.
   disputeQuorum.approve(DEMO_QUORUM_SIGNERS[0]);
   lines.push(
     `  approve ${DEMO_QUORUM_SIGNERS[0]}        quorum ${disputeQuorum.approvalCount()}/${disputeQuorum.threshold} — hasQuorum: ${disputeQuorum.hasQuorum()}`,
+  );
+  const quorumRemainingAfterFirstVote = disputeQuorum.remainingApprovals();
+  if (quorumRemainingAfterFirstVote !== DEMO_QUORUM_THRESHOLD - 1) {
+    throw new Error(
+      "demo fixture broken: dispute quorum remaining approvals are not threshold - 1 after the first vote",
+    );
+  }
+  if (
+    disputeQuorum.approvalCount() + quorumRemainingAfterFirstVote !==
+    DEMO_QUORUM_THRESHOLD
+  ) {
+    throw new Error(
+      "demo fixture broken: dispute quorum collected + remaining do not add up to the threshold after the first vote",
+    );
+  }
+  lines.push(
+    `  remaining approvals after first vote: ${quorumRemainingAfterFirstVote} (collected ${disputeQuorum.approvalCount()} + remaining ${quorumRemainingAfterFirstVote} = threshold ${DEMO_QUORUM_THRESHOLD})`,
   );
 
   // --- Simulated restart: snapshot -> JSON -> restoreQuorum ---
@@ -6051,6 +6109,23 @@ export async function runDemo(): Promise<DemoResult> {
   disputeQuorum.approve(DEMO_QUORUM_SIGNERS[1]);
   lines.push(
     `  approve ${DEMO_QUORUM_SIGNERS[1]}        quorum ${disputeQuorum.approvalCount()}/${disputeQuorum.threshold} — hasQuorum: ${disputeQuorum.hasQuorum()}`,
+  );
+  const quorumRemainingAtThreshold = disputeQuorum.remainingApprovals();
+  if (quorumRemainingAtThreshold !== 0) {
+    throw new Error(
+      "demo fixture broken: dispute quorum remaining approvals are not 0 at threshold",
+    );
+  }
+  if (
+    disputeQuorum.approvalCount() + quorumRemainingAtThreshold !==
+    DEMO_QUORUM_THRESHOLD
+  ) {
+    throw new Error(
+      "demo fixture broken: dispute quorum collected + remaining do not add up to the threshold at threshold",
+    );
+  }
+  lines.push(
+    `  remaining approvals at threshold: ${quorumRemainingAtThreshold} (collected ${disputeQuorum.approvalCount()} + remaining ${quorumRemainingAtThreshold} = threshold ${DEMO_QUORUM_THRESHOLD})`,
   );
   const disputeFrom = disputeEscrow.state;
   const disputeTo = dispatchArbitration(
@@ -12811,6 +12886,9 @@ export async function runDemo(): Promise<DemoResult> {
     disputeEscrow,
     disputeReport,
     disputeQuorum,
+    quorumRemainingBeforeFirstVote,
+    quorumRemainingAfterFirstVote,
+    quorumRemainingAtThreshold,
     quorumSnapshot,
     quorumRestoredApprovalCount,
     quorumRestoredHasQuorum,

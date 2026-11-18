@@ -18,6 +18,17 @@ version changes.
 
 ### Added
 
+- CLI demo `remainingApprovals()` quorum remaining-votes segment
+  (2026-11-18, backlog #1228): the dispute branch's 2-of-3 quorum now
+  reads `remainingApprovals()` before the first vote, after it, and at
+  threshold — printed as 2 → 1 → 0 with collected + remaining =
+  threshold cross-checked at each step (0+2, 1+1, 2+0) and hand-pinned
+  in the demo with `demo fixture broken` guards; `DemoResult` gains
+  `quorumRemainingBeforeFirstVote` / `quorumRemainingAfterFirstVote` /
+  `quorumRemainingAtThreshold`, one new demo test pins the values, the
+  printed lines, their positions, and two-run byte-identical output
+  (a broken printed remaining was verified to fail the new test before
+  restoring). README demo prose and test count refreshed (2239 → 2240).
 - `remainingVisits(state)` state-visit-budget remaining benchmark row
   (2026-11-18, backlog #1227): `bench/bench.ts` gains a
   `remainingVisits()` row over the same fixed budgeted escrow the

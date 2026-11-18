@@ -1632,6 +1632,60 @@ test("demo lines print the quorum snapshot restore segment between the first vot
   );
 });
 
+test("demo dispute quorum remaining approvals step down 2 -> 1 -> 0, collected + remaining = threshold", async () => {
+  const {
+    lines,
+    quorumRemainingBeforeFirstVote,
+    quorumRemainingAfterFirstVote,
+    quorumRemainingAtThreshold,
+  } = await runDemo();
+
+  assert.equal(quorumRemainingBeforeFirstVote, 2);
+  assert.equal(quorumRemainingAfterFirstVote, 1);
+  assert.equal(quorumRemainingAtThreshold, 0);
+  // Cross-check: collected + remaining = threshold at each moment
+  // (0+2, 1+1, 2+0 against the demo's 2-of-3 threshold).
+  assert.equal(0 + quorumRemainingBeforeFirstVote, DEMO_QUORUM_THRESHOLD);
+  assert.equal(1 + quorumRemainingAfterFirstVote, DEMO_QUORUM_THRESHOLD);
+  assert.equal(2 + quorumRemainingAtThreshold, DEMO_QUORUM_THRESHOLD);
+
+  const text = lines.join("\n");
+  const beforeLine = `  remaining approvals before first vote: 2 (collected 0 + remaining 2 = threshold ${DEMO_QUORUM_THRESHOLD})`;
+  const afterLine = `  remaining approvals after first vote: 1 (collected 1 + remaining 1 = threshold ${DEMO_QUORUM_THRESHOLD})`;
+  const atThresholdLine = `  remaining approvals at threshold: 0 (collected 2 + remaining 0 = threshold ${DEMO_QUORUM_THRESHOLD})`;
+  assert.ok(text.includes(beforeLine));
+  assert.ok(text.includes(afterLine));
+  assert.ok(text.includes(atThresholdLine));
+  // Position: before the first vote, between the first vote and the
+  // snapshot restore, and right after the second vote that reaches
+  // the threshold (before the refund dispatch).
+  const firstVoteAt = text.indexOf(`  approve ${DEMO_QUORUM_SIGNERS[0]}`);
+  const snapshotAt = text.indexOf("  quorum snapshot:");
+  const secondVoteAt = text.indexOf(`  approve ${DEMO_QUORUM_SIGNERS[1]}`);
+  const refundAt = text.indexOf("ARBITRATE_REFUND", secondVoteAt);
+  assert.ok(
+    text.indexOf(beforeLine) < firstVoteAt &&
+      firstVoteAt < text.indexOf(afterLine) &&
+      text.indexOf(afterLine) < snapshotAt &&
+      secondVoteAt < text.indexOf(atThresholdLine) &&
+      text.indexOf(atThresholdLine) < refundAt,
+  );
+  // Determinism: a second run prints the same three lines.
+  const again = await runDemo();
+  assert.deepEqual(
+    [
+      again.quorumRemainingBeforeFirstVote,
+      again.quorumRemainingAfterFirstVote,
+      again.quorumRemainingAtThreshold,
+    ],
+    [2, 1, 0],
+  );
+  const textAgain = again.lines.join("\n");
+  assert.ok(textAgain.includes(beforeLine));
+  assert.ok(textAgain.includes(afterLine));
+  assert.ok(textAgain.includes(atThresholdLine));
+});
+
 test("demo signed quorum snapshot rejects a one-byte tamper, restores the original, and rejects expired and wrong-secret envelopes", async () => {
   const {
     quorumSignedEnvelope,
