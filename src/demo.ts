@@ -1599,6 +1599,52 @@ export const DEMO_VISIT_BUDGET_DEFAULT_LOCKED_TOTAL = 9700;
 export const DEMO_VISIT_BUDGET_DEFAULT_HISTORY_LENGTH = 7;
 
 /**
+ * Remaining-visit-budget fixtures for the section after the
+ * visit-budget segment: the read side of the same budget — one
+ * fixed branch escrow ("demo-remaining-visits") constructed with
+ * the same pinned budget, `maxVisitsByState: { FUNDED: 2 }`
+ * (reusing {@link DEMO_VISIT_BUDGET_CAP} and the same funding /
+ * tranche amounts, so the numbers match the segment above step
+ * for step). Hand-pinned expectations — written from the
+ * documented `remainingVisits(state)` semantics in
+ * src/stateMachine.ts (remaining = budget - visits, floored at
+ * 0; unbudgeted states read Infinity) and cross-checked against
+ * test/remainingVisits.test.ts, never derived by calling
+ * `remainingVisits` itself:
+ * - at construction: FUNDED remaining 2 (0 used + 2 remaining =
+ *   budget 2), CREATED and MILESTONE_SUBMITTED remaining
+ *   Infinity (no budget configured — unlimited is not uncounted)
+ * - FUND 10000 is accepted: state FUNDED, FUNDED remaining 1
+ *   (1 used + 1 remaining = 2)
+ * - SUBMIT_MILESTONE + PARTIAL_RELEASE 100 (first milestone
+ *   round) is accepted: state FUNDED, FUNDED remaining 0
+ *   (2 used + 0 remaining = 2)
+ * - SUBMIT_MILESTONE (second milestone) is accepted: state
+ *   MILESTONE_SUBMITTED
+ * - PARTIAL_RELEASE 100 (second round) is rejected with exactly
+ *   {@link DEMO_VISIT_BUDGET_ERROR}: remaining stays 0, state
+ *   stays MILESTONE_SUBMITTED, history stays at length 4, locked
+ *   stays 9900 — 0 remaining means the next entry is refused,
+ *   and the error names the same used/budget numbers
+ * - the visit-budget segment's control escrow
+ *   ("demo-visit-budget-default", no budget) still reads
+ *   Infinity for FUNDED after 4 visits
+ * All dispatch timestamps are injected so the printed audit trail
+ * stays byte-identical across runs. The section is pure: no
+ * network, no randomness, no wall clock.
+ */
+export const DEMO_REMAINING_VISITS_ESCROW_ID = "demo-remaining-visits";
+export const DEMO_REMAINING_VISITS_FUND_AT = "2026-03-10T09:20:00.000Z";
+export const DEMO_REMAINING_VISITS_FIRST_SUBMIT_AT =
+  "2026-03-10T09:21:00.000Z";
+export const DEMO_REMAINING_VISITS_FIRST_RELEASE_AT =
+  "2026-03-10T09:22:00.000Z";
+export const DEMO_REMAINING_VISITS_SECOND_SUBMIT_AT =
+  "2026-03-10T09:23:00.000Z";
+export const DEMO_REMAINING_VISITS_SECOND_RELEASE_AT =
+  "2026-03-10T09:24:00.000Z";
+
+/**
  * Subscription fixtures for the closing segment: one further
  * branch escrow carrying a single collecting listener.
  * Hand-pinned expectations — written from the documented
@@ -3786,6 +3832,95 @@ export interface DemoResult {
    * two entries per milestone round, three rounds.
    */
   visitBudgetDefaultHistoryLength: number;
+  /**
+   * The remaining-visit-budget section's branch escrow
+   * ({@link DEMO_REMAINING_VISITS_ESCROW_ID}, `maxVisitsByState`
+   * pinned at `{ FUNDED: DEMO_VISIT_BUDGET_CAP }`), after the
+   * fixed dispatches ran: MILESTONE_SUBMITTED with 4 history
+   * entries — the second round's PARTIAL_RELEASE was refused at
+   * exactly 0 remaining and left no audit residue.
+   */
+  remainingVisitsEscrow: Escrow;
+  /**
+   * `remainingVisits("FUNDED")` on
+   * {@link DemoResult.remainingVisitsEscrow} at construction:
+   * {@link DEMO_VISIT_BUDGET_CAP} — 0 used + 2 remaining =
+   * budget 2.
+   */
+  remainingVisitsInitialFunded: number;
+  /**
+   * `remainingVisits("FUNDED")` on
+   * {@link DemoResult.remainingVisitsEscrow} after the FUND:
+   * 1 — the first FUND spent one visit (1 used + 1 remaining
+   * = 2).
+   */
+  remainingVisitsAfterFund: number;
+  /**
+   * `remainingVisits("FUNDED")` on
+   * {@link DemoResult.remainingVisitsEscrow} after the first
+   * milestone round: 0 — the PARTIAL_RELEASE back to FUNDED
+   * spent the second visit (2 used + 0 remaining = 2).
+   */
+  remainingVisitsAfterFirstRound: number;
+  /**
+   * `remainingVisits("FUNDED")` on
+   * {@link DemoResult.remainingVisitsEscrow} after the rejected
+   * second-round PARTIAL_RELEASE: still 0 — the refusal appended
+   * nothing, so the reading is unchanged.
+   */
+  remainingVisitsAfterReject: number;
+  /**
+   * `remainingVisits("CREATED")` on
+   * {@link DemoResult.remainingVisitsEscrow} at construction:
+   * Infinity — CREATED carries no budget, so it is unlimited
+   * (unlimited is not uncounted: the initial visit still
+   * counts).
+   */
+  remainingVisitsUnbudgetedCreated: number;
+  /**
+   * `remainingVisits("MILESTONE_SUBMITTED")` on
+   * {@link DemoResult.remainingVisitsEscrow} at construction:
+   * Infinity — MILESTONE_SUBMITTED carries no budget either.
+   */
+  remainingVisitsUnbudgetedMilestoneSubmitted: number;
+  /**
+   * `remainingVisits("FUNDED")` on
+   * {@link DemoResult.visitBudgetDefaultEscrow} after the
+   * segment: Infinity — the control escrow has no budget, so
+   * FUNDED stays unlimited after 4 visits.
+   */
+  remainingVisitsDefaultFunded: number;
+  /**
+   * The exact error message the rejected second-round
+   * PARTIAL_RELEASE threw ({@link DEMO_VISIT_BUDGET_ERROR}),
+   * hand-pinned from the documented visit-budget wording in
+   * src/stateMachine.ts and cross-checked against
+   * test/stateVisitBudget.test.ts — the same error the
+   * visit-budget segment above refused with, at the same 0.
+   */
+  remainingVisitsError: string;
+  /**
+   * State of {@link DemoResult.remainingVisitsEscrow} after the
+   * rejected PARTIAL_RELEASE: MILESTONE_SUBMITTED — the second
+   * round's SUBMIT_MILESTONE had already landed there, and the
+   * refusal changed nothing.
+   */
+  remainingVisitsStateAfterReject: EscrowState;
+  /**
+   * History length of {@link DemoResult.remainingVisitsEscrow}
+   * after the rejected PARTIAL_RELEASE: 4 — FUND,
+   * SUBMIT_MILESTONE, PARTIAL_RELEASE, SUBMIT_MILESTONE; the
+   * refused dispatch appended nothing.
+   */
+  remainingVisitsHistoryLengthAfterReject: number;
+  /**
+   * Locked total on {@link DemoResult.remainingVisitsEscrow}
+   * after the segment:
+   * {@link DEMO_VISIT_BUDGET_LOCKED_AFTER_ROUNDS} — the single
+   * accepted tranche (100) came off the 10000 funding, and the
+   * rejected attempt contributed nothing.
+   */
+  remainingVisitsLockedAfterReject: number;
   /**
    * The closing segment's branch escrow
    * ({@link DEMO_SUBSCRIBE_ESCROW_ID}), after all three fixed
@@ -8557,6 +8692,192 @@ export async function runDemo(): Promise<DemoResult> {
   lines.push(
     `  default escrow ${visitBudgetDefaultEscrow.id} (no maxVisitsByState — the library default is unlimited): 3 milestone rounds all pass, state ${visitBudgetDefaultEscrow.state}, FUNDED visits: ${visitBudgetDefaultVisits}, history entries: ${visitBudgetDefaultHistoryLength}, locked: ${visitBudgetDefaultLockedTotal}`,
   );
+
+  // --- Remaining visit budget (remainingVisits(state), the read ---
+  // side of the visit budget) ---
+  // A watchdog or budget dashboard reads the remaining budget
+  // BEFORE dispatching, instead of discovering the refusal
+  // afterwards: `remainingVisits(state)` is derived from the same
+  // history-derived count the visit-budget check reads, so used +
+  // remaining always equals the budget and 0 means the next entry
+  // into that state is refused with the error naming the same
+  // numbers. A fresh branch escrow carries the same pinned budget
+  // as the segment above (maxVisitsByState { FUNDED: 2 }) and is
+  // driven through the same two milestone rounds, with the
+  // remaining value read and cross-checked at each step; the
+  // unbudgeted states on the same escrow, and FUNDED on the
+  // segment's control escrow, read Infinity — unlimited is not
+  // uncounted, the used counts still step. All assertions live
+  // HERE, outside the printing, against the hand-pinned fixtures
+  // above: a remaining value that drifted from its visit count
+  // would fail the demo itself, not just a test. The section is
+  // pure: no network, no randomness, no wall clock (dispatch
+  // timestamps injected).
+  const remainingVisitsEscrow = new Escrow(DEMO_REMAINING_VISITS_ESCROW_ID, {
+    maxVisitsByState: { FUNDED: DEMO_VISIT_BUDGET_CAP },
+  });
+  const remainingVisitsInitialFunded =
+    remainingVisitsEscrow.remainingVisits("FUNDED");
+  const remainingVisitsUnbudgetedCreated =
+    remainingVisitsEscrow.remainingVisits("CREATED");
+  const remainingVisitsUnbudgetedMilestoneSubmitted =
+    remainingVisitsEscrow.remainingVisits("MILESTONE_SUBMITTED");
+  if (
+    remainingVisitsInitialFunded !== DEMO_VISIT_BUDGET_CAP ||
+    remainingVisitsEscrow.visitCount("FUNDED") +
+      remainingVisitsInitialFunded !==
+      DEMO_VISIT_BUDGET_CAP ||
+    remainingVisitsUnbudgetedCreated !== Infinity ||
+    remainingVisitsUnbudgetedMilestoneSubmitted !== Infinity
+  ) {
+    throw new Error(
+      `demo fixture broken: remaining-visits escrow starts at FUNDED remaining ${remainingVisitsInitialFunded} with ${remainingVisitsEscrow.visitCount("FUNDED")} visits, CREATED remaining ${remainingVisitsUnbudgetedCreated}, MILESTONE_SUBMITTED remaining ${remainingVisitsUnbudgetedMilestoneSubmitted} (expected 2 with 0 visits, Infinity, Infinity)`,
+    );
+  }
+  lines.push(
+    "",
+    "Remaining visit budget (remainingVisits(state) — the read side of the visit budget, before dispatching instead of after the refusal):",
+    `Escrow ${remainingVisitsEscrow.id}: ${remainingVisitsEscrow.state}`,
+    `  remaining at construction: FUNDED ${remainingVisitsInitialFunded} (used ${remainingVisitsEscrow.visitCount("FUNDED")} + remaining ${remainingVisitsInitialFunded} = budget ${DEMO_VISIT_BUDGET_CAP}), CREATED ${remainingVisitsUnbudgetedCreated}, MILESTONE_SUBMITTED ${remainingVisitsUnbudgetedMilestoneSubmitted} (no budget configured — unlimited is not uncounted)`,
+  );
+  let remainingVisitsAfterFund = -1;
+  for (const [event, note, amount, at, actor] of [
+    [
+      "FUND",
+      "Initial funding",
+      DEMO_VISIT_BUDGET_FUND_AMOUNT,
+      DEMO_REMAINING_VISITS_FUND_AT,
+      "sponsor",
+    ],
+    [
+      "SUBMIT_MILESTONE",
+      "First milestone",
+      undefined,
+      DEMO_REMAINING_VISITS_FIRST_SUBMIT_AT,
+      "creator",
+    ],
+    [
+      "PARTIAL_RELEASE",
+      "First tranche released",
+      DEMO_VISIT_BUDGET_TRANCHE,
+      DEMO_REMAINING_VISITS_FIRST_RELEASE_AT,
+      "sponsor",
+    ],
+  ] as const) {
+    const from = remainingVisitsEscrow.state;
+    const to = remainingVisitsEscrow.dispatch(event, note, amount, {
+      actor,
+      at,
+    });
+    lines.push(`  ${event.padEnd(18)} ${from.padEnd(19)} -> ${to}  (${actor})`);
+    if (event === "FUND") {
+      remainingVisitsAfterFund =
+        remainingVisitsEscrow.remainingVisits("FUNDED");
+      if (
+        remainingVisitsAfterFund !== DEMO_VISIT_BUDGET_CAP - 1 ||
+        remainingVisitsEscrow.visitCount("FUNDED") +
+          remainingVisitsAfterFund !==
+          DEMO_VISIT_BUDGET_CAP
+      ) {
+        throw new Error(
+          `demo fixture broken: remaining-visits escrow after FUND reads FUNDED remaining ${remainingVisitsAfterFund} with ${remainingVisitsEscrow.visitCount("FUNDED")} visits (expected 1 with 1 visit)`,
+        );
+      }
+      lines.push(
+        `  remaining after FUND: FUNDED ${remainingVisitsAfterFund} (used ${remainingVisitsEscrow.visitCount("FUNDED")} + remaining ${remainingVisitsAfterFund} = budget ${DEMO_VISIT_BUDGET_CAP})`,
+      );
+    }
+  }
+  const remainingVisitsAfterFirstRound =
+    remainingVisitsEscrow.remainingVisits("FUNDED");
+  if (
+    remainingVisitsAfterFirstRound !== 0 ||
+    remainingVisitsEscrow.visitCount("FUNDED") +
+      remainingVisitsAfterFirstRound !==
+      DEMO_VISIT_BUDGET_CAP
+  ) {
+    throw new Error(
+      `demo fixture broken: remaining-visits escrow after the first milestone round reads FUNDED remaining ${remainingVisitsAfterFirstRound} with ${remainingVisitsEscrow.visitCount("FUNDED")} visits (expected 0 with 2 visits)`,
+    );
+  }
+  lines.push(
+    `  remaining after first milestone round: FUNDED ${remainingVisitsAfterFirstRound} (used ${remainingVisitsEscrow.visitCount("FUNDED")} + remaining ${remainingVisitsAfterFirstRound} = budget ${DEMO_VISIT_BUDGET_CAP} — the budget is spent)`,
+  );
+  // The second milestone round starts fine — MILESTONE_SUBMITTED is
+  // unbudgeted — but the PARTIAL_RELEASE that would re-enter FUNDED
+  // a third time is the dispatch the 0 remaining stops.
+  const remainingVisitsSecondSubmitFrom = remainingVisitsEscrow.state;
+  const remainingVisitsSecondSubmitTo = remainingVisitsEscrow.dispatch(
+    "SUBMIT_MILESTONE",
+    "Second milestone",
+    undefined,
+    { actor: "creator", at: DEMO_REMAINING_VISITS_SECOND_SUBMIT_AT },
+  );
+  lines.push(
+    `  ${"SUBMIT_MILESTONE".padEnd(18)} ${remainingVisitsSecondSubmitFrom.padEnd(19)} -> ${remainingVisitsSecondSubmitTo}  (creator)`,
+  );
+  let remainingVisitsError = "";
+  let remainingVisitsRejected = false;
+  try {
+    remainingVisitsEscrow.dispatch(
+      "PARTIAL_RELEASE",
+      "Second tranche released",
+      DEMO_VISIT_BUDGET_TRANCHE,
+      { actor: "sponsor", at: DEMO_REMAINING_VISITS_SECOND_RELEASE_AT },
+    );
+  } catch (err) {
+    remainingVisitsRejected = true;
+    remainingVisitsError = err instanceof Error ? err.message : String(err);
+  }
+  if (!remainingVisitsRejected) {
+    throw new Error(
+      "demo fixture broken: second round PARTIAL_RELEASE past the visit budget was expected to throw",
+    );
+  }
+  if (remainingVisitsError !== DEMO_VISIT_BUDGET_ERROR) {
+    throw new Error(
+      `demo fixture broken: second round PARTIAL_RELEASE rejected with unexpected message: ${remainingVisitsError}`,
+    );
+  }
+  const remainingVisitsStateAfterReject = remainingVisitsEscrow.state;
+  const remainingVisitsHistoryLengthAfterReject =
+    remainingVisitsEscrow.history.length;
+  const remainingVisitsLockedAfterReject =
+    depositAmountFromHistory(remainingVisitsEscrow.history) -
+    releasedAmountFromHistory(remainingVisitsEscrow.history);
+  if (
+    remainingVisitsStateAfterReject !== "MILESTONE_SUBMITTED" ||
+    remainingVisitsHistoryLengthAfterReject !== 4 ||
+    remainingVisitsLockedAfterReject !== DEMO_VISIT_BUDGET_LOCKED_AFTER_ROUNDS
+  ) {
+    throw new Error(
+      `demo fixture broken: remaining-visits rejection left the escrow at ${remainingVisitsStateAfterReject} with ${remainingVisitsHistoryLengthAfterReject} history entries and locked ${remainingVisitsLockedAfterReject} (expected MILESTONE_SUBMITTED, 4, 9900)`,
+    );
+  }
+  const remainingVisitsAfterReject =
+    remainingVisitsEscrow.remainingVisits("FUNDED");
+  if (remainingVisitsAfterReject !== 0) {
+    throw new Error(
+      `demo fixture broken: remaining-visits escrow after the rejected PARTIAL_RELEASE reads FUNDED remaining ${remainingVisitsAfterReject} (expected 0 — the refusal appends nothing)`,
+    );
+  }
+  lines.push(
+    `  second round PARTIAL_RELEASE -> rejected: "${remainingVisitsError}"; remaining FUNDED after rejection: ${remainingVisitsAfterReject} (state ${remainingVisitsStateAfterReject}, history entries: ${remainingVisitsHistoryLengthAfterReject}, locked: ${remainingVisitsLockedAfterReject} — the refusal appends nothing, so the reading is unchanged)`,
+  );
+  // The same three rounds without a budget still read Infinity:
+  // the visit-budget segment's control escrow visited FUNDED four
+  // times and its remaining budget is still unlimited.
+  const remainingVisitsDefaultFunded =
+    visitBudgetDefaultEscrow.remainingVisits("FUNDED");
+  if (remainingVisitsDefaultFunded !== Infinity) {
+    throw new Error(
+      `demo fixture broken: unbudgeted control escrow reads FUNDED remaining ${remainingVisitsDefaultFunded} after ${visitBudgetDefaultVisits} visits (expected Infinity)`,
+    );
+  }
+  lines.push(
+    `  default escrow ${visitBudgetDefaultEscrow.id} (no maxVisitsByState): FUNDED remaining ${remainingVisitsDefaultFunded} after ${visitBudgetDefaultVisits} visits — unlimited is not uncounted`,
+  );
+
   // dispatch() appends to the audit history and then fans out to
   // subscribers: the seam a reconciliation or notification side
   // wires into. A branch escrow carries one fixed collecting
@@ -12988,6 +13309,18 @@ export async function runDemo(): Promise<DemoResult> {
     visitBudgetDefaultVisits,
     visitBudgetDefaultLockedTotal,
     visitBudgetDefaultHistoryLength,
+    remainingVisitsEscrow,
+    remainingVisitsInitialFunded,
+    remainingVisitsAfterFund,
+    remainingVisitsAfterFirstRound,
+    remainingVisitsAfterReject,
+    remainingVisitsUnbudgetedCreated,
+    remainingVisitsUnbudgetedMilestoneSubmitted,
+    remainingVisitsDefaultFunded,
+    remainingVisitsError,
+    remainingVisitsStateAfterReject,
+    remainingVisitsHistoryLengthAfterReject,
+    remainingVisitsLockedAfterReject,
     subscribeEscrow,
     subscribeNotifications,
     subscribeMatchesHistory,

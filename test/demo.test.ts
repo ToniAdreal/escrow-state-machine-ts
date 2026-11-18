@@ -209,6 +209,12 @@ import {
   DEMO_RECONCILE_REPORT_ONLY_ID,
   DEMO_RECONCILE_SUBMIT_AT,
   DEMO_RECONCILE_VERIFY_PASS_AT,
+  DEMO_REMAINING_VISITS_ESCROW_ID,
+  DEMO_REMAINING_VISITS_FIRST_RELEASE_AT,
+  DEMO_REMAINING_VISITS_FIRST_SUBMIT_AT,
+  DEMO_REMAINING_VISITS_FUND_AT,
+  DEMO_REMAINING_VISITS_SECOND_RELEASE_AT,
+  DEMO_REMAINING_VISITS_SECOND_SUBMIT_AT,
   DEMO_UNRECONCILED_ARB_ID,
   DEMO_UNRECONCILED_REF_ID,
   DEMO_UNRECONCILED_REF_SETTLEMENT_REF,
@@ -5577,6 +5583,147 @@ test("demo shows the state visit budget: a FUNDED budget of 2 spends one visit o
   assert.equal(
     b.visitBudgetDefaultHistoryLength,
     a.visitBudgetDefaultHistoryLength,
+  );
+});
+
+test("demo shows the remaining visit budget: remainingVisits(state) reads 2 -> 1 -> 0 across the first FUND and first milestone round with used + remaining = budget at each step, unbudgeted states read Infinity, and the second round's PARTIAL_RELEASE is refused at exactly 0", async () => {
+  const a = await runDemo();
+  const b = await runDemo();
+  const {
+    remainingVisitsEscrow,
+    remainingVisitsInitialFunded,
+    remainingVisitsAfterFund,
+    remainingVisitsAfterFirstRound,
+    remainingVisitsAfterReject,
+    remainingVisitsUnbudgetedCreated,
+    remainingVisitsUnbudgetedMilestoneSubmitted,
+    remainingVisitsDefaultFunded,
+    remainingVisitsError,
+    remainingVisitsStateAfterReject,
+    remainingVisitsHistoryLengthAfterReject,
+    remainingVisitsLockedAfterReject,
+    lines,
+  } = a;
+  const text = lines.join("\n");
+
+  // Hand-pinned expectations — written out here from the documented
+  // remainingVisits(state) semantics in src/stateMachine.ts
+  // (remaining = budget - visits, floored at 0; unbudgeted states
+  // read Infinity), never derived by calling remainingVisits to
+  // produce them. test/remainingVisits.test.ts pins the same
+  // semantics independently.
+  assert.equal(DEMO_REMAINING_VISITS_ESCROW_ID, "demo-remaining-visits");
+  assert.equal(DEMO_VISIT_BUDGET_CAP, 2);
+  assert.equal(DEMO_VISIT_BUDGET_FUND_AMOUNT, 10000);
+  assert.equal(DEMO_VISIT_BUDGET_TRANCHE, 100);
+  assert.equal(
+    DEMO_VISIT_BUDGET_ERROR,
+    "state visit budget exhausted: FUNDED already visited 2 of 2 times",
+  );
+  assert.equal(DEMO_VISIT_BUDGET_LOCKED_AFTER_ROUNDS, 9900);
+
+  // The demo asserts the same things internally (a remaining value
+  // that drifted from its visit count would fail the demo itself);
+  // the DemoResult fields echo the section's outcome.
+  assert.equal(remainingVisitsEscrow.id, DEMO_REMAINING_VISITS_ESCROW_ID);
+  assert.equal(remainingVisitsInitialFunded, 2);
+  assert.equal(remainingVisitsAfterFund, 1);
+  assert.equal(remainingVisitsAfterFirstRound, 0);
+  assert.equal(remainingVisitsAfterReject, 0);
+  assert.equal(remainingVisitsUnbudgetedCreated, Infinity);
+  assert.equal(remainingVisitsUnbudgetedMilestoneSubmitted, Infinity);
+  assert.equal(remainingVisitsDefaultFunded, Infinity);
+  assert.equal(remainingVisitsError, DEMO_VISIT_BUDGET_ERROR);
+  assert.equal(remainingVisitsStateAfterReject, "MILESTONE_SUBMITTED");
+  assert.equal(remainingVisitsHistoryLengthAfterReject, 4);
+  assert.equal(
+    remainingVisitsLockedAfterReject,
+    DEMO_VISIT_BUDGET_LOCKED_AFTER_ROUNDS,
+  );
+  // Used + remaining = budget at the final checkpoint: the readings
+  // can never drift from the budget-exhausted error.
+  assert.equal(
+    remainingVisitsEscrow.visitCount("FUNDED") + remainingVisitsAfterReject,
+    DEMO_VISIT_BUDGET_CAP,
+  );
+
+  // The section follows the visit-budget segment (the read side of
+  // the budget it just spent) and precedes the subscription
+  // segment; it prints its lines verbatim.
+  const remainingAt = text.indexOf(
+    "Remaining visit budget (remainingVisits(state) — the read side of the visit budget, before dispatching instead of after the refusal):",
+  );
+  assert.ok(
+    remainingAt >
+      text.indexOf(
+        "State visit budget (maxVisitsByState caps re-entries into a state — the budget counts total visits, not re-entries):",
+      ),
+    "remaining-visits segment must follow the visit-budget segment",
+  );
+  assert.ok(
+    remainingAt <
+      text.indexOf(
+        "Subscription notifications (Escrow.subscribe on a branch escrow):",
+      ),
+    "remaining-visits segment must precede the subscription segment",
+  );
+  for (const line of [
+    "Escrow demo-remaining-visits: CREATED",
+    "  remaining at construction: FUNDED 2 (used 0 + remaining 2 = budget 2), CREATED Infinity, MILESTONE_SUBMITTED Infinity (no budget configured — unlimited is not uncounted)",
+    "  FUND               CREATED             -> FUNDED  (sponsor)",
+    "  remaining after FUND: FUNDED 1 (used 1 + remaining 1 = budget 2)",
+    "  SUBMIT_MILESTONE   FUNDED              -> MILESTONE_SUBMITTED  (creator)",
+    "  PARTIAL_RELEASE    MILESTONE_SUBMITTED -> FUNDED  (sponsor)",
+    "  remaining after first milestone round: FUNDED 0 (used 2 + remaining 0 = budget 2 — the budget is spent)",
+    "  SUBMIT_MILESTONE   FUNDED              -> MILESTONE_SUBMITTED  (creator)",
+    '  second round PARTIAL_RELEASE -> rejected: "state visit budget exhausted: FUNDED already visited 2 of 2 times"; remaining FUNDED after rejection: 0 (state MILESTONE_SUBMITTED, history entries: 4, locked: 9900 — the refusal appends nothing, so the reading is unchanged)',
+    "  default escrow demo-visit-budget-default (no maxVisitsByState): FUNDED remaining Infinity after 4 visits — unlimited is not uncounted",
+  ]) {
+    assert.ok(text.includes(line), `missing remaining-visits line: ${line}`);
+  }
+
+  // Determinism: two runs print byte-identical remaining-visits
+  // lines and report identical DemoResult fields — every value is
+  // derived from the fixed fixtures alone (timestamps injected),
+  // so no normalization is needed.
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf(
+        "Remaining visit budget (remainingVisits(state) — the read side of the visit budget, before dispatching instead of after the refusal):",
+      ),
+      ls.indexOf(
+        "Subscription notifications (Escrow.subscribe on a branch escrow):",
+      ) - 1,
+    );
+  assert.deepEqual(segment(a.lines), segment(b.lines));
+  assert.equal(b.remainingVisitsInitialFunded, a.remainingVisitsInitialFunded);
+  assert.equal(b.remainingVisitsAfterFund, a.remainingVisitsAfterFund);
+  assert.equal(
+    b.remainingVisitsAfterFirstRound,
+    a.remainingVisitsAfterFirstRound,
+  );
+  assert.equal(b.remainingVisitsAfterReject, a.remainingVisitsAfterReject);
+  assert.equal(
+    b.remainingVisitsUnbudgetedCreated,
+    a.remainingVisitsUnbudgetedCreated,
+  );
+  assert.equal(
+    b.remainingVisitsUnbudgetedMilestoneSubmitted,
+    a.remainingVisitsUnbudgetedMilestoneSubmitted,
+  );
+  assert.equal(b.remainingVisitsDefaultFunded, a.remainingVisitsDefaultFunded);
+  assert.equal(b.remainingVisitsError, a.remainingVisitsError);
+  assert.equal(
+    b.remainingVisitsStateAfterReject,
+    a.remainingVisitsStateAfterReject,
+  );
+  assert.equal(
+    b.remainingVisitsHistoryLengthAfterReject,
+    a.remainingVisitsHistoryLengthAfterReject,
+  );
+  assert.equal(
+    b.remainingVisitsLockedAfterReject,
+    a.remainingVisitsLockedAfterReject,
   );
 });
 
