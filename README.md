@@ -2578,6 +2578,22 @@ re-export checked identical to the source snapshot on every
 iteration, and the serialized snapshot text restored unchanged
 after a JSON parse/stringify round-trip once, outside the
 timed loop), and
+policy snapshot round-trip (`Escrow.fromJSON` restoring a fixed
+policy-carrying escrow — BENCH-1231, rolePolicy
+{ DISPUTE: ["moderator"] } and maxDeposit 12,000, driven FUND
+of the golden 10,630 at BASE, SUBMIT_MILESTONE at BASE + 1s,
+PARTIAL_RELEASE of 1,000 at BASE + 2s back to FUNDED, deadline
+2026-01-31T00:00:00.000Z — with the restored id, state, and
+deadline and the full history checked entry for entry — hash
+chain included — the envelope's rolePolicy byte-identical to the
+pinned object and maxDeposit exactly 12,000, and a re-export
+checked identical to the source snapshot on every iteration, and
+outside the timed loop an unauthorized actor on DISPUTE pinned to
+throw the exact `actor not authorized for DISPUTE: "intruder" is
+not in [moderator]` error and an over-cap FUND of 3,000 pinned to
+throw the exact `deposit cap exceeded: locked 9630 + new funding
+3000 would exceed maxDeposit 12000` error, both leaving state and
+history unchanged), and
 standalone history parsing (`parseEscrowHistory` over the
 JSON-serialized text of the same fixed 4-entry RELEASED history
 — the text is parsed back and validated standalone, with no
@@ -3182,6 +3198,7 @@ One real run on 2026-11-04:
 | subscribe (full lifecycle, 1 collecting listener) | ~26,820 ops/sec (37.29 µs/op) |
 | subscribe onError (short chain, 1 throwing listener) | ~2,090 ops/sec (478.56 µs/op) |
 | Escrow.fromJSON (snapshot round-trip, 4 entries) | ~29,802 ops/sec (33.55 µs/op) |
+| Escrow.fromJSON (policy snapshot round-trip, 3 entries, rolePolicy + maxDeposit) | ~15,911 ops/sec (62.85 µs/op) |
 | parseEscrowHistory (4 entries, JSON text) | ~11,915 ops/sec (83.93 µs/op) |
 | requireVerifyEvidence VERIFY_PASS (evidence gate) | ~44,494 ops/sec (22.48 µs/op) |
 | maxDeposit FUND (deposit cap, funds to cap) | ~60,005 ops/sec (16.67 µs/op) |
@@ -3214,7 +3231,7 @@ and the settlePartialRelease row above were measured on
 escrowsByEvent row above were measured on 2026-11-06 runs; the
 settlePartialReleases row above was measured on a 2026-11-08 run; the
 escrowsByFilters and settlementAging rows above were measured on a
-2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the signed-snapshot rows above were measured on a 2026-11-11 run; the diffSettlementReports row above was measured on a 2026-11-13 run; the renderSettlementReportsSummary and diffSettlementReportsSummaries rows above were measured on a 2026-11-13 run; the unreconciledSettlements row above was measured on a 2026-11-14 run; the stateAt row above was measured on a 2026-11-15 run; the stateAtFromHistory row above was measured on a 2026-11-15 run; the formatMinorUnits x parseMinorUnits round-trip row above was measured on a 2026-11-15 run; the quorum signed-snapshot round-trip row above was measured on a 2026-11-15 run; the calculateDepositCents row above was measured on a 2026-11-15 run; the escrowsBySettlementRef row above was measured on a 2026-11-15 run; the parseSettlementReportsSummaryCsv and parseSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the renderSettlementReportsSummaryCsv and renderSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the approvalStatement row above was measured on a 2026-11-15 run; the truncateOutboxError row above was measured on a 2026-11-15 run; the verifySettlementWebhook requireEventId row above was measured on a 2026-11-16 run; the diffQuorumSnapshots row above was measured on a 2026-11-16 run; the SettlementEventDedupe.has row above was measured on a 2026-11-16 run; the approveSigned row above was measured on a 2026-11-16 run; the dispatch maxVisitsByState row above was measured on a 2026-11-17 run; the retrySettlementWebhookOutbox row above was measured on a 2026-11-17 run; the SettlementWebhookOutbox.stats row above was measured on a 2026-11-18 run; the quorum remainingApprovals row above was measured on a 2026-11-18 run; the remainingVisits row above was measured on a 2026-11-18 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
+2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the signed-snapshot rows above were measured on a 2026-11-11 run; the diffSettlementReports row above was measured on a 2026-11-13 run; the renderSettlementReportsSummary and diffSettlementReportsSummaries rows above were measured on a 2026-11-13 run; the unreconciledSettlements row above was measured on a 2026-11-14 run; the stateAt row above was measured on a 2026-11-15 run; the stateAtFromHistory row above was measured on a 2026-11-15 run; the formatMinorUnits x parseMinorUnits round-trip row above was measured on a 2026-11-15 run; the quorum signed-snapshot round-trip row above was measured on a 2026-11-15 run; the calculateDepositCents row above was measured on a 2026-11-15 run; the escrowsBySettlementRef row above was measured on a 2026-11-15 run; the parseSettlementReportsSummaryCsv and parseSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the renderSettlementReportsSummaryCsv and renderSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the approvalStatement row above was measured on a 2026-11-15 run; the truncateOutboxError row above was measured on a 2026-11-15 run; the verifySettlementWebhook requireEventId row above was measured on a 2026-11-16 run; the diffQuorumSnapshots row above was measured on a 2026-11-16 run; the SettlementEventDedupe.has row above was measured on a 2026-11-16 run; the approveSigned row above was measured on a 2026-11-16 run; the dispatch maxVisitsByState row above was measured on a 2026-11-17 run; the retrySettlementWebhookOutbox row above was measured on a 2026-11-17 run; the SettlementWebhookOutbox.stats row above was measured on a 2026-11-18 run; the quorum remainingApprovals row above was measured on a 2026-11-18 run; the remainingVisits row above was measured on a 2026-11-18 run; the policy snapshot round-trip row above was measured on a 2026-11-18 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
 came in mixed under shared-host load, so refreshing the whole
 table would misreport changes in paths these additions never
 touched.

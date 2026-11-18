@@ -11065,6 +11065,204 @@ checkSnapshotRoundTrip(
 }
 
 // ---------------------------------------------------------------------
+// Policy snapshot round-trip fixture (backlog #1231): the gap the
+// plain snapshot row (#30) leaves open — its fixture deliberately
+// pins the default-option envelope shape ("no `idempotencyKeys`
+// and no `rolePolicy` field"), so no timed path ever proves a
+// custom policy survives `toJSON()` -> `fromJSON()` and is still
+// enforced afterwards, even though `toJSON()` does write the
+// fields (src/stateMachine.ts: the `rolePolicy` / `maxDeposit`
+// spreads) and `fromJSON()` re-installs them. The dataquest
+// precedent is #522 ("toJSON + fromJSON policy snapshot
+// round-trip": rolePolicy + budgets fixture, RBAC + budget
+// probes outside the timed loop). Hand-written expectations —
+// written from the snapshot contract in src/stateMachine.ts
+// (envelope fields written only when set; `fromJSON()`
+// re-validates and re-installs `rolePolicy` / `maxDeposit`;
+// dispatch runs the transition-legality check, then RBAC, then
+// the amount / deposit-cap checks, before anything is appended)
+// and cross-checked against test/rolePolicy.test.ts,
+// test/maxDeposit.test.ts, and test/snapshotDepositCap.test.ts
+// (#918), never derived by calling toJSON/fromJSON themselves:
+//   - BENCH-1231 is constructed with rolePolicy
+//     { DISPUTE: ["moderator"] } and maxDeposit 12,000, then
+//     driven on fixed timestamps — FUND of the golden 10,630 at
+//     BASE, SUBMIT_MILESTONE at BASE + 1s, PARTIAL_RELEASE of
+//     1,000 at BASE + 2s back to FUNDED — and given the same fixed
+//     deadline as the plain snapshot fixture (BASE + 30 days,
+//     2026-01-31T00:00:00.000Z), so the envelope is exactly
+//     { v: 1, id BENCH-1231, state FUNDED, 3 history entries,
+//     deadline 2026-01-31T00:00:00.000Z, rolePolicy
+//     { DISPUTE: ["moderator"] }, maxDeposit 12000 } — no
+//     `idempotencyKeys` field, because the fixture consumed no
+//     key; the locked total is 10,630 - 1,000 = 9,630;
+//   - the timed path re-exports the fixture escrow with
+//     `toJSON()` on every iteration, runs it through a JSON
+//     stringify/parse round-trip, and restores it with
+//     `Escrow.fromJSON()`; every iteration checks the restored
+//     escrow's id, state, deadline, and full history entry for
+//     entry (hash / prevHash chain included) against the source
+//     snapshot, the envelope's rolePolicy byte-identical to the
+//     pinned object and maxDeposit exactly 12,000, and that
+//     re-exporting the restored escrow reproduces the source
+//     snapshot exactly;
+//   - outside the timed loop, two probe dispatches pin the
+//     post-restore enforcement side: an unauthorized actor
+//     ("intruder") on the policy-covered DISPUTE throws exactly
+//     `actor not authorized for DISPUTE: "intruder" is not in
+//     [moderator]` — DISPUTE is legal from FUNDED, so the RBAC
+//     rejection is the error that surfaces — and a FUND of 3,000
+//     (locked 9,630 + 3,000 = 12,630, over the 12,000 cap) throws
+//     exactly `deposit cap exceeded: locked 9630 + new funding
+//     3000 would exceed maxDeposit 12000`; both rejected
+//     dispatches leave state (FUNDED) and history (3 entries,
+//     re-export byte-identical to the source snapshot)
+//     unchanged.
+// Fixed timestamps, no network, no randomness, no wall clock.
+// ---------------------------------------------------------------------
+const POLICY_SNAPSHOT_ID = "BENCH-1231";
+const POLICY_SNAPSHOT_ROLE_POLICY: RolePolicy = {
+  DISPUTE: ["moderator"],
+};
+const POLICY_SNAPSHOT_MAX_DEPOSIT = 12000;
+const POLICY_SNAPSHOT_TRANCHE = 1000;
+const POLICY_SNAPSHOT_OVER_CAP_FUND = 3000;
+const POLICY_SNAPSHOT_RBAC_ERROR =
+  'actor not authorized for DISPUTE: "intruder" is not in [moderator]';
+const POLICY_SNAPSHOT_CAP_ERROR =
+  "deposit cap exceeded: locked 9630 + new funding 3000 would exceed maxDeposit 12000";
+function buildPolicySnapshotEscrow(): Escrow {
+  const escrow = new Escrow(POLICY_SNAPSHOT_ID, {
+    rolePolicy: POLICY_SNAPSHOT_ROLE_POLICY,
+    maxDeposit: POLICY_SNAPSHOT_MAX_DEPOSIT,
+  });
+  escrow.dispatch("FUND", undefined, DEPOSIT_AMOUNT, {
+    at: new Date(BASE_MS).toISOString(),
+  });
+  escrow.dispatch("SUBMIT_MILESTONE", undefined, undefined, {
+    at: new Date(BASE_MS + 1000).toISOString(),
+  });
+  escrow.dispatch("PARTIAL_RELEASE", undefined, POLICY_SNAPSHOT_TRANCHE, {
+    at: new Date(BASE_MS + 2000).toISOString(),
+  });
+  escrow.setDeadline(new Date(BASE_MS + 30 * DAY_MS));
+  if (
+    escrow.state !== "FUNDED" ||
+    escrow.history.length !== 3 ||
+    escrow.getDeadline() !== SNAPSHOT_DEADLINE
+  ) {
+    throw new Error(
+      "benchmark fixture failed: policy snapshot fixture shape",
+    );
+  }
+  return escrow;
+}
+const policySnapshotEscrow = buildPolicySnapshotEscrow();
+const policySnapshotFixture: EscrowSnapshot = policySnapshotEscrow.toJSON();
+if (
+  policySnapshotFixture.v !== SNAPSHOT_VERSION ||
+  policySnapshotFixture.id !== POLICY_SNAPSHOT_ID ||
+  policySnapshotFixture.state !== "FUNDED" ||
+  policySnapshotFixture.history.length !== 3 ||
+  policySnapshotFixture.deadline !== SNAPSHOT_DEADLINE ||
+  policySnapshotFixture.idempotencyKeys !== undefined ||
+  JSON.stringify(policySnapshotFixture.rolePolicy) !==
+    JSON.stringify(POLICY_SNAPSHOT_ROLE_POLICY) ||
+  policySnapshotFixture.maxDeposit !== POLICY_SNAPSHOT_MAX_DEPOSIT
+) {
+  throw new Error(
+    "benchmark fixture failed: policy snapshot envelope shape",
+  );
+}
+function checkPolicySnapshotRoundTrip(restored: Escrow, where: string): void {
+  if (
+    restored.id !== policySnapshotFixture.id ||
+    restored.state !== policySnapshotFixture.state ||
+    restored.getDeadline() !== SNAPSHOT_DEADLINE ||
+    restored.history.length !== policySnapshotFixture.history.length ||
+    JSON.stringify(restored.toJSON().rolePolicy) !==
+      JSON.stringify(POLICY_SNAPSHOT_ROLE_POLICY) ||
+    restored.toJSON().maxDeposit !== POLICY_SNAPSHOT_MAX_DEPOSIT
+  ) {
+    throw new Error(`benchmark self-check failed: ${where}`);
+  }
+  for (let i = 0; i < policySnapshotFixture.history.length; i++) {
+    const a = restored.history[i];
+    const b = policySnapshotFixture.history[i];
+    if (
+      a.seq !== b.seq ||
+      a.event !== b.event ||
+      a.from !== b.from ||
+      a.to !== b.to ||
+      a.at !== b.at ||
+      a.actor !== b.actor ||
+      a.note !== b.note ||
+      a.amount !== b.amount ||
+      a.evidence !== b.evidence ||
+      a.prevHash !== b.prevHash ||
+      a.hash !== b.hash
+    ) {
+      throw new Error(`benchmark self-check failed: ${where}`);
+    }
+  }
+  if (
+    JSON.stringify(restored.toJSON()) !== JSON.stringify(policySnapshotFixture)
+  ) {
+    throw new Error(`benchmark self-check failed: ${where}`);
+  }
+}
+// One-time validation (outside the timed loop): the intact policy
+// snapshot restores to exactly the hand-written expectations.
+checkPolicySnapshotRoundTrip(
+  Escrow.fromJSON(policySnapshotFixture),
+  "policy snapshot round-trip fixture",
+);
+// One-time enforcement probes (outside the timed loop): a restored
+// escrow keeps enforcing the policy and the cap — an unauthorized
+// actor on DISPUTE and an over-cap FUND are both refused with their
+// pinned errors and leave state and history untouched.
+{
+  const restored = Escrow.fromJSON(policySnapshotFixture);
+  let rbacError = "";
+  try {
+    restored.dispatch("DISPUTE", undefined, undefined, {
+      actor: "intruder",
+      at: new Date(BASE_MS + 3000).toISOString(),
+    });
+  } catch (err) {
+    rbacError = err instanceof Error ? err.message : String(err);
+  }
+  if (
+    rbacError !== POLICY_SNAPSHOT_RBAC_ERROR ||
+    restored.state !== "FUNDED" ||
+    restored.history.length !== 3 ||
+    JSON.stringify(restored.toJSON()) !== JSON.stringify(policySnapshotFixture)
+  ) {
+    throw new Error(
+      "benchmark self-check failed: policy snapshot RBAC probe",
+    );
+  }
+  let capError = "";
+  try {
+    restored.dispatch("FUND", undefined, POLICY_SNAPSHOT_OVER_CAP_FUND, {
+      at: new Date(BASE_MS + 3000).toISOString(),
+    });
+  } catch (err) {
+    capError = err instanceof Error ? err.message : String(err);
+  }
+  if (
+    capError !== POLICY_SNAPSHOT_CAP_ERROR ||
+    restored.state !== "FUNDED" ||
+    restored.history.length !== 3 ||
+    JSON.stringify(restored.toJSON()) !== JSON.stringify(policySnapshotFixture)
+  ) {
+    throw new Error(
+      "benchmark self-check failed: policy snapshot maxDeposit probe",
+    );
+  }
+}
+
+// ---------------------------------------------------------------------
 // parseEscrowHistory fixture: the module-scope `historyFixture`
 // above — the same detached 4-entry chained RELEASED history the
 // dispatch / replay paths use — serialized ONCE with
@@ -15043,6 +15241,24 @@ function benchSnapshotRoundTrip(): number {
   }, ITERATIONS);
 }
 
+function benchPolicySnapshotRoundTrip(): number {
+  return measure(() => {
+    // The fixture escrow is built once, outside the timed loop
+    // (see the policy snapshot fixture above); the timed path is
+    // the full persistence round-trip — `toJSON()`, a JSON
+    // stringify/parse hop, then the strict `Escrow.fromJSON()`
+    // restore. Per-iteration self-check: the restored escrow's
+    // id, state, deadline, and full history match the source
+    // snapshot entry for entry, the envelope's rolePolicy and
+    // maxDeposit survive byte-identically, and its re-export
+    // reproduces the source snapshot exactly.
+    const restored = Escrow.fromJSON(
+      JSON.parse(JSON.stringify(policySnapshotEscrow.toJSON())) as unknown,
+    );
+    checkPolicySnapshotRoundTrip(restored, "policy snapshot round-trip");
+  }, ITERATIONS);
+}
+
 
 // ---------------------------------------------------------------------
 // requireVerifyEvidence fixture: a strict escrow (flag on) driven
@@ -16641,6 +16857,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "subscribe (full lifecycle, 1 collecting listener)", ops: benchSubscribe() },
   { path: "subscribe onError (short chain, 1 throwing listener)", ops: benchSubscribeOnError() },
   { path: "Escrow.fromJSON (snapshot round-trip, 4 entries)", ops: benchSnapshotRoundTrip() },
+  { path: "Escrow.fromJSON (policy snapshot round-trip, 3 entries, rolePolicy + maxDeposit)", ops: benchPolicySnapshotRoundTrip() },
   { path: "parseEscrowHistory (4 entries, JSON text)", ops: benchParseEscrowHistory() },
   { path: "requireVerifyEvidence VERIFY_PASS (evidence gate)", ops: benchRequireVerifyEvidence() },
   { path: "maxDeposit FUND (deposit cap, funds to cap)", ops: benchMaxDeposit() },

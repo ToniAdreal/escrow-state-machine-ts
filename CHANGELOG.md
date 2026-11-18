@@ -14,6 +14,30 @@ under `## [Unreleased]` below (with its date and commit hash once pushed);
 move those lines into a versioned section only when `package.json`'s
 version changes.
 
+## [Unreleased]
+
+### Added
+
+- `Escrow.fromJSON` policy snapshot round-trip benchmark row
+  (2026-11-18, backlog #1231): `bench/bench.ts` gains a
+  `toJSON()` + JSON text + `fromJSON()` row over a fixed
+  policy-carrying escrow (BENCH-1231, rolePolicy
+  { DISPUTE: ["moderator"] }, maxDeposit 12,000, driven FUND of
+  the golden 10,630, SUBMIT_MILESTONE, PARTIAL_RELEASE of 1,000
+  back to FUNDED, deadline 2026-01-31T00:00:00.000Z) — measured
+  ~15,911 ops/sec (62.85 µs/op) on this run (Node v24.22.1, AMD
+  EPYC 9D25, machine-local, not a guarantee), one timed pass
+  re-exporting and restoring the 3-entry snapshot with the
+  envelope's rolePolicy and maxDeposit checked byte-identical
+  and the re-export checked identical to the source snapshot —
+  plus outside-the-timed-loop probes pinning the post-restore
+  enforcement: an unauthorized actor on DISPUTE refused with the
+  pinned RBAC error and an over-cap FUND of 3,000 refused with
+  the pinned deposit-cap error, both leaving state and history
+  untouched. README Benchmarks table, prose, and run-date note
+  refreshed with the real run; a broken RBAC expectation was
+  verified to fail the bench at the probe before restoring.
+
 ## [0.2.0] - 2026-11-18
 
 ### Added
