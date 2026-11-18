@@ -18,6 +18,17 @@ version changes.
 
 ### Added
 
+- CLI demo integer-cents fee segment (2026-11-18,
+  backlog #1236): `src/demo.ts` gains a `calculateDepositCents`
+  section inside the fee breakdown — the golden vector (1,063,000¢)
+  and the fractional 1.25x vector (1,077,999¢) cross-checked against
+  the dollar path ×100 to the cent, plus the cents-derived $10,630
+  FUND refused by a fresh maxDeposit-10000 cap with the pinned error
+  and zero history residue. README demo section and test counts
+  2243 → 2244; one new demo test (section + determinism slice
+  extended to 7 lines), and a broken cents-total expectation was
+  verified to fail the new test at the demo guard before restoring.
+
 - CLI demo settlement-reference-filter segment (2026-11-18,
   backlog #1233): `src/demo.ts` gains a
   `escrowsBySettlementRef` section over the seven-escrow

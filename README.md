@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2243 tests, all local
+npm test   # 2244 tests, all local
 ```
 
 ## Quickstart
@@ -51,7 +51,12 @@ console.log(settleRelease({ gross: 1000, proFeeBps: 500 }));
 Or run the bundled demo — one command drives a deterministic escrow
 through `CREATED → FUNDED → MILESTONE_SUBMITTED → VERIFIED → RELEASED`
 (the golden 10,630 deposit, fixed timestamps) and prints the audit
-history plus the balanced settlement report. It then runs
+history plus the balanced settlement report. Its fee-breakdown segment
+also runs the same funding through `calculateDepositCents` — the golden
+vector as 1,063,000¢ and the fractional 1.25x vector as 1,077,999¢ —
+cross-checking both against the dollar path ×100 to the cent, then shows
+the cents-derived $10,630 deposit refused by a 10,000 `maxDeposit` cap
+with the pinned error and no audit residue. It then runs
 `verifyHistoryChain` on that history — the intact, genesis-linked
 chain passes — and on a detached copy whose FUND entry's amount is
 altered by 1, which fails verification (the stored hash no longer
@@ -2005,7 +2010,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2243 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2244 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

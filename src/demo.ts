@@ -499,6 +499,7 @@ import {
   buildSettlementWebhook,
   buildSettlementWebhooks,
   calculateDeposit,
+  calculateDepositCents,
   createQuorum,
   deliverSettlementWebhook,
   deliverSettlementWebhookToMany,
@@ -510,6 +511,7 @@ import {
   expiredEscrows,
   expireOverdueEscrows,
   exportSignedQuorumSnapshot,
+  formatMinorUnits,
   escrowsApproachingDeadline,
   escrowsByActor,
   escrowsByEvent,
@@ -561,7 +563,9 @@ import {
   type EscrowState,
   type ExpireOverdueResult,
   type FeeBreakdown,
+  type FeeBreakdownCents,
   type FeeInputs,
+  type FeeInputsCents,
   type LedgerSettlement,
   type PartialReleases,
   type PartialSettlement,
@@ -2186,6 +2190,54 @@ export const DEMO_FEE_FRACTIONAL_INPUTS: FeeInputs = {
 };
 export const DEMO_FEE_FRACTIONAL_ADJUSTED_BASE_FEE = 749.99;
 export const DEMO_FEE_FRACTIONAL_DEPOSIT = 10779.99;
+
+/**
+ * Integer-cents fixtures for the same two fee vectors: the golden
+ * vector restated in whole cents (pool 1,000,000¢, base 60,000¢,
+ * loyalty 3,000¢, oracle 6,000¢ — the dollar vector ×100) and the
+ * fractional vector restated the same way (base 59,999¢ = $599.99).
+ * Hand-pinned expectations — written from the documented formula in
+ * src/feeCalculator.ts:
+ *   adjustedBaseFeeCents = round(baseFeeCents × complexityMultiplier)
+ *   depositCents = creatorPoolCents + adjustedBaseFeeCents − loyaltyDiscountCents + oracleFeeCents
+ * The cents path must agree with the dollar path to the cent on both
+ * vectors (golden 1,063,000¢ = $10,630 × 100; fractional 1,077,999¢ =
+ * $10,779.99 × 100), and the fractional vector exercises the single
+ * rounding in cents too (59,999 × 1.25 = 74,998.75 → 74,999). The
+ * demo itself asserts every field below, outside the printing.
+ */
+export const DEMO_FEE_CENTS_INPUTS: FeeInputsCents = {
+  creatorPoolCents: 1000000,
+  baseFeeCents: 60000,
+  complexityMultiplier: 1.0,
+  loyaltyDiscountCents: 3000,
+  oracleFeeCents: 6000,
+};
+export const DEMO_FEE_CENTS_ADJUSTED_BASE_FEE = 60000;
+export const DEMO_FEE_CENTS_DEPOSIT = 1063000;
+export const DEMO_FEE_FRACTIONAL_CENTS_INPUTS: FeeInputsCents = {
+  creatorPoolCents: 1000000,
+  baseFeeCents: 59999,
+  complexityMultiplier: 1.25,
+  loyaltyDiscountCents: 3000,
+  oracleFeeCents: 6000,
+};
+export const DEMO_FEE_FRACTIONAL_CENTS_ADJUSTED_BASE_FEE = 74999;
+export const DEMO_FEE_FRACTIONAL_CENTS_DEPOSIT = 1077999;
+
+/**
+ * Cap fixtures for the integer-cents segment's closing check: the
+ * cents deposit ($10,630) does not fit under a 10,000 cap, so a FUND
+ * of the cents-derived dollars on a fresh maxDeposit-10000 escrow is
+ * refused with the pinned error and leaves zero history residue.
+ * Hand-pinned from the documented deposit-cap wording in
+ * src/stateMachine.ts (locked 0 at the first FUND).
+ */
+export const DEMO_FEE_CENTS_CAP_ESCROW_ID = "demo-fee-cents-cap";
+export const DEMO_FEE_CENTS_CAP_MAX = 10000;
+export const DEMO_FEE_CENTS_CAP_FUND_AT = "2026-03-11T09:00:00.000Z";
+export const DEMO_FEE_CENTS_CAP_OVERFUND_ERROR =
+  "deposit cap exceeded: locked 0 + new funding 10630 would exceed maxDeposit 10000";
 
 /**
  * Subscribe onError fixtures for the final closing segment:
@@ -4756,6 +4808,39 @@ export interface DemoResult {
    */
   fractionalDepositBreakdown: FeeBreakdown;
   /**
+   * The `FeeBreakdownCents` of the portfolio golden vector in whole
+   * cents (pool 1,000,000¢, base 60,000¢, multiplier 1.0x, loyalty
+   * 3,000¢, oracle 6,000¢): `adjustedBaseFeeCents` 60,000,
+   * `depositCents` 1,063,000 — the dollar golden vector ×100, exactly.
+   */
+  centsDepositBreakdown: FeeBreakdownCents;
+  /**
+   * The pinned `FeeInputsCents` of the fractional-multiplier vector
+   * in whole cents: base 59,999¢ × 1.25 — raw product 74,998.75 —
+   * exercising the single rounding in cents.
+   */
+  fractionalCentsFeeInputs: FeeInputsCents;
+  /**
+   * The `FeeBreakdownCents` of the fractional vector in whole cents:
+   * `adjustedBaseFeeCents` 74,999, `depositCents` 1,077,999 — the
+   * dollar fractional vector ×100, exactly.
+   */
+  fractionalCentsDepositBreakdown: FeeBreakdownCents;
+  /**
+   * The fee segment's branch escrow
+   * ({@link DEMO_FEE_CENTS_CAP_ESCROW_ID}, `maxDeposit` pinned at
+   * {@link DEMO_FEE_CENTS_CAP_MAX}), after the refused cents-derived
+   * FUND: still CREATED with 0 history entries — the over-cap
+   * attempt left no audit residue.
+   */
+  centsCapEscrow: Escrow;
+  /**
+   * The exact error message the refused cents-derived FUND threw
+   * ({@link DEMO_FEE_CENTS_CAP_OVERFUND_ERROR}), hand-pinned from
+   * the documented deposit-cap wording in src/stateMachine.ts.
+   */
+  centsCapOverfundError: string;
+  /**
    * The pinned rejection when the fan-out limit demo calls
    * `deliverSettlementWebhookToMany` with 3 endpoints under
    * `maxEndpoints: 2`: exactly
@@ -5396,11 +5481,96 @@ export async function runDemo(): Promise<DemoResult> {
       "demo fixture broken: calculateDeposit fee breakdown does not match the pinned shape (golden adjustedBaseFee 600 with deposit 10630 as the exact components sum; fractional 1.25x adjustedBaseFee 749.99 with deposit 10779.99 as the exact components sum)",
     );
   }
+
+  // --- Integer cents: the same two vectors, money-safe ---
+  // A caller that already holds money as integer cents must never
+  // have to round-trip through float dollars: `calculateDepositCents`
+  // runs the same formula in whole cents, so its totals must agree
+  // with the dollar path ×100 to the cent on both vectors — the
+  // golden vector exactly, the fractional vector through Math.round
+  // (the dollar side's 10779.99 × 100 is exact in float, and the
+  // rounding is pinned here so a dust-level drift would fail the
+  // demo itself, not just a test). The fractional vector exercises
+  // the single rounding in cents as well (59,999 × 1.25 = 74,998.75
+  // → 74,999, matching the dollar side's 749.99). All inputs pinned,
+  // no wall clock, no randomness, no network.
+  const centsFees = calculateDepositCents(DEMO_FEE_CENTS_INPUTS);
+  const fractionalCentsFees = calculateDepositCents(
+    DEMO_FEE_FRACTIONAL_CENTS_INPUTS,
+  );
+  if (
+    centsFees.adjustedBaseFeeCents !== DEMO_FEE_CENTS_ADJUSTED_BASE_FEE ||
+    centsFees.depositCents !== DEMO_FEE_CENTS_DEPOSIT ||
+    centsFees.creatorPoolCents +
+      centsFees.adjustedBaseFeeCents -
+      centsFees.loyaltyDiscountCents +
+      centsFees.oracleFeeCents !==
+      centsFees.depositCents ||
+    centsFees.depositCents !== fees.deposit * 100 ||
+    centsFees.adjustedBaseFeeCents !== fees.adjustedBaseFee * 100 ||
+    fractionalCentsFees.adjustedBaseFeeCents !==
+      DEMO_FEE_FRACTIONAL_CENTS_ADJUSTED_BASE_FEE ||
+    fractionalCentsFees.depositCents !== DEMO_FEE_FRACTIONAL_CENTS_DEPOSIT ||
+    fractionalCentsFees.creatorPoolCents +
+      fractionalCentsFees.adjustedBaseFeeCents -
+      fractionalCentsFees.loyaltyDiscountCents +
+      fractionalCentsFees.oracleFeeCents !==
+      fractionalCentsFees.depositCents ||
+    fractionalCentsFees.depositCents !==
+      Math.round(fractionalFees.deposit * 100) ||
+    fractionalCentsFees.adjustedBaseFeeCents !==
+      Math.round(fractionalFees.adjustedBaseFee * 100)
+  ) {
+    throw new Error(
+      "demo fixture broken: calculateDepositCents integer-cents fee breakdown does not match the pinned shape (golden adjustedBaseFeeCents 60000 with depositCents 1063000 == golden deposit 10630 × 100; fractional 1.25x adjustedBaseFeeCents 74999 with depositCents 1077999 == fractional deposit 10779.99 × 100)",
+    );
+  }
+
+  // The cents deposit does not fit under a 10,000 cap: funding a
+  // fresh maxDeposit-10000 escrow with the cents-derived dollars
+  // (1,063,000¢ → $10,630 via /100) is refused with the pinned
+  // error and leaves zero history residue — the same cap wording the
+  // closing deposit-cap segment pins, here driven by the cents path
+  // instead of a hand-written dollar amount.
+  const centsCapEscrow = new Escrow(DEMO_FEE_CENTS_CAP_ESCROW_ID, {
+    maxDeposit: DEMO_FEE_CENTS_CAP_MAX,
+  });
+  const centsDepositDollars = centsFees.depositCents / 100;
+  let centsCapOverfundError: string | undefined;
+  try {
+    centsCapEscrow.dispatch(
+      "FUND",
+      "Cents-derived deposit",
+      centsDepositDollars,
+      { actor: "sponsor", at: DEMO_FEE_CENTS_CAP_FUND_AT },
+    );
+  } catch (err) {
+    centsCapOverfundError = err instanceof Error ? err.message : String(err);
+  }
+  if (centsCapOverfundError !== DEMO_FEE_CENTS_CAP_OVERFUND_ERROR) {
+    throw new Error(
+      `demo fixture broken: cents-derived FUND did not throw the pinned deposit cap exceeded error (got ${JSON.stringify(
+        centsCapOverfundError,
+      )})`,
+    );
+  }
+  if (
+    centsCapEscrow.state !== "CREATED" ||
+    centsCapEscrow.history.length !== 0
+  ) {
+    throw new Error(
+      "demo fixture broken: rejected cents-derived FUND left history residue or moved the escrow",
+    );
+  }
   lines.push(
     "",
     "Fee breakdown (calculateDeposit adjustedBaseFee — the intermediate the preview line inlines as a bare product):",
     `  golden 1.0x: inputs { pool ${fees.creatorPool}, base ${fees.baseFee}, mult ${fees.complexityMultiplier}, loyalty ${fees.loyaltyDiscount}, oracle ${fees.oracleFee} } -> adjustedBaseFee = round2(600 × 1) = ${fees.adjustedBaseFee}; deposit = round2(${fees.creatorPool} + ${fees.adjustedBaseFee} − ${fees.loyaltyDiscount} + ${fees.oracleFee}) = ${fees.deposit} (equals the components sum, exactly)`,
     `  fractional 1.25x: inputs { pool ${fractionalFees.creatorPool}, base ${fractionalFees.baseFee}, mult ${fractionalFees.complexityMultiplier}, loyalty ${fractionalFees.loyaltyDiscount}, oracle ${fractionalFees.oracleFee} } -> raw 599.99 × 1.25 = 749.9875, round2 -> adjustedBaseFee = ${fractionalFees.adjustedBaseFee}; deposit = round2(${fractionalFees.creatorPool} + ${fractionalFees.adjustedBaseFee} − ${fractionalFees.loyaltyDiscount} + ${fractionalFees.oracleFee}) = ${fractionalFees.deposit} (equals the components sum, exactly)`,
+    "Integer cents (calculateDepositCents — the money-safe path for callers holding cents):",
+    `  golden 1.0x: inputs { pool ${centsFees.creatorPoolCents}¢, base ${centsFees.baseFeeCents}¢, mult ${centsFees.complexityMultiplier}, loyalty ${centsFees.loyaltyDiscountCents}¢, oracle ${centsFees.oracleFeeCents}¢ } -> adjustedBaseFeeCents = round(60000 × 1) = ${centsFees.adjustedBaseFeeCents}; depositCents = ${centsFees.creatorPoolCents} + ${centsFees.adjustedBaseFeeCents} − ${centsFees.loyaltyDiscountCents} + ${centsFees.oracleFeeCents} = ${centsFees.depositCents} (== golden deposit ${fees.deposit} × 100, exactly)`,
+    `  fractional 1.25x: inputs { pool ${fractionalCentsFees.creatorPoolCents}¢, base ${fractionalCentsFees.baseFeeCents}¢, mult ${fractionalCentsFees.complexityMultiplier}, loyalty ${fractionalCentsFees.loyaltyDiscountCents}¢, oracle ${fractionalCentsFees.oracleFeeCents}¢ } -> raw 59999 × 1.25 = 74998.75, round -> adjustedBaseFeeCents = ${fractionalCentsFees.adjustedBaseFeeCents}; depositCents = ${fractionalCentsFees.creatorPoolCents} + ${fractionalCentsFees.adjustedBaseFeeCents} − ${fractionalCentsFees.loyaltyDiscountCents} + ${fractionalCentsFees.oracleFeeCents} = ${fractionalCentsFees.depositCents} (== fractional deposit ${fractionalFees.deposit} × 100, exactly)`,
+    `  cap check: the cents deposit ${centsFees.depositCents}¢ formats as $${formatMinorUnits(centsFees.depositCents)} and does not fit the ${DEMO_FEE_CENTS_CAP_MAX} cap — FUND ${centsDepositDollars} on a fresh maxDeposit-${DEMO_FEE_CENTS_CAP_MAX} escrow -> "${centsCapOverfundError}" (history unchanged, still CREATED)`,
   );
 
   for (const { event, actor, note, at, amount, evidence } of steps) {
@@ -13396,6 +13566,11 @@ export async function runDemo(): Promise<DemoResult> {
     depositBreakdown: fees,
     fractionalFeeInputs: DEMO_FEE_FRACTIONAL_INPUTS,
     fractionalDepositBreakdown: fractionalFees,
+    centsDepositBreakdown: centsFees,
+    fractionalCentsFeeInputs: DEMO_FEE_FRACTIONAL_CENTS_INPUTS,
+    fractionalCentsDepositBreakdown: fractionalCentsFees,
+    centsCapEscrow,
+    centsCapOverfundError,
     historyChainVerified,
     tamperedChainVerified,
     tamperedFundAmount,

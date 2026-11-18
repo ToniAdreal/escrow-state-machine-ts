@@ -99,7 +99,16 @@ import {
   DEMO_FANOUT_LIMIT_FAST_B_PATH,
   DEMO_FANOUT_LIMIT_HANG_PATH,
   DEMO_FANOUT_LIMIT_TIMEOUT_MS,
+  DEMO_FEE_CENTS_ADJUSTED_BASE_FEE,
+  DEMO_FEE_CENTS_CAP_ESCROW_ID,
+  DEMO_FEE_CENTS_CAP_MAX,
+  DEMO_FEE_CENTS_CAP_OVERFUND_ERROR,
+  DEMO_FEE_CENTS_DEPOSIT,
+  DEMO_FEE_CENTS_INPUTS,
   DEMO_FEE_FRACTIONAL_ADJUSTED_BASE_FEE,
+  DEMO_FEE_FRACTIONAL_CENTS_ADJUSTED_BASE_FEE,
+  DEMO_FEE_FRACTIONAL_CENTS_DEPOSIT,
+  DEMO_FEE_FRACTIONAL_CENTS_INPUTS,
   DEMO_FEE_FRACTIONAL_DEPOSIT,
   DEMO_FEE_FRACTIONAL_INPUTS,
   DEMO_FEE_GOLDEN_ADJUSTED_BASE_FEE,
@@ -8613,21 +8622,111 @@ test("demo shows the adjustedBaseFee fee-breakdown segment with pinned expectati
   assert.ok(previewAt < breakdownAt && breakdownAt < dispatchAt);
 });
 
+test("demo shows the integer-cents fee segment with cross-checked totals and a refused over-cap FUND", async () => {
+  const {
+    lines,
+    depositBreakdown,
+    centsDepositBreakdown,
+    fractionalCentsFeeInputs,
+    fractionalCentsDepositBreakdown,
+    centsCapEscrow,
+    centsCapOverfundError,
+  } = await runDemo();
+  const text = lines.join("\n");
+
+  // The cents sub-section names the money-safe path for callers
+  // holding integer cents.
+  assert.ok(
+    text.includes(
+      "Integer cents (calculateDepositCents — the money-safe path for callers holding cents):",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  golden 1.0x: inputs { pool 1000000¢, base 60000¢, mult 1, loyalty 3000¢, oracle 6000¢ } -> adjustedBaseFeeCents = round(60000 × 1) = 60000; depositCents = 1000000 + 60000 − 3000 + 6000 = 1063000 (== golden deposit 10630 × 100, exactly)",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  fractional 1.25x: inputs { pool 1000000¢, base 59999¢, mult 1.25, loyalty 3000¢, oracle 6000¢ } -> raw 59999 × 1.25 = 74998.75, round -> adjustedBaseFeeCents = 74999; depositCents = 1000000 + 74999 − 3000 + 6000 = 1077999 (== fractional deposit 10779.99 × 100, exactly)",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  cap check: the cents deposit 1063000¢ formats as $10630.00 and does not fit the ${DEMO_FEE_CENTS_CAP_MAX} cap — FUND 10630 on a fresh maxDeposit-${DEMO_FEE_CENTS_CAP_MAX} escrow -> "deposit cap exceeded: locked 0 + new funding 10630 would exceed maxDeposit 10000" (history unchanged, still CREATED)`,
+    ),
+  );
+
+  // DemoResult fields mirror the pinned fixtures, independently of
+  // the printed lines: the cents totals agree with the dollar totals
+  // ×100, exactly — the cross-check the demo itself asserts before
+  // printing.
+  assert.deepEqual(
+    centsDepositBreakdown.adjustedBaseFeeCents,
+    DEMO_FEE_CENTS_ADJUSTED_BASE_FEE,
+  );
+  assert.deepEqual(
+    centsDepositBreakdown.depositCents,
+    DEMO_FEE_CENTS_DEPOSIT,
+  );
+  // The breakdown carries the pinned inputs through unchanged.
+  const { adjustedBaseFeeCents, depositCents, ...centsInputs } =
+    centsDepositBreakdown;
+  assert.deepEqual(centsInputs, DEMO_FEE_CENTS_INPUTS);
+  assert.equal(
+    centsDepositBreakdown.depositCents,
+    depositBreakdown.deposit * 100,
+  );
+  assert.deepEqual(fractionalCentsFeeInputs, DEMO_FEE_FRACTIONAL_CENTS_INPUTS);
+  assert.deepEqual(
+    fractionalCentsDepositBreakdown.adjustedBaseFeeCents,
+    DEMO_FEE_FRACTIONAL_CENTS_ADJUSTED_BASE_FEE,
+  );
+  assert.deepEqual(
+    fractionalCentsDepositBreakdown.depositCents,
+    DEMO_FEE_FRACTIONAL_CENTS_DEPOSIT,
+  );
+
+  // The refused cents-derived FUND left the branch escrow untouched:
+  // still CREATED, no audit residue, pinned error verbatim.
+  assert.equal(centsCapEscrow.id, DEMO_FEE_CENTS_CAP_ESCROW_ID);
+  assert.equal(centsCapEscrow.state, "CREATED");
+  assert.equal(centsCapEscrow.history.length, 0);
+  assert.equal(centsCapOverfundError, DEMO_FEE_CENTS_CAP_OVERFUND_ERROR);
+
+  // Position: the cents lines elaborate the fee breakdown, and the
+  // audit trail's dispatch steps only start afterwards.
+  const breakdownAt = text.indexOf(
+    "Fee breakdown (calculateDeposit adjustedBaseFee",
+  );
+  const centsAt = text.indexOf("Integer cents (calculateDepositCents");
+  const dispatchAt = text.indexOf("FUND");
+  assert.ok(breakdownAt !== -1 && centsAt !== -1 && dispatchAt !== -1);
+  assert.ok(breakdownAt < centsAt && centsAt < dispatchAt);
+});
+
 test("demo fee-breakdown segment is deterministic: two runs print byte-identical segment lines", async () => {
   const header =
     "Fee breakdown (calculateDeposit adjustedBaseFee — the intermediate the preview line inlines as a bare product):";
   const segment = (ls: string[]) =>
-    ls.slice(ls.indexOf(header), ls.indexOf(header) + 3);
+    ls.slice(ls.indexOf(header), ls.indexOf(header) + 7);
   const a = await runDemo();
   const b = await runDemo();
-  // Header + the golden line + the fractional line; every printed
-  // value is derived from the pinned fixtures alone, so no
+  // Header + the golden line + the fractional line + the integer-cents
+  // sub-header + the two cents lines + the cap-check line; every
+  // printed value is derived from the pinned fixtures alone, so no
   // normalization is needed.
   const segA = segment(a.lines);
-  assert.equal(segA.length, 3);
+  assert.equal(segA.length, 7);
   assert.deepEqual(segA, segment(b.lines));
   assert.deepEqual(a.depositBreakdown, b.depositBreakdown);
   assert.deepEqual(a.fractionalDepositBreakdown, b.fractionalDepositBreakdown);
+  assert.deepEqual(a.centsDepositBreakdown, b.centsDepositBreakdown);
+  assert.deepEqual(
+    a.fractionalCentsDepositBreakdown,
+    b.fractionalCentsDepositBreakdown,
+  );
+  assert.equal(a.centsCapOverfundError, b.centsCapOverfundError);
 });
 
 test("demo shows staged top-up: two FUND instalments settle to a 12630 deposit with conserved party nets", async () => {
