@@ -507,6 +507,7 @@ import {
   diffEscrowSnapshots,
   diffQuorumSnapshots,
   diffSettlementReports,
+  diffSettlementReportsSummaries,
   dispatchArbitration,
   expiredEscrows,
   expireOverdueEscrows,
@@ -531,11 +532,16 @@ import {
   parseRetryAfter,
   parseSettlementReportCsv,
   parseSettlementReportJson,
+  parseSettlementReportsSummaryCsv,
+  parseSettlementReportsSummaryJson,
   reconcileSettlements,
   releasedAmountFromHistory,
   renderReport,
   renderReportCsv,
   renderReportJson,
+  renderSettlementReportsSummary,
+  renderSettlementReportsSummaryCsv,
+  renderSettlementReportsSummaryJson,
   restoreQuorum,
   restoreSignedQuorumSnapshot,
   retrySettlementWebhookOutbox,
@@ -588,6 +594,7 @@ import {
   type SettlementReportDiff,
   type SettlementReportResult,
   type SettlementReportsSummary,
+  type SettlementReportsSummaryDiff,
   type SettlementWebhook,
   type SettlementWebhookEndpoint,
   type StaleEscrowActionResult,
@@ -2891,6 +2898,24 @@ export const DEMO_UNRECONCILED_ARB_APPROVAL_ATS = [
 export const DEMO_UNRECONCILED_ARB_AT = "2026-03-09T13:00:00.000Z";
 
 /**
+ * Batch-summary export/import/diff fixtures (backlog #1242): the one
+ * more escrow that settles after the day-end batch, so the summary
+ * diff has something real to report — a fourth escrow, released on
+ * the golden deposit at the standard 500 bps, in the same afternoon
+ * as the unreconciled pair above. Re-summarizing the batch with it
+ * moves both dimensions at once: the status dimension (total 3 -> 4,
+ * reports 2 -> 3, released 1 -> 2) and the money dimension (totals
+ * 21,260 -> 31,890, creator net 10,098.50 -> 20,197, platform net
+ * 531.50 -> 1,063, sponsor net -10,630 -> -21,260), while errors (1),
+ * refunded (1), remaining (0) and balanced (true) stay put.
+ */
+export const DEMO_SUMMARY_DIFF_ID = "DEMO-ESC-040";
+export const DEMO_SUMMARY_DIFF_FUND_AT = "2026-03-09T14:00:00.000Z";
+export const DEMO_SUMMARY_DIFF_SUBMIT_AT = "2026-03-09T15:00:00.000Z";
+export const DEMO_SUMMARY_DIFF_VERIFY_PASS_AT = "2026-03-09T16:00:00.000Z";
+export const DEMO_SUMMARY_DIFF_RELEASE_AT = "2026-03-09T17:00:00.000Z";
+
+/**
  * Webhook-outbox fixtures (backlog #1024): the delivery-failure
  * ledger story the earlier delivery segments never show — a
  * receiver that answers 500 three times in a row, and a second
@@ -3453,6 +3478,78 @@ export interface DemoResult {
   batchResults: SettlementReportResult[];
   /** Reconciliation summary over {@link DemoResult.batchResults}. */
   batchSummary: SettlementReportsSummary;
+  /**
+   * `renderSettlementReportsSummary(batchSummary)`: the same batch
+   * summary as plain human-readable text — title, counts, the four
+   * outcome rows, the four money lines, one row per party, one row
+   * per currency bucket, a `balanced` line, and the units line — the
+   * form for a log line or a terminal paste during reconciliation.
+   */
+  batchSummaryText: string;
+  /**
+   * `renderSettlementReportsSummaryCsv(batchSummary)`: the same batch
+   * summary as CSV — header, one `summary` row, four `outcome` rows,
+   * four `party` rows, and one `currency` row per bucket — the form
+   * for bookkeeping imports.
+   */
+  batchSummaryCsv: string;
+  /**
+   * `parseSettlementReportsSummaryCsv(batchSummaryCsv)`: the same
+   * batch summary read back from its CSV form — deep-equal to
+   * {@link DemoResult.batchSummary} and re-rendering byte-identically
+   * through `renderSettlementReportsSummaryCsv`, as an independent
+   * object graph (mutating it never touches `batchSummary`).
+   */
+  batchSummaryCsvImported: SettlementReportsSummary;
+  /**
+   * `renderSettlementReportsSummaryJson(batchSummary)`: the same batch
+   * summary as canonical JSON — exactly the summary's fields, with
+   * amounts as JSON numbers — the form for APIs and storage.
+   */
+  batchSummaryJson: string;
+  /**
+   * `parseSettlementReportsSummaryJson(batchSummaryJson)`: the same
+   * batch summary read back from its JSON form — deep-equal to
+   * {@link DemoResult.batchSummary} and re-rendering byte-identically
+   * through `renderSettlementReportsSummaryJson`, as an independent
+   * object graph (mutating it never touches `batchSummary`).
+   */
+  batchSummaryJsonImported: SettlementReportsSummary;
+  /**
+   * The fourth escrow built for the summary-diff segment: RELEASED on
+   * the golden deposit at the standard 500 bps (id
+   * {@link DEMO_SUMMARY_DIFF_ID}) — the one more settlement that
+   * moves the re-summarized batch in both the status and the money
+   * dimension.
+   */
+  summaryDiffEscrow: Escrow;
+  /**
+   * The day-end batch re-summarized with {@link DemoResult.summaryDiffEscrow}
+   * settled: total 4, reports 3, errors 1, released 2, refunded 1,
+   * totals 31,890, remaining 0, balanced true — the "after" side of
+   * {@link DemoResult.batchSummaryDiff}.
+   */
+  batchSummaryAfter: SettlementReportsSummary;
+  /**
+   * `diffSettlementReportsSummaries(batchSummary, batchSummaryAfter)`:
+   * what moved when the fourth escrow settled — exactly
+   * `totalChanged`, `reportsChanged`, `outcomesChanged`,
+   * `totalDepositChanged`, `totalInflowChanged`,
+   * `totalOutflowChanged`, `partiesChanged` (sponsor, creator,
+   * platform), and `byCurrencyChanged` (UNSPECIFIED); `errorsChanged`,
+   * `totalRemainingChanged`, and `balancedChanged` are absent because
+   * errors (1), remaining (0), and balanced (true) never moved.
+   */
+  batchSummaryDiff: SettlementReportsSummaryDiff;
+  /**
+   * The pinned rejection for a damaged summary CSV whose header was
+   * tampered with (`section` -> `sectio`): `cannot parse settlement
+   * reports summary CSV: header must be exactly
+   * "section,key,count,total,reports,errors,totalDeposit,totalInflow,totalOutflow,totalRemaining,net,balanced"`
+   * — the import fails fast instead of returning a summary read off
+   * the wrong columns.
+   */
+  batchSummaryCsvDamagedError: string;
   /**
    * The with-ref release built for the unreconciled-settlements
    * segment: RELEASED on the golden deposit, its RELEASE entry
@@ -6998,6 +7095,193 @@ export async function runDemo(): Promise<DemoResult> {
     `  summary: ${batchSummary.total} escrows — ${batchSummary.reports} reports, ${batchSummary.errors} error (released ${batchSummary.outcomes.released}, refunded ${batchSummary.outcomes.refunded}, expired ${batchSummary.outcomes.expired})`,
     `  summary totals: deposit ${batchSummary.totalDeposit}, inflow ${batchSummary.totalInflow}, outflow ${batchSummary.totalOutflow}, remaining ${batchSummary.totalRemaining} — ${batchSummary.balanced ? "balanced ✓" : "UNBALANCED ✗"}`,
     `  summary parties: ${batchSummary.parties.map((p) => `${p.party} net ${p.net}`).join(", ")}`,
+  );
+
+  // --- Batch summary as text, CSV and JSON + diff: export, import, compare ---
+  // The summary above is the in-memory object; a caller that wants it
+  // in a log, a spreadsheet, or storage needs the three wire forms,
+  // and a caller that stored one needs the way back. This segment
+  // renders the same fixed batch summary three ways — the plain text
+  // for eyeballing, the CSV for bookkeeping imports, the JSON for APIs
+  // and storage — and reads the CSV and JSON back: each import
+  // deep-equals the summary and re-renders byte-identically, so the
+  // export is lossless in both directions. Then the batch is
+  // re-summarized with one more escrow settled
+  // (DEMO_SUMMARY_DIFF_ID, released on the golden deposit at the
+  // standard 500 bps) and the two summaries are diffed: the move is
+  // in both dimensions at once — the status dimension (total 3 -> 4,
+  // reports 2 -> 3, released 1 -> 2) and the money dimension (totals
+  // 21,260 -> 31,890, creator net 10,098.50 -> 20,197, platform net
+  // 531.50 -> 1,063, sponsor net -10,630 -> -21,260) — while errors
+  // (1), refunded (1), remaining (0), and balanced (true) stay put
+  // and stay out of the diff. A tampered CSV header is refused with
+  // the pinned error, so a misaligned import never becomes a
+  // plausible-looking summary. Hand-pinned expectations, asserted
+  // HERE before printing (the same fail-fast shape the keyed batch
+  // uses): the after-summary's counts, totals, and party nets; both
+  // round-trips deep-equal and byte-identical; the diff's exact key
+  // set and every moved value; the empty diff on identical summaries;
+  // the damaged-header rejection verbatim.
+  const summaryDiffEscrow = new Escrow(DEMO_SUMMARY_DIFF_ID);
+  summaryDiffEscrow.dispatch("FUND", "Deposit locked (wire received)", 10630, {
+    actor: "sponsor",
+    at: DEMO_SUMMARY_DIFF_FUND_AT,
+  });
+  summaryDiffEscrow.dispatch(
+    "SUBMIT_MILESTONE",
+    "Deliverable URLs + IPFS metadata hash",
+    undefined,
+    { actor: "creator", at: DEMO_SUMMARY_DIFF_SUBMIT_AT },
+  );
+  summaryDiffEscrow.dispatch(
+    "VERIFY_PASS",
+    "KPIs met — verification passed",
+    undefined,
+    { actor: "oracle", at: DEMO_SUMMARY_DIFF_VERIFY_PASS_AT },
+  );
+  summaryDiffEscrow.dispatch("RELEASE", "Milestone accepted — release", undefined, {
+    actor: "oracle",
+    at: DEMO_SUMMARY_DIFF_RELEASE_AT,
+  });
+  const batchSummaryAfterResults = buildSettlementReports([
+    {
+      escrowId: escrow.id,
+      history: escrow.history,
+      finalState: escrow.state,
+      deposit: fees,
+      settlement: { proFeeBps: DEMO_PRO_FEE_BPS },
+    },
+    {
+      escrowId: pendingEscrow.id,
+      history: pendingEscrow.history,
+      finalState: pendingEscrow.state,
+      deposit: fees,
+    },
+    {
+      escrowId: disputeEscrow.id,
+      history: disputeEscrow.history,
+      finalState: disputeEscrow.state,
+      deposit: fees,
+    },
+    {
+      escrowId: summaryDiffEscrow.id,
+      history: summaryDiffEscrow.history,
+      finalState: summaryDiffEscrow.state,
+      deposit: fees,
+      settlement: { proFeeBps: DEMO_PRO_FEE_BPS },
+    },
+  ]);
+  const batchSummaryAfter = summarizeSettlementReports(
+    batchSummaryAfterResults,
+  );
+  const batchSummaryText = renderSettlementReportsSummary(batchSummary);
+  const batchSummaryCsv = renderSettlementReportsSummaryCsv(batchSummary);
+  const batchSummaryCsvLines = batchSummaryCsv.split("\n");
+  const batchSummaryCsvImported =
+    parseSettlementReportsSummaryCsv(batchSummaryCsv);
+  const batchSummaryJson = renderSettlementReportsSummaryJson(batchSummary);
+  const batchSummaryJsonImported =
+    parseSettlementReportsSummaryJson(batchSummaryJson);
+  const batchSummaryDiff = diffSettlementReportsSummaries(
+    batchSummary,
+    batchSummaryAfter,
+  );
+  const batchSummaryDiffChangedParties =
+    batchSummaryDiff.partiesChanged?.changed.map((entry) => entry.role) ?? [];
+  const batchSummaryDiffChangedCurrencies =
+    batchSummaryDiff.byCurrencyChanged?.changed.map(
+      (entry) => entry.currency,
+    ) ?? [];
+  const damagedSummaryCsv = batchSummaryCsv.replace(/^section,/, "sectio,");
+  let batchSummaryCsvDamagedError = "";
+  try {
+    parseSettlementReportsSummaryCsv(damagedSummaryCsv);
+  } catch (error) {
+    batchSummaryCsvDamagedError =
+      error instanceof Error ? error.message : String(error);
+  }
+  if (
+    summaryDiffEscrow.state !== "RELEASED" ||
+    batchSummaryAfter.total !== 4 ||
+    batchSummaryAfter.reports !== 3 ||
+    batchSummaryAfter.errors !== 1 ||
+    batchSummaryAfter.outcomes.released !== 2 ||
+    batchSummaryAfter.outcomes.refunded !== 1 ||
+    batchSummaryAfter.outcomes.expired !== 0 ||
+    batchSummaryAfter.outcomes["partially-released"] !== 0 ||
+    batchSummaryAfter.totalDeposit !== 31890 ||
+    batchSummaryAfter.totalInflow !== 31890 ||
+    batchSummaryAfter.totalOutflow !== 31890 ||
+    batchSummaryAfter.totalRemaining !== 0 ||
+    batchSummaryAfter.balanced !== true ||
+    batchSummaryAfter.parties
+      .map((p) => `${p.party} net ${p.net}`)
+      .join(", ") !==
+      "sponsor net -21260, creator net 20197, platform net 1063, referrer net 0" ||
+    !batchSummaryText.includes("Reports: 2 (errors: 1)") ||
+    !batchSummaryText.includes("Total deposit: 21260.00") ||
+    batchSummaryCsvLines[0] !==
+      "section,key,count,total,reports,errors,totalDeposit,totalInflow,totalOutflow,totalRemaining,net,balanced" ||
+    JSON.stringify(batchSummaryCsvImported) !== batchSummaryJson ||
+    renderSettlementReportsSummaryCsv(batchSummaryCsvImported) !==
+      batchSummaryCsv ||
+    JSON.stringify(batchSummaryJsonImported) !== batchSummaryJson ||
+    renderSettlementReportsSummaryJson(batchSummaryJsonImported) !==
+      batchSummaryJson ||
+    Object.keys(batchSummaryDiff).sort().join(",") !==
+      "byCurrencyChanged,outcomesChanged,partiesChanged,reportsChanged,totalChanged,totalDepositChanged,totalInflowChanged,totalOutflowChanged" ||
+    batchSummaryDiff.totalChanged?.from !== 3 ||
+    batchSummaryDiff.totalChanged?.to !== 4 ||
+    batchSummaryDiff.reportsChanged?.from !== 2 ||
+    batchSummaryDiff.reportsChanged?.to !== 3 ||
+    batchSummaryDiff.outcomesChanged?.from.released !== 1 ||
+    batchSummaryDiff.outcomesChanged?.to.released !== 2 ||
+    batchSummaryDiff.totalDepositChanged?.from !== 21260 ||
+    batchSummaryDiff.totalDepositChanged?.to !== 31890 ||
+    batchSummaryDiff.totalInflowChanged?.from !== 21260 ||
+    batchSummaryDiff.totalInflowChanged?.to !== 31890 ||
+    batchSummaryDiff.totalOutflowChanged?.from !== 21260 ||
+    batchSummaryDiff.totalOutflowChanged?.to !== 31890 ||
+    batchSummaryDiffChangedParties.join(",") !== "sponsor,creator,platform" ||
+    batchSummaryDiff.partiesChanged?.changed[0]?.from.net !== -10630 ||
+    batchSummaryDiff.partiesChanged?.changed[0]?.to.net !== -21260 ||
+    batchSummaryDiff.partiesChanged?.changed[1]?.from.net !== 10098.5 ||
+    batchSummaryDiff.partiesChanged?.changed[1]?.to.net !== 20197 ||
+    batchSummaryDiff.partiesChanged?.changed[2]?.from.net !== 531.5 ||
+    batchSummaryDiff.partiesChanged?.changed[2]?.to.net !== 1063 ||
+    batchSummaryDiffChangedCurrencies.join(",") !== "UNSPECIFIED" ||
+    batchSummaryDiff.byCurrencyChanged?.changed[0]?.from.reports !== 2 ||
+    batchSummaryDiff.byCurrencyChanged?.changed[0]?.to.reports !== 3 ||
+    batchSummaryDiff.byCurrencyChanged?.changed[0]?.from.totalDeposit !==
+      21260 ||
+    batchSummaryDiff.byCurrencyChanged?.changed[0]?.to.totalDeposit !==
+      31890 ||
+    batchSummaryDiff.errorsChanged !== undefined ||
+    batchSummaryDiff.totalRemainingChanged !== undefined ||
+    batchSummaryDiff.balancedChanged !== undefined ||
+    Object.keys(diffSettlementReportsSummaries(batchSummary, batchSummary))
+      .length !== 0 ||
+    batchSummaryCsvDamagedError !==
+      'cannot parse settlement reports summary CSV: header must be exactly "section,key,count,total,reports,errors,totalDeposit,totalInflow,totalOutflow,totalRemaining,net,balanced"'
+  ) {
+    throw new Error(
+      "demo fixture broken: batch summary export/import/diff does not match the pinned shape (after-summary total 4 / reports 3 / released 2 / totals 31890 with sponsor -21260, creator 20197, platform 1063; both CSV and JSON round-trips deep-equal and byte-identical; the diff carries exactly total/reports/outcomes/deposit/inflow/outflow/parties/currency changes with errors, remaining and balanced absent; identical summaries diff to {}; a tampered CSV header is rejected verbatim)",
+    );
+  }
+  lines.push(
+    "",
+    "Batch settlement summary as text, CSV and JSON (export -> import -> diff):",
+    batchSummaryText,
+    "  summary CSV (renderSettlementReportsSummaryCsv — the same summary, for bookkeeping imports):",
+    ...batchSummaryCsvLines.map((line) => `  ${line}`),
+    "  CSV round-trip: parseSettlementReportsSummaryCsv(csv) deep-equals the summary and re-renders byte-identically",
+    "  summary JSON (renderSettlementReportsSummaryJson — the same summary, for APIs and storage):",
+    `  ${batchSummaryJson}`,
+    "  JSON round-trip: parseSettlementReportsSummaryJson(json) deep-equals the summary and re-renders byte-identically",
+    `  summary diff (one more escrow settled — ${DEMO_SUMMARY_DIFF_ID} released at 500 bps): total ${batchSummaryDiff.totalChanged?.from} -> ${batchSummaryDiff.totalChanged?.to}, reports ${batchSummaryDiff.reportsChanged?.from} -> ${batchSummaryDiff.reportsChanged?.to}, released ${batchSummaryDiff.outcomesChanged?.from.released} -> ${batchSummaryDiff.outcomesChanged?.to.released}, deposit ${batchSummaryDiff.totalDepositChanged?.from} -> ${batchSummaryDiff.totalDepositChanged?.to}, inflow/outflow ${batchSummaryDiff.totalInflowChanged?.from} -> ${batchSummaryDiff.totalInflowChanged?.to}`,
+    "  diff parties: sponsor net -10630 -> -21260, creator net 10098.5 -> 20197, platform net 531.5 -> 1063 (referrer 0 unchanged); currency UNSPECIFIED 2 reports -> 3, deposit 21260 -> 31890",
+    "  unchanged (absent from the diff): errors 1, refunded 1, remaining 0, balanced true — and identical summaries diff to {}",
+    `  damaged CSV rejected: header tampered (section -> sectio) -> "${batchSummaryCsvDamagedError}" (the import fails fast instead of reading the wrong columns)`,
   );
 
   // --- Unreconciled settlements: which releases lack payment evidence ---
@@ -13645,6 +13929,15 @@ export async function runDemo(): Promise<DemoResult> {
     pendingEscrow,
     batchResults,
     batchSummary,
+    batchSummaryText,
+    batchSummaryCsv,
+    batchSummaryCsvImported,
+    batchSummaryJson,
+    batchSummaryJsonImported,
+    summaryDiffEscrow,
+    batchSummaryAfter,
+    batchSummaryDiff,
+    batchSummaryCsvDamagedError,
     unreconciledRefEscrow,
     unreconciledArbEscrow,
     unreconciledSettlementIds,

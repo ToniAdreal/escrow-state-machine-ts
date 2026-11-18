@@ -18,6 +18,25 @@ version changes.
 
 ### Added
 
+- CLI demo batch-summary export/import/diff segment (2026-11-18,
+  backlog #1242): `src/demo.ts` renders the day-end batch summary
+  three ways after the summary section — `renderSettlementReportsSummary`
+  as plain text, `renderSettlementReportsSummaryCsv` and
+  `renderSettlementReportsSummaryJson` as the interchange forms —
+  reads the CSV and JSON back (each import deep-equals the summary
+  and re-renders byte-identically), re-summarizes the batch with one
+  more escrow settled (DEMO-ESC-040, released on the golden deposit
+  at the standard 500 bps) and diffs the two summaries with
+  `diffSettlementReportsSummaries` (total 3 -> 4, reports 2 -> 3,
+  released 1 -> 2, totals 21,260 -> 31,890, creator net 10,098.50 ->
+  20,197, platform net 531.50 -> 1,063, sponsor net -10,630 ->
+  -21,260; errors, refunded, remaining, and balanced unchanged and
+  absent from the diff), and refuses a CSV with a tampered header
+  with the pinned error. README demo section and test counts
+  2244 -> 2245; one new demo test (round-trips + diff + printed
+  lines + determinism), and a broken diff-total expectation was
+  verified to fail the new test at the demo guard before restoring.
+
 - `history` getter defensive-copy benchmark row (2026-11-18,
   backlog #1238): `bench/bench.ts` gains a `get history()` row over
   the fixed 64-entry RELEASED escrow the `stateAt` row measures

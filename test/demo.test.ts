@@ -243,6 +243,11 @@ import {
   DEMO_SNAPSHOT_DIFF_ID,
   DEMO_SNAPSHOT_DIFF_OTHER_ID,
   DEMO_SNAPSHOT_DIFF_SUBMIT_AT,
+  DEMO_SUMMARY_DIFF_FUND_AT,
+  DEMO_SUMMARY_DIFF_ID,
+  DEMO_SUMMARY_DIFF_RELEASE_AT,
+  DEMO_SUMMARY_DIFF_SUBMIT_AT,
+  DEMO_SUMMARY_DIFF_VERIFY_PASS_AT,
   DEMO_OUTBOX_DEAD_LAST_ERROR,
   DEMO_OUTBOX_ENDPOINT,
   DEMO_OUTBOX_MAX_ATTEMPTS,
@@ -421,6 +426,7 @@ import {
   deliverSettlementWebhook,
   deliverSettlementWebhookToMany,
   depositAmountFromHistory,
+  diffSettlementReportsSummaries,
   historyFromNdjson,
   historyToNdjson,
   isOverdue,
@@ -428,8 +434,13 @@ import {
   parseRetryAfter,
   parseSettlementReportCsv,
   parseSettlementReportJson,
+  parseSettlementReportsSummaryCsv,
+  parseSettlementReportsSummaryJson,
   renderReportCsv,
   renderReportJson,
+  renderSettlementReportsSummary,
+  renderSettlementReportsSummaryCsv,
+  renderSettlementReportsSummaryJson,
   restoreQuorum,
   restoreSignedQuorumSnapshot,
   settlePartialReleases,
@@ -2316,6 +2327,190 @@ test("demo lines print the batch reports + summary section", async () => {
       "  summary parties: sponsor net -10630, creator net 10098.5, platform net 531.5, referrer net 0",
     ),
   );
+});
+
+test("demo batch summary exports round-trip through CSV/JSON and diffs against a re-settled batch", async () => {
+  const {
+    batchSummary,
+    batchSummaryText,
+    batchSummaryCsv,
+    batchSummaryCsvImported,
+    batchSummaryJson,
+    batchSummaryJsonImported,
+    summaryDiffEscrow,
+    batchSummaryAfter,
+    batchSummaryDiff,
+    batchSummaryCsvDamagedError,
+    lines,
+  } = await runDemo();
+
+  // The text form is the human-readable summary: same counts and
+  // totals as the object, with the two-decimal money spellings.
+  assert.ok(batchSummaryText.includes("Settlement reports summary"));
+  assert.ok(batchSummaryText.includes("Reports: 2 (errors: 1)"));
+  assert.ok(batchSummaryText.includes("Released: 1"));
+  assert.ok(batchSummaryText.includes("Refunded: 1"));
+  assert.ok(batchSummaryText.includes("Total deposit: 21260.00"));
+  assert.ok(batchSummaryText.includes("Balanced: true"));
+  // Independent re-derivation: the text form re-rendered from the
+  // summary object through the library equals the demo's copy.
+  assert.equal(renderSettlementReportsSummary(batchSummary), batchSummaryText);
+
+  // CSV: the pinned header, then the import reads it back to the
+  // same summary and re-renders byte-identically (independent
+  // re-derivation through the library, not the demo's own copy).
+  assert.equal(
+    batchSummaryCsv.split("\n")[0],
+    "section,key,count,total,reports,errors,totalDeposit,totalInflow,totalOutflow,totalRemaining,net,balanced",
+  );
+  assert.deepEqual(batchSummaryCsvImported, batchSummary);
+  assert.equal(
+    renderSettlementReportsSummaryCsv(batchSummaryCsvImported),
+    batchSummaryCsv,
+  );
+  // JSON: the same round-trip, with amounts as numbers.
+  assert.deepEqual(batchSummaryJsonImported, batchSummary);
+  assert.equal(
+    renderSettlementReportsSummaryJson(batchSummaryJsonImported),
+    batchSummaryJson,
+  );
+  assert.equal(
+    (JSON.parse(batchSummaryJson) as { totalDeposit: unknown }).totalDeposit,
+    21260,
+  );
+
+  // The fourth escrow settled after the batch: released on the golden
+  // deposit at the standard fee, on the pinned fixed clock.
+  assert.equal(summaryDiffEscrow.id, DEMO_SUMMARY_DIFF_ID);
+  assert.equal(summaryDiffEscrow.state, "RELEASED");
+  assert.deepEqual(
+    summaryDiffEscrow.history.map((entry) => entry.at),
+    [
+      DEMO_SUMMARY_DIFF_FUND_AT,
+      DEMO_SUMMARY_DIFF_SUBMIT_AT,
+      DEMO_SUMMARY_DIFF_VERIFY_PASS_AT,
+      DEMO_SUMMARY_DIFF_RELEASE_AT,
+    ],
+  );
+  assert.equal(batchSummaryAfter.total, 4);
+  assert.equal(batchSummaryAfter.reports, 3);
+  assert.equal(batchSummaryAfter.errors, 1);
+  assert.deepEqual(batchSummaryAfter.outcomes, {
+    released: 2,
+    refunded: 1,
+    expired: 0,
+    "partially-released": 0,
+  });
+  assert.equal(batchSummaryAfter.totalDeposit, 31890);
+  assert.equal(batchSummaryAfter.totalRemaining, 0);
+  assert.equal(batchSummaryAfter.balanced, true);
+
+  // The diff moves in both dimensions — status and money — and the
+  // unchanged fields stay out. The diff recomputed from the two
+  // summaries through the library equals the demo's own.
+  assert.deepEqual(
+    batchSummaryDiff,
+    diffSettlementReportsSummaries(batchSummary, batchSummaryAfter),
+  );
+  assert.deepEqual(Object.keys(batchSummaryDiff).sort(), [
+    "byCurrencyChanged",
+    "outcomesChanged",
+    "partiesChanged",
+    "reportsChanged",
+    "totalChanged",
+    "totalDepositChanged",
+    "totalInflowChanged",
+    "totalOutflowChanged",
+  ]);
+  assert.deepEqual(batchSummaryDiff.totalChanged, { from: 3, to: 4 });
+  assert.deepEqual(batchSummaryDiff.reportsChanged, { from: 2, to: 3 });
+  assert.equal(batchSummaryDiff.outcomesChanged?.to.released, 2);
+  assert.deepEqual(batchSummaryDiff.totalDepositChanged, {
+    from: 21260,
+    to: 31890,
+  });
+  assert.deepEqual(
+    batchSummaryDiff.partiesChanged?.changed.map((entry) => entry.role),
+    ["sponsor", "creator", "platform"],
+  );
+  assert.deepEqual(
+    batchSummaryDiff.byCurrencyChanged?.changed.map(
+      (entry) => entry.currency,
+    ),
+    ["UNSPECIFIED"],
+  );
+  assert.deepEqual(
+    diffSettlementReportsSummaries(batchSummary, batchSummary),
+    {},
+  );
+
+  // The tampered header is refused verbatim.
+  assert.equal(
+    batchSummaryCsvDamagedError,
+    'cannot parse settlement reports summary CSV: header must be exactly "section,key,count,total,reports,errors,totalDeposit,totalInflow,totalOutflow,totalRemaining,net,balanced"',
+  );
+
+  // Printed lines: the section header, the text title, the CSV header,
+  // both round-trip lines, the diff line, and the damaged-CSV line —
+  // and the section sits between the batch summary and the
+  // unreconciled segment.
+  const text = lines.join("\n");
+  assert.match(
+    text,
+    /Batch settlement summary as text, CSV and JSON \(export -> import -> diff\):/,
+  );
+  assert.ok(
+    text.includes("Settlement reports summary\nReports: 2 (errors: 1)"),
+  );
+  assert.ok(
+    text.includes(
+      "  section,key,count,total,reports,errors,totalDeposit,totalInflow,totalOutflow,totalRemaining,net,balanced",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  CSV round-trip: parseSettlementReportsSummaryCsv(csv) deep-equals the summary and re-renders byte-identically",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  JSON round-trip: parseSettlementReportsSummaryJson(json) deep-equals the summary and re-renders byte-identically",
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  summary diff (one more escrow settled — ${DEMO_SUMMARY_DIFF_ID} released at 500 bps): total 3 -> 4, reports 2 -> 3, released 1 -> 2, deposit 21260 -> 31890, inflow/outflow 21260 -> 31890`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      '  damaged CSV rejected: header tampered (section -> sectio) -> "cannot parse settlement reports summary CSV: header must be exactly',
+    ),
+  );
+  const summaryAt = text.indexOf(
+    "Batch settlement reports (batch -> per-item isolation -> summary):",
+  );
+  const exportAt = text.indexOf(
+    "Batch settlement summary as text, CSV and JSON (export -> import -> diff):",
+  );
+  const unreconciledAt = text.indexOf(
+    "Unreconciled settlements (unreconciledSettlements over the day-end batch):",
+  );
+  assert.ok(summaryAt < exportAt && exportAt < unreconciledAt);
+
+  // Determinism: a second run prints the same section byte for byte.
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf(
+        "Batch settlement summary as text, CSV and JSON (export -> import -> diff):",
+      ),
+      ls.indexOf(
+        "Unreconciled settlements (unreconciledSettlements over the day-end batch):",
+      ) - 1,
+    );
+  const second = await runDemo();
+  assert.deepEqual(segment(second.lines), segment(lines));
+  assert.deepEqual(second.batchSummaryDiff, batchSummaryDiff);
 });
 
 test("demo unreconciled settlements flags the releases missing payment evidence", async () => {

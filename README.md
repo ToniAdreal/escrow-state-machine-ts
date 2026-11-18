@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2244 tests, all local
+npm test   # 2245 tests, all local
 ```
 
 ## Quickstart
@@ -137,7 +137,19 @@ the batch without blocking the refunded report after it — and
 summary (2 reports, 1 error, totals of 21,260 on the two golden
 deposits, and a still-locked `remaining` of 0 — both successful
 reports are fully settled, so neither carries a remainder). Right
-after the summary, the demo runs `unreconciledSettlements` over the
+after the summary, the demo renders it three ways —
+`renderSettlementReportsSummary` as plain text,
+`renderSettlementReportsSummaryCsv` and
+`renderSettlementReportsSummaryJson` as the interchange forms — reads
+the CSV and JSON back (each import deep-equals the summary and
+re-renders byte-identically), re-summarizes the batch with one more
+escrow settled (DEMO-ESC-040, released on the golden deposit) and
+diffs the two summaries with `diffSettlementReportsSummaries` (total
+3 → 4, reports 2 → 3, released 1 → 2, totals 21,260 → 31,890, creator
+net 10,098.50 → 20,197, platform net 531.50 → 1,063, sponsor net
+−10,630 → −21,260; errors, refunded, remaining, and balanced
+unchanged and absent from the diff), and refuses a CSV with a tampered
+header with the pinned error. Right after that, the demo runs `unreconciledSettlements` over the
 day-end batch plus two extra cases — a release carrying a
 `settlementRef` (`wire-2026-03-09-001`) and an arbitration release —
 and prints the two releases still missing payment evidence: the main
@@ -2010,7 +2022,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2244 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2245 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
