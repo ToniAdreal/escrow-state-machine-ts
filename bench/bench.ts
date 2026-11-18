@@ -15576,6 +15576,284 @@ function benchDispatchMaxVisitsByState(): number {
   }, ITERATIONS);
 }
 
+// ---------------------------------------------------------------------
+// remainingVisits fixture (backlog #1227): the read side of the
+// visit budget above — `remainingVisits(state)` on the same fixed
+// budgeted escrow the maxVisitsByState fixture drives (FUNDED
+// budget 2, funded once and driven through one milestone round on
+// fixed timestamps, so FUNDED is visited 2 of 2 and the timed
+// fixture stays at FUNDED with 3 entries). Hand-pinned
+// expectations — written from the documented remaining semantics
+// in src/stateMachine.ts (`Math.max(0, budget -
+// _stateVisitCount(state))`, so it reaches 0 exactly when dispatch
+// would throw `state visit budget exhausted: …` naming the same
+// numbers; a state with no budget configured reads `Infinity`,
+// unlimited is not uncounted; the initial visit already counts, so
+// a budget of 1 on an already-passed state reads 0), cross-checked
+// against test/remainingVisits.test.ts, never derived by calling
+// `remainingVisits` itself:
+//   - the timed fixture reads 0 for FUNDED (2 of 2 spent) and
+//     Infinity for the unbudgeted MILESTONE_SUBMITTED — one timed
+//     pass is one read of each, no dispatch in the loop, the
+//     fixture shared across iterations because the read is pure;
+//   - outside the timed loop, a fresh budgeted escrow steps down
+//     2 -> 1 -> 0 as FUND spends the first FUNDED visit and one
+//     milestone round spends the second, with visitCount stepping
+//     0 -> 1 -> 2 in lockstep;
+//   - at 0, the next re-entry throws exactly
+//     MAX_VISITS_EXHAUSTED_ERROR and leaves the remaining at 0
+//     (never negative), the state, and the history untouched;
+//   - an escrow constructed without maxVisitsByState reads
+//     Infinity for FUNDED even after three milestone rounds
+//     (visitCount 4), and for every unbudgeted state;
+//   - a budget of 1 on the already-passed CREATED state reads 0
+//     at construction, and a FUNDED budget of 1 reads 1 before
+//     FUND and 0 after;
+//   - a toJSON()/fromJSON() round-trip of the timed fixture keeps
+//     the budget and the used count: the restored escrow reads 0
+//     with a byte-identical history, and its next re-entry still
+//     throws the same pinned error with the remaining at 0.
+// Fixed timestamps, no network, no randomness, no wall clock.
+// ---------------------------------------------------------------------
+const REMAINING_VISITS_FUNDED_EXPECTED = 0;
+const remainingVisitsEscrow = runVisitBudgetRound();
+function checkRemainingVisits(where: string): void {
+  // One measured op is exactly one `remainingVisits("FUNDED")`
+  // call plus one `remainingVisits("MILESTONE_SUBMITTED")` call
+  // (the unbudgeted-state Infinity read); the step-down /
+  // exhaustion / snapshot probes live outside the timed loop.
+  const funded = remainingVisitsEscrow.remainingVisits("FUNDED");
+  const unbudgeted =
+    remainingVisitsEscrow.remainingVisits("MILESTONE_SUBMITTED");
+  if (
+    funded !== REMAINING_VISITS_FUNDED_EXPECTED ||
+    unbudgeted !== Infinity
+  ) {
+    throw new Error(
+      `benchmark ${where} failed: remainingVisits reads ${funded}/${unbudgeted} (expected ${REMAINING_VISITS_FUNDED_EXPECTED}/Infinity)`,
+    );
+  }
+}
+// Fixture validation (outside the timed loop): the timed escrow is
+// the spent 2-of-2 shape — FUNDED, 3 entries, visitCount 2 — and
+// reads 0 for FUNDED, Infinity for the unbudgeted states.
+if (
+  remainingVisitsEscrow.state !== "FUNDED" ||
+  remainingVisitsEscrow.history.length !== 3 ||
+  remainingVisitsEscrow.visitCount("FUNDED") !== MAX_VISITS_BUDGET ||
+  remainingVisitsEscrow.remainingVisits("CREATED") !== Infinity
+) {
+  throw new Error(
+    "benchmark fixture failed: remainingVisits fixture shape",
+  );
+}
+checkRemainingVisits("fixture");
+// Pure-read check (outside the timed loop): two reads agree and
+// the history is byte-identical before and after a call.
+{
+  const historyBefore = historyToNdjson(remainingVisitsEscrow.history);
+  const first = remainingVisitsEscrow.remainingVisits("FUNDED");
+  const second = remainingVisitsEscrow.remainingVisits("FUNDED");
+  if (
+    first !== REMAINING_VISITS_FUNDED_EXPECTED ||
+    second !== REMAINING_VISITS_FUNDED_EXPECTED ||
+    remainingVisitsEscrow.state !== "FUNDED" ||
+    historyToNdjson(remainingVisitsEscrow.history) !== historyBefore
+  ) {
+    throw new Error(
+      "benchmark fixture failed: remainingVisits moved the escrow",
+    );
+  }
+}
+// Step-down probe (outside the timed loop): the remaining steps
+// down 2 -> 1 -> 0 as visits are spent, with visitCount in
+// lockstep.
+{
+  const probe = new Escrow("BENCH-REMAINING-VISITS-STEP", {
+    maxVisitsByState: { FUNDED: MAX_VISITS_BUDGET },
+  });
+  if (
+    probe.remainingVisits("FUNDED") !== 2 ||
+    probe.visitCount("FUNDED") !== 0
+  ) {
+    throw new Error(
+      "benchmark fixture failed: remainingVisits step-down at construction",
+    );
+  }
+  probe.dispatch("FUND", undefined, MAX_VISITS_FUND_AMOUNT, {
+    at: new Date(BASE_MS).toISOString(),
+  });
+  if (
+    probe.remainingVisits("FUNDED") !== 1 ||
+    probe.visitCount("FUNDED") !== 1
+  ) {
+    throw new Error(
+      "benchmark fixture failed: remainingVisits step-down after FUND",
+    );
+  }
+  probe.dispatch("SUBMIT_MILESTONE", undefined, undefined, {
+    at: new Date(BASE_MS + 1000).toISOString(),
+  });
+  probe.dispatch("PARTIAL_RELEASE", undefined, MAX_VISITS_TRANCHE, {
+    at: new Date(BASE_MS + 2000).toISOString(),
+  });
+  if (
+    probe.remainingVisits("FUNDED") !== 0 ||
+    probe.visitCount("FUNDED") !== 2 ||
+    probe.state !== "FUNDED" ||
+    probe.history.length !== 3
+  ) {
+    throw new Error(
+      "benchmark fixture failed: remainingVisits step-down after one round",
+    );
+  }
+}
+// Exhaustion probe (outside the timed loop): at 0 remaining, the
+// next re-entry throws the pinned budget error and leaves the
+// remaining at 0, the state, and the history untouched.
+{
+  const probe = runVisitBudgetRound();
+  const historyBefore = historyToNdjson(probe.history);
+  probe.dispatch("SUBMIT_MILESTONE", undefined, undefined, {
+    at: new Date(BASE_MS + 3000).toISOString(),
+  });
+  let budgetError = "";
+  try {
+    probe.dispatch("PARTIAL_RELEASE", undefined, MAX_VISITS_TRANCHE, {
+      at: new Date(BASE_MS + 4000).toISOString(),
+    });
+  } catch (err) {
+    budgetError = err instanceof Error ? err.message : String(err);
+  }
+  if (
+    budgetError !== MAX_VISITS_EXHAUSTED_ERROR ||
+    probe.remainingVisits("FUNDED") !== 0 ||
+    probe.visitCount("FUNDED") !== MAX_VISITS_BUDGET ||
+    probe.state !== "MILESTONE_SUBMITTED" ||
+    probe.history.length !== 4 ||
+    historyToNdjson(probe.history.slice(0, 3)) !== historyBefore
+  ) {
+    throw new Error(
+      "benchmark fixture failed: remainingVisits exhaustion mismatch",
+    );
+  }
+}
+// Unbudgeted probe (outside the timed loop): no budget configured,
+// three full milestone rounds run unimpeded and the remaining
+// stays Infinity while the used count still steps.
+{
+  const unbudgeted = new Escrow("BENCH-REMAINING-VISITS-UNBUDGETED");
+  unbudgeted.dispatch("FUND", undefined, MAX_VISITS_FUND_AMOUNT, {
+    at: new Date(BASE_MS).toISOString(),
+  });
+  for (let round = 0; round < 3; round += 1) {
+    unbudgeted.dispatch("SUBMIT_MILESTONE", undefined, undefined, {
+      at: new Date(BASE_MS + (round * 2 + 1) * 1000).toISOString(),
+    });
+    unbudgeted.dispatch("PARTIAL_RELEASE", undefined, MAX_VISITS_TRANCHE, {
+      at: new Date(BASE_MS + (round * 2 + 2) * 1000).toISOString(),
+    });
+  }
+  if (
+    unbudgeted.state !== "FUNDED" ||
+    unbudgeted.visitCount("FUNDED") !== 4 ||
+    unbudgeted.history.length !== 7 ||
+    unbudgeted.remainingVisits("FUNDED") !== Infinity ||
+    unbudgeted.remainingVisits("MILESTONE_SUBMITTED") !== Infinity
+  ) {
+    throw new Error(
+      "benchmark fixture failed: remainingVisits unbudgeted mismatch",
+    );
+  }
+}
+// Already-passed-state probe (outside the timed loop): a budget
+// of 1 on CREATED reads 0 at construction — the initial visit
+// already spent it — and a FUNDED budget of 1 reads 1 before FUND
+// and 0 after.
+{
+  const created = new Escrow("BENCH-REMAINING-VISITS-CREATED", {
+    maxVisitsByState: { CREATED: 1 },
+  });
+  if (
+    created.remainingVisits("CREATED") !== 0 ||
+    created.visitCount("CREATED") !== 1
+  ) {
+    throw new Error(
+      "benchmark fixture failed: remainingVisits already-passed CREATED",
+    );
+  }
+  const fundedOne = new Escrow("BENCH-REMAINING-VISITS-FUNDED-ONE", {
+    maxVisitsByState: { FUNDED: 1 },
+  });
+  if (fundedOne.remainingVisits("FUNDED") !== 1) {
+    throw new Error(
+      "benchmark fixture failed: remainingVisits single-budget before FUND",
+    );
+  }
+  fundedOne.dispatch("FUND", undefined, MAX_VISITS_FUND_AMOUNT, {
+    at: new Date(BASE_MS).toISOString(),
+  });
+  if (fundedOne.remainingVisits("FUNDED") !== 0) {
+    throw new Error(
+      "benchmark fixture failed: remainingVisits single-budget after FUND",
+    );
+  }
+}
+// Snapshot probe (outside the timed loop): a toJSON()/fromJSON()
+// round-trip keeps the budget and the used count, and the restored
+// escrow still refuses the third re-entry with the same error and
+// the remaining at 0.
+{
+  const restored = Escrow.fromJSON(remainingVisitsEscrow.toJSON());
+  if (
+    restored.state !== "FUNDED" ||
+    restored.visitCount("FUNDED") !== MAX_VISITS_BUDGET ||
+    restored.history.length !== 3 ||
+    restored.remainingVisits("FUNDED") !== 0 ||
+    restored.remainingVisits("MILESTONE_SUBMITTED") !== Infinity ||
+    historyToNdjson(restored.history) !==
+      historyToNdjson(remainingVisitsEscrow.history)
+  ) {
+    throw new Error(
+      "benchmark fixture failed: remainingVisits snapshot mismatch",
+    );
+  }
+  restored.dispatch("SUBMIT_MILESTONE", undefined, undefined, {
+    at: new Date(BASE_MS + 3000).toISOString(),
+  });
+  const historyBefore = historyToNdjson(restored.history);
+  let budgetError = "";
+  try {
+    restored.dispatch("PARTIAL_RELEASE", undefined, MAX_VISITS_TRANCHE, {
+      at: new Date(BASE_MS + 4000).toISOString(),
+    });
+  } catch (err) {
+    budgetError = err instanceof Error ? err.message : String(err);
+  }
+  const stateAfterReject: string = restored.state;
+  if (
+    budgetError !== MAX_VISITS_EXHAUSTED_ERROR ||
+    restored.remainingVisits("FUNDED") !== 0 ||
+    stateAfterReject !== "MILESTONE_SUBMITTED" ||
+    historyToNdjson(restored.history) !== historyBefore
+  ) {
+    throw new Error(
+      "benchmark fixture failed: remainingVisits snapshot budget mismatch",
+    );
+  }
+}
+
+function benchRemainingVisits(): number {
+  const ops = measure(() => {
+    checkRemainingVisits("self-check");
+  }, ITERATIONS);
+  // Post-loop validation (outside the timed loop): the fixture is
+  // a pure read, so it still reads the pinned 0 / Infinity —
+  // re-run the check to prove the timed loop moved nothing.
+  checkRemainingVisits("self-check");
+  return ops;
+}
+
 
 // ---------------------------------------------------------------------
 // expectedSeq fixture: an escrow driven on fixed timestamps to
@@ -16367,6 +16645,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "requireVerifyEvidence VERIFY_PASS (evidence gate)", ops: benchRequireVerifyEvidence() },
   { path: "maxDeposit FUND (deposit cap, funds to cap)", ops: benchMaxDeposit() },
   { path: "dispatch maxVisitsByState (visit budget, 2 FUNDED visits)", ops: benchDispatchMaxVisitsByState() },
+  { path: "remainingVisits (FUNDED spent, 0 + unbudgeted Infinity)", ops: benchRemainingVisits() },
   { path: "dispatch expectedSeq (optimistic concurrency)", ops: benchExpectedSeq() },
   { path: "dispatch idempotencyKey (key hit/miss)", ops: benchDispatchIdempotencyKey() },
   { path: "dispatch rolePolicy (moderator arbitrate, contributor rejected)", ops: benchDispatchRolePolicy() },

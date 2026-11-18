@@ -18,6 +18,23 @@ version changes.
 
 ### Added
 
+- `remainingVisits(state)` state-visit-budget remaining benchmark row
+  (2026-11-18, backlog #1227): `bench/bench.ts` gains a
+  `remainingVisits()` row over the same fixed budgeted escrow the
+  visit-budget row drives (`maxVisitsByState: { FUNDED: 2 }`, FUNDED
+  visited 2 of 2) — measured ~135,374 ops/sec (7.39 µs/op) on this run
+  (Node v24.22.1, AMD EPYC 9D25, machine-local, not a guarantee), one
+  timed pass reading FUNDED (0) and the unbudgeted
+  MILESTONE_SUBMITTED (Infinity) — plus outside-the-timed-loop probes
+  pinning the 2 → 1 → 0 step-down with `visitCount` in lockstep, the
+  at-0 re-entry refusal with the pinned budget error and the remaining
+  staying 0, the unbudgeted Infinity read after three milestone rounds,
+  the budget-of-1 on the already-passed CREATED state reading 0 at
+  construction, and the snapshot round-trip keeping the budget and the
+  used count. README Benchmarks table, prose, and run-date note
+  refreshed with the real run; a broken remaining expectation was
+  verified to fail the bench at the fixture probe (exit 1) before
+  restoring.
 - `remainingApprovals()` quorum remaining-votes benchmark row (2026-11-18,
   backlog #1226): `bench/bench.ts` gains a `remainingApprovals()` row over a
   fixed pinned 2-of-3 quorum with one vote in — measured ~369,061 ops/sec

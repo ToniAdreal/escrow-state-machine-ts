@@ -2632,6 +2632,24 @@ unimpeded (FUNDED visited 4 times, history 7 entries), and a
 `toJSON()`/`fromJSON()` round-trip pinned to keep the budget and
 the used count so the restored escrow still refuses the third
 re-entry with the same error and no trace), and
+state-visit-budget remaining read (`remainingVisits(state)` on
+the same fixed budgeted escrow the visit-budget row drives —
+`maxVisitsByState: { FUNDED: 2 }`, funded 10,000 at BASE and
+driven through one milestone round so FUNDED is visited 2 of 2 —
+with `remainingVisits("FUNDED")` pinned to 0 and
+`remainingVisits("MILESTONE_SUBMITTED")` pinned to Infinity for
+the unbudgeted state on every iteration, and outside the timed
+loop the remaining pinned to step down 2 → 1 → 0 as the visits
+are spent with `visitCount` in lockstep, the next re-entry at 0
+pinned to throw the exact `state visit budget exhausted: FUNDED
+already visited 2 of 2 times` error and to leave the remaining
+at 0 with state and history unchanged entry for entry, an
+escrow without the budget pinned to read Infinity for FUNDED
+even after three milestone rounds (visitCount 4), a budget of 1
+on the already-passed CREATED state pinned to read 0 at
+construction, and a `toJSON()`/`fromJSON()` round-trip pinned to
+keep the budget and the used count so the restored escrow still
+reads 0 and refuses the third re-entry with the same error), and
 optimistic-concurrency dispatch (`dispatch("VERIFY_PASS")` with
 `expectedSeq: 2` on a fresh escrow — rebuilt on every iteration
 because dispatch mutates it, driven FUND → SUBMIT_MILESTONE on
@@ -3166,6 +3184,7 @@ One real run on 2026-11-04:
 | requireVerifyEvidence VERIFY_PASS (evidence gate) | ~44,494 ops/sec (22.48 µs/op) |
 | maxDeposit FUND (deposit cap, funds to cap) | ~60,005 ops/sec (16.67 µs/op) |
 | dispatch maxVisitsByState (visit budget, 2 FUNDED visits) | ~39,700 ops/sec (25.19 µs/op) |
+| remainingVisits (FUNDED spent, 0 + unbudgeted Infinity) | ~135,374 ops/sec (7.39 µs/op) |
 | dispatch expectedSeq (optimistic concurrency) | ~35,245 ops/sec (28.37 µs/op) |
 | dispatch idempotencyKey (key hit/miss) | ~48,143 ops/sec (20.77 µs/op) |
 | dispatch rolePolicy (moderator arbitrate, contributor rejected) | ~5,966 ops/sec (167.61 µs/op) |
@@ -3193,7 +3212,7 @@ and the settlePartialRelease row above were measured on
 escrowsByEvent row above were measured on 2026-11-06 runs; the
 settlePartialReleases row above was measured on a 2026-11-08 run; the
 escrowsByFilters and settlementAging rows above were measured on a
-2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the signed-snapshot rows above were measured on a 2026-11-11 run; the diffSettlementReports row above was measured on a 2026-11-13 run; the renderSettlementReportsSummary and diffSettlementReportsSummaries rows above were measured on a 2026-11-13 run; the unreconciledSettlements row above was measured on a 2026-11-14 run; the stateAt row above was measured on a 2026-11-15 run; the stateAtFromHistory row above was measured on a 2026-11-15 run; the formatMinorUnits x parseMinorUnits round-trip row above was measured on a 2026-11-15 run; the quorum signed-snapshot round-trip row above was measured on a 2026-11-15 run; the calculateDepositCents row above was measured on a 2026-11-15 run; the escrowsBySettlementRef row above was measured on a 2026-11-15 run; the parseSettlementReportsSummaryCsv and parseSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the renderSettlementReportsSummaryCsv and renderSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the approvalStatement row above was measured on a 2026-11-15 run; the truncateOutboxError row above was measured on a 2026-11-15 run; the verifySettlementWebhook requireEventId row above was measured on a 2026-11-16 run; the diffQuorumSnapshots row above was measured on a 2026-11-16 run; the SettlementEventDedupe.has row above was measured on a 2026-11-16 run; the approveSigned row above was measured on a 2026-11-16 run; the dispatch maxVisitsByState row above was measured on a 2026-11-17 run; the retrySettlementWebhookOutbox row above was measured on a 2026-11-17 run; the SettlementWebhookOutbox.stats row above was measured on a 2026-11-18 run; the quorum remainingApprovals row above was measured on a 2026-11-18 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
+2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the signed-snapshot rows above were measured on a 2026-11-11 run; the diffSettlementReports row above was measured on a 2026-11-13 run; the renderSettlementReportsSummary and diffSettlementReportsSummaries rows above were measured on a 2026-11-13 run; the unreconciledSettlements row above was measured on a 2026-11-14 run; the stateAt row above was measured on a 2026-11-15 run; the stateAtFromHistory row above was measured on a 2026-11-15 run; the formatMinorUnits x parseMinorUnits round-trip row above was measured on a 2026-11-15 run; the quorum signed-snapshot round-trip row above was measured on a 2026-11-15 run; the calculateDepositCents row above was measured on a 2026-11-15 run; the escrowsBySettlementRef row above was measured on a 2026-11-15 run; the parseSettlementReportsSummaryCsv and parseSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the renderSettlementReportsSummaryCsv and renderSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the approvalStatement row above was measured on a 2026-11-15 run; the truncateOutboxError row above was measured on a 2026-11-15 run; the verifySettlementWebhook requireEventId row above was measured on a 2026-11-16 run; the diffQuorumSnapshots row above was measured on a 2026-11-16 run; the SettlementEventDedupe.has row above was measured on a 2026-11-16 run; the approveSigned row above was measured on a 2026-11-16 run; the dispatch maxVisitsByState row above was measured on a 2026-11-17 run; the retrySettlementWebhookOutbox row above was measured on a 2026-11-17 run; the SettlementWebhookOutbox.stats row above was measured on a 2026-11-18 run; the quorum remainingApprovals row above was measured on a 2026-11-18 run; the remainingVisits row above was measured on a 2026-11-18 run; the rest of the table is the 2026-11-04 run. Those runs' other rows
 came in mixed under shared-host load, so refreshing the whole
 table would misreport changes in paths these additions never
 touched.
