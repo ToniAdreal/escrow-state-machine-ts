@@ -536,6 +536,34 @@ export interface EscrowSnapshot {
    * as `requireVerifyEvidence`.
    */
   requireActor?: boolean;
+  /**
+   * Settlement-reference gate (see {@link EscrowOptions.requireSettlementRef}),
+   * present only when the gate is enabled. `toJSON()` writes this
+   * field ONLY when true, so a gate-off escrow's snapshot keeps its
+   * exact legacy shape. `fromJSON()` restores it the same way as
+   * `requireActor` (strict boolean validation; an explicit
+   * `opts.requireSettlementRef` overrides the snapshot's value). A legacy
+   * snapshot without the field restores with the gate off — the
+   * pre-#1256 shape, in which a restored escrow silently lost the
+   * gate and accepted a reference-free RELEASE it would previously
+   * have rejected. The schema version stays 1 for the same reason
+   * as `requireVerifyEvidence`.
+   */
+  requireSettlementRef?: boolean;
+  /**
+   * Refund-reference gate (see {@link EscrowOptions.requireRefundRef}),
+   * present only when the gate is enabled. `toJSON()` writes this
+   * field ONLY when true, so a gate-off escrow's snapshot keeps its
+   * exact legacy shape. `fromJSON()` restores it the same way as
+   * `requireSettlementRef` (strict boolean validation; an explicit
+   * `opts.requireRefundRef` overrides the snapshot's value). A legacy
+   * snapshot without the field restores with the gate off — the
+   * pre-#1256 shape, in which a restored escrow silently lost the
+   * gate and accepted a reference-free ARBITRATE_REFUND it would
+   * previously have rejected. The schema version stays 1 for the
+   * same reason as `requireVerifyEvidence`.
+   */
+  requireRefundRef?: boolean;
 }
 
 /**
@@ -568,7 +596,8 @@ export interface EscrowSnapshot {
  * Why this exists: the audit hash chain covers the history entries
  * only — the snapshot-level fields (`state`, `deadline`,
  * `rolePolicy`, `idempotencyKeys`, `maxDeposit`,
- * `requireVerifyEvidence`, `requireActor`) sit outside the chain, so a rewritten
+ * `requireVerifyEvidence`, `requireActor`, `requireSettlementRef`,
+ * `requireRefundRef`) sit outside the chain, so a rewritten
  * persisted snapshot could push a deadline back, loosen a policy,
  * clear consumed idempotency keys, or lift a deposit cap without
  * breaking any history link. The envelope MAC covers the whole
@@ -672,6 +701,8 @@ const SNAPSHOT_FIELDS = new Set([
   "maxVisitsByState",
   "requireVerifyEvidence",
   "requireActor",
+  "requireSettlementRef",
+  "requireRefundRef",
 ]);
 
 /**
@@ -1082,6 +1113,20 @@ function resolveWatchdogAt(at: Date | string | undefined): string | undefined {
  *    before backlog #1078) restores gate-off, exactly like a
  *    default-constructed escrow, while a snapshot carrying
  *    `requireActor: true` restores gate-on
+ *  - `requireSettlementRef`, when present, must be a boolean; absent
+ *    means the gate is off (the legacy shape). Same treatment as
+ *    `requireActor`: validated strictly, governs future dispatches
+ *    only — a snapshot that omits the field (written before backlog
+ *    #1256) restores gate-off, exactly like a default-constructed
+ *    escrow, while a snapshot carrying `requireSettlementRef: true`
+ *    restores gate-on
+ *  - `requireRefundRef`, when present, must be a boolean; absent
+ *    means the gate is off (the legacy shape). Same treatment as
+ *    `requireSettlementRef`: validated strictly, governs future
+ *    dispatches only — a snapshot that omits the field (written
+ *    before backlog #1256) restores gate-off, exactly like a
+ *    default-constructed escrow, while a snapshot carrying
+ *    `requireRefundRef: true` restores gate-on
  *  - `actor`, when present on a history entry, must be a non-empty
  *    string no longer than {@link MAX_ACTOR_LENGTH} characters (the
  *    same bar dispatch() applies); absent is the
@@ -1089,7 +1134,8 @@ function resolveWatchdogAt(at: Date | string | undefined): string | undefined {
  *  - unknown fields are rejected (fail-closed), never silently dropped:
  *    top level allows only
  *    `v`/`id`/`state`/`history`/`deadline`/`idempotencyKeys`/`rolePolicy`/
- *    `maxDeposit`/`maxVisitsByState`/`requireVerifyEvidence`/`requireActor`
+ *    `maxDeposit`/`maxVisitsByState`/`requireVerifyEvidence`/`requireActor`/
+ *    `requireSettlementRef`/`requireRefundRef`
  *    (`unknown field "<name>"`), and a history entry allows only
  *    `seq`/`event`/`from`/`to`/`at`/`actor`/`note`/`amount`/`evidence`/
  *    `settlementRef`/`refundRef`/`prevHash`/`hash` (`history[i]: unknown field "<name>"). A typo
@@ -1430,6 +1476,24 @@ function parseEscrowSnapshot(
     }
     requireActor = snapshot.requireActor;
   }
+  let requireSettlementRef: boolean | undefined;
+  if (snapshot.requireSettlementRef !== undefined) {
+    if (typeof snapshot.requireSettlementRef !== "boolean") {
+      throw new Error(
+        `invalid snapshot: requireSettlementRef must be a boolean, got ${JSON.stringify(snapshot.requireSettlementRef)}`
+      );
+    }
+    requireSettlementRef = snapshot.requireSettlementRef;
+  }
+  let requireRefundRef: boolean | undefined;
+  if (snapshot.requireRefundRef !== undefined) {
+    if (typeof snapshot.requireRefundRef !== "boolean") {
+      throw new Error(
+        `invalid snapshot: requireRefundRef must be a boolean, got ${JSON.stringify(snapshot.requireRefundRef)}`
+      );
+    }
+    requireRefundRef = snapshot.requireRefundRef;
+  }
 
   return {
     v: SNAPSHOT_VERSION,
@@ -1459,6 +1523,10 @@ function parseEscrowSnapshot(
       ? {}
       : { requireVerifyEvidence }),
     ...(requireActor === undefined ? {} : { requireActor }),
+    ...(requireSettlementRef === undefined
+      ? {}
+      : { requireSettlementRef }),
+    ...(requireRefundRef === undefined ? {} : { requireRefundRef }),
   };
 }
 
@@ -1536,6 +1604,20 @@ export interface EscrowSnapshotDiff {
    * on->off flip is a change.
    */
   actorGateChanged?: { from: boolean; to: boolean };
+  /**
+   * Settlement-reference gate flipped. Same reporting as
+   * `evidenceGateChanged`: an absent field and an explicit `false`
+   * are the same state (gate off), so only a true off->on or
+   * on->off flip is a change.
+   */
+  settlementRefGateChanged?: { from: boolean; to: boolean };
+  /**
+   * Refund-reference gate flipped. Same reporting as
+   * `evidenceGateChanged`: an absent field and an explicit `false`
+   * are the same state (gate off), so only a true off->on or
+   * on->off flip is a change.
+   */
+  refundRefGateChanged?: { from: boolean; to: boolean };
   /**
    * Consumed idempotency-key set moved (a key consumed, or a key
    * dropped on restore). Reported as a plain boolean: the set is
@@ -1696,6 +1778,18 @@ export function diffEscrowSnapshots(
     diff.actorGateChanged = {
       from: a.requireActor === true,
       to: b.requireActor === true,
+    };
+  }
+  if ((a.requireSettlementRef === true) !== (b.requireSettlementRef === true)) {
+    diff.settlementRefGateChanged = {
+      from: a.requireSettlementRef === true,
+      to: b.requireSettlementRef === true,
+    };
+  }
+  if ((a.requireRefundRef === true) !== (b.requireRefundRef === true)) {
+    diff.refundRefGateChanged = {
+      from: a.requireRefundRef === true,
+      to: b.requireRefundRef === true,
     };
   }
   if (idempotencyKeysKey(a.idempotencyKeys) !== idempotencyKeysKey(b.idempotencyKeys)) {
@@ -2446,12 +2540,15 @@ export interface EscrowOptions {
    * and before anything is appended or any idempotency key is
    * consumed, so a rejected dispatch leaves no trace and a retry
    * with a reference and the same key still executes. Like
-   * `requireActor` and `auditKey`, the switch is escrow
-   * configuration, not audit data: it is never written into the
-   * `toJSON()` snapshot envelope, so a restored escrow must
-   * re-enable it via
-   * `Escrow.fromJSON(snapshot, { requireSettlementRef: true })`
-   * or `Escrow.fromHistory(id, history, { requireSettlementRef: true })`.
+   * `requireActor`, the switch is escrow configuration, not audit
+   * data. The flag IS part of `toJSON()`/`fromJSON()` snapshots (as
+   * `requireSettlementRef`, written only when true — see
+   * {@link EscrowSnapshot}): a restored escrow keeps enforcing the
+   * gate unless `Escrow.fromJSON(snapshot, { requireSettlementRef: false })`
+   * explicitly overrides it. A legacy snapshot without the field
+   * restores with the gate off. A bare history carries no gate, so
+   * `Escrow.fromHistory(id, history, { requireSettlementRef: true })`
+   * is still the way to re-attach it there.
    * Invalid values throw `invalid option: …` at construction.
    *
    * Default: false (unchanged legacy behavior).
@@ -2477,10 +2574,14 @@ export interface EscrowOptions {
    * rejected dispatch leaves no trace and a retry with a reference
    * and the same key still executes. Like `requireActor` and
    * `requireSettlementRef`, the switch is escrow configuration, not
-   * audit data: it is never written into the `toJSON()` snapshot
-   * envelope, so a restored escrow must re-enable it via
-   * `Escrow.fromJSON(snapshot, { requireRefundRef: true })`
-   * or `Escrow.fromHistory(id, history, { requireRefundRef: true })`.
+   * audit data. The flag IS part of `toJSON()`/`fromJSON()` snapshots
+   * (as `requireRefundRef`, written only when true — see
+   * {@link EscrowSnapshot}): a restored escrow keeps enforcing the
+   * gate unless `Escrow.fromJSON(snapshot, { requireRefundRef: false })`
+   * explicitly overrides it. A legacy snapshot without the field
+   * restores with the gate off. A bare history carries no gate, so
+   * `Escrow.fromHistory(id, history, { requireRefundRef: true })`
+   * is still the way to re-attach it there.
    * Invalid values throw `invalid option: …` at construction.
    *
    * Default: false (unchanged legacy behavior).
@@ -3763,6 +3864,8 @@ export class Escrow {
         ? { requireVerifyEvidence: true }
         : {}),
       ...(this._requireActor ? { requireActor: true } : {}),
+      ...(this._requireSettlementRef ? { requireSettlementRef: true } : {}),
+      ...(this._requireRefundRef ? { requireRefundRef: true } : {}),
     };
   }
 
@@ -3774,7 +3877,8 @@ export class Escrow {
    * envelope (plain JSON) before a restart and restore it with
    * {@link Escrow.restoreSignedSnapshot} — a process that restarts
    * keeps its deadline, policy, deposit cap, per-state visit budget,
-   * verify-evidence gate, actor gate, and consumed idempotency keys,
+   * verify-evidence gate, actor gate, settlement-reference gate,
+   * refund-reference gate, and consumed idempotency keys,
    * and anyone who rewrites the persisted file
    * without the secret is caught at restore instead of silently
    * pushing a deadline back, loosening a policy, clearing consumed
@@ -3839,9 +3943,11 @@ export class Escrow {
    * The snapshot's deposit cap (`maxDeposit`, when present),
    * per-state visit budget (`maxVisitsByState`, when present),
    * verify-evidence gate (`requireVerifyEvidence`, when present),
-   * and audit-attribution gate (`requireActor`, when present) are
-   * likewise restored and keep being enforced after a restart; a
-   * legacy snapshot without the fields restores uncapped, unbudgeted,
+   * audit-attribution gate (`requireActor`, when present),
+   * settlement-reference gate (`requireSettlementRef`, when
+   * present), and refund-reference gate (`requireRefundRef`, when
+   * present) are likewise restored and keep being enforced after a
+   * restart; a legacy snapshot without the fields restores uncapped, unbudgeted,
    * with the gates off. The used visit count is not stored — it is
    * derived from the restored history, so the budget resumes with the
    * exact count the live escrow had. The audit key is the exception:
@@ -3889,7 +3995,8 @@ export class Escrow {
    */
   static fromJSON(snapshot: unknown, opts?: EscrowOptions): Escrow {
     const parsed = parseEscrowSnapshot(snapshot, opts?.auditKey);
-    // maxDeposit / requireVerifyEvidence / requireActor are snapshot
+    // maxDeposit / requireVerifyEvidence / requireActor /
+    // requireSettlementRef / requireRefundRef are snapshot
     // state with override semantics (see JSDoc): an explicit
     // (non-undefined) opt wins, otherwise the snapshot's value is
     // installed through the constructor — the fields are readonly,
@@ -3911,6 +4018,12 @@ export class Escrow {
         : {}),
       ...(parsed.requireActor !== undefined
         ? { requireActor: parsed.requireActor }
+        : {}),
+      ...(parsed.requireSettlementRef !== undefined
+        ? { requireSettlementRef: parsed.requireSettlementRef }
+        : {}),
+      ...(parsed.requireRefundRef !== undefined
+        ? { requireRefundRef: parsed.requireRefundRef }
         : {}),
     };
     const effectiveOpts: EscrowOptions | undefined =
@@ -3980,7 +4093,8 @@ export class Escrow {
    * snapshot under `secret` throws a descriptive configuration
    * `Error` and no escrow is produced — a tampered `state`,
    * `deadline`, `rolePolicy`, `idempotencyKeys`, `maxDeposit`,
-   * `maxVisitsByState`, `requireVerifyEvidence`, or `requireActor`,
+   * `maxVisitsByState`, `requireVerifyEvidence`, `requireActor`,
+   * `requireSettlementRef`, or `requireRefundRef`,
    * a tampered history entry, or a wrong
    * secret all fail here, before any snapshot parsing, so a
    * tampered envelope can never partially install. A MAC-valid

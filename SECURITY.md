@@ -152,10 +152,15 @@ quorum approvals (`approveSigned()`).
   `requireActor` gate) and before any append — no history is
   appended and no idempotency key is consumed. Other events are
   unaffected, and the default (gate off) keeps a reference-free
-  RELEASE legal. The switch is configuration, not audit data: it is
-  never written into snapshots and must be re-enabled on restore.
-  Like the evidence gate, it does not verify the external settlement
-  — it only guarantees the audit trail names the transfer.
+  RELEASE legal. The switch IS part of `toJSON()`/`fromJSON()`
+  snapshots (`requireSettlementRef`, written only when true): a
+  restored escrow keeps enforcing it unless an explicit
+  `Escrow.fromJSON(snapshot, { requireSettlementRef: false })`
+  overrides it, and a tampered gate in a stored snapshot is
+  rejected. A bare history carries no gate, so `fromHistory` still
+  needs the option re-supplied. Like the evidence gate, it does not
+  verify the external settlement — it only guarantees the audit trail
+  names the transfer.
 - **Refund-reference gate (when `requireRefundRef: true`).**
   `Escrow` constructed with `requireRefundRef` rejects an
   ARBITRATE_REFUND without a `refundRef` with
@@ -163,11 +168,15 @@ quorum approvals (`approveSigned()`).
   checks (after the `requireActor` and `requireSettlementRef` gates)
   and before any append — no history is appended and no idempotency
   key is consumed. Other events are unaffected, and the default (gate
-  off) keeps a reference-free ARBITRATE_REFUND legal. The switch is
-  configuration, not audit data: it is never written into snapshots
-  and must be re-enabled on restore. Like the settlement gate, it
-  does not verify the external refund — it only guarantees the audit
-  trail names the transfer.
+  off) keeps a reference-free ARBITRATE_REFUND legal. The switch IS
+  part of `toJSON()`/`fromJSON()` snapshots (`requireRefundRef`,
+  written only when true): a restored escrow keeps enforcing it
+  unless an explicit `Escrow.fromJSON(snapshot, { requireRefundRef: false })`
+  overrides it, and a tampered gate in a stored snapshot is
+  rejected. A bare history carries no gate, so `fromHistory` still
+  needs the option re-supplied. Like the settlement gate, it does not
+  verify the external refund — it only guarantees the audit trail
+  names the transfer.
 - **Per-state visit budget (when `maxVisitsByState` is set).**
   `Escrow` constructed with a per-state visit budget rejects a dispatch
   whose target state already used its budget with

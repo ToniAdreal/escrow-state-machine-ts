@@ -18,6 +18,24 @@ version changes.
 
 ### Added
 
+- Snapshot persistence for the settlement/refund reference gates
+  (2026-11-19, backlog #1256): `EscrowOptions.requireSettlementRef` /
+  `requireRefundRef` are now part of `toJSON()`/`fromJSON()` snapshots
+  (written only when true, following the `requireActor` precedent from
+  #1078) — a restored escrow keeps enforcing both gates instead of
+  silently dropping them, an explicit `fromJSON` opt overrides either
+  gate in either direction, and a legacy snapshot without the fields
+  restores with the gates off. The parser rejects non-boolean values
+  (`invalid snapshot: … must be a boolean, …`), `diffEscrowSnapshots`
+  reports `settlementRefGateChanged` / `refundRefGateChanged`, and the
+  signed-snapshot envelope carries both gates (flipping one inside an
+  envelope fails the MAC check). The two stale "never written into
+  snapshots" statements in the gate tests, README, and SECURITY.md now
+  describe the persisted behavior; the README Persistence entry-field
+  list also gains the previously omitted `refundRef`. New
+  `test/snapshotRequireRefs.test.ts` (14 cases), test counts
+  2256 -> 2270.
+
 - CLI demo event-level RBAC segment (2026-11-19,
   backlog #1247): `src/demo.ts` finally closes with a rolePolicy
   segment mirroring the dataquest demo's #476 — a dedicated escrow

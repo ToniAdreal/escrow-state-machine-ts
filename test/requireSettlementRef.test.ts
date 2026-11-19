@@ -33,11 +33,12 @@ import { Escrow, type EscrowOptions } from "../src/index.js";
  *    actor without a ref reports settlement-required
  *  - a rejected dispatch consumes no idempotency key and leaves no
  *    seq gap; a duplicate delivery is a no-op even with the gate on
- *  - the switch is escrow configuration, not audit data: it is never
- *    written into the toJSON() snapshot
- *  - fromJSON() does not restore the switch (advisory again after
- *    restore) unless the option is passed; fromHistory(id, history,
- *    { requireSettlementRef: true }) re-attaches it
+ *  - the switch IS written into the toJSON() snapshot (backlog
+ *    #1256, see test/snapshotRequireRefs.test.ts): fromJSON()
+ *    restores it unless an explicit option overrides it;
+ *    fromHistory(id, history, { requireSettlementRef: true })
+ *    re-attaches it on the history-only path (a bare history
+ *    carries no gate)
  *  - with requireActor also on, a RELEASE with neither actor nor ref
  *    reports the actor error first (the actor gate runs before the
  *    settlement-ref gate — check order pinned)
@@ -194,20 +195,28 @@ test("duplicate delivery is a no-op even when the gate is on", () => {
   assert.equal(e.history.length, before);
 });
 
-test("the switch is not written into the toJSON() snapshot", () => {
+test("the switch is written into the toJSON() snapshot (backlog #1256)", () => {
   const e = toVerified("rs-11", { requireSettlementRef: true });
   const snapshot = e.toJSON();
-  assert.equal("requireSettlementRef" in snapshot, false);
+  assert.equal(snapshot.requireSettlementRef, true);
+  const open = toVerified("rs-11b");
+  assert.equal("requireSettlementRef" in open.toJSON(), false);
 });
 
-test("fromJSON() does not restore the switch: advisory again after restore", () => {
+test("fromJSON() restores the switch: gate still enforced after restore", () => {
   const e = toVerified("rs-12", { requireSettlementRef: true });
   const restored = Escrow.fromJSON(JSON.parse(JSON.stringify(e.toJSON())));
-  restored.dispatch("RELEASE");
+  assert.throws(
+    () => restored.dispatch("RELEASE"),
+    /settlement reference required/,
+  );
+  restored.dispatch("RELEASE", undefined, undefined, {
+    settlementRef: "tx-12",
+  });
   assert.equal(restored.state, "RELEASED");
   assert.equal(
     restored.history[restored.history.length - 1].settlementRef,
-    undefined,
+    "tx-12",
   );
 });
 

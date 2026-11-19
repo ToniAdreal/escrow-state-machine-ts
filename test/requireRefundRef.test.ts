@@ -34,11 +34,12 @@ import { Escrow, type EscrowOptions } from "../src/index.js";
  *    an authorized actor without a ref reports refund-required
  *  - a rejected dispatch consumes no idempotency key and leaves no
  *    seq gap; a duplicate delivery is a no-op even with the gate on
- *  - the switch is escrow configuration, not audit data: it is never
- *    written into the toJSON() snapshot
- *  - fromJSON() does not restore the switch (advisory again after
- *    restore) unless the option is passed; fromHistory(id, history,
- *    { requireRefundRef: true }) re-attaches it
+ *  - the switch IS written into the toJSON() snapshot (backlog
+ *    #1256, see test/snapshotRequireRefs.test.ts): fromJSON()
+ *    restores it unless an explicit option overrides it;
+ *    fromHistory(id, history, { requireRefundRef: true })
+ *    re-attaches it on the history-only path (a bare history
+ *    carries no gate)
  *  - with requireActor also on, an ARBITRATE_REFUND with neither
  *    actor nor ref reports the actor error first (the actor gate
  *    runs before the refund-ref gate — check order pinned)
@@ -220,20 +221,28 @@ test("duplicate delivery is a no-op even when the gate is on", () => {
   assert.equal(e.history.length, before);
 });
 
-test("the switch is not written into the toJSON() snapshot", () => {
+test("the switch is written into the toJSON() snapshot (backlog #1256)", () => {
   const e = toDisputed("rr-11", { requireRefundRef: true });
   const snapshot = e.toJSON();
-  assert.equal("requireRefundRef" in snapshot, false);
+  assert.equal(snapshot.requireRefundRef, true);
+  const open = toDisputed("rr-11b");
+  assert.equal("requireRefundRef" in open.toJSON(), false);
 });
 
-test("fromJSON() does not restore the switch: advisory again after restore", () => {
+test("fromJSON() restores the switch: gate still enforced after restore", () => {
   const e = toDisputed("rr-12", { requireRefundRef: true });
   const restored = Escrow.fromJSON(JSON.parse(JSON.stringify(e.toJSON())));
-  restored.dispatch("ARBITRATE_REFUND");
+  assert.throws(
+    () => restored.dispatch("ARBITRATE_REFUND"),
+    /refund reference required/,
+  );
+  restored.dispatch("ARBITRATE_REFUND", undefined, undefined, {
+    refundRef: "rfnd-12",
+  });
   assert.equal(restored.state, "REFUNDED");
   assert.equal(
     restored.history[restored.history.length - 1].refundRef,
-    undefined,
+    "rfnd-12",
   );
 });
 
