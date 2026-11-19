@@ -460,7 +460,7 @@
  * letter 0. All sides are
  * asserted outside the printing against hand-pinned
  * expectations.
- * The demo finally closes with a caller-string-length-limits
+ * The demo then shows a caller-string-length-limits
  * segment: the five caller-supplied short-identifier caps the
  * library enforces (dispatch `actor`, webhook `eventId`,
  * escrow id, quorum approval `evidence`, dispatch
@@ -470,6 +470,18 @@
  * idempotency replay is a no-op, and the at-cap eventId builds
  * a webhook that still verifies. All sides are asserted
  * outside the printing against hand-pinned expectations.
+ * The demo finally closes with an event-level RBAC
+ * segment: a dedicated escrow constructed with a pinned
+ * `rolePolicy` (FUND only by sponsor, DISPUTE only by
+ * moderator, arbitration only by arbiter) refuses a covered
+ * event from a wrong actor — or with no actor at all — with
+ * the pinned `actor not authorized for …` error and leaves
+ * state and history untouched, while an allowlisted actor
+ * advances it and events the policy does not cover run with
+ * no actor at all; a second escrow built without a policy
+ * drives the same route actor-less, the pre-policy behavior
+ * unchanged. All sides are asserted outside the printing
+ * against hand-pinned expectations.
  *
  * Usage: `npm run demo` (builds with tsc, then runs node on the compiled
  * output). Zero runtime dependencies: this file only imports the library
@@ -582,6 +594,7 @@ import {
   type QuorumSnapshotDiff,
   type ReconcileSettlementsResult,
   type RefundSettlement,
+  type RolePolicy,
   type Settlement,
   type SettlementAgingResult,
   type SettlementEventDedupeSignedSnapshotEnvelope,
@@ -3025,6 +3038,31 @@ export const DEMO_LIMITS_EVENT_ID_ERROR = `cannot build settlement webhook: 'eve
 export const DEMO_LIMITS_ESCROW_ID_ERROR = `invalid escrow: id must be at most ${MAX_ESCROW_ID_LENGTH} characters, got ${MAX_ESCROW_ID_LENGTH + 1}`;
 export const DEMO_LIMITS_EVIDENCE_ERROR = `quorum approval evidence must be at most ${MAX_EVIDENCE_LENGTH} characters, got ${MAX_EVIDENCE_LENGTH + 1}`;
 export const DEMO_LIMITS_IDEMPOTENCY_KEY_ERROR = `invalid dispatch options: idempotencyKey must be at most ${MAX_IDEMPOTENCY_KEY_LENGTH} characters, got ${MAX_IDEMPOTENCY_KEY_LENGTH + 1}`;
+
+/**
+ * Event-level RBAC fixtures (backlog #1247): the pinned policy
+ * for the demo's closing rolePolicy segment, mirroring the
+ * dataquest demo's DEMO_ROLE_POLICY (#476) — FUND only by
+ * sponsor, DISPUTE only by moderator, arbitration only by
+ * arbiter. The two segment escrows are driven under fixed
+ * literal timestamps on 2026-04-07 (no wall clock, no
+ * randomness), so the whole segment prints byte-identically
+ * on every run.
+ */
+export const DEMO_ROLE_POLICY: RolePolicy = {
+  FUND: ["sponsor"],
+  DISPUTE: ["moderator"],
+  ARBITRATE_RELEASE: ["arbiter"],
+  ARBITRATE_REFUND: ["arbiter"],
+};
+export const DEMO_ROLE_POLICY_ESCROW_ID = "DEMO-ESC-RBAC";
+export const DEMO_ROLE_POLICY_DEFAULT_ESCROW_ID = "DEMO-ESC-RBAC-DEFAULT";
+export const DEMO_ROLE_POLICY_FUND_AMOUNT = 10000;
+export const DEMO_ROLE_POLICY_FUND_AT = "2026-04-07T09:00:00.000Z";
+export const DEMO_ROLE_POLICY_SUBMIT_AT = "2026-04-07T09:05:00.000Z";
+export const DEMO_ROLE_POLICY_VERIFY_AT = "2026-04-07T09:10:00.000Z";
+export const DEMO_ROLE_POLICY_DISPUTE_AT = "2026-04-07T09:15:00.000Z";
+export const DEMO_ROLE_POLICY_ARBITRATE_AT = "2026-04-07T09:20:00.000Z";
 
 export interface DemoResult {
   escrow: Escrow;
@@ -5514,6 +5552,89 @@ export interface DemoResult {
    * evidence was refused before anything was recorded.
    */
   limitsQuorumApprovalCount: number;
+  /**
+   * The event-level RBAC segment's policy escrow
+   * ({@link DEMO_ROLE_POLICY_ESCROW_ID}), constructed with the
+   * pinned {@link DEMO_ROLE_POLICY}: RELEASED after the
+   * allowlisted arbiter arbitrates — every wrong-actor and
+   * missing-actor dispatch before it was rejected with no
+   * residue.
+   */
+  rolePolicyEscrow: Escrow;
+  /**
+   * The segment's pinned policy ({@link DEMO_ROLE_POLICY}):
+   * FUND only by sponsor, DISPUTE only by moderator,
+   * arbitration only by arbiter.
+   */
+  rolePolicy: RolePolicy;
+  /**
+   * The exact error the wrong-actor FUND threw — hand-pinned
+   * from the RBAC guard wording in `src/stateMachine.ts` and
+   * cross-checked against `test/rbac.test.ts`.
+   */
+  rolePolicyFundUnauthorizedError: string;
+  /**
+   * The exact error the actor-less FUND threw — hand-pinned
+   * from the same guard wording.
+   */
+  rolePolicyFundMissingActorError: string;
+  /**
+   * State of the policy escrow after both rejected FUNDs:
+   * CREATED — a rejected dispatch appends nothing.
+   */
+  rolePolicyStateAfterFundRejects: EscrowState;
+  /**
+   * History length of the policy escrow after both rejected
+   * FUNDs: 0.
+   */
+  rolePolicyHistoryLengthAfterFundRejects: number;
+  /**
+   * The exact error the wrong-actor DISPUTE threw — hand-pinned
+   * from the RBAC guard wording.
+   */
+  rolePolicyDisputeUnauthorizedError: string;
+  /**
+   * The exact error the actor-less DISPUTE threw — hand-pinned
+   * from the same guard wording.
+   */
+  rolePolicyDisputeMissingActorError: string;
+  /**
+   * State of the policy escrow after both rejected DISPUTEs:
+   * VERIFIED — the milestone round trip before it stands.
+   */
+  rolePolicyStateAfterDisputeRejects: EscrowState;
+  /**
+   * History length of the policy escrow after both rejected
+   * DISPUTEs: 3 (FUND, SUBMIT_MILESTONE, VERIFY_PASS).
+   */
+  rolePolicyHistoryLengthAfterDisputeRejects: number;
+  /**
+   * The exact error the wrong-actor ARBITRATE_RELEASE threw —
+   * hand-pinned from the RBAC guard wording.
+   */
+  rolePolicyArbitrateUnauthorizedError: string;
+  /**
+   * The exact error the actor-less ARBITRATE_RELEASE threw —
+   * hand-pinned from the same guard wording.
+   */
+  rolePolicyArbitrateMissingActorError: string;
+  /**
+   * State of the policy escrow after both rejected
+   * ARBITRATE_RELEASEs: DISPUTED.
+   */
+  rolePolicyStateAfterArbitrateRejects: EscrowState;
+  /**
+   * History length of the policy escrow after both rejected
+   * ARBITRATE_RELEASEs: 4 (the DISPUTE entry included).
+   */
+  rolePolicyHistoryLengthAfterArbitrateRejects: number;
+  /**
+   * The event-level RBAC segment's policy-free escrow
+   * ({@link DEMO_ROLE_POLICY_DEFAULT_ESCROW_ID}): driven the
+   * same route with no actor at all — RELEASED with 5 history
+   * entries, the pre-policy behavior unchanged.
+   */
+  rolePolicyDefaultEscrow: Escrow;
   lines: string[];
 }
 
@@ -13838,6 +13959,228 @@ export async function runDemo(): Promise<DemoResult> {
     `  idempotencyKey: ${MAX_IDEMPOTENCY_KEY_LENGTH + 1} chars rejected — "${limitsIdempotencyKeyError}" — key not consumed, history unchanged; ${MAX_IDEMPOTENCY_KEY_LENGTH} chars accepted and a replay with the same key is a no-op`,
   );
 
+  // --- Event-level RBAC: rolePolicy gates covered events to the listed actors (final closing) ---
+  // Every segment above dispatches with named actors, but nothing
+  // ever checked WHO may dispatch WHAT — the demo's actors were
+  // pure audit decoration. The opt-in `rolePolicy`
+  // (EscrowOptions, unit-tested since the RBAC tests landed)
+  // maps covered events to an actor allowlist: a covered
+  // dispatch whose actor is missing or outside the list throws
+  // `actor not authorized for …` after the transition-legality
+  // check and before anything is appended; uncovered events
+  // skip the check entirely; an escrow built without a policy
+  // skips it everywhere. Two dedicated escrows are driven under
+  // fixed literal timestamps — no network, no randomness, no
+  // wall clock:
+  //   - DEMO-ESC-RBAC carries the pinned DEMO_ROLE_POLICY
+  //     (FUND: [sponsor], DISPUTE: [moderator],
+  //     ARBITRATE_RELEASE / ARBITRATE_REFUND: [arbiter]). Its
+  //     FUND by creator and its actor-less FUND are both
+  //     rejected with the pinned errors, leaving CREATED / 0
+  //     entries; the allowlisted sponsor then funds it; the
+  //     two uncovered events (SUBMIT_MILESTONE, VERIFY_PASS)
+  //     run with no actor at all to VERIFIED / 3 entries;
+  //     DISPUTE by creator and actor-less DISPUTE are both
+  //     rejected, leaving VERIFIED / 3 entries; the moderator
+  //     then disputes; ARBITRATE_RELEASE by moderator and
+  //     actor-less ARBITRATE_RELEASE are both rejected,
+  //     leaving DISPUTED / 4 entries; the arbiter then
+  //     arbitrates to RELEASED.
+  //   - DEMO-ESC-RBAC-DEFAULT carries no policy: the same drive
+  //     to DISPUTED and an actor-less ARBITRATE_RELEASE both
+  //     succeed — the pre-policy behavior, unchanged.
+  // Hand-written expectations — written out here from the
+  // EscrowOptions docs and the RBAC tests, never derived from
+  // the gate itself. The segment asserts all of this here,
+  // outside the printed lines: an authorization verdict that
+  // drifted would fail the demo itself, not just a test.
+  // Honest limit: the allowlist checks the actor NAME a
+  // dispatch carries; authenticating that the caller really is
+  // that actor is the caller's job, not this library's.
+  const rolePolicyEscrow = new Escrow(DEMO_ROLE_POLICY_ESCROW_ID, {
+    rolePolicy: DEMO_ROLE_POLICY,
+  });
+  let rolePolicyFundUnauthorizedError: string | undefined;
+  try {
+    rolePolicyEscrow.dispatch(
+      "FUND",
+      "Deposit locked (wire received)",
+      DEMO_ROLE_POLICY_FUND_AMOUNT,
+      { actor: "creator", at: DEMO_ROLE_POLICY_FUND_AT },
+    );
+  } catch (err) {
+    rolePolicyFundUnauthorizedError =
+      err instanceof Error ? err.message : String(err);
+  }
+  let rolePolicyFundMissingActorError: string | undefined;
+  try {
+    rolePolicyEscrow.dispatch(
+      "FUND",
+      "Deposit locked (wire received)",
+      DEMO_ROLE_POLICY_FUND_AMOUNT,
+      { at: DEMO_ROLE_POLICY_FUND_AT },
+    );
+  } catch (err) {
+    rolePolicyFundMissingActorError =
+      err instanceof Error ? err.message : String(err);
+  }
+  const rolePolicyStateAfterFundRejects = rolePolicyEscrow.state;
+  const rolePolicyHistoryLengthAfterFundRejects =
+    rolePolicyEscrow.history.length;
+  rolePolicyEscrow.dispatch(
+    "FUND",
+    "Deposit locked (wire received)",
+    DEMO_ROLE_POLICY_FUND_AMOUNT,
+    { actor: "sponsor", at: DEMO_ROLE_POLICY_FUND_AT },
+  );
+  rolePolicyEscrow.dispatch(
+    "SUBMIT_MILESTONE",
+    "Milestone 1 delivered",
+    undefined,
+    { at: DEMO_ROLE_POLICY_SUBMIT_AT },
+  );
+  rolePolicyEscrow.dispatch("VERIFY_PASS", "Milestone 1 verified", undefined, {
+    at: DEMO_ROLE_POLICY_VERIFY_AT,
+  });
+  let rolePolicyDisputeUnauthorizedError: string | undefined;
+  try {
+    rolePolicyEscrow.dispatch("DISPUTE", "Delivery disputed", undefined, {
+      actor: "creator",
+      at: DEMO_ROLE_POLICY_DISPUTE_AT,
+    });
+  } catch (err) {
+    rolePolicyDisputeUnauthorizedError =
+      err instanceof Error ? err.message : String(err);
+  }
+  let rolePolicyDisputeMissingActorError: string | undefined;
+  try {
+    rolePolicyEscrow.dispatch("DISPUTE", "Delivery disputed", undefined, {
+      at: DEMO_ROLE_POLICY_DISPUTE_AT,
+    });
+  } catch (err) {
+    rolePolicyDisputeMissingActorError =
+      err instanceof Error ? err.message : String(err);
+  }
+  const rolePolicyStateAfterDisputeRejects = rolePolicyEscrow.state;
+  const rolePolicyHistoryLengthAfterDisputeRejects =
+    rolePolicyEscrow.history.length;
+  rolePolicyEscrow.dispatch("DISPUTE", "Delivery disputed", undefined, {
+    actor: "moderator",
+    at: DEMO_ROLE_POLICY_DISPUTE_AT,
+  });
+  let rolePolicyArbitrateUnauthorizedError: string | undefined;
+  try {
+    rolePolicyEscrow.dispatch(
+      "ARBITRATE_RELEASE",
+      "Arbitration: release to creator",
+      undefined,
+      { actor: "moderator", at: DEMO_ROLE_POLICY_ARBITRATE_AT },
+    );
+  } catch (err) {
+    rolePolicyArbitrateUnauthorizedError =
+      err instanceof Error ? err.message : String(err);
+  }
+  let rolePolicyArbitrateMissingActorError: string | undefined;
+  try {
+    rolePolicyEscrow.dispatch(
+      "ARBITRATE_RELEASE",
+      "Arbitration: release to creator",
+      undefined,
+      { at: DEMO_ROLE_POLICY_ARBITRATE_AT },
+    );
+  } catch (err) {
+    rolePolicyArbitrateMissingActorError =
+      err instanceof Error ? err.message : String(err);
+  }
+  const rolePolicyStateAfterArbitrateRejects = rolePolicyEscrow.state;
+  const rolePolicyHistoryLengthAfterArbitrateRejects =
+    rolePolicyEscrow.history.length;
+  rolePolicyEscrow.dispatch(
+    "ARBITRATE_RELEASE",
+    "Arbitration: release to creator",
+    undefined,
+    { actor: "arbiter", at: DEMO_ROLE_POLICY_ARBITRATE_AT },
+  );
+  const rolePolicyDefaultEscrow = new Escrow(
+    DEMO_ROLE_POLICY_DEFAULT_ESCROW_ID,
+  );
+  rolePolicyDefaultEscrow.dispatch(
+    "FUND",
+    "Deposit locked (wire received)",
+    DEMO_ROLE_POLICY_FUND_AMOUNT,
+    { at: DEMO_ROLE_POLICY_FUND_AT },
+  );
+  rolePolicyDefaultEscrow.dispatch(
+    "SUBMIT_MILESTONE",
+    "Milestone 1 delivered",
+    undefined,
+    { at: DEMO_ROLE_POLICY_SUBMIT_AT },
+  );
+  rolePolicyDefaultEscrow.dispatch(
+    "VERIFY_PASS",
+    "Milestone 1 verified",
+    undefined,
+    { at: DEMO_ROLE_POLICY_VERIFY_AT },
+  );
+  rolePolicyDefaultEscrow.dispatch("DISPUTE", "Delivery disputed", undefined, {
+    at: DEMO_ROLE_POLICY_DISPUTE_AT,
+  });
+  rolePolicyDefaultEscrow.dispatch(
+    "ARBITRATE_RELEASE",
+    "Arbitration: release to creator",
+    undefined,
+    { at: DEMO_ROLE_POLICY_ARBITRATE_AT },
+  );
+  const rolePolicyDefaultState = rolePolicyDefaultEscrow.state;
+  const rolePolicyDefaultHistoryLength =
+    rolePolicyDefaultEscrow.history.length;
+  if (
+    rolePolicyFundUnauthorizedError !==
+      'actor not authorized for FUND: "creator" is not in [sponsor]' ||
+    rolePolicyFundMissingActorError !==
+      "actor not authorized for FUND: policy requires an actor in [sponsor]" ||
+    rolePolicyStateAfterFundRejects !== "CREATED" ||
+    rolePolicyHistoryLengthAfterFundRejects !== 0 ||
+    rolePolicyDisputeUnauthorizedError !==
+      'actor not authorized for DISPUTE: "creator" is not in [moderator]' ||
+    rolePolicyDisputeMissingActorError !==
+      "actor not authorized for DISPUTE: policy requires an actor in [moderator]" ||
+    rolePolicyStateAfterDisputeRejects !== "VERIFIED" ||
+    rolePolicyHistoryLengthAfterDisputeRejects !== 3 ||
+    rolePolicyArbitrateUnauthorizedError !==
+      'actor not authorized for ARBITRATE_RELEASE: "moderator" is not in [arbiter]' ||
+    rolePolicyArbitrateMissingActorError !==
+      "actor not authorized for ARBITRATE_RELEASE: policy requires an actor in [arbiter]" ||
+    rolePolicyStateAfterArbitrateRejects !== "DISPUTED" ||
+    rolePolicyHistoryLengthAfterArbitrateRejects !== 4 ||
+    rolePolicyEscrow.state !== "RELEASED" ||
+    rolePolicyEscrow.history.length !== 5 ||
+    rolePolicyEscrow.history[0]?.event !== "FUND" ||
+    rolePolicyEscrow.history[0]?.actor !== "sponsor" ||
+    rolePolicyEscrow.history[0]?.at !== DEMO_ROLE_POLICY_FUND_AT ||
+    rolePolicyEscrow.history[1]?.actor !== undefined ||
+    rolePolicyEscrow.history[4]?.event !== "ARBITRATE_RELEASE" ||
+    rolePolicyEscrow.history[4]?.actor !== "arbiter" ||
+    rolePolicyEscrow.history[4]?.at !== DEMO_ROLE_POLICY_ARBITRATE_AT ||
+    rolePolicyDefaultState !== "RELEASED" ||
+    rolePolicyDefaultHistoryLength !== 5 ||
+    rolePolicyDefaultEscrow.history[4]?.event !== "ARBITRATE_RELEASE" ||
+    rolePolicyDefaultEscrow.history[4]?.actor !== undefined
+  ) {
+    throw new Error(
+      "demo fixture broken: rolePolicy does not match the hand-pinned contract (a covered event must reject an actor outside the allowlist and a missing actor with the pinned errors and no state or history change, an allowlisted actor must advance the escrow, uncovered events must run actor-less, and an escrow without a policy must arbitrate actor-less exactly as before)",
+    );
+  }
+  lines.push(
+    "",
+    "Event-level RBAC (rolePolicy gates covered events to the listed actors):",
+    `  policy escrow ${DEMO_ROLE_POLICY_ESCROW_ID} (constructed with rolePolicy { FUND: [sponsor], DISPUTE: [moderator], ARBITRATE_RELEASE: [arbiter], ARBITRATE_REFUND: [arbiter] }): FUND by sponsor at ${DEMO_ROLE_POLICY_FUND_AT} -> FUNDED; SUBMIT_MILESTONE and VERIFY_PASS with no actor -> VERIFIED (events the policy does not cover are unrestricted — no actor needed; the allowlist is an authorization check on the actor name, not identity authentication — a real deployment authenticates its actors itself)`,
+    `  covered event, wrong or missing actor (${DEMO_ROLE_POLICY_ESCROW_ID}): FUND by creator -> rejected: "${rolePolicyFundUnauthorizedError}"; FUND with no actor -> rejected: "${rolePolicyFundMissingActorError}"; state after both rejections: ${rolePolicyStateAfterFundRejects}, history entries: ${rolePolicyHistoryLengthAfterFundRejects} (a rejected dispatch appends nothing — the check runs before the audit entry is written)`,
+    `  DISPUTE by creator -> rejected: "${rolePolicyDisputeUnauthorizedError}"; DISPUTE with no actor -> rejected: "${rolePolicyDisputeMissingActorError}"; state after both rejections: ${rolePolicyStateAfterDisputeRejects}, history entries: ${rolePolicyHistoryLengthAfterDisputeRejects}`,
+    `  ARBITRATE_RELEASE by moderator -> rejected: "${rolePolicyArbitrateUnauthorizedError}"; ARBITRATE_RELEASE with no actor -> rejected: "${rolePolicyArbitrateMissingActorError}"; state after both rejections: ${rolePolicyStateAfterArbitrateRejects}, history entries: ${rolePolicyHistoryLengthAfterArbitrateRejects}; ARBITRATE_RELEASE by arbiter -> RELEASED`,
+    `  no policy, no check (${DEMO_ROLE_POLICY_DEFAULT_ESCROW_ID}): an escrow constructed without rolePolicy is driven FUND -> SUBMIT_MILESTONE -> VERIFY_PASS -> DISPUTE -> ARBITRATE_RELEASE with no actor at all -> RELEASED, history entries: ${rolePolicyDefaultHistoryLength} (omitting the policy preserves the exact pre-policy behavior — no event requires an actor anywhere)`,
+  );
+
   return {
     escrow,
     report,
@@ -14226,6 +14569,21 @@ export async function runDemo(): Promise<DemoResult> {
     limitsIdempotencyKeyError,
     limitsAtLimitWebhookVerified,
     limitsQuorumApprovalCount,
+    rolePolicyEscrow,
+    rolePolicy: DEMO_ROLE_POLICY,
+    rolePolicyFundUnauthorizedError,
+    rolePolicyFundMissingActorError,
+    rolePolicyStateAfterFundRejects,
+    rolePolicyHistoryLengthAfterFundRejects,
+    rolePolicyDisputeUnauthorizedError,
+    rolePolicyDisputeMissingActorError,
+    rolePolicyStateAfterDisputeRejects,
+    rolePolicyHistoryLengthAfterDisputeRejects,
+    rolePolicyArbitrateUnauthorizedError,
+    rolePolicyArbitrateMissingActorError,
+    rolePolicyStateAfterArbitrateRejects,
+    rolePolicyHistoryLengthAfterArbitrateRejects,
+    rolePolicyDefaultEscrow,
     lines,
   };
 }

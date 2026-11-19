@@ -18,6 +18,24 @@ version changes.
 
 ### Added
 
+- CLI demo event-level RBAC segment (2026-11-19,
+  backlog #1247): `src/demo.ts` finally closes with a rolePolicy
+  segment mirroring the dataquest demo's #476 — a dedicated escrow
+  constructed with the pinned `DEMO_ROLE_POLICY` (FUND: [sponsor],
+  DISPUTE: [moderator], ARBITRATE_RELEASE / ARBITRATE_REFUND:
+  [arbiter]) refuses a covered event from a wrong actor or with no
+  actor at all with the pinned `actor not authorized for …` error
+  and zero state/history residue, while an allowlisted actor
+  advances it and the uncovered SUBMIT_MILESTONE / VERIFY_PASS run
+  actor-less; a second escrow built without a policy drives the
+  same FUND -> SUBMIT_MILESTONE -> VERIFY_PASS -> DISPUTE ->
+  ARBITRATE_RELEASE route with no actor at all, the pre-policy
+  behavior unchanged. README demo section and RBAC bullet updated,
+  test counts 2245 -> 2247; two new demo tests (in-process verdicts
+  with an independent re-drive cross-check + printed lines +
+  determinism), and a broken pinned state expectation was verified
+  to fail the demo at the guard before restoring.
+
 - CLI demo batch-summary export/import/diff segment (2026-11-18,
   backlog #1242): `src/demo.ts` renders the day-end batch summary
   three ways after the summary section — `renderSettlementReportsSummary`

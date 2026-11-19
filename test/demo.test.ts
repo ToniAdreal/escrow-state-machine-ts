@@ -283,6 +283,15 @@ import {
   DEMO_RETRY_AFTER_DELIVERY_SCRIPTED_STATUSES,
   DEMO_RETRY_AFTER_DELIVERY_URL,
   DEMO_RETRY_AFTER_NOW_MS,
+  DEMO_ROLE_POLICY,
+  DEMO_ROLE_POLICY_ARBITRATE_AT,
+  DEMO_ROLE_POLICY_DEFAULT_ESCROW_ID,
+  DEMO_ROLE_POLICY_DISPUTE_AT,
+  DEMO_ROLE_POLICY_ESCROW_ID,
+  DEMO_ROLE_POLICY_FUND_AMOUNT,
+  DEMO_ROLE_POLICY_FUND_AT,
+  DEMO_ROLE_POLICY_SUBMIT_AT,
+  DEMO_ROLE_POLICY_VERIFY_AT,
   DEMO_SINGLE_DELIVERY_SCRIPTED_STATUSES,
   DEMO_SINGLE_DELIVERY_URL,
   DEMO_EVENT_ID_HEADER_FANOUT_AT,
@@ -4704,7 +4713,9 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
   );
   // Snapshot-comparison tail: the segment diffs two snapshots of
   // one escrow and ends on the cross-escrow rejection line —
-  // followed now by the webhook-outbox segment that closes the
+  // followed now by the webhook-outbox segment, the redrive
+  // segment, the retry segment, the caller-string-length-limits
+  // segment, and the event-level RBAC segment that closes the
   // demo.
   assert.match(
     out,
@@ -4724,8 +4735,8 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
   // 500s into the outbox (pending, then dead-letter) and clears
   // the recovered pair with its 200; it is followed by the
   // redrive segment, which drains the dead letter, and then by
-  // the caller-string-length-limits segment that now closes the
-  // demo.
+  // the caller-string-length-limits segment and the
+  // event-level RBAC segment that now closes the demo.
   assert.match(
     out,
     /Webhook outbox \(SettlementWebhookOutbox: failed deliveries stay pending, then dead-letter\):/,
@@ -4772,10 +4783,11 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
       "  redelivery after the fix: 200 on the first attempt — the success cleared the pair; ledger ends pending 0, dead letter 0",
     ),
   );
-  // Caller-string-length-limits tail: the closing segment refuses
+  // Caller-string-length-limits tail: the segment refuses
   // one-over-the-cap values for all five caller-supplied short
-  // identifiers and accepts the exact at-cap values, and the demo
-  // ends on the idempotencyKey line.
+  // identifiers and accepts the exact at-cap values; it is
+  // followed by the event-level RBAC segment that now closes
+  // the demo, and the demo ends on the no-policy line.
   assert.match(
     out,
     /Caller string length limits \(caller-supplied identifiers are capped, never truncated\):/,
@@ -4801,10 +4813,42 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
     ),
   );
   assert.ok(
+    out.includes(
+      `  idempotencyKey: 257 chars rejected — "${DEMO_LIMITS_IDEMPOTENCY_KEY_ERROR}" — key not consumed, history unchanged; 256 chars accepted and a replay with the same key is a no-op`,
+    ),
+  );
+  // Event-level RBAC tail: the closing segment gates FUND /
+  // DISPUTE / arbitration to the listed actors and drives a
+  // policy-free escrow the same route with no actor at all.
+  assert.match(
+    out,
+    /Event-level RBAC \(rolePolicy gates covered events to the listed actors\):/,
+  );
+  assert.ok(
+    out.includes(
+      `  policy escrow ${DEMO_ROLE_POLICY_ESCROW_ID} (constructed with rolePolicy { FUND: [sponsor], DISPUTE: [moderator], ARBITRATE_RELEASE: [arbiter], ARBITRATE_REFUND: [arbiter] }): FUND by sponsor at ${DEMO_ROLE_POLICY_FUND_AT} -> FUNDED; SUBMIT_MILESTONE and VERIFY_PASS with no actor -> VERIFIED (events the policy does not cover are unrestricted — no actor needed; the allowlist is an authorization check on the actor name, not identity authentication — a real deployment authenticates its actors itself)`,
+    ),
+  );
+  assert.ok(
+    out.includes(
+      `  covered event, wrong or missing actor (${DEMO_ROLE_POLICY_ESCROW_ID}): FUND by creator -> rejected: "actor not authorized for FUND: "creator" is not in [sponsor]"; FUND with no actor -> rejected: "actor not authorized for FUND: policy requires an actor in [sponsor]"; state after both rejections: CREATED, history entries: 0 (a rejected dispatch appends nothing — the check runs before the audit entry is written)`,
+    ),
+  );
+  assert.ok(
+    out.includes(
+      `  DISPUTE by creator -> rejected: "actor not authorized for DISPUTE: "creator" is not in [moderator]"; DISPUTE with no actor -> rejected: "actor not authorized for DISPUTE: policy requires an actor in [moderator]"; state after both rejections: VERIFIED, history entries: 3`,
+    ),
+  );
+  assert.ok(
+    out.includes(
+      `  ARBITRATE_RELEASE by moderator -> rejected: "actor not authorized for ARBITRATE_RELEASE: "moderator" is not in [arbiter]"; ARBITRATE_RELEASE with no actor -> rejected: "actor not authorized for ARBITRATE_RELEASE: policy requires an actor in [arbiter]"; state after both rejections: DISPUTED, history entries: 4; ARBITRATE_RELEASE by arbiter -> RELEASED`,
+    ),
+  );
+  assert.ok(
     out
       .trimEnd()
       .endsWith(
-        `  idempotencyKey: 257 chars rejected — "${DEMO_LIMITS_IDEMPOTENCY_KEY_ERROR}" — key not consumed, history unchanged; 256 chars accepted and a replay with the same key is a no-op`,
+        `  no policy, no check (${DEMO_ROLE_POLICY_DEFAULT_ESCROW_ID}): an escrow constructed without rolePolicy is driven FUND -> SUBMIT_MILESTONE -> VERIFY_PASS -> DISPUTE -> ARBITRATE_RELEASE with no actor at all -> RELEASED, history entries: 5 (omitting the policy preserves the exact pre-policy behavior — no event requires an actor anywhere)`,
       ),
   );
 });
@@ -11009,8 +11053,8 @@ test("demo shows webhook outbox redrive: dead-lettered pair returns to pending, 
   assert.deepEqual(outbox.deadLetter(), outboxDeadAfterRedrive);
 
   // The printed section follows the outbox segment and precedes
-  // the caller-string-length-limits segment that now closes the
-  // demo.
+  // the caller-string-length-limits segment that precedes the
+  // event-level RBAC segment closing the demo.
   const header =
     "Webhook outbox redrive (SettlementWebhookOutbox.redrive: the dead letter comes back to pending):";
   assert.ok(
@@ -11123,7 +11167,8 @@ test("demo shows webhook outbox retry: runner re-delivers the pending pair (500 
   assert.deepEqual(outboxRetryOutbox.deadLetter(), []);
 
   // The printed section follows the redrive segment and precedes
-  // the caller-string-length-limits segment that closes the demo.
+  // the caller-string-length-limits segment that precedes the
+  // event-level RBAC segment closing the demo.
   const header =
     "Webhook outbox retry (retrySettlementWebhookOutbox: the opt-in retry loop over the pending ledger):";
   assert.ok(
@@ -11313,8 +11358,9 @@ test("demo shows caller string length limits: five caps refuse one-over and acce
   assert.equal(limitsAtLimitWebhookVerified, true);
   assert.equal(limitsQuorumApprovalCount, 1);
 
-  // The printed section is the demo's closing section, after the
-  // webhook-outbox segment.
+  // The printed section follows the webhook-outbox segment
+  // and precedes the event-level RBAC segment that now closes
+  // the demo.
   const header =
     "Caller string length limits (caller-supplied identifiers are capped, never truncated):";
   assert.ok(
@@ -11323,6 +11369,13 @@ test("demo shows caller string length limits: five caps refuse one-over and acce
         "Webhook outbox (SettlementWebhookOutbox: failed deliveries stay pending, then dead-letter):",
       ),
     "caller-string-length-limits segment must follow the webhook-outbox segment",
+  );
+  assert.ok(
+    text.indexOf(header) <
+      text.indexOf(
+        "Event-level RBAC (rolePolicy gates covered events to the listed actors):",
+      ),
+    "caller-string-length-limits segment must precede the event-level RBAC segment",
   );
   assert.ok(
     text.includes(
@@ -11354,9 +11407,13 @@ test("demo shows caller string length limits: five caps refuse one-over and acce
 test("demo caller-string-length-limits segment is deterministic: two runs print byte-identical limits lines", async () => {
   const header =
     "Caller string length limits (caller-supplied identifiers are capped, never truncated):";
-  // The limits section is the demo's last section, so it runs
-  // from the blank line before its header to the end.
-  const segment = (ls: string[]) => ls.slice(ls.indexOf(header) - 1);
+  const rolePolicyHeader =
+    "Event-level RBAC (rolePolicy gates covered events to the listed actors):";
+  // The limits section is followed by the event-level RBAC
+  // section, so it runs from the blank line before its header
+  // to the blank line before the RBAC header.
+  const segment = (ls: string[]) =>
+    ls.slice(ls.indexOf(header) - 1, ls.indexOf(rolePolicyHeader) - 1);
   const a = await runDemo();
   const b = await runDemo();
   // Blank + header + actor + eventId + escrow-id + evidence +
@@ -11376,4 +11433,292 @@ test("demo caller-string-length-limits segment is deterministic: two runs print 
     b.limitsAtLimitWebhookVerified,
   );
   assert.equal(a.limitsQuorumApprovalCount, b.limitsQuorumApprovalCount);
+});
+
+test("demo shows the event-level RBAC segment in-process: allowlisted actors advance, wrong or missing actors are rejected without a trace, uncovered events and policy-free escrows are unrestricted", async () => {
+  const {
+    rolePolicyEscrow,
+    rolePolicy,
+    rolePolicyFundUnauthorizedError,
+    rolePolicyFundMissingActorError,
+    rolePolicyStateAfterFundRejects,
+    rolePolicyHistoryLengthAfterFundRejects,
+    rolePolicyDisputeUnauthorizedError,
+    rolePolicyDisputeMissingActorError,
+    rolePolicyStateAfterDisputeRejects,
+    rolePolicyHistoryLengthAfterDisputeRejects,
+    rolePolicyArbitrateUnauthorizedError,
+    rolePolicyArbitrateMissingActorError,
+    rolePolicyStateAfterArbitrateRejects,
+    rolePolicyHistoryLengthAfterArbitrateRejects,
+    rolePolicyDefaultEscrow,
+    lines,
+  } = await runDemo();
+  const text = lines.join("\n");
+
+  // Hand-written expectations — written out here from the
+  // EscrowOptions docs in src/stateMachine.ts and
+  // test/rbac.test.ts, never derived from the gate itself.
+  assert.deepEqual(DEMO_ROLE_POLICY, {
+    FUND: ["sponsor"],
+    DISPUTE: ["moderator"],
+    ARBITRATE_RELEASE: ["arbiter"],
+    ARBITRATE_REFUND: ["arbiter"],
+  });
+  assert.deepEqual(rolePolicy, DEMO_ROLE_POLICY);
+  assert.equal(rolePolicyEscrow.id, DEMO_ROLE_POLICY_ESCROW_ID);
+  assert.equal(rolePolicyEscrow.state, "RELEASED");
+  assert.equal(rolePolicyEscrow.history.length, 5);
+  assert.equal(
+    rolePolicyFundUnauthorizedError,
+    'actor not authorized for FUND: "creator" is not in [sponsor]',
+  );
+  assert.equal(
+    rolePolicyFundMissingActorError,
+    "actor not authorized for FUND: policy requires an actor in [sponsor]",
+  );
+  assert.equal(rolePolicyStateAfterFundRejects, "CREATED");
+  assert.equal(rolePolicyHistoryLengthAfterFundRejects, 0);
+  assert.equal(
+    rolePolicyDisputeUnauthorizedError,
+    'actor not authorized for DISPUTE: "creator" is not in [moderator]',
+  );
+  assert.equal(
+    rolePolicyDisputeMissingActorError,
+    "actor not authorized for DISPUTE: policy requires an actor in [moderator]",
+  );
+  assert.equal(rolePolicyStateAfterDisputeRejects, "VERIFIED");
+  assert.equal(rolePolicyHistoryLengthAfterDisputeRejects, 3);
+  assert.equal(
+    rolePolicyArbitrateUnauthorizedError,
+    'actor not authorized for ARBITRATE_RELEASE: "moderator" is not in [arbiter]',
+  );
+  assert.equal(
+    rolePolicyArbitrateMissingActorError,
+    "actor not authorized for ARBITRATE_RELEASE: policy requires an actor in [arbiter]",
+  );
+  assert.equal(rolePolicyStateAfterArbitrateRejects, "DISPUTED");
+  assert.equal(rolePolicyHistoryLengthAfterArbitrateRejects, 4);
+  assert.equal(rolePolicyEscrow.history[0]?.event, "FUND");
+  assert.equal(rolePolicyEscrow.history[0]?.actor, "sponsor");
+  assert.equal(rolePolicyEscrow.history[0]?.at, DEMO_ROLE_POLICY_FUND_AT);
+  assert.equal(rolePolicyEscrow.history[1]?.event, "SUBMIT_MILESTONE");
+  assert.equal(rolePolicyEscrow.history[1]?.actor, undefined);
+  assert.equal(rolePolicyEscrow.history[2]?.event, "VERIFY_PASS");
+  assert.equal(rolePolicyEscrow.history[2]?.actor, undefined);
+  assert.equal(rolePolicyEscrow.history[3]?.event, "DISPUTE");
+  assert.equal(rolePolicyEscrow.history[3]?.actor, "moderator");
+  assert.equal(rolePolicyEscrow.history[4]?.event, "ARBITRATE_RELEASE");
+  assert.equal(rolePolicyEscrow.history[4]?.actor, "arbiter");
+  assert.equal(rolePolicyEscrow.history[4]?.at, DEMO_ROLE_POLICY_ARBITRATE_AT);
+  assert.equal(rolePolicyDefaultEscrow.id, DEMO_ROLE_POLICY_DEFAULT_ESCROW_ID);
+  assert.equal(rolePolicyDefaultEscrow.state, "RELEASED");
+  assert.equal(rolePolicyDefaultEscrow.history.length, 5);
+  assert.equal(
+    rolePolicyDefaultEscrow.history[4]?.event,
+    "ARBITRATE_RELEASE",
+  );
+  assert.equal(rolePolicyDefaultEscrow.history[4]?.actor, undefined);
+  // Independent checks built in the test — the demo segment
+  // is not self-certifying: fresh escrows driven here under
+  // the same policy and fixed timestamps reproduce every
+  // verdict on their own (the script from the RBAC tests).
+  const independent = new Escrow("test-rbac-demo", {
+    rolePolicy: DEMO_ROLE_POLICY,
+  });
+  assert.throws(
+    () =>
+      independent.dispatch(
+        "FUND",
+        "Deposit locked (wire received)",
+        DEMO_ROLE_POLICY_FUND_AMOUNT,
+        { actor: "creator", at: DEMO_ROLE_POLICY_FUND_AT },
+      ),
+    /actor not authorized for FUND: "creator" is not in \[sponsor\]/,
+  );
+  assert.throws(
+    () =>
+      independent.dispatch(
+        "FUND",
+        "Deposit locked (wire received)",
+        DEMO_ROLE_POLICY_FUND_AMOUNT,
+        { at: DEMO_ROLE_POLICY_FUND_AT },
+      ),
+    /actor not authorized for FUND: policy requires an actor in \[sponsor\]/,
+  );
+  assert.equal(independent.state, "CREATED");
+  assert.equal(independent.history.length, 0);
+  independent.dispatch(
+    "FUND",
+    "Deposit locked (wire received)",
+    DEMO_ROLE_POLICY_FUND_AMOUNT,
+    { actor: "sponsor", at: DEMO_ROLE_POLICY_FUND_AT },
+  );
+  independent.dispatch("SUBMIT_MILESTONE", "Milestone 1 delivered", undefined, {
+    at: DEMO_ROLE_POLICY_SUBMIT_AT,
+  });
+  independent.dispatch("VERIFY_PASS", "Milestone 1 verified", undefined, {
+    at: DEMO_ROLE_POLICY_VERIFY_AT,
+  });
+  assert.equal(independent.state, "VERIFIED");
+  assert.throws(
+    () =>
+      independent.dispatch("DISPUTE", "Delivery disputed", undefined, {
+        actor: "creator",
+        at: DEMO_ROLE_POLICY_DISPUTE_AT,
+      }),
+    /actor not authorized for DISPUTE: "creator" is not in \[moderator\]/,
+  );
+  assert.throws(
+    () =>
+      independent.dispatch("DISPUTE", "Delivery disputed", undefined, {
+        at: DEMO_ROLE_POLICY_DISPUTE_AT,
+      }),
+    /actor not authorized for DISPUTE: policy requires an actor in \[moderator\]/,
+  );
+  assert.equal(independent.history.length, 3);
+  independent.dispatch("DISPUTE", "Delivery disputed", undefined, {
+    actor: "moderator",
+    at: DEMO_ROLE_POLICY_DISPUTE_AT,
+  });
+  assert.throws(
+    () =>
+      independent.dispatch(
+        "ARBITRATE_RELEASE",
+        "Arbitration: release to creator",
+        undefined,
+        { actor: "moderator", at: DEMO_ROLE_POLICY_ARBITRATE_AT },
+      ),
+    /actor not authorized for ARBITRATE_RELEASE: "moderator" is not in \[arbiter\]/,
+  );
+  assert.throws(
+    () =>
+      independent.dispatch(
+        "ARBITRATE_RELEASE",
+        "Arbitration: release to creator",
+        undefined,
+        { at: DEMO_ROLE_POLICY_ARBITRATE_AT },
+      ),
+    /actor not authorized for ARBITRATE_RELEASE: policy requires an actor in \[arbiter\]/,
+  );
+  assert.equal(independent.history.length, 4);
+  independent.dispatch(
+    "ARBITRATE_RELEASE",
+    "Arbitration: release to creator",
+    undefined,
+    { actor: "arbiter", at: DEMO_ROLE_POLICY_ARBITRATE_AT },
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(independent.history)),
+    JSON.parse(JSON.stringify(rolePolicyEscrow.history)),
+  );
+  const independentDefault = new Escrow("test-rbac-demo-default");
+  independentDefault.dispatch(
+    "FUND",
+    "Deposit locked (wire received)",
+    DEMO_ROLE_POLICY_FUND_AMOUNT,
+    { at: DEMO_ROLE_POLICY_FUND_AT },
+  );
+  independentDefault.dispatch("SUBMIT_MILESTONE", "Milestone 1 delivered", undefined, {
+    at: DEMO_ROLE_POLICY_SUBMIT_AT,
+  });
+  independentDefault.dispatch("VERIFY_PASS", "Milestone 1 verified", undefined, {
+    at: DEMO_ROLE_POLICY_VERIFY_AT,
+  });
+  independentDefault.dispatch("DISPUTE", "Delivery disputed", undefined, {
+    at: DEMO_ROLE_POLICY_DISPUTE_AT,
+  });
+  independentDefault.dispatch(
+    "ARBITRATE_RELEASE",
+    "Arbitration: release to creator",
+    undefined,
+    { at: DEMO_ROLE_POLICY_ARBITRATE_AT },
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(independentDefault.history)),
+    JSON.parse(JSON.stringify(rolePolicyDefaultEscrow.history)),
+  );
+
+  // The printed section is the demo's closing section, after the
+  // caller-string-length-limits segment.
+  const header =
+    "Event-level RBAC (rolePolicy gates covered events to the listed actors):";
+  assert.ok(
+    text.indexOf(header) >
+      text.indexOf(
+        "Caller string length limits (caller-supplied identifiers are capped, never truncated):",
+      ),
+    "event-level RBAC segment must follow the caller-string-length-limits segment",
+  );
+  assert.ok(
+    text.includes(
+      `  policy escrow ${DEMO_ROLE_POLICY_ESCROW_ID} (constructed with rolePolicy { FUND: [sponsor], DISPUTE: [moderator], ARBITRATE_RELEASE: [arbiter], ARBITRATE_REFUND: [arbiter] }): FUND by sponsor at ${DEMO_ROLE_POLICY_FUND_AT} -> FUNDED; SUBMIT_MILESTONE and VERIFY_PASS with no actor -> VERIFIED (events the policy does not cover are unrestricted — no actor needed; the allowlist is an authorization check on the actor name, not identity authentication — a real deployment authenticates its actors itself)`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  covered event, wrong or missing actor (${DEMO_ROLE_POLICY_ESCROW_ID}): FUND by creator -> rejected: "${rolePolicyFundUnauthorizedError}"; FUND with no actor -> rejected: "${rolePolicyFundMissingActorError}"; state after both rejections: ${rolePolicyStateAfterFundRejects}, history entries: ${rolePolicyHistoryLengthAfterFundRejects} (a rejected dispatch appends nothing — the check runs before the audit entry is written)`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  DISPUTE by creator -> rejected: "${rolePolicyDisputeUnauthorizedError}"; DISPUTE with no actor -> rejected: "${rolePolicyDisputeMissingActorError}"; state after both rejections: ${rolePolicyStateAfterDisputeRejects}, history entries: ${rolePolicyHistoryLengthAfterDisputeRejects}`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  ARBITRATE_RELEASE by moderator -> rejected: "${rolePolicyArbitrateUnauthorizedError}"; ARBITRATE_RELEASE with no actor -> rejected: "${rolePolicyArbitrateMissingActorError}"; state after both rejections: ${rolePolicyStateAfterArbitrateRejects}, history entries: ${rolePolicyHistoryLengthAfterArbitrateRejects}; ARBITRATE_RELEASE by arbiter -> RELEASED`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  no policy, no check (${DEMO_ROLE_POLICY_DEFAULT_ESCROW_ID}): an escrow constructed without rolePolicy is driven FUND -> SUBMIT_MILESTONE -> VERIFY_PASS -> DISPUTE -> ARBITRATE_RELEASE with no actor at all -> RELEASED, history entries: 5 (omitting the policy preserves the exact pre-policy behavior — no event requires an actor anywhere)`,
+    ),
+  );
+});
+
+test("demo event-level RBAC segment is deterministic: two runs print byte-identical rolePolicy lines", async () => {
+  const header =
+    "Event-level RBAC (rolePolicy gates covered events to the listed actors):";
+  // The RBAC section is the demo's last section, so it runs
+  // from the blank line before its header to the end.
+  const segment = (ls: string[]) => ls.slice(ls.indexOf(header) - 1);
+  const a = await runDemo();
+  const b = await runDemo();
+  // Blank + header + policy-escrow + FUND-rejects + DISPUTE-rejects
+  // + arbitration-rejects + no-policy lines; every printed value
+  // derives from the pinned fixtures alone, so no normalization
+  // is needed.
+  const segA = segment(a.lines);
+  assert.equal(segA.length, 7);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.deepEqual(a.rolePolicyEscrow.history, b.rolePolicyEscrow.history);
+  assert.equal(
+    a.rolePolicyFundUnauthorizedError,
+    b.rolePolicyFundUnauthorizedError,
+  );
+  assert.equal(
+    a.rolePolicyFundMissingActorError,
+    b.rolePolicyFundMissingActorError,
+  );
+  assert.equal(
+    a.rolePolicyDisputeUnauthorizedError,
+    b.rolePolicyDisputeUnauthorizedError,
+  );
+  assert.equal(
+    a.rolePolicyDisputeMissingActorError,
+    b.rolePolicyDisputeMissingActorError,
+  );
+  assert.equal(
+    a.rolePolicyArbitrateUnauthorizedError,
+    b.rolePolicyArbitrateUnauthorizedError,
+  );
+  assert.equal(
+    a.rolePolicyArbitrateMissingActorError,
+    b.rolePolicyArbitrateMissingActorError,
+  );
+  assert.deepEqual(
+    a.rolePolicyDefaultEscrow.history,
+    b.rolePolicyDefaultEscrow.history,
+  );
 });
