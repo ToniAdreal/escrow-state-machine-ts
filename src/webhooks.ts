@@ -133,6 +133,15 @@ export interface BuildWebhookOptions {
  * candidate whose HMAC matches wins, so the array order is only a
  * performance preference (put the newest secret first), never a security
  * one — any match authenticates, and all-mismatch fails closed.
+ *
+ * Unknown option keys fail closed (#1262, see
+ * `VERIFY_WEBHOOK_OPTION_FIELDS`): a typo'd `maxAge` would otherwise be
+ * silently dropped, leaving the caller believing a freshness window was
+ * on while verification ran signature-only. An unknown key throws
+ * `cannot verify settlement webhook: unknown option "<key>"` after the
+ * `secrets` non-empty check and before any other field is read or the
+ * signature is compared. The string/Buffer single-secret overload has no
+ * keys to scan and is unaffected.
  */
 export interface VerifyWebhookOptions {
   /** Candidate HMAC secrets; must be a non-empty array of non-empty secrets. */
@@ -580,7 +589,20 @@ export function buildSettlementWebhooks(
  * on its signature alone (legacy behavior), leaving a receiver that
  * deduplicates on `eventId` with no key — which is exactly the gap
  * this option closes.
+ *
+ * Unknown option keys fail closed (#1262): checked after the `secrets`
+ * non-empty validation and before any other field is read or the
+ * signature is compared, so a typo is reported as itself, not as a
+ * missing-field default.
  */
+/** Allowlist of `VerifyWebhookOptions` keys (#1262). */
+const VERIFY_WEBHOOK_OPTION_FIELDS = new Set([
+  "secrets",
+  "maxAgeMs",
+  "maxFutureSkewMs",
+  "requireEventId",
+  "now",
+]);
 export function verifySettlementWebhook(
   body: string | SettlementWebhookPayload,
   signature: string,
@@ -615,6 +637,24 @@ export function verifySettlementWebhook(
 
   const isOptionsForm =
     typeof secretOrOptions === "object" && !Buffer.isBuffer(secretOrOptions);
+  // Unknown option keys fail closed (#1262, see
+  // VERIFY_WEBHOOK_OPTION_FIELDS), checked after the `secrets`
+  // non-empty validation and before any other field is read or the
+  // signature is compared: a typo'd `maxAge` would otherwise silently
+  // drop the freshness window the caller thought it had, and a year-old
+  // legitimately-signed notification would verify on its signature
+  // alone. Only the options form is scanned; the string/Buffer
+  // single-secret overload has no keys to scan.
+  if (isOptionsForm) {
+    for (const key of Object.keys(secretOrOptions)) {
+      if (!VERIFY_WEBHOOK_OPTION_FIELDS.has(key)) {
+        throw new Error(
+          `cannot verify settlement webhook: unknown option "${key}"`,
+        );
+      }
+    }
+  }
+
   const maxAgeMs = isOptionsForm
     ? (secretOrOptions as VerifyWebhookOptions).maxAgeMs
     : undefined;

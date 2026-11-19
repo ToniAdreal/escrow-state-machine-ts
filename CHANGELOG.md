@@ -139,6 +139,24 @@ version changes.
 
 ### Fixed
 
+- `verifySettlementWebhook` `VerifyWebhookOptions` unknown fields now
+  fail closed (2026-11-19, backlog #1262): the verifier validated
+  each of its five known keys (`secrets`, `maxAgeMs`,
+  `maxFutureSkewMs`, `requireEventId`, `now`) but never scanned the
+  keys, so a typo'd `maxAge` was silently dropped — the caller
+  believed a freshness window was on while verification ran
+  signature-only, and a year-old legitimately-signed notification
+  verified. An unknown key now throws
+  `cannot verify settlement webhook: unknown option "<key>"` after
+  the `secrets` non-empty check (an empty `secrets` error still wins)
+  and before any other field is read or the signature is compared, so
+  even a forged signature reports the typo instead of a quiet
+  `false`. The string/Buffer single-secret overload has no keys to
+  scan and is unaffected. New
+  `test/verifySettlementWebhookUnknownOptions.test.ts` (15 cases),
+  test counts 2279 -> 2294; a disabled guard was verified to turn
+  the new tests red, then restored.
+
 - `expireOverdueEscrows` now fails fast on an invalid `now`
   (2026-11-19, backlog #1259): an invalid `now` screened nothing
   (`NaN >= deadline` is false for every escrow) and the executor

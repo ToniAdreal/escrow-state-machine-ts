@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2279 tests, all local
+npm test   # 2294 tests, all local
 ```
 
 ## Quickstart
@@ -1553,6 +1553,15 @@ sender's own options, never this receiver-side requirement — so
 enabling it only hardens receivers. Defaults to `false`: without it,
 a keyless payload verifies on its signature alone, exactly as before.
 
+Option typos fail closed: the options object is scanned against the
+five known keys (`secrets`, `maxAgeMs`, `maxFutureSkewMs`,
+`requireEventId`, `now`) after the `secrets` non-empty check and
+before any other field is read or the signature is compared, and an
+unknown key throws `cannot verify settlement webhook: unknown option
+"<key>"`. A typo'd `maxAge` can therefore never silently drop the
+freshness window it was meant to set. The string/Buffer single-secret
+overload takes no options object and is unaffected.
+
 Delivery is handled by `deliverSettlementWebhook(url, webhook, options)` —
 still zero runtime dependencies (Node ≥ 20 global `fetch`):
 
@@ -2052,7 +2061,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2279 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2294 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
