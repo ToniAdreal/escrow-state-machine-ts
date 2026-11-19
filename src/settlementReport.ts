@@ -947,6 +947,16 @@ export interface SettlementReportsSummary {
  *
  * Pure: the results array and the reports inside it are only read.
  *
+ * A duplicated report is rejected before any figure is summed: if two
+ * results carry reports for the same `escrowId`, the call throws
+ * `invalid summarizeSettlementReports: duplicate report escrowId: "<id>"`
+ * and returns no summary — the same settlement counted twice would
+ * silently double the day-end totals, so the caller bug fails closed
+ * the way {@link reconcileSettlements} and {@link buildSettlementReports}
+ * already do. Error entries carry no report and never participate in
+ * the duplicate check: two failures for the same escrow id are just
+ * two counted errors.
+ *
  * If any running total would leave the finite range — a hand-built or
  * upstream report carrying astronomical figures, or a batch whose
  * figures sum past `Number.MAX_VALUE` — the function throws
@@ -1002,6 +1012,24 @@ export function summarizeSettlementReports(
     string,
     { reports: number; totalDeposit: number; totalInflow: number; totalOutflow: number; totalRemaining: number }
   >();
+
+  // Fail-closed duplicate guard (backlog #1268): a repeated escrow in
+  // the batch would double-count one settlement in the totals, so the
+  // whole call throws before any figure is summed — mirroring the
+  // `reconcileSettlements` duplicate check and the batch builder's own
+  // rule. Error entries carry no report and never participate: two
+  // failures for the same id are just two counted errors.
+  const seenReportIds = new Set<string>();
+  for (const result of results) {
+    if (!result.report) continue;
+    const id = result.report.escrowId;
+    if (seenReportIds.has(id)) {
+      throw new Error(
+        `invalid summarizeSettlementReports: duplicate report escrowId: ${JSON.stringify(id)}`,
+      );
+    }
+    seenReportIds.add(id);
+  }
 
   for (const result of results) {
     if (!result.report) {

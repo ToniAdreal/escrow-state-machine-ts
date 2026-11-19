@@ -139,6 +139,22 @@ version changes.
 
 ### Fixed
 
+- `summarizeSettlementReports` rejects a duplicated report escrowId
+  (2026-11-19, backlog #1268): the summary loop summed every report it
+  was handed with no seen set, so the same escrow's report twice in a
+  batch — the same result object passed twice, or two builds of one
+  escrow spliced into one batch — silently doubled deposit, inflow,
+  outflow, and party figures in the day-end totals, even though the
+  batch builder (#993) and `reconcileSettlements` already refuse the
+  same mistake at their own entry points. A fail-fast pre-scan now
+  throws
+  `invalid summarizeSettlementReports: duplicate report escrowId: "<id>"`
+  before any figure is summed (so the duplicate error also wins over
+  the #1098 overflow guard); error entries carry no report and never
+  trigger the check. New
+  `test/summarizeSettlementReportsDuplicate.test.ts` (10 cases), test
+  counts 2307 -> 2317.
+
 - `SettlementEventDedupe` constructor options unknown fields now
   fail closed (2026-11-19, backlog #1265): the constructor validated
   each of its three known keys (`ttlMs`, `maxEntries`, `now`) but
