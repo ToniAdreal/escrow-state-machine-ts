@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2247 tests, all local
+npm test   # 2256 tests, all local
 ```
 
 ## Quickstart
@@ -408,6 +408,14 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   `toJSON()`. This is per-escrow retry protection, not a distributed
   idempotency store: two processes restoring the same snapshot
   independently can each execute the same key once.
+  Unknown `opts` keys fail closed: `dispatch` throws
+  `invalid dispatch options: unknown option "<key>"` before any field is
+  read, so a typo'd `idempotencykey` is reported instead of silently
+  dropping the dedupe, and a typo'd `actorr` instead of silently dropping
+  the audit attribution. The check runs after the `expectedSeq` guard
+  (which stays first of all) and before the actor shape validation and
+  the dedupe; the seven known keys are `actor`, `idempotencyKey`,
+  `evidence`, `settlementRef`, `refundRef`, `at`, and `expectedSeq`.
 - Injectable audit timestamps: `dispatch` opts also accept `at`
   (`Date | string`) to pin the audit entry's timestamp — for deterministic
   dispatch tests and replay (quorum approvals and webhook payloads already
@@ -2025,7 +2033,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2247 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2256 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

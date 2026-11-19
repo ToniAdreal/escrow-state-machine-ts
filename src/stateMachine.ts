@@ -700,6 +700,27 @@ const ESCROW_OPTION_FIELDS = new Set([
 ]);
 
 /**
+ * Allowlist of `DispatchOptions` keys, enforced by {@link Escrow.dispatch}
+ * (#1254). Unknown keys fail closed before any field is read: a typo'd
+ * `idempotencykey` would otherwise silently drop the idempotency dedupe,
+ * and a typo'd `actorr` would silently drop the audit attribution — the
+ * same silent-config-loss class the constructor-side unknown-field rule
+ * (#548, `ESCROW_OPTION_FIELDS`) already closes, moved from construction
+ * time to every dispatch. The set must stay in lockstep with the
+ * `DispatchOptions` interface; adding a field there without adding it
+ * here makes the new option unusable.
+ */
+const DISPATCH_OPTION_FIELDS = new Set([
+  "actor",
+  "idempotencyKey",
+  "evidence",
+  "settlementRef",
+  "refundRef",
+  "at",
+  "expectedSeq",
+]);
+
+/**
  * Validate a list of idempotency keys into a deduped set.
  *
  * `undefined` means "no keys" (the default). Otherwise the value must be
@@ -2019,7 +2040,11 @@ function chainHistoryEntries(
 }
 
 /**
- * Options accepted by {@link Escrow.dispatch}.
+ * Options accepted by {@link Escrow.dispatch}. Unknown keys fail closed:
+ * dispatch throws `invalid dispatch options: unknown option "<key>"`
+ * before any field is read (see `DISPATCH_OPTION_FIELDS` in
+ * `src/stateMachine.ts`), so a typo'd key can never silently drop a
+ * guard it was meant to set.
  */
 export interface DispatchOptions {
   /**
@@ -3037,10 +3062,16 @@ export class Escrow {
    *
    *               RBAC / idempotency ordering (mirrors the dataquest
    *               lifecycle): (0) the `expectedSeq` guard above runs
-   *               first of all; (1) the actor's own shape is validated
-   *               up front with the other dispatch-option validation,
-   *               before the idempotency dedup — a malformed actor is a
-   *               caller bug and is reported even on a duplicate key;
+   *               first of all; (1) the unknown-option scan runs next,
+   *               inside the dispatch-option validation — right after
+   *               the opts-must-be-object check and before any field
+   *               is read — so a typo'd key is reported as itself
+   *               (`invalid dispatch options: unknown option "<key>"`)
+   *               instead of being silently dropped; the actor's own
+   *               shape is validated up front with the other
+   *               dispatch-option validation, before the idempotency
+   *               dedup — a malformed actor is a caller bug and is
+   *               reported even on a duplicate key;
    *               (2) the idempotency dedup runs next, so a duplicate
    *               delivery is a pure no-op that never reaches the RBAC
    *               check; (3) the RBAC check itself runs AFTER the
@@ -3125,6 +3156,21 @@ export class Escrow {
     if (opts !== undefined) {
       if (typeof opts !== "object" || opts === null || Array.isArray(opts)) {
         throw new Error("invalid dispatch options: opts must be an object");
+      }
+      // Unknown option keys fail closed (#1254, see
+      // DISPATCH_OPTION_FIELDS), checked before any field is read so a
+      // typo is reported as itself, not as a missing-field default: a
+      // typo'd `idempotencykey` would otherwise silently drop the
+      // idempotency dedupe, and a typo'd `actorr` would silently drop
+      // the audit attribution. Runs after the `expectedSeq` guard
+      // above (the guard stays first of all) and after the
+      // must-be-object check, before the actor shape validation.
+      for (const key of Object.keys(opts)) {
+        if (!DISPATCH_OPTION_FIELDS.has(key)) {
+          throw new Error(
+            `invalid dispatch options: unknown option "${key}"`
+          );
+        }
       }
       // Actor shape validation up front, before the idempotency dedup
       // (mirrors dataquest): an empty actor has zero audit value — the
