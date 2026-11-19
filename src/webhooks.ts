@@ -804,7 +804,15 @@ function payloadFreshEnough(
 /* Receiver-side eventId deduplication                                 */
 /* ------------------------------------------------------------------ */
 
-/** Options for {@link SettlementEventDedupe}. All fields optional. */
+/** Options for {@link SettlementEventDedupe}. All fields optional.
+ *
+ * Unknown keys fail closed (#1265): the constructor throws
+ * `SettlementEventDedupe: unknown option "<key>"` instead of silently
+ * dropping a typo'd key and falling back to the default — a `ttl` the
+ * caller believed was 60 seconds would otherwise leave the 1-hour
+ * default in place and silently widen the replay window, and a
+ * `maxEntry` the caller believed capped the store at 100 would leave
+ * the 10_000-entry default. */
 export interface SettlementEventDedupeOptions {
   /**
    * Milliseconds a recorded `eventId` stays deduplicated. An id seen
@@ -1225,6 +1233,12 @@ function computeSnapshotMac(
  * process the store is exact: an id is a duplicate if and only if
  * it was recorded within the TTL and has not since been evicted.
  */
+/** Allowlist of `SettlementEventDedupeOptions` keys (#1265). */
+const SETTLEMENT_EVENT_DEDUPE_OPTION_FIELDS = new Set([
+  "ttlMs",
+  "maxEntries",
+  "now",
+]);
 export class SettlementEventDedupe {
   private readonly ttlMs: number;
   private readonly maxEntries: number;
@@ -1236,6 +1250,20 @@ export class SettlementEventDedupe {
   private evictions = 0;
 
   constructor(opts: SettlementEventDedupeOptions = {}) {
+    // Unknown option keys fail closed (#1265, see
+    // SETTLEMENT_EVENT_DEDUPE_OPTION_FIELDS), checked before any
+    // field is read: a typo'd `ttl` would otherwise silently fall
+    // back to the 1-hour default and widen the replay window the
+    // caller thought it had narrowed, and a typo'd `maxEntry` would
+    // silently keep the 10_000-entry cap. The snapshot path already
+    // rejects unknown fields; the constructor was the only gap.
+    for (const key of Object.keys(opts)) {
+      if (!SETTLEMENT_EVENT_DEDUPE_OPTION_FIELDS.has(key)) {
+        throw new Error(
+          `SettlementEventDedupe: unknown option "${key}"`,
+        );
+      }
+    }
     const ttlMs = opts.ttlMs ?? 3_600_000;
     const maxEntries = opts.maxEntries ?? 10_000;
     if (!Number.isFinite(ttlMs) || ttlMs <= 0) {

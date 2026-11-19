@@ -139,6 +139,23 @@ version changes.
 
 ### Fixed
 
+- `SettlementEventDedupe` constructor options unknown fields now
+  fail closed (2026-11-19, backlog #1265): the constructor validated
+  each of its three known keys (`ttlMs`, `maxEntries`, `now`) but
+  never scanned the keys, so a typo'd `ttl` was silently dropped and
+  the store fell back to the 1-hour default — the caller believed a
+  60-second deduplication window was on while the replay window
+  stayed an hour wide, and a typo'd `maxEntry` likewise silently
+  kept the 10_000-entry cap. An unknown key now throws
+  `SettlementEventDedupe: unknown option "<key>"` before any field
+  is read (an unknown key therefore also wins over an invalid known
+  value), so no instance is ever produced from a misspelled
+  configuration; `restore()` / `restoreSignedSnapshot()` route
+  through the constructor and inherit the guard, while the snapshot
+  path itself already rejected unknown fields. New
+  `test/settlementEventDedupeUnknownOptions.test.ts` (13 cases),
+  test counts 2294 -> 2307.
+
 - `verifySettlementWebhook` `VerifyWebhookOptions` unknown fields now
   fail closed (2026-11-19, backlog #1262): the verifier validated
   each of its five known keys (`secrets`, `maxAgeMs`,

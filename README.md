@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2294 tests, all local
+npm test   # 2307 tests, all local
 ```
 
 ## Quickstart
@@ -1228,7 +1228,11 @@ duplicate hit never extends the window. At capacity, expired entries
 are reclaimed before the least recently seen entry is evicted.
 Illegal configuration (`ttlMs` not a positive finite number,
 `maxEntries` not a positive integer) throws at construction, and an
-empty, non-string, or overlong (longer than `MAX_EVENT_ID_LENGTH`)
+unknown option key throws `SettlementEventDedupe: unknown option
+"<key>"` before any field is read — a typo'd `ttl` is reported as
+itself instead of silently falling back to the 1-hour default and
+widening the replay window the caller thought it had narrowed.
+An empty, non-string, or overlong (longer than `MAX_EVENT_ID_LENGTH`)
 `eventId` throws instead of silently passing.
 `size` and `stats()` (`{ size, hits, misses, evictions }`) expose
 observability, and `clear()` resets both. For a read-only question —
@@ -2061,7 +2065,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2294 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2307 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
