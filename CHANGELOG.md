@@ -137,6 +137,27 @@ version changes.
   refreshed with the real run; a broken RBAC expectation was
   verified to fail the bench at the probe before restoring.
 
+### Fixed
+
+- `expireOverdueEscrows` now fails fast on an invalid `now`
+  (2026-11-19, backlog #1259): an invalid `now` screened nothing
+  (`NaN >= deadline` is false for every escrow) and the executor
+  then threw a bare `RangeError: Invalid time value` from
+  `now.toISOString()` when no explicit `opts.at` pin was given —
+  a confusing error for a caller bug, surfacing only after
+  screening. A non-Date `now`, `new Date(NaN)`, or
+  `new Date("not-a-date")` now throws
+  `invalid now: expected a valid Date` at entry, after the `opts`
+  shape check and before `resolveWatchdogAt`, so it also wins over
+  an explicit valid `at` pin; the stale comment claiming the old
+  order could never throw the bare RangeError is corrected, and the
+  executor's JSDoc records the fail-fast. The sibling helpers
+  (`isOverdue` / `expiredEscrows`) are deliberately left
+  unvalidated — they are pure filters, and the executor is the
+  fail-fast boundary. New `test/expireOverdueInvalidNow.test.ts`
+  (9 cases), test counts 2270 -> 2279; a disabled guard was verified
+  to turn 7 of the 9 new tests red, then restored.
+
 ## [0.2.0] - 2026-11-18
 
 ### Added

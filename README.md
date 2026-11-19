@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2270 tests, all local
+npm test   # 2279 tests, all local
 ```
 
 ## Quickstart
@@ -638,7 +638,11 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   `EXPIRE` edge, backdated `now`, or a `rolePolicy` that does not
   admit `system`); `expired` is false throughout and `entry` is never
   present. A dry run leaves no residue, so the same batch can
-  immediately be expired for real. Illegal options throw fail-fast.
+  immediately be expired for real. Illegal options throw fail-fast,
+  and so does an invalid `now` (not a `Date`, or an invalid `Date`):
+  it throws `invalid now: expected a valid Date` before any escrow
+  is screened, instead of screening nothing and failing later on a
+  bare `RangeError`.
   The scheduler companion is `nextEscrowDeadline(escrows, now?)`: it
   returns the non-terminal escrow whose deadline comes first, as
   `{ escrow, deadline }` (canonical ISO), or `undefined` when none
@@ -2048,7 +2052,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2270 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2279 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

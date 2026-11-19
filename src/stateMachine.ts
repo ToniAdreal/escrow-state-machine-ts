@@ -4545,7 +4545,9 @@ function predictExpireOverdueEscrow(
  * escrow's own history and snapshot policy — it never dispatches, so
  * a dry run leaves no residue and the same batch can immediately be
  * expired for real. Illegal `opts` throw fail-fast, before any
- * screening.
+ * screening; an invalid `now` (not a Date, or an invalid Date) throws
+ * `invalid now: expected a valid Date` the same way, instead of
+ * screening nothing and failing later on a bare RangeError.
  */
 export function expireOverdueEscrows(
   escrows: readonly Escrow[],
@@ -4564,13 +4566,21 @@ export function expireOverdueEscrows(
       );
     }
   }
+  // Fail fast on an invalid `now` before screening or dispatching
+  // anything: without this, an invalid `now` screens nothing (NaN
+  // compares false against every deadline) and `now.toISOString()`
+  // below throws a bare RangeError. Same wording as the other
+  // watchdog helpers (`nextEscrowDeadline`, `staleEscrows`).
+  if (!(now instanceof Date) || Number.isNaN(now.getTime())) {
+    throw new Error("invalid now: expected a valid Date");
+  }
   // Fail fast on a bad `at` before screening or dispatching anything:
   // a malformed pin must never half-stamp a batch.
   const atOpt = resolveWatchdogAt(opts?.at);
   const screened = expiredEscrows(escrows, now);
   // Omitted, the pin stays the screening `now` (the #552 semantic).
-  // Resolved after screening: an invalid `now` screens nothing, so
-  // this never throws a bare RangeError for it.
+  // `now` was validated fail-fast at entry, so this toISOString()
+  // cannot throw a bare RangeError for an invalid `now`.
   const atIso = atOpt ?? now.toISOString();
   if (opts?.dryRun === true) {
     return screened.map((escrow) => predictExpireOverdueEscrow(escrow, atIso));
