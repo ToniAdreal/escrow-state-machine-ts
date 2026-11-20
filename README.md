@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2368 tests, all local
+npm test   # 2380 tests, all local
 ```
 
 ## Quickstart
@@ -1013,7 +1013,13 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   validation (unknown signers, duplicate entries, bad timestamps,
   illegal evidence, and config mismatches are rejected; expiry keeps
   aging from the original
-  timestamps, never refreshed by the restore). When the snapshot
+  timestamps, never refreshed by the restore). Unknown `QuorumConfig`
+  keys fail closed too: `createQuorum` / `restoreQuorum` reject them
+  (`quorum: unknown option "<key>"`) before any field is read, so a
+  typo'd `maxApprovalAge` cannot silently disable the expiry window
+  and a typo'd `threshhold` cannot silently leave the threshold at 1;
+  `restoreSignedQuorumSnapshot` likewise rejects unknown restore
+  options (only `now` is legal). When the snapshot
   crosses an untrusted boundary, wrap it instead in the HMAC-signed
   envelope: `exportSignedQuorumSnapshot(quorum, secret)` returns
   `{ v: 1, snapshot, mac }` (same envelope shape as the escrow signed
@@ -2098,7 +2104,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2368 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2380 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

@@ -305,13 +305,35 @@ export interface Quorum {
   snapshot(): QuorumSnapshot;
 }
 
-function assertValidConfig({
-  threshold,
-  signers,
-  now,
-  maxApprovalAgeMs,
-  signerPublicKeys,
-}: QuorumConfig): void {
+/**
+ * Allowlist of `QuorumConfig` keys, enforced by {@link assertValidConfig}
+ * (#1281). Unknown keys fail closed before any field is read: a typo'd
+ * `maxApprovalAge` (for `maxApprovalAgeMs`) or `threshhold` (for
+ * `threshold`) used to be silently dropped — the first quietly disabling
+ * the approval-expiry window so approvals never expired, the second
+ * quietly leaving the threshold at 1 so a single vote reached quorum.
+ * The snapshot side (`validateQuorumSnapshotShape`) already rejected
+ * unknown fields; the config side now matches it.
+ */
+const QUORUM_CONFIG_FIELDS = new Set([
+  "threshold",
+  "signers",
+  "now",
+  "maxApprovalAgeMs",
+  "signerPublicKeys",
+]);
+
+function assertValidConfig(config: QuorumConfig): void {
+  // Unknown config fields fail closed (see QUORUM_CONFIG_FIELDS),
+  // checked before any field is consumed so a typo is reported as
+  // itself, not as a silently dropped risk control.
+  for (const key of Object.keys(config)) {
+    if (!QUORUM_CONFIG_FIELDS.has(key)) {
+      throw new Error(`quorum: unknown option "${key}"`);
+    }
+  }
+  const { threshold, signers, now, maxApprovalAgeMs, signerPublicKeys } =
+    config;
   if (!Array.isArray(signers) || signers.length === 0)
     throw new Error("quorum signers must be a non-empty array");
   const seen = new Set<string>();
@@ -1052,7 +1074,10 @@ export interface QuorumExportSignedSnapshotOptions {
 
 /**
  * Options for {@link restoreSignedQuorumSnapshot}: the clock used
- * for the envelope-expiry check.
+ * for the envelope-expiry check. Unknown option keys fail closed
+ * (backlog #1281): a typo'd clock used to fall back to `Date.now()`
+ * silently, so the expiry check ran on wall-clock instead of the
+ * injected clock.
  */
 export interface QuorumRestoreSignedSnapshotOptions {
   /**
@@ -1328,6 +1353,24 @@ export function restoreSignedQuorumSnapshot(
   secret: string | Buffer,
   opts?: QuorumRestoreSignedSnapshotOptions,
 ): Quorum {
+  // Unknown restore options fail closed (#1281): `now` is the only
+  // legal key, and a typo'd clock used to fall back to `Date.now()`
+  // silently — the expiry check then ran on wall-clock instead of the
+  // injected clock. Checked before any field is consumed.
+  if (opts !== undefined) {
+    if (typeof opts !== "object" || opts === null || Array.isArray(opts)) {
+      throw new Error(
+        "Quorum: invalid signed snapshot envelope: restore options must be an object",
+      );
+    }
+    for (const key of Object.keys(opts)) {
+      if (key !== "now") {
+        throw new Error(
+          `Quorum: invalid signed snapshot envelope: unknown option "${key}"`,
+        );
+      }
+    }
+  }
   const secretBytes = quorumSignedSnapshotSecretBytes(secret);
   const fail = (detail: string): never => {
     throw new Error(

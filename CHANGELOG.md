@@ -139,6 +139,32 @@ version changes.
 
 ### Fixed
 
+- `QuorumConfig` unknown option keys now fail closed (2026-11-20,
+  backlog #1281): `createQuorum` / `restoreQuorum` destructured only
+  the keys they knew, so a typo'd `threshhold: 99` was silently
+  dropped while the caller believed the threshold was 99 (a single
+  vote reached quorum at the real threshold of 1), and a typo'd
+  `maxApprovalAge: 1000` silently dropped the approval-expiry window
+  so approvals never expired. Both entry points now scan the config
+  against a `QUORUM_CONFIG_FIELDS` allowlist
+  (`threshold` / `signers` / `now` / `maxApprovalAgeMs` /
+  `signerPublicKeys`) before any field is consumed, throwing
+  `quorum: unknown option "<key>"` — the scan runs before the other
+  config checks, so a typo is reported as itself. `restoreQuorum`
+  shares the check through `assertValidConfig`, closing the config
+  side to match the snapshot side (`validateQuorumSnapshotShape`
+  already rejected unknown fields). `restoreSignedQuorumSnapshot`'s
+  own `opts` is tightened in the same round: only `now` is legal, and
+  a typo'd clock used to fall back to `Date.now()` silently, so the
+  envelope expiry check ran on wall-clock instead of the injected
+  clock; unknown restore options now throw
+  `Quorum: invalid signed snapshot envelope: unknown option "<key>"`
+  and a non-object `opts` is rejected outright. README quorum FAQ and
+  SECURITY.md record the fail-closed rule. New
+  `test/quorumConfigUnknownFields.test.ts` (12 cases), test counts
+  2368 -> 2380; bypassing either scan turns its tests red
+  (mutation-checked).
+
 - `summarizeSettlementReports` now shape-checks every report before
   summing (2026-11-20, backlog #1278): the summary was the only public
   consumer of reports that never validated their shape — it read

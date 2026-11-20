@@ -23,6 +23,14 @@ quorum approvals (`approveSigned()`).
   "dao-3 approved". The optional `maxApprovalAgeMs` expiry window only
   bounds how long a recorded approval *counts* (the audit log keeps
   expired entries); it does not authenticate the approval itself.
+  A misspelled config key cannot silently disable that window or the
+  threshold: `createQuorum` / `restoreQuorum` reject unknown
+  `QuorumConfig` fields (`quorum: unknown option "<key>"`) before any
+  field is read, so a typo'd `maxApprovalAge` cannot leave approvals
+  permanently valid and a typo'd `threshhold` cannot leave the
+  threshold at 1; `restoreSignedQuorumSnapshot` likewise rejects
+  unknown restore options (only `now` is legal) instead of falling
+  back to wall-clock.
   Opt-in verification exists: `approveSigned()` verifies an Ed25519
   signature over the canonical statement
   `escrow-quorum:approve:<signerId>` against a public key registered
