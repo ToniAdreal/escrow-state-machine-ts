@@ -921,6 +921,13 @@ export interface SettlementEventDedupeOptions {
   /**
    * Clock source (milliseconds since the epoch). Defaults to
    * `Date.now`. Inject a fake clock for deterministic tests.
+   *
+   * Every read of the clock is checked: a clock that returns a
+   * non-finite number (`NaN`, `Infinity`, or a non-number) throws a
+   * configuration `Error` instead of silently disabling
+   * deduplication — a `NaN` reading makes every
+   * `t - prev < ttlMs` comparison false, so a recorded `eventId`
+   * would be treated as expired and re-admitted.
    */
   now?: () => number;
 }
@@ -1387,6 +1394,36 @@ export class SettlementEventDedupe {
   }
 
   /**
+   * Resolve the "now" for one clock read, fail-closed (backlog
+   * #1289, same contract as the sibling rfc9421 `ReplayCache`
+   * `resolveNow`): an explicit `now` wins over the injected clock,
+   * and either value must be a finite number of milliseconds since
+   * the epoch. A non-finite reading throws a configuration `Error`
+   * before any store state is read or written, so a bad clock can
+   * never silently reopen the deduplication window — `NaN` would
+   * make `t - prev < ttlMs` false for every recorded id, and an
+   * `Infinity` reading would make every id look live forever.
+   * `prune(t)` only ever receives a value resolved here.
+   */
+  private resolveNow(now?: number): number {
+    if (now !== undefined) {
+      if (typeof now !== "number" || !Number.isFinite(now)) {
+        throw new Error(
+          `SettlementEventDedupe: now must be a finite number of milliseconds since the epoch, got ${String(now)}`,
+        );
+      }
+      return now;
+    }
+    const t = this.clock();
+    if (typeof t !== "number" || !Number.isFinite(t)) {
+      throw new Error(
+        `SettlementEventDedupe: clock must return a finite number of milliseconds since the epoch, got ${String(t)}`,
+      );
+    }
+    return t;
+  }
+
+  /**
    * Atomically check-and-record an `eventId`: returns `true` when the
    * id was already recorded within the TTL — i.e. this delivery is a
    * duplicate/replay, the same "true = is a replay" contract as the
@@ -1417,7 +1454,7 @@ export class SettlementEventDedupe {
         `SettlementEventDedupe: eventId must be at most ${MAX_EVENT_ID_LENGTH} characters, got ${eventId.length}`,
       );
     }
-    const t = this.clock();
+    const t = this.resolveNow();
     const prev = this.seenAt.get(eventId);
     if (prev !== undefined) {
       if (t - prev < this.ttlMs) {
@@ -1464,6 +1501,10 @@ export class SettlementEventDedupe {
    * ago counts as expired. An empty, non-string, or overlong
    * (longer than {@link MAX_EVENT_ID_LENGTH}) `eventId` throws a
    * configuration `Error`, the same caliber as `checkAndRecord`.
+   * A non-finite explicit `now` — or a non-finite injected-clock
+   * reading — throws the same way instead of reporting the id as
+   * unseen: with `NaN`, `t - prev < ttlMs` is false for every
+   * recorded id, so the probe would silently lie.
    */
   has(eventId: string, now?: number): boolean {
     if (typeof eventId !== "string" || eventId.length === 0) {
@@ -1476,7 +1517,7 @@ export class SettlementEventDedupe {
         `SettlementEventDedupe: eventId must be at most ${MAX_EVENT_ID_LENGTH} characters, got ${eventId.length}`,
       );
     }
-    const t = now ?? this.clock();
+    const t = this.resolveNow(now);
     const prev = this.seenAt.get(eventId);
     if (prev === undefined) return false;
     return t - prev < this.ttlMs;
@@ -1484,10 +1525,12 @@ export class SettlementEventDedupe {
 
   /**
    * Number of live (unexpired) entries tracked, computed against the
-   * dedupe's injected clock.
+   * dedupe's injected clock. A non-finite clock reading throws
+   * instead of reporting 0 — with `NaN` every entry would look
+   * expired, so a count of 0 would be a lie.
    */
   get size(): number {
-    const t = this.clock();
+    const t = this.resolveNow();
     let n = 0;
     for (const at of this.seenAt.values()) if (t - at < this.ttlMs) n++;
     return n;
@@ -1525,10 +1568,13 @@ export class SettlementEventDedupe {
    *
    * Entries already expired against this dedupe's clock are excluded.
    * The returned object (including every entry pair) is a fresh copy —
-   * mutating it does not affect this store.
+   * mutating it does not affect this store. A non-finite clock
+   * reading throws instead of exporting an empty snapshot — with
+   * `NaN` every entry would look expired, so an empty export would
+   * silently discard live ids.
    */
   exportSnapshot(): SettlementEventDedupeSnapshot {
-    const t = this.clock();
+    const t = this.resolveNow();
     const entries: Array<[string, number]> = [];
     for (const [eventId, at] of this.seenAt) {
       if (t - at < this.ttlMs) entries.push([eventId, at]);
@@ -1661,7 +1707,7 @@ export class SettlementEventDedupe {
     }
 
     const dedupe = new SettlementEventDedupe(opts);
-    const t = dedupe.clock();
+    const t = dedupe.resolveNow();
     // Drop entries whose TTL already ran out against the new clock, and
     // collapse duplicate ids to their last occurrence (position and
     // timestamp), mirroring the recency refresh in `checkAndRecord`.
