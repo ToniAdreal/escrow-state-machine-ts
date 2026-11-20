@@ -139,6 +139,28 @@ version changes.
 
 ### Fixed
 
+- `diffSettlementReports()` shape-checks both inputs first
+  (2026-11-20, backlog #1293, the single-report mirror of #1292):
+  the diff previously only checked that each input was an object
+  plus matching `escrowId` and then read the fields straight off
+  it, so a report missing `deposit` threw a bare `TypeError` from
+  `sameFeeBreakdown` (reading `undefined.creatorPool`), a report
+  missing `parties` threw a bare `TypeError` from `indexParties`
+  (`for...of` over `undefined`), a missing field diffed as no move
+  (`undefined === undefined`), a wrong-type money figure silently
+  produced a misleading difference, and an unknown `outcome` value
+  silently diffed as a phantom move. Both inputs now go through the
+  shared `assertReportShape` (all report fields present, money
+  finite, outcome one of the four tiers, party ledgers well-formed),
+  throwing `invalid settlement report diff: …` before any field
+  compare. The comparison-not-validation contract is untouched:
+  the totals and the `balanced` self-consistency are still not
+  re-checked — a shape-valid but self-inconsistent report still
+  diffs. The README single-report diff paragraph now states the
+  shape gate. New `test/settlementReportDiffShape.test.ts`
+  (10 cases), test counts 2447 -> 2457; stripping the gate turns
+  7 of the 10 new tests red (mutation-checked).
+
 - `diffSettlementReportsSummaries()` shape-checks both inputs first
   (2026-11-20, backlog #1292, the escrow-side mirror of dataquest
   #1276): the diff previously only checked that each input was an

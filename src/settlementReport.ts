@@ -1604,7 +1604,13 @@ function indexParties(
  * internally consistent, that its history chain holds, or that its
  * totals sum; run a report through `buildSettlementReport` (or its
  * history through `verifyHistoryChain`) when the input itself is
- * untrusted.
+ * untrusted. Both inputs are shape-checked first (backlog #1293,
+ * the single-report mirror of #1292): a non-report must fail here
+ * rather than diffing as "no change" (`undefined === undefined`)
+ * or as a phantom move, and a record-shaped but field-missing input
+ * must not reach the field compares as a bare TypeError. Consistency
+ * is deliberately not checked — the totals and the `balanced`
+ * self-consistency stay the builders'/parsers' job.
  *
  *   const before = buildSettlementReport({ ... });
  *   const after = buildSettlementReport({ ..., settlement: { proFeeBps: 600 } });
@@ -1625,6 +1631,15 @@ export function diffSettlementReports(
       "invalid settlement report diff: both reports must be objects",
     );
   }
+  // Shape first: a non-report must fail here rather than diffing
+  // as "no change" (`undefined === undefined`) or as a phantom move,
+  // and a record-shaped but field-missing input must not reach the
+  // field compares as a bare TypeError from `sameFeeBreakdown` /
+  // `indexParties`. Consistency is deliberately not checked — the
+  // totals and the `balanced` self-consistency stay the builders'/
+  // parsers' job (backlog #1292 mirror, #1293).
+  assertReportShape(a, "invalid settlement report diff");
+  assertReportShape(b, "invalid settlement report diff");
   if (a.escrowId !== b.escrowId) {
     throw new Error(
       `settlement report diff failed: cannot diff reports of different escrows (${JSON.stringify(a.escrowId)} vs ${JSON.stringify(b.escrowId)})`,

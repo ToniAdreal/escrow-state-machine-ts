@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2447 tests, all local
+npm test   # 2457 tests, all local
 ```
 
 ## Quickstart
@@ -1904,7 +1904,13 @@ refund is visible even when every figure agrees; parties align
 by role, with a role present on one side only reported as added or
 removed instead of silently dropped; and a `balanced` flip is its own
 entry, so a report that stopped balancing is visible even when no
-single amount looks wrong. Reports of different escrows throw
+single amount looks wrong. Both inputs must be reports at all first:
+a missing `deposit`, `parties`, total, event count, or `balanced`
+flag, a wrong-type money figure, or an unknown `outcome` throws
+`invalid settlement report diff: …` before any field compare
+(backlog #1293), so a record-shaped but field-missing input no longer
+dies with a bare `TypeError` or reports a phantom move. Reports of
+different escrows throw
 `settlement report diff failed: cannot diff reports of different escrows …`,
 the same fail-fast identity rule `diffEscrowSnapshots` uses for
 snapshots. The function is pure and returns detached copies.
@@ -2127,7 +2133,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2447 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2457 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
