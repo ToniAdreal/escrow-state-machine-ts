@@ -139,6 +139,32 @@ version changes.
 
 ### Fixed
 
+- `diffSettlementReportsSummaries()` shape-checks both inputs first
+  (2026-11-20, backlog #1292, the escrow-side mirror of dataquest
+  #1276): the diff previously only checked that each input was an
+  object and then read eleven fields straight off it, so a
+  record-shaped but field-missing input (e.g. `{total: 1}`) threw a
+  bare `TypeError` from `sameOutcomes` / `indexParties` /
+  `Object.keys(b.byCurrency)`, a missing field diffed as no move
+  (`undefined === undefined`), a wrong-type field silently produced
+  a misleading difference, and an unknown outcome tier or party role
+  silently diffed as a phantom move. Both inputs now go through the
+  shared `assertSettlementReportsSummaryShape` (all eleven fields
+  present, no unknown fields, counts non-negative safe integers,
+  money finite and cent-exact, exactly the four party roles,
+  currency buckets well-formed), throwing
+  `invalid settlement reports summary diff: …` before any field
+  compare. The comparison-not-validation contract is untouched:
+  the total/outcomes sums and the `balanced` self-consistency are
+  still not re-checked — a shape-valid but self-inconsistent summary
+  still diffs. Two pre-existing diff tests fed inputs the gate now
+  rejects (a sub-cent money figure, a three-party summary) and were
+  rewritten to pin the shape error instead; the README batch-summary
+  paragraph now says a missing party role throws rather than diffing
+  as removed. New `test/settlementReportsSummaryDiffShape.test.ts`
+  (15 cases), test counts 2432 -> 2447; stripping the gate turns
+  all 15 new tests red (mutation-checked).
+
 - `SettlementEventDedupe` clock readings are now fail-closed on
   non-finite values (2026-11-20, backlog #1289, same contract as
   the sibling rfc9421 `ReplayCache` #1288): a new private

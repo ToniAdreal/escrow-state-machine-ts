@@ -1875,7 +1875,15 @@ function sameCurrencySummary(
  * currency buckets sum to the top-level totals, that `balanced` agrees
  * with its totals, or that its figures match any audit history; run an
  * untrusted input through the summary parsers when the input itself is
- * untrusted.
+ * untrusted. The shape check still runs, though: both inputs must be
+ * summaries at all first (all eleven fields present, no unknown
+ * fields, counts non-negative safe integers, money finite and
+ * cent-exact, exactly the four party roles, currency buckets
+ * well-formed), via the shared `assertSettlementReportsSummaryShape`,
+ * so a record-shaped but field-missing input no longer throws a bare
+ * `TypeError` from the field compares or reports a phantom move — the
+ * total/outcomes sums and the `balanced` self-consistency are the only
+ * checks the diff leaves to the renderers/parsers (backlog #1292).
  *
  *   const before = summarizeSettlementReports(results);
  *   const after = summarizeSettlementReports(recomputed);
@@ -1896,6 +1904,21 @@ export function diffSettlementReportsSummaries(
       "invalid settlement reports summary diff: both summaries must be objects",
     );
   }
+  // Shape first: a non-summary must fail here rather than diffing
+  // as "no change" (`{}` vs `{}`) or as a phantom move (`NaN`
+  // never equals itself), and a record-shaped but field-missing
+  // input must not reach the field compares as a bare TypeError.
+  // Consistency is deliberately not checked — the total/outcomes
+  // sums and the `balanced` self-consistency stay the renderers'/
+  // parsers' job (backlog #1276 mirror, #1292).
+  assertSettlementReportsSummaryShape(
+    a,
+    "invalid settlement reports summary diff",
+  );
+  assertSettlementReportsSummaryShape(
+    b,
+    "invalid settlement reports summary diff",
+  );
   const diff: SettlementReportsSummaryDiff = {};
   if (a.total !== b.total) {
     diff.totalChanged = { from: a.total, to: b.total };

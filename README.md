@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2432 tests, all local
+npm test   # 2447 tests, all local
 ```
 
 ## Quickstart
@@ -1917,8 +1917,17 @@ moved; identical summaries diff to `{}`. Counts compare exactly and
 money compares at integer-cent precision, the same rule as the
 single-report diff; `outcomes` is one entry carrying the whole
 four-tier record, parties align by role, and currency buckets align by
-code, with a role or code present on one side only reported as added
-or removed instead of silently dropped. A summary carries no batch id,
+code, with a code present on one side only reported as added or
+removed instead of silently dropped — a summary always carries
+exactly the four party roles, so a missing role throws the shape
+error below instead of diffing as removed. Both inputs must be
+summaries at all first: a missing or unknown field, a non-integer
+count, a non-cent-exact or non-finite money figure, a malformed
+party entry, or a malformed currency bucket throws
+`invalid settlement reports summary diff: …` before any field
+compare (backlog #1292), so a record-shaped but field-missing input
+no longer dies with a bare `TypeError` or reports a phantom move.
+A summary carries no batch id,
 so — unlike the single-report diff, which refuses to cross escrows —
 there is no identity guard: diffing summaries of two different batches
 is the caller's responsibility. The function is pure and returns
@@ -2118,7 +2127,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2432 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2447 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

@@ -174,14 +174,23 @@ test("a single money field moving reports only that field", () => {
   );
 });
 
-test("a sub-cent money difference is not a change (cent rule)", () => {
-  // 0.004 of drift is raw-float noise, not a moved amount.
-  assert.deepEqual(
-    diffSettlementReportsSummaries(
-      fakeSummary(),
-      fakeSummary({ totalDeposit: 21260.004 }),
-    ),
-    {},
+test("a sub-cent money figure is rejected by the shape gate, not diffed as no change", () => {
+  // Before backlog #1292 this diffed to {}: `sameMoney` compares at
+  // cent precision, so 0.004 of drift read as no move. The shape
+  // gate now runs first and a non-cent-exact money figure is not a
+  // summary at all, so it throws instead — the cent rule still lives
+  // in `sameMoney` for the field compares, but a sub-cent figure
+  // never reaches them through this entry point.
+  assert.throws(
+    () =>
+      diffSettlementReportsSummaries(
+        fakeSummary(),
+        fakeSummary({ totalDeposit: 21260.004 }),
+      ),
+    (err: unknown) =>
+      err instanceof Error &&
+      err.message ===
+        "invalid settlement reports summary diff: totalDeposit must be a cent-exact number, got 21260.004",
   );
 });
 
@@ -268,20 +277,29 @@ test("one party role moving one figure reports that role only", () => {
   );
 });
 
-test("a party role present on one side only is added or removed, not dropped", () => {
+test("a summary missing a party role is rejected by the shape gate, not diffed as removed", () => {
+  // Before backlog #1292 a three-party summary diffed as
+  // `removed: ["referrer"]`. The shape gate now runs first and a
+  // summary must carry exactly the four party roles, so the missing
+  // role throws instead — party add/remove stays in the comparison
+  // code (unchanged) but is unreachable for shape-valid summaries,
+  // while currency add/remove is still reachable and still covered
+  // by the currency test below.
   const withoutReferrer = fakeSummary();
   withoutReferrer.parties = withoutReferrer.parties.slice(0, 3);
-  assert.deepEqual(
-    diffSettlementReportsSummaries(fakeSummary(), withoutReferrer),
-    {
-      partiesChanged: { added: [], removed: ["referrer"], changed: [] },
-    },
+  assert.throws(
+    () => diffSettlementReportsSummaries(fakeSummary(), withoutReferrer),
+    (err: unknown) =>
+      err instanceof Error &&
+      err.message ===
+        "invalid settlement reports summary diff: parties must be an array of exactly 4 PartyLedger entries",
   );
-  assert.deepEqual(
-    diffSettlementReportsSummaries(withoutReferrer, fakeSummary()),
-    {
-      partiesChanged: { added: ["referrer"], removed: [], changed: [] },
-    },
+  assert.throws(
+    () => diffSettlementReportsSummaries(withoutReferrer, fakeSummary()),
+    (err: unknown) =>
+      err instanceof Error &&
+      err.message ===
+        "invalid settlement reports summary diff: parties must be an array of exactly 4 PartyLedger entries",
   );
 });
 
