@@ -139,6 +139,32 @@ version changes.
 
 ### Fixed
 
+- `deliverSettlementWebhook` / `deliverSettlementWebhookToMany`
+  unknown option keys now fail closed (2026-11-20, backlog #1275):
+  the delivery side was the second gap in the fail-closed family —
+  the build side scans its options (#1272) and the verify side scans
+  `VerifyWebhookOptions` (#1262) — but the two delivery entry points
+  only read the keys they knew. A typo'd `timeouMs` silently ran with
+  the default 10s timeout and a typo'd `retry` silently ran with the
+  default 3 retries, so a delivery the caller believed was "0 retries,
+  5ms timeout" actually ran as 3 retries with a 10s timeout. The
+  fan-out side was worse: a typo'd `maxEndpoint` silently dropped the
+  endpoint-explosion cap and a typo'd `overallDeadline` silently
+  dropped the wall-clock budget. Both entry points now scan their
+  options against an allowlist before any other validation or request
+  is made (single: the eight delivery keys; fan-out call level: those
+  eight plus `now`, `eventId`, `maxEndpoints`, `maxConcurrency`,
+  `overallDeadlineMs`), throwing `cannot deliver settlement webhook
+  (to many endpoints): unknown option "<key>"`. A typo'd
+  per-endpoint override is a per-endpoint configuration failure: it
+  is reported as that endpoint's `{ ok: false, attempts: 0, error }`
+  result, the endpoint makes no request, and the other endpoints
+  still deliver. The shared `assertNoUnknownBuildOptions` helper is
+  generalized to `assertNoUnknownOptions` for both families. New
+  `test/deliverWebhookUnknownOptions.test.ts` (16 cases), test counts
+  2337 -> 2353; bypassing any one of the three scans turns its
+  tests red (mutation-checked).
+
 - `buildSettlementWebhook` / `buildSettlementWebhooks` unknown option
   keys now fail closed (2026-11-20, backlog #1272): the sign side
   was the last gap in the fail-closed family — the verifier scans

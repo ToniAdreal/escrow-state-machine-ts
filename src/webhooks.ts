@@ -235,14 +235,14 @@ const BUILD_SETTLEMENT_WEBHOOKS_OPTION_FIELDS = new Set([
 ]);
 
 /**
- * Shared unknown-option scan for the two build entry points (#1272):
- * a typo'd key is a caller bug and must be reported as itself, never
- * silently dropped. A non-object options value (a missing options
- * argument, a string, …) has no keys to scan and falls through to the
- * caller's own secret validation, which reports the missing secret as
- * a configuration error instead of a bare `TypeError`.
+ * Shared unknown-option scan for the build and delivery entry points
+ * (#1272, #1275): a typo'd key is a caller bug and must be reported as
+ * itself, never silently dropped. A non-object options value (a missing
+ * options argument, a string, …) has no keys to scan and falls through
+ * to the caller's own validation, which reports the missing value as a
+ * configuration error instead of a bare `TypeError`.
  */
-function assertNoUnknownBuildOptions(
+function assertNoUnknownOptions(
   options: unknown,
   fields: ReadonlySet<string>,
   caller: string,
@@ -367,7 +367,7 @@ export function buildSettlementWebhook(
   // typo'd `secrett` would otherwise fall through to assertSecret and
   // surface as a bare TypeError on `undefined.length`, and a typo'd
   // `eventId` would silently fall back to a random UUID.
-  assertNoUnknownBuildOptions(
+  assertNoUnknownOptions(
     options,
     BUILD_WEBHOOK_OPTION_FIELDS,
     "cannot build settlement webhook",
@@ -507,7 +507,7 @@ export function buildSettlementWebhooks(
   // silently fall back to the default randomUUID factory, and a
   // typo'd `secert` would surface as the secret-type error instead of
   // being reported as itself. No webhook is signed before this scan.
-  assertNoUnknownBuildOptions(
+  assertNoUnknownOptions(
     options,
     BUILD_SETTLEMENT_WEBHOOKS_OPTION_FIELDS,
     "cannot build settlement webhooks",
@@ -3302,7 +3302,14 @@ export type SettlementWebhookFetchImpl = (
   init: RequestInit,
 ) => Promise<Response>;
 
-/** Options for {@link deliverSettlementWebhook}. All fields optional. */
+/**
+ * Options for {@link deliverSettlementWebhook}. All fields optional.
+ * Unknown keys fail closed (#1275): an option name the function does
+ * not know throws `cannot deliver settlement webhook: unknown option
+ * "<key>"` before any request is made, so a typo'd `timeouMs` is
+ * reported as itself instead of silently running with the default
+ * 10s timeout.
+ */
 export interface DeliverWebhookOptions {
   /**
    * Retries after the initial attempt. Default 3 (up to 4 total attempts).
@@ -3501,6 +3508,40 @@ function withDeliveryOutcome(
   return annotated;
 }
 
+/** Allowlist of `DeliverWebhookOptions` keys (#1275). */
+const DELIVER_WEBHOOK_OPTION_FIELDS = new Set([
+  "retries",
+  "backoffMs",
+  "timeoutMs",
+  "maxRetryDelayMs",
+  "jitterMs",
+  "signal",
+  "allowInsecureHttp",
+  "fetchImpl",
+]);
+/** Allowlist of `DeliverSettlementWebhookToManyOptions` keys (#1275): the single-delivery keys plus the fan-out keys. */
+const DELIVER_TO_MANY_OPTION_FIELDS = new Set([
+  ...DELIVER_WEBHOOK_OPTION_FIELDS,
+  "now",
+  "eventId",
+  "maxEndpoints",
+  "maxConcurrency",
+  "overallDeadlineMs",
+]);
+/** Allowlist of `SettlementWebhookEndpoint` keys (#1275). */
+const SETTLEMENT_WEBHOOK_ENDPOINT_FIELDS = new Set([
+  "url",
+  "secret",
+  "retries",
+  "backoffMs",
+  "timeoutMs",
+  "maxRetryDelayMs",
+  "jitterMs",
+  "signal",
+  "allowInsecureHttp",
+  "fetchImpl",
+]);
+
 function assertDeliverSignalType(signal: unknown): void {
   if (signal !== undefined && !(signal instanceof AbortSignal)) {
     throw new Error(
@@ -3649,12 +3690,29 @@ function assertDeliverOptionValues(
  * a custom transport in production; the per-attempt timeout and the
  * external `signal` are still wired into `init.signal`, so the
  * implementation must honor it like the global `fetch` does.
+ *
+ * Unknown option keys fail closed (#1275): the options object is
+ * scanned against the eight known keys before any other validation or
+ * request is made, and an unknown key throws
+ * `cannot deliver settlement webhook: unknown option "<key>"` — checked
+ * before the signal/type/numeric validations, so a typo is always
+ * reported as itself, never masked by a value error on a known key.
  */
 export async function deliverSettlementWebhook(
   url: string,
   webhook: SettlementWebhook,
   options: DeliverWebhookOptions = {},
 ): Promise<WebhookDeliveryResult> {
+  // Unknown option keys fail closed (#1275, see
+  // DELIVER_WEBHOOK_OPTION_FIELDS), checked before any other
+  // validation or request is made: a typo'd `timeouMs` would otherwise
+  // silently run with the default 10s timeout, and a typo'd `retry`
+  // would silently run with the default 3 retries.
+  assertNoUnknownOptions(
+    options,
+    DELIVER_WEBHOOK_OPTION_FIELDS,
+    "cannot deliver settlement webhook",
+  );
   const retries = options.retries ?? 3;
   const backoffMs = options.backoffMs ?? 1000;
   const timeoutMs = options.timeoutMs ?? 10_000;
@@ -3793,6 +3851,13 @@ export async function deliverSettlementWebhook(
  * override the call-level options for this endpoint only (retry budgets
  * are therefore counted per endpoint).
  */
+/**
+ * One destination for {@link deliverSettlementWebhookToMany}: its own
+ * URL and signing secret, plus per-endpoint overrides of the call-level
+ * delivery options. Unknown keys fail closed (#1275): a typo'd override
+ * is reported as that endpoint's failed result (0 attempts, no
+ * request), never silently dropped.
+ */
 export interface SettlementWebhookEndpoint {
   /** Destination URL (http/https), validated per endpoint. */
   url: string;
@@ -3821,7 +3886,12 @@ export interface SettlementWebhookEndpoint {
   fetchImpl?: SettlementWebhookFetchImpl;
 }
 
-/** Options for {@link deliverSettlementWebhookToMany}. */
+/**
+ * Options for {@link deliverSettlementWebhookToMany}. Unknown keys fail
+ * closed (#1275): an unknown call-level key throws
+ * `cannot deliver settlement webhook to many endpoints: unknown option
+ * "<key>"` before any request is made.
+ */
 export interface DeliverSettlementWebhookToManyOptions
   extends DeliverWebhookOptions {
   /**
@@ -3985,7 +4055,20 @@ function fanoutEndpointUrl(endpoint: unknown): string {
  * - Call-level configuration errors DO throw before any request is
  *   made: a missing/empty/non-array `endpoints`, invalid global
  *   delivery options, or an invalid shared `now`/`eventId` are caller
- *   bugs, not per-endpoint outcomes.
+ *   bugs, not per-endpoint outcomes. An unknown call-level option key
+ *   is one of these: it throws
+ *   `cannot deliver settlement webhook to many endpoints: unknown
+ *   option "<key>"`, checked before the numeric/type validation of
+ *   the known keys (#1275).
+ * - A typo'd per-endpoint option key is a per-endpoint configuration
+ *   failure, not a call-level throw: it is reported as that
+ *   endpoint's `{ ok: false, attempts: 0, error }` result (the error
+ *   names the unknown key), the endpoint makes no request, and the
+ *   other endpoints still deliver (#1275). This matches the
+ *   established rule that a bad per-endpoint override fails only its
+ *   own endpoint — `deliverOne` reads its overrides field by field,
+ *   so without the scan a typo'd `retry` would silently fall back to
+ *   the call-level retries.
  * - `maxEndpoints` caps the fan-out size: more endpoints than the cap
  *   throws before any request, and an invalid cap (non-integer, <= 0,
  *   non-finite, non-number) throws the same way.
@@ -4022,6 +4105,16 @@ export async function deliverSettlementWebhookToMany(
   // once, up front, with the same rules as a single delivery.
   // (Per-endpoint overrides are validated per endpoint, inside the
   // fan-out, so a bad override fails only its own endpoint.)
+  // Unknown call-level keys fail closed (#1275, see
+  // DELIVER_TO_MANY_OPTION_FIELDS), checked before the signal/type/
+  // numeric validations: a typo'd `maxEndpoint` would otherwise
+  // silently drop the fan-out size cap, and a typo'd
+  // `overallDeadline` would silently drop the wall-clock budget.
+  assertNoUnknownOptions(
+    opts,
+    DELIVER_TO_MANY_OPTION_FIELDS,
+    "cannot deliver settlement webhook to many endpoints",
+  );
   assertDeliverSignalType(opts.signal);
   assertDeliverAllowInsecureHttpType(opts.allowInsecureHttp);
   assertDeliverFetchImplType(opts.fetchImpl);
@@ -4119,6 +4212,19 @@ export async function deliverSettlementWebhookToMany(
           `cannot deliver settlement webhook to many endpoints: endpoints[${index}] must be an object with a string url and a secret`,
         );
       }
+      // Unknown per-endpoint keys fail closed (#1275, see
+      // SETTLEMENT_WEBHOOK_ENDPOINT_FIELDS), checked right after the
+      // shape check and before the secret is read: `deliverOne` builds
+      // its single-delivery options field by field below, so a typo'd
+      // `retry` would otherwise be silently dropped and the endpoint
+      // would run with the call-level retries. The throw is caught by
+      // the per-endpoint handler below and reported as this endpoint's
+      // failed result (0 attempts, no request), never thrown.
+      assertNoUnknownOptions(
+        endpoint,
+        SETTLEMENT_WEBHOOK_ENDPOINT_FIELDS,
+        `cannot deliver settlement webhook to many endpoints: endpoints[${index}]`,
+      );
       assertSecret(endpoint.secret);
       const webhook: SettlementWebhook = {
         payload,

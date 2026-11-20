@@ -221,7 +221,14 @@ quorum approvals (`approveSigned()`).
   only 429/5xx/network errors get retries, with a 429 `Retry-After` hint
   honored over the exponential backoff — the hint is clamped to
   `maxRetryDelayMs` (default 60s), so a runaway value cannot park the
-  delivery promise for longer than the cap. **Plaintext transport is
+  delivery promise for longer than the cap. Option typos fail closed on
+  the delivery side too: the single-delivery options and the fan-out
+  call-level options are scanned against their known keys before any
+  other validation or request, and an unknown key throws naming the
+  key — a typo'd `timeouMs` or `maxEndpoint` is reported as itself
+  instead of silently running with the default timeout or dropping
+  the fan-out cap; a typo'd per-endpoint override fails only that
+  endpoint (`{ ok: false, attempts: 0 }`, no request made). **Plaintext transport is
   refused by default:** an `http:` endpoint URL throws before any request
   unless the caller explicitly passes `allowInsecureHttp: true` — the
   signed payload plus the `X-Signature` header are replayable over the

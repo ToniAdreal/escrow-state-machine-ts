@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2337 tests, all local
+npm test   # 2353 tests, all local
 ```
 
 ## Quickstart
@@ -1590,6 +1590,23 @@ const pending = deliverSettlementWebhook(url, { payload, signature }, {
 controller.abort(); // pending rejects with `webhook delivery aborted`, never retried
 ```
 
+Option typos fail closed on the delivery side too: `deliverSettlementWebhook`
+scans its options against the eight known keys before any other validation or
+request is made, and an unknown key throws
+`cannot deliver settlement webhook: unknown option "<key>"` — a typo'd
+`timeouMs` is reported as itself instead of silently running with the default
+10s timeout, and a typo'd `retry` instead of silently running with the default
+3 retries. The scan runs first, so an unknown key is never masked by a value
+error on a known key. `deliverSettlementWebhookToMany` scans its call-level
+options the same way (the eight delivery keys plus `now`, `eventId`,
+`maxEndpoints`, `maxConcurrency`, `overallDeadlineMs`), throwing before any
+request when a key is unknown — a typo'd `maxEndpoint` can therefore never
+silently drop the fan-out size cap, nor a typo'd `overallDeadline` the
+wall-clock budget. A typo'd per-endpoint override is a per-endpoint
+configuration failure instead: it is reported as that endpoint's
+`{ ok: false, attempts: 0, error }` result, the endpoint makes no request, and
+the other endpoints still deliver.
+
 Semantics: the payload is POSTed as JSON with the `X-Signature` header,
 byte-identical to what `buildSettlementWebhook` signed so the receiver can
 verify it over the raw body. Every attempt also carries an `X-Event-Id`
@@ -2073,7 +2090,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2337 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2353 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
