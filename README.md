@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2457 tests, all local
+npm test   # 2470 tests, all local
 ```
 
 ## Quickstart
@@ -852,6 +852,11 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   so a key consumed or dropped between two stored snapshots shows up
   instead of silently vanishing); a later history that is not an append-only
   extension of the earlier one throws instead of reporting progress.
+  Both inputs are shape-checked first (`invalid snapshot diff: …`):
+  an unknown state, a malformed `rolePolicy` / `idempotencyKeys`, or
+  a missing field fails here rather than diffing as a phantom move
+  or a bare `TypeError` — the diff is a comparison, not a validation,
+  so transition legality and the hash chain are still the parser's job.
   A snapshot is an *export*, not a datastore — there is still no
   built-in storage or locking.
 - History-only restore (event sourcing): `Escrow.fromHistory(id, history)`
@@ -2133,7 +2138,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2457 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2470 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

@@ -1158,6 +1158,246 @@ function resolveWatchdogAt(at: Date | string | undefined): string | undefined {
  *
  * Anything produced by toJSON() passes; anything else must earn its way.
  */
+/**
+ * Shape-only half of {@link parseEscrowSnapshot}, shared with
+ * {@link diffEscrowSnapshots} (backlog #1295, the escrow mirror of
+ * dataquest #1294): everything a snapshot must BE to be comparable,
+ * nothing about whether it is a consistent or untampered record.
+ *
+ * Checked here: the version gate, both field whitelists
+ * (`SNAPSHOT_FIELDS` / `HISTORY_ENTRY_FIELDS`), a non-empty id within
+ * {@link MAX_ESCROW_ID_LENGTH}, a known state, a history array whose
+ * entries each carry a positive-integer seq, known event/from/to, a
+ * canonical ISO-8601 `at`, and well-shaped optional fields
+ * (`actor`/`note`/`amount`/`evidence`/`settlementRef`/`refundRef`
+ * with their per-entry placement rules — amount only on FUND and
+ * PARTIAL_RELEASE, evidence only on VERIFY_PASS, settlementRef only
+ * on RELEASE, refundRef only on ARBITRATE_REFUND — and the
+ * all-or-nothing `prevHash`/`hash` pair), plus the configuration
+ * fields (`deadline`, `idempotencyKeys`, `rolePolicy`, `maxDeposit`,
+ * `maxVisitsByState`, the four require* gates) at the same bar the
+ * parser applies. The config helpers are called with the caller's
+ * tag, so a bad `rolePolicy` reports as a diff-shape error, never
+ * as a bare `TypeError` from `rolePolicyKey` reading `policy[event]`
+ * off a string or a number.
+ *
+ * Deliberately NOT checked here — the comparison-not-validation
+ * boundary stays exactly where the diff's JSDoc draws it: from/to
+ * chain continuity, chain-start-at-CREATED, non-decreasing
+ * timestamps, transition legality, history-ends-at-state, and the
+ * hash-chain content (including the mixed chained/hashless
+ * rejection). A well-formed chained entry whose hash is wrong is
+ * still a shape-valid entry, and the diff reports what changed
+ * rather than crying tampering; run a snapshot through `fromJSON`
+ * when the input itself is untrusted.
+ */
+function assertEscrowSnapshotShape(snapshot: unknown, tag: string): void {
+  if (!isRecord(snapshot)) {
+    throw new Error(`${tag}: expected a JSON object`);
+  }
+  if (snapshot.v !== undefined && snapshot.v !== SNAPSHOT_VERSION) {
+    throw new Error(
+      `${tag}: unsupported snapshot version ${String(snapshot.v)}`,
+    );
+  }
+  for (const key of Object.keys(snapshot)) {
+    if (!SNAPSHOT_FIELDS.has(key)) {
+      throw new Error(`${tag}: unknown field "${key}"`);
+    }
+  }
+  if (typeof snapshot.id !== "string" || snapshot.id.length === 0) {
+    throw new Error(`${tag}: id must be a non-empty string`);
+  }
+  if (snapshot.id.length > MAX_ESCROW_ID_LENGTH) {
+    throw new Error(
+      `${tag}: id must be at most ${MAX_ESCROW_ID_LENGTH} characters, got ${snapshot.id.length}`,
+    );
+  }
+  if (!ESCROW_STATES.has(snapshot.state as EscrowState)) {
+    throw new Error(`${tag}: unknown state ${String(snapshot.state)}`);
+  }
+  if (!Array.isArray(snapshot.history)) {
+    throw new Error(`${tag}: history must be an array`);
+  }
+  for (let i = 0; i < snapshot.history.length; i++) {
+    const raw = snapshot.history[i];
+    const entryTag = `${tag}: entry[${i}]`;
+    if (!isRecord(raw)) {
+      throw new Error(`${entryTag}: entry must be an object`);
+    }
+    for (const key of Object.keys(raw)) {
+      if (!HISTORY_ENTRY_FIELDS.has(key)) {
+        throw new Error(`${entryTag}: unknown field "${key}"`);
+      }
+    }
+    if (
+      typeof raw.seq !== "number" ||
+      !Number.isInteger(raw.seq) ||
+      raw.seq < 1
+    ) {
+      throw new Error(
+        `${entryTag}: seq must be a positive integer, got ${String(raw.seq)}`,
+      );
+    }
+    if (!ESCROW_EVENTS.has(raw.event as EscrowEvent)) {
+      throw new Error(`${entryTag}: unknown event ${String(raw.event)}`);
+    }
+    if (!ESCROW_STATES.has(raw.from as EscrowState)) {
+      throw new Error(`${entryTag}: unknown from-state ${String(raw.from)}`);
+    }
+    if (!ESCROW_STATES.has(raw.to as EscrowState)) {
+      throw new Error(`${entryTag}: unknown to-state ${String(raw.to)}`);
+    }
+    if (!isCanonicalIso(raw.at)) {
+      throw new Error(
+        `${entryTag}: at must be canonical ISO-8601, got ${String(raw.at)}`,
+      );
+    }
+    const event = raw.event as EscrowEvent;
+    if (raw.actor !== undefined) {
+      if (typeof raw.actor !== "string" || raw.actor.length === 0) {
+        throw new Error(
+          `${entryTag}: actor must be a non-empty string, got ${JSON.stringify(raw.actor)}`,
+        );
+      }
+      if (raw.actor.length > MAX_ACTOR_LENGTH) {
+        throw new Error(
+          `${entryTag}: actor must be at most ${MAX_ACTOR_LENGTH} characters, got ${raw.actor.length}`,
+        );
+      }
+    }
+    if (raw.note !== undefined) {
+      if (typeof raw.note !== "string") {
+        throw new Error(`${entryTag}: note must be a string`);
+      }
+      if (raw.note.length > MAX_NOTE_LENGTH) {
+        throw new Error(
+          `${entryTag}: note must be at most ${MAX_NOTE_LENGTH} characters, got ${raw.note.length}`,
+        );
+      }
+    }
+    if (raw.amount !== undefined) {
+      if (event !== "FUND" && event !== "PARTIAL_RELEASE") {
+        throw new Error(
+          `${entryTag}: amount only allowed on FUND and PARTIAL_RELEASE entries`,
+        );
+      }
+      if (
+        typeof raw.amount !== "number" ||
+        !Number.isFinite(raw.amount) ||
+        raw.amount < 0
+      ) {
+        throw new Error(
+          `${entryTag}: amount must be a finite non-negative number`,
+        );
+      }
+    }
+    if (raw.evidence !== undefined) {
+      if (event !== "VERIFY_PASS") {
+        throw new Error(
+          `${entryTag}: evidence only allowed on VERIFY_PASS entries`,
+        );
+      }
+      if (typeof raw.evidence !== "string" || raw.evidence.length === 0) {
+        throw new Error(
+          `${entryTag}: evidence must be a non-empty string`,
+        );
+      }
+      if (raw.evidence.length > MAX_EVIDENCE_LENGTH) {
+        throw new Error(
+          `${entryTag}: evidence must be at most ${MAX_EVIDENCE_LENGTH} characters, got ${raw.evidence.length}`,
+        );
+      }
+    }
+    if (raw.settlementRef !== undefined) {
+      if (event !== "RELEASE") {
+        throw new Error(
+          `${entryTag}: settlementRef only allowed on RELEASE entries`,
+        );
+      }
+      if (
+        typeof raw.settlementRef !== "string" ||
+        raw.settlementRef.length === 0
+      ) {
+        throw new Error(
+          `${entryTag}: settlementRef must be a non-empty string, got ${JSON.stringify(raw.settlementRef)}`,
+        );
+      }
+      if (raw.settlementRef.length > MAX_SETTLEMENT_REF_LENGTH) {
+        throw new Error(
+          `${entryTag}: settlementRef must be at most ${MAX_SETTLEMENT_REF_LENGTH} characters, got ${raw.settlementRef.length}`,
+        );
+      }
+    }
+    if (raw.refundRef !== undefined) {
+      if (event !== "ARBITRATE_REFUND") {
+        throw new Error(
+          `${entryTag}: refundRef only allowed on ARBITRATE_REFUND entries`,
+        );
+      }
+      if (
+        typeof raw.refundRef !== "string" ||
+        raw.refundRef.length === 0
+      ) {
+        throw new Error(
+          `${entryTag}: refundRef must be a non-empty string, got ${JSON.stringify(raw.refundRef)}`,
+        );
+      }
+      if (raw.refundRef.length > MAX_SETTLEMENT_REF_LENGTH) {
+        throw new Error(
+          `${entryTag}: refundRef must be at most ${MAX_SETTLEMENT_REF_LENGTH} characters, got ${raw.refundRef.length}`,
+        );
+      }
+    }
+    // Hash-chain fields are all-or-nothing per entry, exactly as
+    // parseEscrowSnapshot requires — but the chain CONTENT is not
+    // re-verified here: a well-formed chained entry whose hash is
+    // wrong is still a shape-valid entry, and the diff reports what
+    // changed rather than crying tampering.
+    if (raw.prevHash !== undefined || raw.hash !== undefined) {
+      if (typeof raw.prevHash !== "string" || raw.prevHash.length === 0) {
+        throw new Error(`${entryTag}: prevHash must be a non-empty string`);
+      }
+      if (typeof raw.hash !== "string" || raw.hash.length === 0) {
+        throw new Error(`${entryTag}: hash must be a non-empty string`);
+      }
+    }
+  }
+  if (snapshot.deadline !== undefined) {
+    if (!isCanonicalIso(snapshot.deadline)) {
+      throw new Error(
+        `${tag}: deadline must be canonical ISO-8601, got ${String(snapshot.deadline)}`,
+      );
+    }
+  }
+  assertIdempotencyKeys(snapshot.idempotencyKeys, tag);
+  assertRolePolicy(snapshot.rolePolicy, tag);
+  if (snapshot.maxDeposit !== undefined) {
+    if (
+      typeof snapshot.maxDeposit !== "number" ||
+      !Number.isFinite(snapshot.maxDeposit) ||
+      snapshot.maxDeposit < 0
+    ) {
+      throw new Error(
+        `${tag}: maxDeposit must be a finite non-negative number, got ${JSON.stringify(snapshot.maxDeposit)}`,
+      );
+    }
+  }
+  assertMaxVisitsByState(snapshot.maxVisitsByState, tag);
+  for (const gate of [
+    "requireVerifyEvidence",
+    "requireActor",
+    "requireSettlementRef",
+    "requireRefundRef",
+  ] as const) {
+    if (snapshot[gate] !== undefined && typeof snapshot[gate] !== "boolean") {
+      throw new Error(
+        `${tag}: ${gate} must be a boolean, got ${JSON.stringify(snapshot[gate])}`,
+      );
+    }
+  }
+}
+
 function parseEscrowSnapshot(
   snapshot: unknown,
   auditKey?: AuditKey
@@ -1733,6 +1973,14 @@ function idempotencyKeysKey(keys: readonly string[] | undefined): string {
  * legality, seq continuity, or the hash chain; run a snapshot
  * through `fromJSON` (or its history through
  * {@link verifyHistoryChain}) when the input itself is untrusted.
+ * Both inputs are shape-checked first (backlog #1295, the escrow
+ * mirror of dataquest #1294): a non-snapshot must fail here rather
+ * than diffing as "no change" (`undefined === undefined`) or as a
+ * phantom move, and a record-shaped but field-missing input must
+ * not reach the field compares as a bare `TypeError` from
+ * `rolePolicyKey` / `idempotencyKeysKey`. Consistency is
+ * deliberately not checked — transition legality, seq continuity,
+ * and the hash chain stay the parser's job.
  *
  *   const before = escrow.toJSON();
  *   escrow.dispatch("SUBMIT_MILESTONE");
@@ -1749,14 +1997,19 @@ export function diffEscrowSnapshots(
       "invalid snapshot diff: both snapshots must be objects",
     );
   }
+  // Shape first: a non-snapshot must fail here rather than diffing
+  // as "no change" (`undefined === undefined`) or as a phantom move,
+  // and a record-shaped but field-missing input must not reach the
+  // field compares as a bare TypeError from `rolePolicyKey` (reading
+  // `policy[event]` off a string) or `idempotencyKeysKey`
+  // (spreading a string into a character set). Consistency is
+  // deliberately not checked — transition legality, seq continuity,
+  // and the hash chain stay the parser's job (backlog #1295).
+  assertEscrowSnapshotShape(a, "invalid snapshot diff");
+  assertEscrowSnapshotShape(b, "invalid snapshot diff");
   if (a.id !== b.id) {
     throw new Error(
       `snapshot diff failed: cannot diff snapshots of different escrows (${JSON.stringify(a.id)} vs ${JSON.stringify(b.id)})`,
-    );
-  }
-  if (!Array.isArray(a.history) || !Array.isArray(b.history)) {
-    throw new Error(
-      `snapshot diff failed: history of escrow ${JSON.stringify(a.id)} must be an array in both snapshots`,
     );
   }
   for (let i = 0; i < a.history.length; i++) {

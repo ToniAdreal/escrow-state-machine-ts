@@ -139,6 +139,29 @@ version changes.
 
 ### Fixed
 
+- `diffEscrowSnapshots()` shape-checks both inputs first
+  (2026-11-21, backlog #1295, the escrow mirror of dataquest
+  #1294): the diff previously only checked that each input was an
+  object plus matching `id` and an array `history` and then read the
+  fields straight off it, so `state: "BOGUS"` diffed as a phantom
+  state move, a string `rolePolicy` was silently expanded into a
+  character set by `rolePolicyKey` (`Object.keys("x")` is `["0"]`),
+  a numeric `rolePolicy` slipped through the same key function, and
+  a `null` policy threw a bare `TypeError` from `Object.keys(null)`.
+  Both inputs now go through the shared
+  `assertEscrowSnapshotShape` (the shape-only half of
+  `parseEscrowSnapshot`: version gate, field whitelists, known
+  state/event, canonical timestamps, per-entry field placement, and
+  the config fields at the parser's bar), throwing
+  `invalid snapshot diff: …` before any field compare. The
+  comparison-not-validation contract is untouched: transition
+  legality, seq continuity, and the hash chain are still not
+  re-checked — a shape-valid but hash-broken pair still diffs. The
+  README snapshot-diff paragraph now states the shape gate. New
+  `test/escrowSnapshotDiffShape.test.ts` (13 cases), test counts
+  2457 -> 2470; stripping the gate turns 10 of the 13 new tests red
+  (mutation-checked).
+
 - `diffSettlementReports()` shape-checks both inputs first
   (2026-11-20, backlog #1293, the single-report mirror of #1292):
   the diff previously only checked that each input was an object
