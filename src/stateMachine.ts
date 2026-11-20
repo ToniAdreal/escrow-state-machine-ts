@@ -632,6 +632,9 @@ export interface EscrowSignedSnapshotEnvelope {
  * `maxAgeMs`. The resolved timestamp is written into the envelope
  * and covered by its MAC, so it cannot be extended without the
  * secret. An envelope exported with neither option never expires.
+ * Unknown option keys fail closed (backlog #1284): a typo'd
+ * `expiry` is reported as itself instead of silently producing a
+ * never-expiring envelope.
  */
 export interface EscrowExportSignedSnapshotOptions {
   /**
@@ -728,6 +731,17 @@ const ESCROW_OPTION_FIELDS = new Set([
   "requireRefundRef",
   "deadline",
   "idempotencyKeys",
+]);
+
+/**
+ * Allowlist of `EscrowExportSignedSnapshotOptions` keys (#1284).
+ * The set must stay in lockstep with the interface; adding a field
+ * there without adding it here makes the new option unusable.
+ */
+const ESCROW_SIGNED_SNAPSHOT_EXPORT_OPTION_FIELDS = new Set([
+  "expiresAt",
+  "maxAgeMs",
+  "now",
 ]);
 
 /**
@@ -2731,6 +2745,12 @@ function signedSnapshotSecretBytes(secret: unknown): Buffer {
  * Returns `undefined` when the caller set neither (no expiry).
  * Mirrors the sibling dataquest `TaskLifecycle` resolver
  * (backlog #1076), same wording, same bar.
+ *
+ * Unknown option keys fail closed (backlog #1284): a typo'd
+ * `expiry` used to be silently dropped, so the caller believed
+ * the envelope expired in 2099 while it actually never expired.
+ * The scan runs before any field is read, so a typo is reported
+ * as itself.
  */
 function resolveSignedSnapshotExpiresAt(
   opts: EscrowExportSignedSnapshotOptions | undefined,
@@ -2740,6 +2760,13 @@ function resolveSignedSnapshotExpiresAt(
     throw new Error(
       "Escrow: exportSignedSnapshot options must be an object",
     );
+  for (const key of Object.keys(opts)) {
+    if (!ESCROW_SIGNED_SNAPSHOT_EXPORT_OPTION_FIELDS.has(key)) {
+      throw new Error(
+        `Escrow: exportSignedSnapshot: unknown option "${key}"`,
+      );
+    }
+  }
   const { expiresAt, maxAgeMs, now } = opts;
   if (expiresAt !== undefined && maxAgeMs !== undefined)
     throw new Error(

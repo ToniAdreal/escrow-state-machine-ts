@@ -227,6 +227,12 @@ function assertSecret(secret: unknown): void {
 
 /** Allowlist of `BuildWebhookOptions` keys (#1272). */
 const BUILD_WEBHOOK_OPTION_FIELDS = new Set(["secret", "now", "eventId"]);
+/** Allowlist of `SignedSnapshotExportOptions` keys (#1284). */
+const SIGNED_SNAPSHOT_EXPORT_OPTION_FIELDS = new Set([
+  "expiresAt",
+  "maxAgeMs",
+  "now",
+]);
 /** Allowlist of `BuildSettlementWebhooksOptions` keys (#1272). */
 const BUILD_SETTLEMENT_WEBHOOKS_OPTION_FIELDS = new Set([
   "secret",
@@ -1075,6 +1081,9 @@ function isCanonicalIsoTimestamp(s: unknown): s is string {
  * `maxAgeMs`. The resolved timestamp is written into the envelope
  * and covered by its MAC, so it cannot be extended without the
  * secret. An envelope exported with neither option never expires.
+ * Unknown option keys fail closed (backlog #1284): a typo'd
+ * `expiry` is reported as itself instead of silently producing a
+ * never-expiring envelope.
  */
 export interface SignedSnapshotExportOptions {
   /**
@@ -1110,6 +1119,12 @@ export interface SignedSnapshotExportOptions {
  * without `maxAgeMs` is a configuration error. Returns
  * `undefined` when the caller set neither (no expiry). `label`
  * is the owning class name, used to prefix the error messages.
+ *
+ * Unknown option keys fail closed (backlog #1284): a typo'd
+ * `expiry` used to be silently dropped, so the caller believed
+ * the envelope expired in 2099 while it actually never expired.
+ * The scan runs before any field is read, so a typo is reported
+ * as itself.
  */
 function resolveSignedSnapshotExpiresAt(
   opts: SignedSnapshotExportOptions | undefined,
@@ -1120,6 +1135,13 @@ function resolveSignedSnapshotExpiresAt(
     throw new Error(
       `${label}: exportSignedSnapshot options must be an object`,
     );
+  for (const key of Object.keys(opts)) {
+    if (!SIGNED_SNAPSHOT_EXPORT_OPTION_FIELDS.has(key)) {
+      throw new Error(
+        `${label}: exportSignedSnapshot: unknown option "${key}"`,
+      );
+    }
+  }
   const { expiresAt, maxAgeMs, now } = opts;
   if (expiresAt !== undefined && maxAgeMs !== undefined)
     throw new Error(
@@ -2187,6 +2209,12 @@ function computeOutboxSnapshotMac(
  *   `deadLetter()` lists pairs with `attempts >= maxAttempts`; a pair
  *   is in exactly one of the two lists.
  */
+/** Allowlist of `SettlementWebhookOutboxOptions` keys (#1284). */
+const SETTLEMENT_WEBHOOK_OUTBOX_OPTION_FIELDS = new Set([
+  "maxAttempts",
+  "maxEntries",
+  "now",
+]);
 export class SettlementWebhookOutbox {
   private readonly maxAttempts: number;
   private readonly maxEntries: number;
@@ -2202,6 +2230,21 @@ export class SettlementWebhookOutbox {
   >();
 
   constructor(opts: SettlementWebhookOutboxOptions = {}) {
+    // Unknown option keys fail closed (#1284, see
+    // SETTLEMENT_WEBHOOK_OUTBOX_OPTION_FIELDS), checked before any
+    // field is read: a typo'd `maxAttempt` would otherwise silently
+    // fall back to the 3-attempt default, and a typo'd `now` clock
+    // on `restoreSignedSnapshot` would silently fall back to
+    // `Date.now()` for the envelope-expiry check — the same gap
+    // #1265 closed for `SettlementEventDedupe` and #1281 closed for
+    // the quorum restore options.
+    for (const key of Object.keys(opts)) {
+      if (!SETTLEMENT_WEBHOOK_OUTBOX_OPTION_FIELDS.has(key)) {
+        throw new Error(
+          `SettlementWebhookOutbox: unknown option "${key}"`,
+        );
+      }
+    }
     const maxAttempts = opts.maxAttempts ?? 3;
     if (!Number.isInteger(maxAttempts) || maxAttempts < 1) {
       throw new Error(

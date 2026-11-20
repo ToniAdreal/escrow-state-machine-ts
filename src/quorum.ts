@@ -323,6 +323,17 @@ const QUORUM_CONFIG_FIELDS = new Set([
   "signerPublicKeys",
 ]);
 
+/**
+ * Allowlist of `QuorumExportSignedSnapshotOptions` keys (#1284).
+ * The set must stay in lockstep with the interface; adding a field
+ * there without adding it here makes the new option unusable.
+ */
+const QUORUM_SIGNED_SNAPSHOT_EXPORT_OPTION_FIELDS = new Set([
+  "expiresAt",
+  "maxAgeMs",
+  "now",
+]);
+
 function assertValidConfig(config: QuorumConfig): void {
   // Unknown config fields fail closed (see QUORUM_CONFIG_FIELDS),
   // checked before any field is consumed so a typo is reported as
@@ -1045,7 +1056,9 @@ export interface QuorumSignedSnapshotEnvelope {
  * `maxAgeMs` may be set; `now` is only used with `maxAgeMs`. The
  * resolved timestamp is written into the envelope and covered by
  * its MAC, so it cannot be extended without the secret. An envelope
- * exported with neither option never expires.
+ * exported with neither option never expires. Unknown option keys
+ * fail closed (backlog #1284): a typo'd `expiry` is reported as
+ * itself instead of silently producing a never-expiring envelope.
  */
 export interface QuorumExportSignedSnapshotOptions {
   /**
@@ -1169,6 +1182,12 @@ function quorumSignedSnapshotSecretBytes(secret: unknown): Buffer {
  * exclusive, and `now` without `maxAgeMs` is a configuration error.
  * Returns `undefined` when the caller set neither (no expiry).
  * Mirrors the sibling `Escrow` resolver, same wording, same bar.
+ *
+ * Unknown option keys fail closed (backlog #1284): a typo'd
+ * `expiry` used to be silently dropped, so the caller believed
+ * the envelope expired in 2099 while it actually never expired.
+ * The scan runs before any field is read, so a typo is reported
+ * as itself.
  */
 function resolveQuorumSignedSnapshotExpiresAt(
   opts: QuorumExportSignedSnapshotOptions | undefined,
@@ -1178,6 +1197,13 @@ function resolveQuorumSignedSnapshotExpiresAt(
     throw new Error(
       "Quorum: exportSignedQuorumSnapshot options must be an object",
     );
+  for (const key of Object.keys(opts)) {
+    if (!QUORUM_SIGNED_SNAPSHOT_EXPORT_OPTION_FIELDS.has(key)) {
+      throw new Error(
+        `Quorum: exportSignedQuorumSnapshot: unknown option "${key}"`,
+      );
+    }
+  }
   const { expiresAt, maxAgeMs, now } = opts;
   if (expiresAt !== undefined && maxAgeMs !== undefined)
     throw new Error(

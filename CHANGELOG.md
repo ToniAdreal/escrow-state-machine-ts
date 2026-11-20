@@ -139,6 +139,34 @@ version changes.
 
 ### Fixed
 
+- Signed snapshot export options now fail closed on unknown keys
+  (2026-11-20, backlog #1284): the three expiry resolvers
+  (`Escrow` / `SettlementEventDedupe` /
+  `SettlementWebhookOutbox` in `resolveSignedSnapshotExpiresAt`,
+  plus `resolveQuorumSignedSnapshotExpiresAt`) destructured only
+  the keys they knew, so a typo'd `expiry: '2099-01-01T00:00:00.000Z'`
+  was silently dropped and the caller believed the envelope expired
+  in 2099 while it actually never expired — the expiry is the
+  #1103 anti-resurrection time window, so a dropped key removed the
+  protection entirely. Each resolver now scans its options against
+  an allowlist (`expiresAt` / `maxAgeMs` / `now`) before any field
+  is read, throwing `<Label>: exportSignedSnapshot: unknown option
+  "<key>"` (quorum: `Quorum: exportSignedQuorumSnapshot: unknown
+  option "<key>"`). Restore side, checked in the same round: the
+  quorum restore was already fail-closed (#1281), and the dedupe
+  and escrow restores already reject a typo'd clock through their
+  constructors' unknown-option scans — but the outbox restore
+  silently ignored one, because `SettlementWebhookOutbox`'s
+  constructor never scanned its options; it now does
+  (`maxAttempts` / `maxEntries` / `now`), closing the restore path
+  and direct construction alike. README envelope sections and
+  `SignedSnapshotExportOptions` /
+  `EscrowExportSignedSnapshotOptions` /
+  `QuorumExportSignedSnapshotOptions` docs record the rule. New
+  `test/signedSnapshotExportUnknownOptions.test.ts` (42 cases),
+  test counts 2380 -> 2422; reverting the scans turns the new tests
+  red (mutation-checked).
+
 - `QuorumConfig` unknown option keys now fail closed (2026-11-20,
   backlog #1281): `createQuorum` / `restoreQuorum` destructured only
   the keys they knew, so a typo'd `threshhold: 99` was silently

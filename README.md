@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2380 tests, all local
+npm test   # 2422 tests, all local
 ```
 
 ## Quickstart
@@ -839,7 +839,10 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   exactly `expiresAt` still succeeds) after the MAC check and before
   any snapshot parsing, with `opts.now` injecting the clock for
   deterministic tests. An envelope without `expiresAt` never expires,
-  exactly as before.
+  exactly as before. Unknown export option keys fail closed: a
+  typo'd `expiry` throws `Escrow: exportSignedSnapshot: unknown
+  option "expiry"` instead of silently producing a never-expiring
+  envelope.
   Snapshot diffing:
   `diffEscrowSnapshots(before, after)` reports only what changed
   (`stateChanged` / `deadlineChanged` / `historyAppended` /
@@ -1031,7 +1034,10 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   malformed still fails strict snapshot validation. The envelope can
   also carry an optional expiry (`{ expiresAt }` or `{ maxAgeMs, now? }`,
   covered by the MAC; restoring at exactly `expiresAt` still succeeds),
-  and the secret is never written into the envelope — the MAC is
+  and unknown export option keys fail closed: a typo'd `expiry` throws
+  `Quorum: exportSignedQuorumSnapshot: unknown option "expiry"` instead
+  of silently producing a never-expiring envelope. The secret is never
+  written into the envelope — the MAC is
   integrity protection only, not encryption. The snapshot is an
   export format, not a built-in store, and restored approvals are
   still caller-persisted data: a restored `verified` flag was not
@@ -1315,7 +1321,10 @@ into the envelope, covered by the MAC; restore rejects an expired
 envelope (`now > expiresAt` — restoring at exactly `expiresAt` still
 succeeds) after the MAC check and before any snapshot parsing, with
 `opts.now` as the clock. An envelope without `expiresAt` never
-expires, exactly as before. The MAC is integrity
+expires, exactly as before. Unknown export option keys fail closed:
+a typo'd `expiry` throws `SettlementEventDedupe: exportSignedSnapshot:
+unknown option "expiry"` instead of silently producing a
+never-expiring envelope. The MAC is integrity
 protection only, not encryption: the eventIds inside are wire-visible
 values, so keep the secret where the snapshot writer keeps its other
 signing-side secrets. This mirrors the sibling rfc9421
@@ -1420,7 +1429,12 @@ into the envelope, covered by the MAC; restore rejects an expired
 envelope (`now > expiresAt` — restoring at exactly `expiresAt` still
 succeeds) after the MAC check and before any snapshot parsing, with
 `opts.now` as the clock. An envelope without `expiresAt` never
-expires, exactly as before. The MAC is integrity protection only,
+expires, exactly as before. Unknown export option keys fail closed:
+a typo'd `expiry` throws `SettlementWebhookOutbox:
+exportSignedSnapshot: unknown option "expiry"` instead of silently
+producing a never-expiring envelope, and the outbox constructor
+likewise rejects unknown options, so a typo'd restore clock cannot
+silently fall back to wall-clock. The MAC is integrity protection only,
 not encryption: the endpoints and eventIds inside are wire-visible
 values, so keep the secret where the snapshot writer keeps its other
 signing-side secrets. Same envelope shape and canonical form as the
@@ -2104,7 +2118,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2380 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2422 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
