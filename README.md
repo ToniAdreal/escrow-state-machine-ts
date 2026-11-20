@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2317 tests, all local
+npm test   # 2337 tests, all local
 ```
 
 ## Quickstart
@@ -1221,6 +1221,8 @@ if (dedupe.checkAndRecord(payload.eventId)) {
 
 For a whole batch, `buildSettlementWebhooks(buildSettlementReports(inputs), { secret })` pipes the batch report results straight into signed webhooks — one `{ escrowId, webhook }` per settled escrow, an `{ escrowId, error }` per failed entry (forwarded untouched, never blocking later entries), a shared secret and `now`, and a distinct `eventId` per settlement via `eventIdFactory` (default `crypto.randomUUID()`), so receivers deduplicating on `eventId` never drop a settlement as an apparent duplicate. A factory bug that repeats an `eventId` is caught in the batch itself: the later report fails as `{ escrowId, error }` with a `duplicate eventId` message, is never signed, and does not block later reports — only successfully signed ids are recorded, so a report whose build fails never claims its id. A repeated `escrowId` in the batch is the one exception to per-entry isolation, mirroring `buildSettlementReports`: it aborts the whole batch with an error naming the duplicate id(s) and produces no webhooks, since two signed webhooks with different `eventId`s for one settlement would look like two different settlements to a receiver deduplicating on `eventId`.
 
+Option typos fail closed on the build side too: `buildSettlementWebhook` and `buildSettlementWebhooks` scan their options against their known keys (`secret`, `now`, `eventId` / `secret`, `now`, `eventIdFactory`) before any signing, and an unknown key throws `cannot build settlement webhook(s): unknown option "<key>"`. A typo'd `secrett` is therefore reported as itself instead of surfacing as a bare `TypeError` on the missing secret, and a typo'd `eventIdFactory` can never silently fall back to the default `randomUUID` factory. A missing or non-string/Buffer `secret` likewise throws a configuration error, never a bare `TypeError`.
+
 `checkAndRecord(eventId)` returns `false` on first sighting and `true`
 for a repeat within the TTL ("true = is a replay"); at exactly `ttlMs`
 the record has expired and the id counts as unseen again, and a
@@ -2071,7 +2073,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2317 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2337 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

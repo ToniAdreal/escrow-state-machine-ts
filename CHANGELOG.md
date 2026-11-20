@@ -139,6 +139,30 @@ version changes.
 
 ### Fixed
 
+- `buildSettlementWebhook` / `buildSettlementWebhooks` unknown option
+  keys now fail closed (2026-11-20, backlog #1272): the sign side
+  was the last gap in the fail-closed family — the verifier scans
+  `VerifyWebhookOptions` (#1262), `SettlementEventDedupe` scans its
+  constructor options (#1265), and the escrow constructor/dispatch
+  scan theirs — but the two build entry points only read the keys
+  they knew. A typo'd `secrett` fell through to `assertSecret`,
+  which read `undefined.length` and threw a bare `TypeError`, and a
+  typo'd `eventId` / `eventIdFactory` silently fell back to the
+  default `randomUUID` factory, turning deterministic signatures
+  random. Both entry points now scan their options against an
+  allowlist (`secret`, `now`, `eventId` / `secret`, `now`,
+  `eventIdFactory`) before any signing, throwing
+  `cannot build settlement webhook(s): unknown option "<key>"` — the
+  batch scan runs first among the call-level validations, so an
+  unknown key also wins over a missing/invalid secret or `now` — and
+  `assertSecret` now reports a missing or non-string/Buffer secret
+  as `cannot build settlement webhook: signing secret must be a
+  string or Buffer` instead of a bare `TypeError` (an empty secret
+  still reports `must not be empty`). The internal batch loop and
+  the fan-out delivery path pass only known keys and are unaffected.
+  New `test/buildWebhookUnknownOptions.test.ts` (20 cases), test
+  counts 2317 -> 2337.
+
 - `summarizeSettlementReports` rejects a duplicated report escrowId
   (2026-11-19, backlog #1268): the summary loop summed every report it
   was handed with no seen set, so the same escrow's report twice in a

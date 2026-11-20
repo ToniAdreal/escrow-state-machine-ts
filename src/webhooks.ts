@@ -108,6 +108,17 @@ export interface SettlementWebhook {
   signature: string;
 }
 
+/**
+ * Options for {@link buildSettlementWebhook}.
+ *
+ * Unknown option keys fail closed (#1272, see
+ * `BUILD_WEBHOOK_OPTION_FIELDS`): a typo'd `secrett` throws
+ * `cannot build settlement webhook: unknown option "secrett"` before
+ * the secret is read — previously the misspelled secret fell through
+ * to `assertSecret` and surfaced as a bare `TypeError` on
+ * `undefined.length` — and a typo'd `eventId` never silently falls
+ * back to a random UUID.
+ */
 export interface BuildWebhookOptions {
   /** HMAC secret; must not be empty (empty string / zero-length buffer throws). */
   secret: string | Buffer;
@@ -201,11 +212,46 @@ export interface VerifyWebhookOptions {
   now?: number;
 }
 
-function assertSecret(secret: string | Buffer): void {
+function assertSecret(secret: unknown): void {
+  if (typeof secret !== "string" && !Buffer.isBuffer(secret)) {
+    throw new Error(
+      "cannot build settlement webhook: signing secret must be a string or Buffer",
+    );
+  }
   if (secret.length === 0) {
     throw new Error(
       "cannot build settlement webhook: signing secret must not be empty",
     );
+  }
+}
+
+/** Allowlist of `BuildWebhookOptions` keys (#1272). */
+const BUILD_WEBHOOK_OPTION_FIELDS = new Set(["secret", "now", "eventId"]);
+/** Allowlist of `BuildSettlementWebhooksOptions` keys (#1272). */
+const BUILD_SETTLEMENT_WEBHOOKS_OPTION_FIELDS = new Set([
+  "secret",
+  "now",
+  "eventIdFactory",
+]);
+
+/**
+ * Shared unknown-option scan for the two build entry points (#1272):
+ * a typo'd key is a caller bug and must be reported as itself, never
+ * silently dropped. A non-object options value (a missing options
+ * argument, a string, …) has no keys to scan and falls through to the
+ * caller's own secret validation, which reports the missing secret as
+ * a configuration error instead of a bare `TypeError`.
+ */
+function assertNoUnknownBuildOptions(
+  options: unknown,
+  fields: ReadonlySet<string>,
+  caller: string,
+): void {
+  if (options === null || typeof options !== "object") return;
+  for (const key of Object.keys(options)) {
+    if (!fields.has(key)) {
+      throw new Error(`${caller}: unknown option "${key}"`);
+    }
   }
 }
 
@@ -306,19 +352,42 @@ function buildPayload(
  * derived from the append-only audit history): nothing is invented here.
  * Throws when the secret is empty, `now` is not a valid timestamp, or an
  * injected `eventId` is not a non-empty string no longer than
- * {@link MAX_EVENT_ID_LENGTH} characters.
+ * {@link MAX_EVENT_ID_LENGTH} characters. A missing or non-string/Buffer
+ * secret throws a configuration error, never a bare `TypeError`, and an
+ * unknown option key throws
+ * `cannot build settlement webhook: unknown option "<key>"` before the
+ * secret is read (#1272).
  */
 export function buildSettlementWebhook(
   report: SettlementReport,
   options: BuildWebhookOptions,
 ): SettlementWebhook {
-  assertSecret(options.secret);
+  // Unknown option keys fail closed (#1272, see
+  // BUILD_WEBHOOK_OPTION_FIELDS), checked before the secret is read: a
+  // typo'd `secrett` would otherwise fall through to assertSecret and
+  // surface as a bare TypeError on `undefined.length`, and a typo'd
+  // `eventId` would silently fall back to a random UUID.
+  assertNoUnknownBuildOptions(
+    options,
+    BUILD_WEBHOOK_OPTION_FIELDS,
+    "cannot build settlement webhook",
+  );
+  assertSecret(options?.secret);
   const payload = buildPayload(report, options);
   const signature = sign(canonicalJson(payload), options.secret);
   return { payload, signature };
 }
 
-/** Options for {@link buildSettlementWebhooks}. */
+/** Options for {@link buildSettlementWebhooks}.
+ *
+ * Unknown option keys fail closed (#1272, see
+ * `BUILD_SETTLEMENT_WEBHOOKS_OPTION_FIELDS`): a typo'd
+ * `eventIdFactor` throws
+ * `cannot build settlement webhooks: unknown option "eventIdFactor"`
+ * before any report is attempted — previously it silently fell back
+ * to the default `randomUUID` factory, so per-report `eventId`s were
+ * no longer the deterministic values the caller injected.
+ */
 export interface BuildSettlementWebhooksOptions {
   /** HMAC secret shared by every webhook in the batch; must not be empty. */
   secret: string | Buffer;
@@ -386,8 +455,8 @@ export type BuildSettlementWebhooksResult =
  *
  * Call-level configuration errors DO throw before any report is
  * attempted — those are caller bugs, not per-report outcomes: a
- * non-array input, a missing/empty secret, an invalid shared `now`, or
- * a non-function `eventIdFactory`.
+ * non-array input, a missing/empty secret, an invalid shared `now`,
+ * a non-function `eventIdFactory`, or an unknown option key (#1272).
  *
  * `eventId` semantics: one DISTINCT `eventId` per report (see
  * {@link BuildSettlementWebhooksOptions.eventIdFactory}); the shared
@@ -432,6 +501,17 @@ export function buildSettlementWebhooks(
   results: readonly SettlementReportResult[],
   options: BuildSettlementWebhooksOptions,
 ): BuildSettlementWebhooksResult[] {
+  // Unknown option keys fail closed (#1272, see
+  // BUILD_SETTLEMENT_WEBHOOKS_OPTION_FIELDS), checked first among the
+  // call-level validations: a typo'd `eventIdFactor` would otherwise
+  // silently fall back to the default randomUUID factory, and a
+  // typo'd `secert` would surface as the secret-type error instead of
+  // being reported as itself. No webhook is signed before this scan.
+  assertNoUnknownBuildOptions(
+    options,
+    BUILD_SETTLEMENT_WEBHOOKS_OPTION_FIELDS,
+    "cannot build settlement webhooks",
+  );
   if (!Array.isArray(results)) {
     throw new Error(
       "cannot build settlement webhooks: results must be an array",
