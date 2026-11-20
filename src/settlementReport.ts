@@ -962,9 +962,19 @@ export interface SettlementReportsSummary {
  * figures sum past `Number.MAX_VALUE` — the function throws
  * `settlement reports summary computation overflowed: inputs too large`
  * instead of returning `Infinity` totals that would only surface as
- * render errors downstream. Single reports are never re-validated:
- * only the sums are guarded, mirroring dataquest's
- * `summarizeTaskSettlements` contract (backlog #838).
+ * render errors downstream. Every report in the batch is shape-checked
+ * first (backlog #1278) with the same `assertReportShape` the JSON/CSV
+ * renderers apply — an unknown `outcome`, an unknown party role, a
+ * non-array `parties`, or a missing/non-finite `deposit` / total /
+ * `remaining` throws `invalid settlement reports summary: …` and
+ * returns no summary at all, before any figure is summed: without that
+ * check an unknown outcome silently became a `NaN` outcome count
+ * (serialized as `null`) while its `totalInflow` was still added, so
+ * the party nets no longer summed to zero. Error entries carry no
+ * report and are never shape-checked; only successful reports are
+ * validated. A hand-built report should go through
+ * `parseSettlementReportJson` or `buildSettlementReport` first — both
+ * apply the same check — rather than being assembled by hand.
  */
 export function summarizeSettlementReports(
   results: readonly SettlementReportResult[],
@@ -1022,6 +1032,16 @@ export function summarizeSettlementReports(
   const seenReportIds = new Set<string>();
   for (const result of results) {
     if (!result.report) continue;
+    // Fail-closed shape guard (backlog #1278): the same check the
+    // JSON/CSV renderers apply, run here before any figure is summed,
+    // so a hand-built report with an unknown outcome, an unknown party
+    // role, a non-array `parties`, or a missing/non-finite money field
+    // throws `invalid settlement reports summary: …` and returns no
+    // summary — instead of silently producing a summary whose outcome
+    // count is `NaN` (serialized as `null`) while its inflow was still
+    // added. The duplicate check below runs in the same pre-pass, so a
+    // malformed batch fails whole, never partially.
+    assertReportShape(result.report, "invalid settlement reports summary");
     const id = result.report.escrowId;
     if (seenReportIds.has(id)) {
       throw new Error(

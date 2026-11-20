@@ -139,6 +139,29 @@ version changes.
 
 ### Fixed
 
+- `summarizeSettlementReports` now shape-checks every report before
+  summing (2026-11-20, backlog #1278): the summary was the only public
+  consumer of reports that never validated their shape — it read
+  `report.deposit.deposit` / `totalInflow` / `parties` directly, so a
+  hand-built report with `outcome: "bogus-outcome"` and an
+  `escrow-agent` party row produced an outcome count of `NaN`
+  (serialized as `null`) while its `totalInflow` was still added and
+  the party nets no longer summed to zero, and a string `parties`
+  value was silently iterated character by character with zero
+  errors. Each successful report is now checked with the same
+  `assertReportShape` the JSON/CSV renderers apply (unknown outcome
+  or party role, non-array `parties`, missing/non-finite `deposit` /
+  totals / `remaining`, missing `balanced` / `eventCount`), throwing
+  `invalid settlement reports summary: …` before any figure is summed
+  — a malformed batch fails whole, never partially, mirroring the
+  #1268 duplicate guard. Error entries carry no report and are never
+  checked. The two #1098 overflow tests that fed `Infinity`/`NaN`
+  single-report figures now expect the shape error instead of the
+  overflow error — the call still fails closed, with the more precise
+  message — and their header comment now describes the layered
+  contract. New `test/settlementReportsSummaryShape.test.ts` (15
+  cases), test counts 2353 -> 2368.
+
 - `deliverSettlementWebhook` / `deliverSettlementWebhookToMany`
   unknown option keys now fail closed (2026-11-20, backlog #1275):
   the delivery side was the second gap in the fail-closed family —

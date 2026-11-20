@@ -8,11 +8,13 @@ import {
 
 // Backlog #1098: `summarizeSettlementReports` must fail closed when a
 // batch's money figures overflow, instead of silently returning
-// `Infinity` totals. The fixtures below are hand-built reports — the
-// function deliberately never re-validates a single report, so a
-// hand-built report can carry figures no builder would ever produce
-// (astronomical amounts, report totals that disagree with party rows);
-// only the sums are guarded.
+// `Infinity` totals. The fixtures below are hand-built reports carrying
+// figures no builder would ever produce (astronomical amounts, report
+// totals that disagree with party rows). Since backlog #1278 the
+// function shape-checks each report first, so a non-finite figure is
+// rejected by that check with the more precise shape error before the
+// overflow guard ever runs; the overflow guard still covers the
+// remaining case — finite figures whose sums leave the finite range.
 
 const OVERFLOW_MESSAGE =
   "settlement reports summary computation overflowed: inputs too large";
@@ -22,6 +24,19 @@ function assertOverflows(results: readonly SettlementReportResult[]) {
     () => summarizeSettlementReports(results),
     (err: unknown) =>
       err instanceof Error && err.message === OVERFLOW_MESSAGE,
+  );
+}
+
+// Backlog #1278: a non-finite figure is rejected by the shape check
+// before any sum is accumulated, so the call still fails closed — with
+// the more precise shape error instead of the overflow error.
+function assertShapeRejects(results: readonly SettlementReportResult[]) {
+  assert.throws(
+    () => summarizeSettlementReports(results),
+    (err: unknown) =>
+      err instanceof Error &&
+      err.message.startsWith("invalid settlement reports summary: ") &&
+      err.message.includes("must be a finite number"),
   );
 }
 
@@ -72,12 +87,12 @@ function fakeReport(
   return { escrowId: id, report };
 }
 
-test("single report carrying Infinity fails closed at the top-level totals", () => {
-  assertOverflows([fakeReport("s-inf", { amount: Number.POSITIVE_INFINITY })]);
+test("single report carrying Infinity is rejected by the shape check, not summed", () => {
+  assertShapeRejects([fakeReport("s-inf", { amount: Number.POSITIVE_INFINITY })]);
 });
 
-test("single report carrying NaN fails closed, not silently summed", () => {
-  assertOverflows([fakeReport("s-nan", { amount: Number.NaN })]);
+test("single report carrying NaN is rejected by the shape check, not summed", () => {
+  assertShapeRejects([fakeReport("s-nan", { amount: Number.NaN })]);
 });
 
 test("batch accumulation overflow: two finite reports summing past MAX_VALUE", () => {

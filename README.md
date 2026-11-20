@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2353 tests, all local
+npm test   # 2368 tests, all local
 ```
 
 ## Quickstart
@@ -1744,8 +1744,16 @@ If any running total would leave the finite range — a hand-built or
 upstream report carrying astronomical figures, or a batch whose figures
 sum past `Number.MAX_VALUE` — the call throws
 `settlement reports summary computation overflowed: inputs too large`
-instead of returning `Infinity` totals; single reports are never
-re-validated, only the sums are guarded.
+instead of returning `Infinity` totals; and every successful report is
+shape-checked with the same `assertReportShape` the JSON/CSV renderers
+apply before any figure is summed — an unknown `outcome`, an unknown
+party role, a non-array `parties`, or a missing/non-finite `deposit` /
+total / `remaining` throws
+`invalid settlement reports summary: …` and returns no summary, so a
+hand-built report can no longer produce an outcome count of `NaN`
+(serialized as `null`) while its inflow is still added. Error entries
+carry no report and are never checked; a hand-built report should go
+through `parseSettlementReportJson` or `buildSettlementReport` first.
 Read the still-locked remainder from `totalRemaining`, not from
 `totalDeposit - totalOutflow`: a partial report's ledger runs over the
 full deposit, so that difference is 0 even while money is still
@@ -2090,7 +2098,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2353 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2368 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
