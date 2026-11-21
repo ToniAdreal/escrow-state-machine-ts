@@ -444,6 +444,20 @@ version changes.
   (9 cases), test counts 2270 -> 2279; a disabled guard was verified
   to turn 7 of the 9 new tests red, then restored.
 
+- `dispatch()` rejects unknown `DispatchOptions` keys
+  (2026-11-19, backlog #1254): `dispatch()` previously read only
+  the keys it knew and silently ignored the rest, so a typo'd
+  `idempotencykey` dropped the idempotency dedupe and a typo'd
+  `actorr` dropped the audit attribution without a word. Unknown
+  opts keys now throw
+  `invalid dispatch options: unknown option "<key>"` before any
+  field is read — after the `expectedSeq` guard (which stays first
+  of all) and the opts-must-be-object check, before actor shape
+  validation and the dedupe. The JSDoc check-ordering note and the
+  README dispatch section record the order. New
+  `test/dispatchUnknownOptions.test.ts` (9 cases), test counts
+  2247 -> 2256.
+
 ## [0.2.0] - 2026-11-18
 
 ### Added
