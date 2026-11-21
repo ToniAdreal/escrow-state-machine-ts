@@ -204,7 +204,7 @@ test("rewriting a persisted ref breaks the hash chain", () => {
   assert.equal(verifyHistoryChain(tampered.history), false);
   assert.throws(
     () => Escrow.fromJSON(tampered),
-    /invalid snapshot: history hash chain is broken/,
+    /invalid snapshot: history\[3\]: history hash chain is broken \(an entry was tampered with, deleted, or reordered\) at entry seq 4/,
   );
 });
 

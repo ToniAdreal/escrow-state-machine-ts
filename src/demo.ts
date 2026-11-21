@@ -1449,11 +1449,13 @@ export const DEMO_OVERDUE_CHECK_AFTER_AT = "2026-03-11T09:00:00.000Z";
  *   SUBMIT_MILESTONE) carries {@link DEMO_PARSED_HISTORY_TAMPERED_NOTE}
  *   instead of its original note is structurally well-formed but
  *   no longer recomputes its stored hash, so the parse throws
- *   `invalid snapshot: history hash chain is broken (an entry
- *   was tampered with, deleted, or reordered)` — the
+ *   `invalid snapshot: history[1]: history hash chain is broken (an entry
+ *   was tampered with, deleted, or reordered) at entry seq 2` — the
  *   `invalid snapshot:` tag is the parser's own, because
  *   `parseEscrowHistory` validates through the snapshot parser
- *   (see its doc comment in src/stateMachine.ts)
+ *   (see its doc comment in src/stateMachine.ts); the `history[1]`
+ *   locator names the first entry whose link or hash fails, and the
+ *   seq is the entry's own 1-based sequence number
  * The tamper touches only the detached copy: the escrow's own
  * history keeps its original note and still parses afterwards.
  */
@@ -1461,7 +1463,7 @@ export const DEMO_PARSED_HISTORY_TAMPERED_SEQ = 2;
 export const DEMO_PARSED_HISTORY_TAMPERED_NOTE =
   "REWRITTEN after the fact — milestone note altered";
 export const DEMO_PARSED_HISTORY_TAMPER_ERROR =
-  "invalid snapshot: history hash chain is broken (an entry was tampered with, deleted, or reordered)";
+  "invalid snapshot: history[1]: history hash chain is broken (an entry was tampered with, deleted, or reordered) at entry seq 2";
 
 /**
  * Event-sourced rebuild fixture for the closing segment: the

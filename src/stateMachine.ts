@@ -1648,14 +1648,30 @@ function parseEscrowSnapshot(
   // them deterministically on rehydration).
   const chainedFlags = history.map((e) => e.hash !== undefined);
   if (chainedFlags.some(Boolean) && chainedFlags.some((c) => !c)) {
+    // Name the first entry that breaks the first entry's pattern:
+    // the first hashless entry in a chained log, or the first chained
+    // entry in a hashless-first log. The `history[N]` form is what
+    // lets historyFromNdjson retag this failure with its NDJSON line
+    // number.
+    const firstOdd = chainedFlags.findIndex((c) => c !== chainedFlags[0]);
     throw new Error(
-      "invalid snapshot: hash-chain entries must not be mixed with hashless entries"
+      `invalid snapshot: history[${firstOdd}]: hash-chain entries must not be mixed with hashless entries at entry seq ${firstOdd + 1}`
     );
   }
   if (chainedFlags.length > 0 && chainedFlags.every(Boolean)) {
     if (!verifyHistoryChain(history, auditKey)) {
+      // Re-walk the chain to name the first entry whose link or hash
+      // fails, so a 200-entry log points at the tampered entry instead
+      // of only saying the chain is broken. The `history[N]` form is
+      // what lets historyFromNdjson retag this failure with its NDJSON
+      // line number; the null fallback keeps the old generic message
+      // and is unreachable in practice (verifyHistoryChain just
+      // failed, so the walk must find a break).
+      const breakIndex = findFirstChainBreak(history, auditKey);
       throw new Error(
-        "invalid snapshot: history hash chain is broken (an entry was tampered with, deleted, or reordered)"
+        breakIndex === null
+          ? "invalid snapshot: history hash chain is broken (an entry was tampered with, deleted, or reordered)"
+          : `invalid snapshot: history[${breakIndex}]: history hash chain is broken (an entry was tampered with, deleted, or reordered) at entry seq ${history[breakIndex].seq}`
       );
     }
   }
@@ -2259,6 +2275,60 @@ function constantTimeHexEqual(
 }
 
 /**
+ * Locate the first entry where the hash chain breaks, so a caller can
+ * name it instead of reporting only "the chain is broken". Returns the
+ * 0-based index of the first entry whose `prevHash` does not link to
+ * the previous entry's `hash` (genesis links to
+ * {@link GENESIS_PREV_HASH}), whose stored `hash` does not recompute
+ * from the entry content, or — in a mixed log — whose chained-ness
+ * differs from the first entry's. Returns `null` when the chain is
+ * intact, which includes an empty history and a fully hashless legacy
+ * history (there is no chain to break there).
+ *
+ * This is the single walk {@link verifyHistoryChain} and
+ * {@link parseEscrowHistory} share, so the boolean verdict and the
+ * located break can never disagree about where the chain fails.
+ */
+function findFirstChainBreak(
+  history: readonly EscrowHistoryEntry[],
+  key?: AuditKey
+): number | null {
+  if (history.length === 0) return null;
+  const carried = history.map(
+    (e) => e.hash !== undefined || e.prevHash !== undefined
+  );
+  if (carried.every((c) => !c)) return null; // legacy: nothing to verify
+  if (carried.some((c) => !c)) {
+    // Mixed: the first entry that breaks the first entry's pattern.
+    for (let i = 1; i < carried.length; i++) {
+      if (carried[i] !== carried[0]) return i;
+    }
+    return null; // unreachable: some() above already found a differing entry
+  }
+  let expectedPrev = GENESIS_PREV_HASH;
+  for (let i = 0; i < history.length; i++) {
+    const entry = history[i];
+    if (entry.prevHash !== expectedPrev) return i;
+    const canonical = canonicalHistoryEntry(entry);
+    const recomputed = hashHistoryEntry(canonical, entry.prevHash!, key);
+    if (typeof entry.hash !== "string") return i;
+    // Keyed links are MACs: compare in constant time so an online
+    // verifier gives no per-byte timing oracle. The unkeyed chain is
+    // tamper-evidence only (its digests are not keyed secrets), so its
+    // comparison stays a plain equality — semantics unchanged.
+    const intact =
+      key === undefined
+        ? recomputed === entry.hash
+        : constantTimeHexEqual(recomputed, entry.hash);
+    if (!intact) {
+      return i;
+    }
+    expectedPrev = entry.hash;
+  }
+  return null;
+}
+
+/**
  * Verify the hash chain of an audit history. Returns `true` when the
  * chain is intact: every entry's `prevHash` matches the previous entry's
  * `hash` (genesis links to {@link GENESIS_PREV_HASH}) and every `hash`
@@ -2285,31 +2355,16 @@ function constantTimeHexEqual(
  * Note: this checks integrity only, not structure. A re-sequenced or
  * structurally invalid history still needs parseEscrowSnapshot
  * (via {@link Escrow.fromJSON}) for the seq/edge/timestamp rules.
+ * It answers only whether the chain holds; when the answer is `false`,
+ * {@link parseEscrowHistory} names the first entry where the chain
+ * breaks (`invalid snapshot: history[N]: … at entry seq <n>`).
  */
 export function verifyHistoryChain(
   history: readonly EscrowHistoryEntry[],
   key?: AuditKey
 ): boolean {
   if (key !== undefined) assertAuditKey(key);
-  if (history.length === 0) return true;
-  const carried = history.map(
-    (e) => e.hash !== undefined || e.prevHash !== undefined
-  );
-  if (carried.every((c) => !c)) return true; // legacy: nothing to verify
-  if (carried.some((c) => !c)) return false; // mixed: fail closed
-  let expectedPrev = GENESIS_PREV_HASH;
-  for (const entry of history) {
-    if (entry.prevHash !== expectedPrev) return false;
-    const canonical = canonicalHistoryEntry(entry);
-    const expected = hashHistoryEntry(canonical, entry.prevHash, key);
-    const matches =
-      key === undefined
-        ? expected === entry.hash
-        : constantTimeHexEqual(expected, entry.hash);
-    if (!matches) return false;
-    expectedPrev = entry.hash!;
-  }
-  return true;
+  return findFirstChainBreak(history, key) === null;
 }
 
 /**

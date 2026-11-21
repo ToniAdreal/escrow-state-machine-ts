@@ -5053,7 +5053,7 @@ test("demo shows standalone history parsing: serialized history parses back verb
   assert.equal(parsedHistoryTamperError, DEMO_PARSED_HISTORY_TAMPER_ERROR);
   assert.equal(
     DEMO_PARSED_HISTORY_TAMPER_ERROR,
-    "invalid snapshot: history hash chain is broken (an entry was tampered with, deleted, or reordered)",
+    "invalid snapshot: history[1]: history hash chain is broken (an entry was tampered with, deleted, or reordered) at entry seq 2",
   );
   // Independent cross-checks: a fresh standalone parse of the
   // serialized history reproduces the demo's entries, the same

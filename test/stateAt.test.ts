@@ -203,10 +203,10 @@ test("stateAtFromHistory: a keyed chain needs its auditKey, like rehydration", (
   // No key (or the wrong one) on a keyed chain is fail-closed.
   assert.throws(
     () => stateAtFromHistory(log, T11),
-    /invalid snapshot: history hash chain is broken/,
+    /invalid snapshot: history\[0\]: history hash chain is broken \(an entry was tampered with, deleted, or reordered\) at entry seq 1/,
   );
   assert.throws(
     () => stateAtFromHistory(log, T11, "wrong-audit-key"),
-    /invalid snapshot: history hash chain is broken/,
+    /invalid snapshot: history\[0\]: history hash chain is broken \(an entry was tampered with, deleted, or reordered\) at entry seq 1/,
   );
 });

@@ -363,7 +363,7 @@ test("MAC-valid envelope with a malformed snapshot still fails validation", () =
         { v: 1, snapshot: badSnapshot, mac },
         SECRET,
       ),
-    /invalid snapshot: history hash chain is broken/,
+    /invalid snapshot: history\[0\]: history hash chain is broken \(an entry was tampered with, deleted, or reordered\) at entry seq 1/,
   );
 });
 
@@ -435,14 +435,14 @@ test("keyed history chain still needs its auditKey on signed restore", () => {
   // is rejected — the envelope MAC alone does not bless the log.
   assert.throws(
     () => Escrow.restoreSignedSnapshot(envelope, SECRET),
-    /invalid snapshot: history hash chain is broken/,
+    /invalid snapshot: history\[0\]: history hash chain is broken \(an entry was tampered with, deleted, or reordered\) at entry seq 1/,
   );
   assert.throws(
     () =>
       Escrow.restoreSignedSnapshot(envelope, SECRET, {
         auditKey: "wrong-audit-key",
       }),
-    /invalid snapshot: history hash chain is broken/,
+    /invalid snapshot: history\[0\]: history hash chain is broken \(an entry was tampered with, deleted, or reordered\) at entry seq 1/,
   );
 });
 

@@ -139,6 +139,24 @@ version changes.
 
 ### Fixed
 
+- `parseEscrowHistory()` / `Escrow.fromJSON()` name the first entry
+  where the hash chain breaks (2026-11-21, backlog #1296, the escrow
+  mirror of dataquest #1285): a broken chain previously failed with
+  one generic sentence that named no entry, so a 200-entry audit log
+  gave the caller nowhere to look — and NDJSON import could not retag
+  it with a line number. The parser now walks the chain once through
+  the shared internal `findFirstChainBreak` (the same walk
+  `verifyHistoryChain()` delegates to, so the boolean verdict and the
+  located break can never disagree) and throws
+  `invalid snapshot: history[N]: history hash chain is broken (…) at
+  entry seq <n>`; a mixed chained/hashless log names its first
+  off-pattern entry the same way. NDJSON import retags the located
+  form to its physical line number with no NDJSON-side change, and
+  the demo's pinned tamper error is now the located form. New
+  `test/historyChainBrokenLocation.test.ts` (17 cases), test counts
+  2470 -> 2487; reporting seq + 1 turns the new tests red
+  (mutation-checked).
+
 - `diffEscrowSnapshots()` shape-checks both inputs first
   (2026-11-21, backlog #1295, the escrow mirror of dataquest
   #1294): the diff previously only checked that each input was an
