@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2489 tests, all local
+npm test   # 2491 tests, all local
 ```
 
 ## Quickstart
@@ -577,7 +577,17 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   the way to re-attach it there.
   Honest limit: requiring a reference cannot verify the external refund
   happened — it only guarantees the audit trail says which transfer it was
-  (see SECURITY.md).
+  (see SECURITY.md). The CLI demo (`npm run demo`) walks both gates end to
+  end on branch escrows: a reference-free RELEASE on a
+  `requireSettlementRef: true` escrow is refused with state and history
+  untouched, the same dispatch carrying a settlement reference is accepted
+  and recorded verbatim, a snapshot restore keeps refusing the
+  reference-free RELEASE and then releases with the reference, and a
+  default escrow (flag off) keeps the pre-gate behavior; the refund side
+  mirrors all four shapes for ARBITRATE_REFUND under
+  `requireRefundRef: true`. The demo's references are fixed strings, not
+  verified transfers — the gates only guarantee the audit trail names the
+  external transfer or refund.
 - Optimistic concurrency (opt-in): `dispatch` opts accept `expectedSeq`
   — the history length (the last entry's `seq`; `0` for an empty
   history) the caller based its decision on. When set, the guard runs
@@ -2148,7 +2158,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2489 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2491 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

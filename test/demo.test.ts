@@ -205,6 +205,13 @@ import {
   DEMO_REFUND_ESCROW_ID,
   DEMO_REFUND_FUND_AT,
   DEMO_REFUND_QUORUM_NOW_MS,
+  DEMO_REFUND_REF_GATE_DEFAULT_ESCROW_ID,
+  DEMO_REFUND_REF_GATE_DISPUTE_AT,
+  DEMO_REFUND_REF_GATE_ERROR,
+  DEMO_REFUND_REF_GATE_ESCROW_ID,
+  DEMO_REFUND_REF_GATE_FUND_AT,
+  DEMO_REFUND_REF_GATE_REF,
+  DEMO_REFUND_REF_GATE_REFUND_AT,
   DEMO_REFUND_SUBMIT_AT,
   DEMO_REFUND_VERIFY_FAIL_AT,
   DEMO_RECONCILE_EXPIRE_AT,
@@ -224,6 +231,15 @@ import {
   DEMO_REMAINING_VISITS_FUND_AT,
   DEMO_REMAINING_VISITS_SECOND_RELEASE_AT,
   DEMO_REMAINING_VISITS_SECOND_SUBMIT_AT,
+  DEMO_SETTLEMENT_REF_GATE_DEFAULT_ESCROW_ID,
+  DEMO_SETTLEMENT_REF_GATE_ERROR,
+  DEMO_SETTLEMENT_REF_GATE_ESCROW_ID,
+  DEMO_SETTLEMENT_REF_GATE_FUND_AT,
+  DEMO_SETTLEMENT_REF_GATE_REF,
+  DEMO_SETTLEMENT_REF_GATE_RELEASE_AT,
+  DEMO_SETTLEMENT_REF_GATE_SUBMIT_AT,
+  DEMO_SETTLEMENT_REF_GATE_VERIFY_AT,
+  DEMO_SETTLEMENT_REF_GATE_VERIFY_EVIDENCE,
   DEMO_SETTLEMENT_REF_NO_MATCH,
   DEMO_SETTLEMENT_REF_OTHER,
   DEMO_SETTLEMENT_REF_OTHER_FUND_AT,
@@ -8196,7 +8212,7 @@ test("demo verifyEvidence segment is deterministic: two runs print byte-identica
         "Verify evidence gate (EscrowOptions.requireVerifyEvidence on branch escrows):",
       ),
       ls.indexOf(
-        "Keyed audit chain (verifyHistoryChain with EscrowOptions.auditKey on a branch escrow):",
+        "Settlement and refund reference gates (EscrowOptions.requireSettlementRef / requireRefundRef on branch escrows):",
       ) - 1,
     );
   const a = await runDemo();
@@ -8216,6 +8232,322 @@ test("demo verifyEvidence segment is deterministic: two runs print byte-identica
   assert.equal(
     a.verifyEvidenceHistoryLengthAfterReject,
     b.verifyEvidenceHistoryLengthAfterReject,
+  );
+});
+
+test("demo shows requireSettlementRef / requireRefundRef gates: a reference-free RELEASE / ARBITRATE_REFUND is refused without touching the strict escrow, a snapshot restore keeps the gate, the same dispatch with a reference passes and records it, and a default escrow is unchanged", async () => {
+  const {
+    settlementRefGateEscrow,
+    settlementRefGateError,
+    settlementRefGateStateAfterReject,
+    settlementRefGateHistoryLengthAfterReject,
+    settlementRefGateReleasedState,
+    settlementRefGateRecordedRef,
+    settlementRefGateRestoredEscrow,
+    settlementRefGateRestoredError,
+    settlementRefGateRestoredReleasedState,
+    settlementRefGateRestoredRecordedRef,
+    settlementRefGateDefaultEscrow,
+    settlementRefGateDefaultState,
+    refundRefGateEscrow,
+    refundRefGateError,
+    refundRefGateStateAfterReject,
+    refundRefGateHistoryLengthAfterReject,
+    refundRefGateRefundedState,
+    refundRefGateRecordedRef,
+    refundRefGateRestoredEscrow,
+    refundRefGateRestoredError,
+    refundRefGateRestoredRefundedState,
+    refundRefGateRestoredRecordedRef,
+    refundRefGateDefaultEscrow,
+    refundRefGateDefaultState,
+    lines,
+  } = await runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned fixture shape: the pinned errors are
+  // the exact strings src/stateMachine.ts throws when
+  // each gate is on and no reference is given.
+  assert.equal(
+    DEMO_SETTLEMENT_REF_GATE_ERROR,
+    "settlement reference required: RELEASE must carry a non-empty settlementRef when requireSettlementRef is enabled",
+  );
+  assert.equal(
+    DEMO_REFUND_REF_GATE_ERROR,
+    "refund reference required: ARBITRATE_REFUND must carry a non-empty refundRef when requireRefundRef is enabled",
+  );
+
+  // Settlement side: the reference-free RELEASE is
+  // refused and changes nothing, a snapshot restore
+  // keeps refusing it and then releases with the
+  // reference, the original releases with the same
+  // reference, and the default escrow (flag off) keeps
+  // the pre-gate behavior.
+  assert.equal(settlementRefGateError, DEMO_SETTLEMENT_REF_GATE_ERROR);
+  assert.equal(settlementRefGateStateAfterReject, "VERIFIED");
+  assert.equal(settlementRefGateHistoryLengthAfterReject, 3);
+  assert.equal(settlementRefGateReleasedState, "RELEASED");
+  assert.equal(settlementRefGateRecordedRef, DEMO_SETTLEMENT_REF_GATE_REF);
+  assert.equal(settlementRefGateEscrow.id, DEMO_SETTLEMENT_REF_GATE_ESCROW_ID);
+  assert.equal(settlementRefGateEscrow.state, "RELEASED");
+  assert.deepEqual(
+    settlementRefGateEscrow.history.map((e) => [e.seq, e.event, e.at]),
+    [
+      [1, "FUND", DEMO_SETTLEMENT_REF_GATE_FUND_AT],
+      [2, "SUBMIT_MILESTONE", DEMO_SETTLEMENT_REF_GATE_SUBMIT_AT],
+      [3, "VERIFY_PASS", DEMO_SETTLEMENT_REF_GATE_VERIFY_AT],
+      [4, "RELEASE", DEMO_SETTLEMENT_REF_GATE_RELEASE_AT],
+    ],
+  );
+  assert.equal(
+    settlementRefGateEscrow.history[3].settlementRef,
+    DEMO_SETTLEMENT_REF_GATE_REF,
+  );
+  assert.equal(
+    settlementRefGateRestoredError,
+    DEMO_SETTLEMENT_REF_GATE_ERROR,
+  );
+  assert.equal(settlementRefGateRestoredReleasedState, "RELEASED");
+  assert.equal(
+    settlementRefGateRestoredRecordedRef,
+    DEMO_SETTLEMENT_REF_GATE_REF,
+  );
+  assert.equal(
+    settlementRefGateRestoredEscrow.id,
+    DEMO_SETTLEMENT_REF_GATE_ESCROW_ID,
+  );
+  assert.equal(settlementRefGateRestoredEscrow.state, "RELEASED");
+  assert.equal(settlementRefGateRestoredEscrow.history.length, 4);
+  assert.equal(
+    settlementRefGateRestoredEscrow.history[3].settlementRef,
+    DEMO_SETTLEMENT_REF_GATE_REF,
+  );
+  assert.equal(
+    settlementRefGateRestoredEscrow.toJSON().requireSettlementRef,
+    true,
+  );
+  assert.equal(settlementRefGateDefaultState, "RELEASED");
+  assert.equal(
+    settlementRefGateDefaultEscrow.id,
+    DEMO_SETTLEMENT_REF_GATE_DEFAULT_ESCROW_ID,
+  );
+  assert.equal(settlementRefGateDefaultEscrow.state, "RELEASED");
+  assert.equal(settlementRefGateDefaultEscrow.history.length, 4);
+  assert.ok(
+    !("settlementRef" in settlementRefGateDefaultEscrow.history[3]),
+    "default escrow RELEASE entry must carry no settlementRef field",
+  );
+
+  // Refund side: the same four shapes for
+  // ARBITRATE_REFUND under the refund gate.
+  assert.equal(refundRefGateError, DEMO_REFUND_REF_GATE_ERROR);
+  assert.equal(refundRefGateStateAfterReject, "DISPUTED");
+  assert.equal(refundRefGateHistoryLengthAfterReject, 2);
+  assert.equal(refundRefGateRefundedState, "REFUNDED");
+  assert.equal(refundRefGateRecordedRef, DEMO_REFUND_REF_GATE_REF);
+  assert.equal(refundRefGateEscrow.id, DEMO_REFUND_REF_GATE_ESCROW_ID);
+  assert.equal(refundRefGateEscrow.state, "REFUNDED");
+  assert.deepEqual(
+    refundRefGateEscrow.history.map((e) => [e.seq, e.event, e.at]),
+    [
+      [1, "FUND", DEMO_REFUND_REF_GATE_FUND_AT],
+      [2, "DISPUTE", DEMO_REFUND_REF_GATE_DISPUTE_AT],
+      [3, "ARBITRATE_REFUND", DEMO_REFUND_REF_GATE_REFUND_AT],
+    ],
+  );
+  assert.equal(
+    refundRefGateEscrow.history[2].refundRef,
+    DEMO_REFUND_REF_GATE_REF,
+  );
+  assert.equal(refundRefGateRestoredError, DEMO_REFUND_REF_GATE_ERROR);
+  assert.equal(refundRefGateRestoredRefundedState, "REFUNDED");
+  assert.equal(
+    refundRefGateRestoredRecordedRef,
+    DEMO_REFUND_REF_GATE_REF,
+  );
+  assert.equal(
+    refundRefGateRestoredEscrow.id,
+    DEMO_REFUND_REF_GATE_ESCROW_ID,
+  );
+  assert.equal(refundRefGateRestoredEscrow.state, "REFUNDED");
+  assert.equal(refundRefGateRestoredEscrow.history.length, 3);
+  assert.equal(
+    refundRefGateRestoredEscrow.history[2].refundRef,
+    DEMO_REFUND_REF_GATE_REF,
+  );
+  assert.equal(
+    refundRefGateRestoredEscrow.toJSON().requireRefundRef,
+    true,
+  );
+  assert.equal(refundRefGateDefaultState, "REFUNDED");
+  assert.equal(
+    refundRefGateDefaultEscrow.id,
+    DEMO_REFUND_REF_GATE_DEFAULT_ESCROW_ID,
+  );
+  assert.equal(refundRefGateDefaultEscrow.state, "REFUNDED");
+  assert.equal(refundRefGateDefaultEscrow.history.length, 3);
+  assert.ok(
+    !("refundRef" in refundRefGateDefaultEscrow.history[2]),
+    "default escrow ARBITRATE_REFUND entry must carry no refundRef field",
+  );
+
+  // Independent re-verification: fresh escrows driven
+  // by hand through the same shapes agree — each strict
+  // escrow refuses without its reference (state and
+  // history untouched), accepts with it, a snapshot
+  // restore keeps the gate, and a default escrow accepts
+  // without a reference.
+  const probeSettlement = new Escrow("probe-settlement-ref-demo", {
+    requireSettlementRef: true,
+  });
+  probeSettlement.dispatch("FUND", undefined, 100);
+  probeSettlement.dispatch("SUBMIT_MILESTONE");
+  probeSettlement.dispatch("VERIFY_PASS", undefined, undefined, {
+    evidence: "probe-evidence-ref",
+  });
+  assert.throws(
+    () => probeSettlement.dispatch("RELEASE"),
+    new Error(DEMO_SETTLEMENT_REF_GATE_ERROR),
+  );
+  assert.equal(probeSettlement.state, "VERIFIED");
+  assert.equal(probeSettlement.history.length, 3);
+  const probeSettlementRestored = Escrow.fromJSON(
+    JSON.parse(JSON.stringify(probeSettlement.toJSON())),
+  );
+  assert.throws(
+    () => probeSettlementRestored.dispatch("RELEASE"),
+    new Error(DEMO_SETTLEMENT_REF_GATE_ERROR),
+  );
+  assert.equal(
+    probeSettlementRestored.dispatch("RELEASE", undefined, undefined, {
+      settlementRef: "probe-settlement-ref",
+    }),
+    "RELEASED",
+  );
+  assert.equal(
+    probeSettlementRestored.history[3].settlementRef,
+    "probe-settlement-ref",
+  );
+  assert.equal(
+    probeSettlement.dispatch("RELEASE", undefined, undefined, {
+      settlementRef: "probe-settlement-ref",
+    }),
+    "RELEASED",
+  );
+  assert.equal(probeSettlement.history[3].settlementRef, "probe-settlement-ref");
+  const probeSettlementDefault = new Escrow("probe-settlement-default-demo");
+  probeSettlementDefault.dispatch("FUND", undefined, 100);
+  probeSettlementDefault.dispatch("SUBMIT_MILESTONE");
+  probeSettlementDefault.dispatch("VERIFY_PASS");
+  assert.equal(probeSettlementDefault.dispatch("RELEASE"), "RELEASED");
+  assert.ok(!("settlementRef" in probeSettlementDefault.history[3]));
+  const probeRefund = new Escrow("probe-refund-ref-demo", {
+    requireRefundRef: true,
+  });
+  probeRefund.dispatch("FUND", undefined, 100);
+  probeRefund.dispatch("DISPUTE");
+  assert.throws(
+    () => probeRefund.dispatch("ARBITRATE_REFUND"),
+    new Error(DEMO_REFUND_REF_GATE_ERROR),
+  );
+  assert.equal(probeRefund.state, "DISPUTED");
+  assert.equal(probeRefund.history.length, 2);
+  const probeRefundRestored = Escrow.fromJSON(
+    JSON.parse(JSON.stringify(probeRefund.toJSON())),
+  );
+  assert.throws(
+    () => probeRefundRestored.dispatch("ARBITRATE_REFUND"),
+    new Error(DEMO_REFUND_REF_GATE_ERROR),
+  );
+  assert.equal(
+    probeRefundRestored.dispatch("ARBITRATE_REFUND", undefined, undefined, {
+      refundRef: "probe-refund-ref",
+    }),
+    "REFUNDED",
+  );
+  assert.equal(
+    probeRefundRestored.history[2].refundRef,
+    "probe-refund-ref",
+  );
+  assert.equal(
+    probeRefund.dispatch("ARBITRATE_REFUND", undefined, undefined, {
+      refundRef: "probe-refund-ref",
+    }),
+    "REFUNDED",
+  );
+  assert.equal(probeRefund.history[2].refundRef, "probe-refund-ref");
+  const probeRefundDefault = new Escrow("probe-refund-default-demo");
+  probeRefundDefault.dispatch("FUND", undefined, 100);
+  probeRefundDefault.dispatch("DISPUTE");
+  assert.equal(probeRefundDefault.dispatch("ARBITRATE_REFUND"), "REFUNDED");
+  assert.ok(!("refundRef" in probeRefundDefault.history[2]));
+
+  // The segment follows the verifyEvidence segment and
+  // prints its lines verbatim; the auditKey segment
+  // follows it.
+  const verifyEvidenceAt = text.indexOf(
+    "Verify evidence gate (EscrowOptions.requireVerifyEvidence on branch escrows):",
+  );
+  const refGateAt = text.indexOf(
+    "Settlement and refund reference gates (EscrowOptions.requireSettlementRef / requireRefundRef on branch escrows):",
+  );
+  assert.ok(
+    refGateAt > verifyEvidenceAt,
+    "settlement/refund reference gates segment must follow the verifyEvidence segment",
+  );
+  for (const line of [
+    `  escrow ${DEMO_SETTLEMENT_REF_GATE_ESCROW_ID} (requireSettlementRef: true): FUND 10630 -> FUNDED, SUBMIT_MILESTONE -> MILESTONE_SUBMITTED, VERIFY_PASS -> VERIFIED on fixed timestamps (the settlement gate is armed)`,
+    `  RELEASE without settlementRef: throws "${DEMO_SETTLEMENT_REF_GATE_ERROR}" — state stays VERIFIED, history stays 3 entries (nothing appended)`,
+    `  RELEASE with settlementRef "${DEMO_SETTLEMENT_REF_GATE_REF}": -> RELEASED, reference recorded verbatim on the audit entry (the reference names the external transfer; the library does not verify the transfer happened)`,
+    `  snapshot round-trip: Escrow.fromJSON(toJSON()) still refuses a reference-free RELEASE with the same error, then releases with "${DEMO_SETTLEMENT_REF_GATE_REF}" -> RELEASED (the gate survives the snapshot)`,
+    `  escrow ${DEMO_SETTLEMENT_REF_GATE_DEFAULT_ESCROW_ID} (default, flag off): RELEASE without settlementRef -> RELEASED (omitting the flag preserves the pre-gate behavior)`,
+    `  escrow ${DEMO_REFUND_REF_GATE_ESCROW_ID} (requireRefundRef: true): FUND 10630 -> FUNDED, DISPUTE -> DISPUTED on fixed timestamps (the refund gate is armed)`,
+    `  ARBITRATE_REFUND without refundRef: throws "${DEMO_REFUND_REF_GATE_ERROR}" — state stays DISPUTED, history stays 2 entries (nothing appended)`,
+    `  ARBITRATE_REFUND with refundRef "${DEMO_REFUND_REF_GATE_REF}": -> REFUNDED, reference recorded verbatim on the audit entry (the reference names the external refund; the library does not verify the refund happened)`,
+    `  snapshot round-trip: Escrow.fromJSON(toJSON()) still refuses a reference-free ARBITRATE_REFUND with the same error, then refunds with "${DEMO_REFUND_REF_GATE_REF}" -> REFUNDED (the gate survives the snapshot)`,
+    `  escrow ${DEMO_REFUND_REF_GATE_DEFAULT_ESCROW_ID} (default, flag off): ARBITRATE_REFUND without refundRef -> REFUNDED (omitting the flag preserves the pre-gate behavior)`,
+  ]) {
+    assert.ok(text.includes(line), `missing settlement/refund ref gate line: ${line}`);
+  }
+  const auditKeyAt = text.indexOf(
+    "Keyed audit chain (verifyHistoryChain with EscrowOptions.auditKey on a branch escrow):",
+  );
+  assert.ok(
+    auditKeyAt > refGateAt,
+    "auditKey segment must follow the settlement/refund reference gates segment",
+  );
+});
+
+test("demo settlement/refund reference gates segment is deterministic: two runs print byte-identical reference-gate lines", async () => {
+  const segment = (ls: string[]) =>
+    ls.slice(
+      ls.indexOf(
+        "Settlement and refund reference gates (EscrowOptions.requireSettlementRef / requireRefundRef on branch escrows):",
+      ),
+      ls.indexOf(
+        "Keyed audit chain (verifyHistoryChain with EscrowOptions.auditKey on a branch escrow):",
+      ) - 1,
+    );
+  const a = await runDemo();
+  const b = await runDemo();
+  const segA = segment(a.lines);
+  // Header + the five settlement lines + the five
+  // refund lines; every value is derived from the
+  // fixed fixtures alone, so no normalization is
+  // needed.
+  assert.equal(segA.length, 11);
+  assert.deepEqual(segA, segment(b.lines));
+  assert.equal(a.settlementRefGateError, b.settlementRefGateError);
+  assert.equal(a.settlementRefGateRecordedRef, b.settlementRefGateRecordedRef);
+  assert.equal(
+    a.settlementRefGateHistoryLengthAfterReject,
+    b.settlementRefGateHistoryLengthAfterReject,
+  );
+  assert.equal(a.refundRefGateError, b.refundRefGateError);
+  assert.equal(a.refundRefGateRecordedRef, b.refundRefGateRecordedRef);
+  assert.equal(
+    a.refundRefGateHistoryLengthAfterReject,
+    b.refundRefGateHistoryLengthAfterReject,
   );
 });
 

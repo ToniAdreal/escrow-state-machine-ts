@@ -2524,6 +2524,91 @@ export const DEMO_VERIFY_EVIDENCE_ERROR =
   'verify evidence required: dispatch("VERIFY_PASS") requires a non-empty evidence reference when requireVerifyEvidence is enabled';
 
 /**
+ * Settlement/refund-reference gate fixtures for the
+ * final closing segment: four fresh branch escrows
+ * driven on fixed timestamps while the
+ * `requireSettlementRef` / `requireRefundRef` gates
+ * of `EscrowOptions` (src/stateMachine.ts) are
+ * exercised in every shape. Hand-pinned expectations
+ * — written from the documented gate semantics there
+ * (with the flag on, a RELEASE without a non-empty
+ * `settlementRef` throws the pinned error BEFORE
+ * anything is appended, and an ARBITRATE_REFUND
+ * without a non-empty `refundRef` throws its pinned
+ * error the same way; with the reference each
+ * proceeds and the reference is recorded verbatim on
+ * the audit entry; both flags ARE part of the
+ * `toJSON()` snapshot, so a restored escrow keeps
+ * enforcing its gate; the library records the
+ * caller's reference and does NOT verify the external
+ * transfer or refund behind it), never derived by
+ * calling the gated dispatch itself, and
+ * cross-checked against
+ * test/requireSettlementRef.test.ts and
+ * test/requireRefundRef.test.ts, which pin the same
+ * shapes:
+ * - DEMO-ESC-041 (settlement gate on): FUND +
+ *   SUBMIT_MILESTONE + VERIFY_PASS on fixed
+ *   timestamps reach VERIFIED (3 entries)
+ * - RELEASE with NO settlementRef throws exactly
+ *   {@link DEMO_SETTLEMENT_REF_GATE_ERROR} and leaves
+ *   state (VERIFIED) and history (3 entries)
+ *   untouched
+ * - a `fromJSON(toJSON())` restore of that VERIFIED
+ *   escrow throws the same error on a reference-free
+ *   RELEASE, then releases with
+ *   {@link DEMO_SETTLEMENT_REF_GATE_REF} to RELEASED
+ *   with the reference recorded verbatim
+ * - the original escrow then releases with the same
+ *   reference to RELEASED, recorded verbatim
+ * - DEMO-ESC-042 (flag off, the default): the same
+ *   chain with a reference-free RELEASE succeeds —
+ *   omitting the flag preserves the exact pre-gate
+ *   behavior, and its RELEASE entry carries no
+ *   settlementRef field
+ * - DEMO-ESC-043 (refund gate on): FUND + DISPUTE on
+ *   fixed timestamps reach DISPUTED (2 entries)
+ * - ARBITRATE_REFUND with NO refundRef throws exactly
+ *   {@link DEMO_REFUND_REF_GATE_ERROR} and leaves
+ *   state (DISPUTED) and history (2 entries)
+ *   untouched
+ * - a `fromJSON(toJSON())` restore of that DISPUTED
+ *   escrow throws the same error on a reference-free
+ *   ARBITRATE_REFUND, then refunds with
+ *   {@link DEMO_REFUND_REF_GATE_REF} to REFUNDED with
+ *   the reference recorded verbatim
+ * - the original escrow then refunds with the same
+ *   reference to REFUNDED, recorded verbatim
+ * - DEMO-ESC-044 (flag off, the default): the same
+ *   dispute chain with a reference-free
+ *   ARBITRATE_REFUND succeeds — omitting the flag
+ *   preserves the exact pre-gate behavior, and its
+ *   ARBITRATE_REFUND entry carries no refundRef field
+ * Fixed escrow ids, fixed amount (the golden deposit),
+ * fixed timestamps: no network, no randomness, no
+ * wall clock.
+ */
+export const DEMO_SETTLEMENT_REF_GATE_ESCROW_ID = "DEMO-ESC-041";
+export const DEMO_SETTLEMENT_REF_GATE_DEFAULT_ESCROW_ID = "DEMO-ESC-042";
+export const DEMO_REFUND_REF_GATE_ESCROW_ID = "DEMO-ESC-043";
+export const DEMO_REFUND_REF_GATE_DEFAULT_ESCROW_ID = "DEMO-ESC-044";
+export const DEMO_SETTLEMENT_REF_GATE_FUND_AT = "2026-03-22T09:00:00.000Z";
+export const DEMO_SETTLEMENT_REF_GATE_SUBMIT_AT = "2026-03-22T10:00:00.000Z";
+export const DEMO_SETTLEMENT_REF_GATE_VERIFY_AT = "2026-03-22T11:00:00.000Z";
+export const DEMO_SETTLEMENT_REF_GATE_RELEASE_AT = "2026-03-22T11:01:00.000Z";
+export const DEMO_REFUND_REF_GATE_FUND_AT = "2026-03-22T09:00:00.000Z";
+export const DEMO_REFUND_REF_GATE_DISPUTE_AT = "2026-03-22T10:00:00.000Z";
+export const DEMO_REFUND_REF_GATE_REFUND_AT = "2026-03-22T11:00:00.000Z";
+export const DEMO_SETTLEMENT_REF_GATE_REF = "wire-2026-03-22-041";
+export const DEMO_REFUND_REF_GATE_REF = "rfnd-2026-03-22-043";
+export const DEMO_SETTLEMENT_REF_GATE_VERIFY_EVIDENCE =
+  "demo-oracle-attestation-041";
+export const DEMO_SETTLEMENT_REF_GATE_ERROR =
+  "settlement reference required: RELEASE must carry a non-empty settlementRef when requireSettlementRef is enabled";
+export const DEMO_REFUND_REF_GATE_ERROR =
+  "refund reference required: ARBITRATE_REFUND must carry a non-empty refundRef when requireRefundRef is enabled";
+
+/**
  * Keyed audit-chain fixtures for the final closing segment:
  * one fresh branch escrow driven on fixed timestamps while
  * the keyed (HMAC) mode of the audit hash chain —
@@ -4825,6 +4910,167 @@ export interface DemoResult {
    * evidence-free VERIFY_PASS: `"VERIFIED"`.
    */
   verifyEvidenceDefaultState: EscrowState;
+  /**
+   * The final closing segment's strict settlement
+   * branch escrow (DEMO-ESC-041,
+   * `requireSettlementRef: true`), after the rejected
+   * reference-free RELEASE and the accepted
+   * reference-carrying one: RELEASED with 4 history
+   * entries, the last carrying the pinned
+   * settlement reference verbatim.
+   */
+  settlementRefGateEscrow: Escrow;
+  /**
+   * Error message of the reference-free RELEASE on
+   * the strict settlement escrow: exactly
+   * {@link DEMO_SETTLEMENT_REF_GATE_ERROR}.
+   */
+  settlementRefGateError: string;
+  /**
+   * The strict settlement escrow's state after the
+   * rejection: `"VERIFIED"` — the gate changed
+   * nothing.
+   */
+  settlementRefGateStateAfterReject: EscrowState;
+  /**
+   * The strict settlement escrow's history length
+   * after the rejection: exactly 3 — nothing was
+   * appended.
+   */
+  settlementRefGateHistoryLengthAfterReject: number;
+  /**
+   * State returned by the RELEASE dispatched with
+   * the pinned settlement reference: `"RELEASED"`.
+   */
+  settlementRefGateReleasedState: EscrowState;
+  /**
+   * The settlement reference recorded verbatim on
+   * the strict settlement escrow's RELEASE audit
+   * entry: exactly
+   * {@link DEMO_SETTLEMENT_REF_GATE_REF}.
+   */
+  settlementRefGateRecordedRef: string;
+  /**
+   * The `fromJSON(toJSON())` restore of the strict
+   * settlement escrow, after its own rejected
+   * reference-free RELEASE and accepted
+   * reference-carrying one: RELEASED with 4 history
+   * entries, the last carrying the pinned settlement
+   * reference verbatim — the gate survives the
+   * snapshot round-trip.
+   */
+  settlementRefGateRestoredEscrow: Escrow;
+  /**
+   * Error message of the reference-free RELEASE on
+   * the restored settlement escrow: exactly
+   * {@link DEMO_SETTLEMENT_REF_GATE_ERROR}.
+   */
+  settlementRefGateRestoredError: string;
+  /**
+   * State returned by the restored settlement
+   * escrow's RELEASE dispatched with the pinned
+   * settlement reference: `"RELEASED"`.
+   */
+  settlementRefGateRestoredReleasedState: EscrowState;
+  /**
+   * The settlement reference recorded verbatim on
+   * the restored settlement escrow's RELEASE audit
+   * entry: exactly
+   * {@link DEMO_SETTLEMENT_REF_GATE_REF}.
+   */
+  settlementRefGateRestoredRecordedRef: string;
+  /**
+   * The default settlement branch escrow
+   * (DEMO-ESC-042, flag off), after its
+   * reference-free RELEASE: RELEASED with 4 history
+   * entries, the last carrying no settlementRef
+   * field — the pre-gate behavior.
+   */
+  settlementRefGateDefaultEscrow: Escrow;
+  /**
+   * State returned by the default settlement
+   * escrow's reference-free RELEASE: `"RELEASED"`.
+   */
+  settlementRefGateDefaultState: EscrowState;
+  /**
+   * The final closing segment's strict refund branch
+   * escrow (DEMO-ESC-043, `requireRefundRef: true`),
+   * after the rejected reference-free
+   * ARBITRATE_REFUND and the accepted
+   * reference-carrying one: REFUNDED with 3 history
+   * entries, the last carrying the pinned refund
+   * reference verbatim.
+   */
+  refundRefGateEscrow: Escrow;
+  /**
+   * Error message of the reference-free
+   * ARBITRATE_REFUND on the strict refund escrow:
+   * exactly {@link DEMO_REFUND_REF_GATE_ERROR}.
+   */
+  refundRefGateError: string;
+  /**
+   * The strict refund escrow's state after the
+   * rejection: `"DISPUTED"` — the gate changed
+   * nothing.
+   */
+  refundRefGateStateAfterReject: EscrowState;
+  /**
+   * The strict refund escrow's history length after
+   * the rejection: exactly 2 — nothing was appended.
+   */
+  refundRefGateHistoryLengthAfterReject: number;
+  /**
+   * State returned by the ARBITRATE_REFUND dispatched
+   * with the pinned refund reference: `"REFUNDED"`.
+   */
+  refundRefGateRefundedState: EscrowState;
+  /**
+   * The refund reference recorded verbatim on the
+   * strict refund escrow's ARBITRATE_REFUND audit
+   * entry: exactly {@link DEMO_REFUND_REF_GATE_REF}.
+   */
+  refundRefGateRecordedRef: string;
+  /**
+   * The `fromJSON(toJSON())` restore of the strict
+   * refund escrow, after its own rejected
+   * reference-free ARBITRATE_REFUND and accepted
+   * reference-carrying one: REFUNDED with 3 history
+   * entries, the last carrying the pinned refund
+   * reference verbatim — the gate survives the
+   * snapshot round-trip.
+   */
+  refundRefGateRestoredEscrow: Escrow;
+  /**
+   * Error message of the reference-free
+   * ARBITRATE_REFUND on the restored refund escrow:
+   * exactly {@link DEMO_REFUND_REF_GATE_ERROR}.
+   */
+  refundRefGateRestoredError: string;
+  /**
+   * State returned by the restored refund escrow's
+   * ARBITRATE_REFUND dispatched with the pinned
+   * refund reference: `"REFUNDED"`.
+   */
+  refundRefGateRestoredRefundedState: EscrowState;
+  /**
+   * The refund reference recorded verbatim on the
+   * restored refund escrow's ARBITRATE_REFUND audit
+   * entry: exactly {@link DEMO_REFUND_REF_GATE_REF}.
+   */
+  refundRefGateRestoredRecordedRef: string;
+  /**
+   * The default refund branch escrow (DEMO-ESC-044,
+   * flag off), after its reference-free
+   * ARBITRATE_REFUND: REFUNDED with 3 history
+   * entries, the last carrying no refundRef field —
+   * the pre-gate behavior.
+   */
+  refundRefGateDefaultEscrow: Escrow;
+  /**
+   * State returned by the default refund escrow's
+   * reference-free ARBITRATE_REFUND: `"REFUNDED"`.
+   */
+  refundRefGateDefaultState: EscrowState;
   /**
    * The final closing segment's keyed branch escrow
    * (DEMO-ESC-019, `auditKey` set), after the full
@@ -11260,6 +11506,341 @@ export async function runDemo(): Promise<DemoResult> {
     `  escrow ${verifyEvidenceDefaultEscrow.id} (default, flag off): VERIFY_PASS without evidence -> ${verifyEvidenceDefaultState} (omitting the flag preserves the pre-gate behavior)`,
   );
 
+  // --- Settlement and refund reference gates: requireSettlementRef / requireRefundRef (final closing) ---
+  // A settlement reference is the reconciliation anchor
+  // for a release: the bank transfer ref, chain tx hash,
+  // or payout batch id the external ledger files the
+  // payment under. A refund reference is the same anchor
+  // on the refund side. The opt-in
+  // `requireSettlementRef` / `requireRefundRef` flags
+  // make the caller cite that reference up front —
+  // recorded verbatim on the audit entry — and refuse
+  // the dispatch outright when no reference is given.
+  // Four fresh branch escrows walk the gates in every
+  // shape on fixed timestamps: the strict settlement
+  // escrow (DEMO-ESC-041, settlement gate on) is driven
+  // to VERIFIED, its reference-free RELEASE throws the
+  // pinned error and leaves state and history untouched,
+  // a `fromJSON(toJSON())` restore of it throws the
+  // same error on a reference-free RELEASE and then
+  // releases with the pinned reference, and the
+  // original escrow then releases with the same
+  // reference; the default settlement escrow
+  // (DEMO-ESC-042, flag off) releases without a
+  // reference, because omitting the flag preserves the
+  // exact pre-gate behavior. The strict refund escrow
+  // (DEMO-ESC-043, refund gate on) is driven to
+  // DISPUTED, its reference-free ARBITRATE_REFUND
+  // throws the pinned error and leaves state and
+  // history untouched, a `fromJSON(toJSON())` restore
+  // of it throws the same error on a reference-free
+  // ARBITRATE_REFUND and then refunds with the pinned
+  // reference, and the original escrow then refunds
+  // with the same reference; the default refund escrow
+  // (DEMO-ESC-044, flag off) refunds without a
+  // reference. Hand-pinned expectations (see the
+  // fixture comment above), asserted HERE, outside the
+  // printing: a rejection that appended anything, a
+  // recorded reference that differed, a restored
+  // escrow that dropped its gate, or a default escrow
+  // that behaved differently would fail the demo
+  // itself, not just a test. Zero network, zero
+  // randomness, fixed timestamps.
+  const settlementRefGateEscrow = new Escrow(
+    DEMO_SETTLEMENT_REF_GATE_ESCROW_ID,
+    {
+      requireSettlementRef: true,
+    },
+  );
+  settlementRefGateEscrow.dispatch(
+    "FUND",
+    "Deposit locked (wire received)",
+    10630,
+    {
+      actor: "sponsor",
+      at: DEMO_SETTLEMENT_REF_GATE_FUND_AT,
+    },
+  );
+  settlementRefGateEscrow.dispatch(
+    "SUBMIT_MILESTONE",
+    "Deliverable URLs + IPFS metadata hash",
+    undefined,
+    {
+      actor: "creator",
+      at: DEMO_SETTLEMENT_REF_GATE_SUBMIT_AT,
+    },
+  );
+  settlementRefGateEscrow.dispatch(
+    "VERIFY_PASS",
+    "KPIs validated by oracle",
+    undefined,
+    {
+      actor: "oracle",
+      at: DEMO_SETTLEMENT_REF_GATE_VERIFY_AT,
+      evidence: DEMO_SETTLEMENT_REF_GATE_VERIFY_EVIDENCE,
+    },
+  );
+  let settlementRefGateError = "";
+  try {
+    settlementRefGateEscrow.dispatch("RELEASE", "Settlement released", undefined, {
+      actor: "treasury",
+      at: DEMO_SETTLEMENT_REF_GATE_RELEASE_AT,
+    });
+  } catch (err) {
+    settlementRefGateError =
+      err instanceof Error ? err.message : String(err);
+  }
+  const settlementRefGateStateAfterReject = settlementRefGateEscrow.state;
+  const settlementRefGateHistoryLengthAfterReject =
+    settlementRefGateEscrow.history.length;
+  const settlementRefGateRestoredEscrow = Escrow.fromJSON(
+    JSON.parse(JSON.stringify(settlementRefGateEscrow.toJSON())),
+  );
+  let settlementRefGateRestoredError = "";
+  try {
+    settlementRefGateRestoredEscrow.dispatch(
+      "RELEASE",
+      "Settlement released",
+      undefined,
+      {
+        actor: "treasury",
+        at: DEMO_SETTLEMENT_REF_GATE_RELEASE_AT,
+      },
+    );
+  } catch (err) {
+    settlementRefGateRestoredError =
+      err instanceof Error ? err.message : String(err);
+  }
+  const settlementRefGateRestoredReleasedState =
+    settlementRefGateRestoredEscrow.dispatch(
+      "RELEASE",
+      "Settlement released",
+      undefined,
+      {
+        actor: "treasury",
+        at: DEMO_SETTLEMENT_REF_GATE_RELEASE_AT,
+        settlementRef: DEMO_SETTLEMENT_REF_GATE_REF,
+      },
+    );
+  const settlementRefGateRestoredRecordedRef =
+    settlementRefGateRestoredEscrow.history[
+      settlementRefGateRestoredEscrow.history.length - 1
+    ].settlementRef ?? "";
+  const settlementRefGateReleasedState = settlementRefGateEscrow.dispatch(
+    "RELEASE",
+    "Settlement released",
+    undefined,
+    {
+      actor: "treasury",
+      at: DEMO_SETTLEMENT_REF_GATE_RELEASE_AT,
+      settlementRef: DEMO_SETTLEMENT_REF_GATE_REF,
+    },
+  );
+  const settlementRefGateRecordedRef =
+    settlementRefGateEscrow.history[
+      settlementRefGateEscrow.history.length - 1
+    ].settlementRef ?? "";
+  const settlementRefGateDefaultEscrow = new Escrow(
+    DEMO_SETTLEMENT_REF_GATE_DEFAULT_ESCROW_ID,
+  );
+  settlementRefGateDefaultEscrow.dispatch(
+    "FUND",
+    "Deposit locked (wire received)",
+    10630,
+    {
+      actor: "sponsor",
+      at: DEMO_SETTLEMENT_REF_GATE_FUND_AT,
+    },
+  );
+  settlementRefGateDefaultEscrow.dispatch(
+    "SUBMIT_MILESTONE",
+    "Deliverable URLs + IPFS metadata hash",
+    undefined,
+    {
+      actor: "creator",
+      at: DEMO_SETTLEMENT_REF_GATE_SUBMIT_AT,
+    },
+  );
+  settlementRefGateDefaultEscrow.dispatch(
+    "VERIFY_PASS",
+    "KPIs validated by oracle",
+    undefined,
+    {
+      actor: "oracle",
+      at: DEMO_SETTLEMENT_REF_GATE_VERIFY_AT,
+      evidence: DEMO_SETTLEMENT_REF_GATE_VERIFY_EVIDENCE,
+    },
+  );
+  const settlementRefGateDefaultState = settlementRefGateDefaultEscrow.dispatch(
+    "RELEASE",
+    "Settlement released",
+    undefined,
+    {
+      actor: "treasury",
+      at: DEMO_SETTLEMENT_REF_GATE_RELEASE_AT,
+    },
+  );
+  const refundRefGateEscrow = new Escrow(DEMO_REFUND_REF_GATE_ESCROW_ID, {
+    requireRefundRef: true,
+  });
+  refundRefGateEscrow.dispatch(
+    "FUND",
+    "Deposit locked (wire received)",
+    10630,
+    {
+      actor: "sponsor",
+      at: DEMO_REFUND_REF_GATE_FUND_AT,
+    },
+  );
+  refundRefGateEscrow.dispatch("DISPUTE", "Delivery disputed by sponsor", undefined, {
+    actor: "sponsor",
+    at: DEMO_REFUND_REF_GATE_DISPUTE_AT,
+  });
+  let refundRefGateError = "";
+  try {
+    refundRefGateEscrow.dispatch(
+      "ARBITRATE_REFUND",
+      "Refund arbitrated",
+      undefined,
+      {
+        actor: "arbiter",
+        at: DEMO_REFUND_REF_GATE_REFUND_AT,
+      },
+    );
+  } catch (err) {
+    refundRefGateError = err instanceof Error ? err.message : String(err);
+  }
+  const refundRefGateStateAfterReject = refundRefGateEscrow.state;
+  const refundRefGateHistoryLengthAfterReject =
+    refundRefGateEscrow.history.length;
+  const refundRefGateRestoredEscrow = Escrow.fromJSON(
+    JSON.parse(JSON.stringify(refundRefGateEscrow.toJSON())),
+  );
+  let refundRefGateRestoredError = "";
+  try {
+    refundRefGateRestoredEscrow.dispatch(
+      "ARBITRATE_REFUND",
+      "Refund arbitrated",
+      undefined,
+      {
+        actor: "arbiter",
+        at: DEMO_REFUND_REF_GATE_REFUND_AT,
+      },
+    );
+  } catch (err) {
+    refundRefGateRestoredError =
+      err instanceof Error ? err.message : String(err);
+  }
+  const refundRefGateRestoredRefundedState =
+    refundRefGateRestoredEscrow.dispatch(
+      "ARBITRATE_REFUND",
+      "Refund arbitrated",
+      undefined,
+      {
+        actor: "arbiter",
+        at: DEMO_REFUND_REF_GATE_REFUND_AT,
+        refundRef: DEMO_REFUND_REF_GATE_REF,
+      },
+    );
+  const refundRefGateRestoredRecordedRef =
+    refundRefGateRestoredEscrow.history[
+      refundRefGateRestoredEscrow.history.length - 1
+    ].refundRef ?? "";
+  const refundRefGateRefundedState = refundRefGateEscrow.dispatch(
+    "ARBITRATE_REFUND",
+    "Refund arbitrated",
+    undefined,
+    {
+      actor: "arbiter",
+      at: DEMO_REFUND_REF_GATE_REFUND_AT,
+      refundRef: DEMO_REFUND_REF_GATE_REF,
+    },
+  );
+  const refundRefGateRecordedRef =
+    refundRefGateEscrow.history[refundRefGateEscrow.history.length - 1]
+      .refundRef ?? "";
+  const refundRefGateDefaultEscrow = new Escrow(
+    DEMO_REFUND_REF_GATE_DEFAULT_ESCROW_ID,
+  );
+  refundRefGateDefaultEscrow.dispatch(
+    "FUND",
+    "Deposit locked (wire received)",
+    10630,
+    {
+      actor: "sponsor",
+      at: DEMO_REFUND_REF_GATE_FUND_AT,
+    },
+  );
+  refundRefGateDefaultEscrow.dispatch("DISPUTE", "Delivery disputed by sponsor", undefined, {
+    actor: "sponsor",
+    at: DEMO_REFUND_REF_GATE_DISPUTE_AT,
+  });
+  const refundRefGateDefaultState = refundRefGateDefaultEscrow.dispatch(
+    "ARBITRATE_REFUND",
+    "Refund arbitrated",
+    undefined,
+    {
+      actor: "arbiter",
+      at: DEMO_REFUND_REF_GATE_REFUND_AT,
+    },
+  );
+  if (
+    settlementRefGateError !== DEMO_SETTLEMENT_REF_GATE_ERROR ||
+    settlementRefGateStateAfterReject !== "VERIFIED" ||
+    settlementRefGateHistoryLengthAfterReject !== 3 ||
+    settlementRefGateRestoredError !== DEMO_SETTLEMENT_REF_GATE_ERROR ||
+    settlementRefGateRestoredEscrow.state !== "RELEASED" ||
+    settlementRefGateRestoredEscrow.history.length !== 4 ||
+    settlementRefGateRestoredReleasedState !== "RELEASED" ||
+    settlementRefGateRestoredRecordedRef !== DEMO_SETTLEMENT_REF_GATE_REF ||
+    settlementRefGateReleasedState !== "RELEASED" ||
+    settlementRefGateRecordedRef !== DEMO_SETTLEMENT_REF_GATE_REF ||
+    settlementRefGateEscrow.state !== "RELEASED" ||
+    settlementRefGateEscrow.history.length !== 4 ||
+    settlementRefGateDefaultState !== "RELEASED" ||
+    settlementRefGateDefaultEscrow.history.length !== 4 ||
+    "settlementRef" in
+      settlementRefGateDefaultEscrow.history[
+        settlementRefGateDefaultEscrow.history.length - 1
+      ] ||
+    refundRefGateError !== DEMO_REFUND_REF_GATE_ERROR ||
+    refundRefGateStateAfterReject !== "DISPUTED" ||
+    refundRefGateHistoryLengthAfterReject !== 2 ||
+    refundRefGateRestoredError !== DEMO_REFUND_REF_GATE_ERROR ||
+    refundRefGateRestoredEscrow.state !== "REFUNDED" ||
+    refundRefGateRestoredEscrow.history.length !== 3 ||
+    refundRefGateRestoredRefundedState !== "REFUNDED" ||
+    refundRefGateRestoredRecordedRef !== DEMO_REFUND_REF_GATE_REF ||
+    refundRefGateRefundedState !== "REFUNDED" ||
+    refundRefGateRecordedRef !== DEMO_REFUND_REF_GATE_REF ||
+    refundRefGateEscrow.state !== "REFUNDED" ||
+    refundRefGateEscrow.history.length !== 3 ||
+    refundRefGateDefaultState !== "REFUNDED" ||
+    refundRefGateDefaultEscrow.history.length !== 3 ||
+    "refundRef" in
+      refundRefGateDefaultEscrow.history[
+        refundRefGateDefaultEscrow.history.length - 1
+      ]
+  ) {
+    throw new Error(
+      "demo fixture broken: settlement/refund reference gates do not match the pinned shape (a reference-free RELEASE on the strict settlement escrow throws the pinned error and changes nothing, a snapshot restore of it throws the same error and then releases with the pinned reference, the original releases with the same reference, a default escrow releases without a reference, and the refund side mirrors all four shapes for ARBITRATE_REFUND)",
+    );
+  }
+  lines.push(
+    "",
+    "Settlement and refund reference gates (EscrowOptions.requireSettlementRef / requireRefundRef on branch escrows):",
+    `  escrow ${settlementRefGateEscrow.id} (requireSettlementRef: true): FUND 10630 -> FUNDED, SUBMIT_MILESTONE -> MILESTONE_SUBMITTED, VERIFY_PASS -> VERIFIED on fixed timestamps (the settlement gate is armed)`,
+    `  RELEASE without settlementRef: throws "${settlementRefGateError}" — state stays ${settlementRefGateStateAfterReject}, history stays ${settlementRefGateHistoryLengthAfterReject} entries (nothing appended)`,
+    `  RELEASE with settlementRef "${DEMO_SETTLEMENT_REF_GATE_REF}": -> ${settlementRefGateReleasedState}, reference recorded verbatim on the audit entry (the reference names the external transfer; the library does not verify the transfer happened)`,
+    `  snapshot round-trip: Escrow.fromJSON(toJSON()) still refuses a reference-free RELEASE with the same error, then releases with "${DEMO_SETTLEMENT_REF_GATE_REF}" -> ${settlementRefGateRestoredReleasedState} (the gate survives the snapshot)`,
+    `  escrow ${settlementRefGateDefaultEscrow.id} (default, flag off): RELEASE without settlementRef -> ${settlementRefGateDefaultState} (omitting the flag preserves the pre-gate behavior)`,
+    `  escrow ${refundRefGateEscrow.id} (requireRefundRef: true): FUND 10630 -> FUNDED, DISPUTE -> DISPUTED on fixed timestamps (the refund gate is armed)`,
+    `  ARBITRATE_REFUND without refundRef: throws "${refundRefGateError}" — state stays ${refundRefGateStateAfterReject}, history stays ${refundRefGateHistoryLengthAfterReject} entries (nothing appended)`,
+    `  ARBITRATE_REFUND with refundRef "${DEMO_REFUND_REF_GATE_REF}": -> ${refundRefGateRefundedState}, reference recorded verbatim on the audit entry (the reference names the external refund; the library does not verify the refund happened)`,
+    `  snapshot round-trip: Escrow.fromJSON(toJSON()) still refuses a reference-free ARBITRATE_REFUND with the same error, then refunds with "${DEMO_REFUND_REF_GATE_REF}" -> ${refundRefGateRestoredRefundedState} (the gate survives the snapshot)`,
+    `  escrow ${refundRefGateDefaultEscrow.id} (default, flag off): ARBITRATE_REFUND without refundRef -> ${refundRefGateDefaultState} (omitting the flag preserves the pre-gate behavior)`,
+  );
+
   // --- Keyed audit chain: verifyHistoryChain auditKey (final closing) ---
   // The main escrow's audit chain above is the UNKEYED
   // form: plain SHA-256 links are tamper evidence, but
@@ -14676,6 +15257,30 @@ export async function runDemo(): Promise<DemoResult> {
     verifyEvidenceRecordedEvidence,
     verifyEvidenceDefaultEscrow,
     verifyEvidenceDefaultState,
+    settlementRefGateEscrow,
+    settlementRefGateError,
+    settlementRefGateStateAfterReject,
+    settlementRefGateHistoryLengthAfterReject,
+    settlementRefGateReleasedState,
+    settlementRefGateRecordedRef,
+    settlementRefGateRestoredEscrow,
+    settlementRefGateRestoredError,
+    settlementRefGateRestoredReleasedState,
+    settlementRefGateRestoredRecordedRef,
+    settlementRefGateDefaultEscrow,
+    settlementRefGateDefaultState,
+    refundRefGateEscrow,
+    refundRefGateError,
+    refundRefGateStateAfterReject,
+    refundRefGateHistoryLengthAfterReject,
+    refundRefGateRefundedState,
+    refundRefGateRecordedRef,
+    refundRefGateRestoredEscrow,
+    refundRefGateRestoredError,
+    refundRefGateRestoredRefundedState,
+    refundRefGateRestoredRecordedRef,
+    refundRefGateDefaultEscrow,
+    refundRefGateDefaultState,
     auditKeyEscrow,
     auditKeyChainVerified,
     auditKeyWrongKeyVerified,

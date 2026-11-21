@@ -18,6 +18,18 @@ version changes.
 
 ### Added
 
+- CLI demo settlement/refund reference-gate segment (2026-11-21,
+  backlog #1313): `src/demo.ts` shows `requireSettlementRef` /
+  `requireRefundRef` on branch escrows — a reference-free RELEASE /
+  ARBITRATE_REFUND is refused with the pinned error and zero history
+  residue, a snapshot restore keeps the gate, the same dispatch with a
+  reference passes and records it verbatim, and a default escrow (flag
+  off) keeps the pre-gate behavior. New `DemoResult` fields
+  (`settlementRefGate*` / `refundRefGate*`), two new demo tests (fields
+  + printed lines + position + determinism, and a broken
+  refusal-message expectation verified to fail the new test),
+  test counts 2489 -> 2491; README demo section updated.
+
 - CLI demo outbox error-truncation segment (2026-11-21,
   backlog #1307): `src/demo.ts` shows `truncateOutboxError` in
   the settlement-outbox segment — a fixed 1500-char failure is
