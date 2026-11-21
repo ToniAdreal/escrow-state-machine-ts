@@ -452,6 +452,11 @@
  * one that needs a human; a second event fails once and then
  * delivers 200, so its success clears its own pair and the
  * ledger ends pending 0, dead letter 1. The demo then shows
+ * the outbox's error cap: a fixed 1500-char failure is
+ * truncated to exactly 1024 chars ending with the
+ * `…[truncated]` marker, a short error is kept verbatim, and
+ * the same long error recorded in a fresh outbox lands in the
+ * ledger already truncated. The demo then shows
  * the dead letter coming back: `redrive()` at a fixed later
  * clock moves the dead-lettered pair back to pending with
  * attempts reset to 0, a second redrive while pending is
@@ -539,6 +544,7 @@ import {
   MAX_EVENT_ID_LENGTH,
   MAX_EVIDENCE_LENGTH,
   MAX_IDEMPOTENCY_KEY_LENGTH,
+  MAX_OUTBOX_ERROR_LENGTH,
   nextEscrowDeadline,
   parseEscrowHistory,
   parseMinorUnits,
@@ -569,6 +575,7 @@ import {
   summarizeSettlementReports,
   transitionTable,
   transitionTableJson,
+  truncateOutboxError,
   unreconciledSettlements,
   verifyHistoryChain,
   verifySettlementWebhook,
@@ -2971,6 +2978,13 @@ export const DEMO_SUMMARY_DIFF_RELEASE_AT = "2026-03-09T17:00:00.000Z";
  *   dead letter 0; a `dryRun: true` rehearsal over a second
  *   pending pair reports wouldRetry 1 with attempted 0 and
  *   acknowledged 0 and leaves the ledger untouched.
+ * - the outbox's error cap is then shown (backlog #1307): a fixed
+ *   1500-char failure is truncated by `truncateOutboxError` to
+ *   exactly `MAX_OUTBOX_ERROR_LENGTH` (1024) chars ending with the
+ *   `…[truncated]` marker, a short error passes through verbatim,
+ *   and the same long error recorded in a fresh outbox lands in
+ *   the ledger already truncated — the cap is applied at record
+ *   time, so snapshots carry the truncated form.
  * All timestamps fixed; the printed lines carry the endpoint,
  * eventIds, and counts only, so no wall clock enters the output.
  */
@@ -2988,6 +3002,10 @@ export const DEMO_OUTBOX_REDRIVE_PENDING_ERROR =
 export const DEMO_OUTBOX_RETRY_EVENT_ID = "evt_demo_outbox_003";
 export const DEMO_OUTBOX_RETRY_NOW = "2026-03-08T14:00:00.000Z";
 export const DEMO_OUTBOX_RETRY_DRYRUN_EVENT_ID = "evt_demo_outbox_004";
+export const DEMO_OUTBOX_LONG_ERROR = "E".repeat(1500);
+export const DEMO_OUTBOX_SHORT_ERROR = "server responded with status 500";
+export const DEMO_OUTBOX_ERROR_MARKER = "…[truncated]";
+export const DEMO_OUTBOX_TRUNCATION_EVENT_ID = "evt_demo_outbox_005";
 
 /**
  * Caller-string-length-limits fixtures (backlog #1069): the five
@@ -5421,6 +5439,23 @@ export interface DemoResult {
    * only its own pair, never the dead letter.
    */
   outboxDeadFinal: SettlementWebhookOutboxEntry[];
+  /**
+   * The outbox error-truncation segment (backlog #1307): the
+   * 1500-char fixed long error
+   * {@link DEMO_OUTBOX_LONG_ERROR} truncated by
+   * `truncateOutboxError` to exactly
+   * {@link MAX_OUTBOX_ERROR_LENGTH} chars, ending with the
+   * {@link DEMO_OUTBOX_ERROR_MARKER} marker; the short error
+   * {@link DEMO_OUTBOX_SHORT_ERROR} kept verbatim; and
+   * `pending()` of a fresh outbox that recorded the long error —
+   * its `lastError` is the truncated form, proving the cap is
+   * applied at record time.
+   */
+  outboxErrorTruncation: {
+    truncatedLongError: string;
+    shortErrorKept: string;
+    ledgerPending: SettlementWebhookOutboxEntry[];
+  };
   /**
    * `outbox.deadLetter()` just before the redrive: exactly the
    * one dead-lettered pair — attempts 3, capped at
@@ -13546,6 +13581,76 @@ export async function runDemo(): Promise<DemoResult> {
     `  recovered event ${DEMO_OUTBOX_RECOVERED_EVENT_ID}: 1 failure (pending, attempts 1), then 200 — the success cleared the pair; ledger ends pending 0, dead letter 1`,
   );
 
+  // --- Webhook outbox error truncation: the ledger caps long errors ---
+  // The outbox segment above records the exact delivery error as
+  // `lastError`, but a real failure can be a full HTML error page
+  // or a long stack trace — `recordAttempt()` caps what it stores
+  // at `MAX_OUTBOX_ERROR_LENGTH` (1024 chars) via
+  // `truncateOutboxError`, so one oversized failure cannot bloat
+  // the failure ledger or the snapshot exported from it. Here a
+  // fixed 1500-char error is truncated to exactly the cap, keeping
+  // its first 1012 chars and ending with the `…[truncated]`
+  // marker, while a short error passes through verbatim; the same
+  // long error is then recorded in a fresh outbox (its own fixed
+  // eventId, same endpoint, fixed clock), and the ledger's
+  // `lastError` is the truncated form — the cap is applied at
+  // record time, before the entry ever reaches a snapshot.
+  // Hand-pinned expectations, asserted HERE, outside the printing:
+  // the truncated length and marker, the truncated prefix
+  // verbatim, the short error untouched, and the fresh ledger's
+  // single pending entry carrying the truncated error. Zero
+  // network, zero real waiting, no wall clock.
+  const outboxLongErrorTruncated = truncateOutboxError(
+    DEMO_OUTBOX_LONG_ERROR,
+  );
+  const outboxShortErrorKept = truncateOutboxError(DEMO_OUTBOX_SHORT_ERROR);
+  const outboxTruncationOutbox = new SettlementWebhookOutbox({
+    maxAttempts: DEMO_OUTBOX_MAX_ATTEMPTS,
+    now: () => outboxNowMs,
+  });
+  outboxTruncationOutbox.recordAttempt({
+    endpoint: DEMO_OUTBOX_ENDPOINT,
+    eventId: DEMO_OUTBOX_TRUNCATION_EVENT_ID,
+    ok: false,
+    status: 500,
+    error: DEMO_OUTBOX_LONG_ERROR,
+    at: outboxNowMs,
+  });
+  const outboxErrorTruncationLedger = outboxTruncationOutbox.pending();
+  const outboxErrorTruncation = {
+    truncatedLongError: outboxLongErrorTruncated,
+    shortErrorKept: outboxShortErrorKept,
+    ledgerPending: outboxErrorTruncationLedger,
+  };
+  if (
+    outboxLongErrorTruncated.length !== MAX_OUTBOX_ERROR_LENGTH ||
+    !outboxLongErrorTruncated.endsWith(DEMO_OUTBOX_ERROR_MARKER) ||
+    outboxLongErrorTruncated !==
+      "E".repeat(
+        MAX_OUTBOX_ERROR_LENGTH - DEMO_OUTBOX_ERROR_MARKER.length,
+      ) + DEMO_OUTBOX_ERROR_MARKER ||
+    outboxShortErrorKept !== DEMO_OUTBOX_SHORT_ERROR ||
+    outboxErrorTruncationLedger.length !== 1 ||
+    outboxErrorTruncationLedger[0]?.endpoint !== DEMO_OUTBOX_ENDPOINT ||
+    outboxErrorTruncationLedger[0]?.eventId !==
+      DEMO_OUTBOX_TRUNCATION_EVENT_ID ||
+    outboxErrorTruncationLedger[0]?.attempts !== 1 ||
+    outboxErrorTruncationLedger[0]?.lastError !==
+      outboxLongErrorTruncated ||
+    outboxErrorTruncationLedger[0]?.lastAt !== outboxNowMs
+  ) {
+    throw new Error(
+      "demo fixture broken: webhook outbox error-truncation segment does not match the pinned shape (1500-char error truncated to exactly 1024 chars ending with the …[truncated] marker, short error kept verbatim, fresh outbox ledger lastError is the truncated form)",
+    );
+  }
+  lines.push(
+    "",
+    "Webhook outbox error truncation (truncateOutboxError: the failure ledger caps long errors at 1024 chars):",
+    `  long error: ${DEMO_OUTBOX_LONG_ERROR.length} chars -> truncated to ${outboxLongErrorTruncated.length} chars, ends with "${DEMO_OUTBOX_ERROR_MARKER}"`,
+    `  short error: "${DEMO_OUTBOX_SHORT_ERROR}" kept verbatim (${DEMO_OUTBOX_SHORT_ERROR.length} chars, no marker)`,
+    `  the same long error recorded in a fresh outbox: ledger lastError is the truncated form (${outboxErrorTruncationLedger[0]?.lastError?.length} chars)`,
+  );
+
   // --- Webhook outbox redrive: a dead letter is not a dead end ---
   // The outbox segment above ends with the main webhook's pair
   // dead-lettered at attempts 3 — the one that needs a human.
@@ -14650,6 +14755,7 @@ export async function runDemo(): Promise<DemoResult> {
     outboxRecoveredFetchCalls: outboxRecoveredCalls.length,
     outboxPendingFinal,
     outboxDeadFinal,
+    outboxErrorTruncation,
     outboxRedriveDeadBefore,
     outboxRedrivePendingAfter,
     outboxRedriveDeadAfter,

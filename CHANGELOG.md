@@ -18,6 +18,18 @@ version changes.
 
 ### Added
 
+- CLI demo outbox error-truncation segment (2026-11-21,
+  backlog #1307): `src/demo.ts` shows `truncateOutboxError` in
+  the settlement-outbox segment — a fixed 1500-char failure is
+  truncated to exactly `MAX_OUTBOX_ERROR_LENGTH` (1024) chars
+  ending with the `…[truncated]` marker, a short error is kept
+  verbatim, and the same long error recorded in a fresh outbox
+  lands in the ledger already truncated (the cap is applied at
+  record time). New `DemoResult` field (`outboxErrorTruncation`),
+  one new demo test (fields + printed lines + position, and a
+  broken truncated-length expectation verified to fail it),
+  test counts 2488 -> 2489; README demo section updated.
+
 - `releasedAmountFromHistory` benchmark row (2026-11-21,
   backlog #1305): `bench/bench.ts` gains a released-total row over
   a fixed 4-shape corpus — two PARTIAL_RELEASE tranches summing to

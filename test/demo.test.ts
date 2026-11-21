@@ -250,6 +250,8 @@ import {
   DEMO_SUMMARY_DIFF_VERIFY_PASS_AT,
   DEMO_OUTBOX_DEAD_LAST_ERROR,
   DEMO_OUTBOX_ENDPOINT,
+  DEMO_OUTBOX_ERROR_MARKER,
+  DEMO_OUTBOX_LONG_ERROR,
   DEMO_OUTBOX_MAX_ATTEMPTS,
   DEMO_OUTBOX_NOW,
   DEMO_OUTBOX_RECOVERED_AT,
@@ -259,6 +261,8 @@ import {
   DEMO_OUTBOX_RETRY_DRYRUN_EVENT_ID,
   DEMO_OUTBOX_RETRY_EVENT_ID,
   DEMO_OUTBOX_RETRY_NOW,
+  DEMO_OUTBOX_SHORT_ERROR,
+  DEMO_OUTBOX_TRUNCATION_EVENT_ID,
   DEMO_LIMITS_ACTOR_ERROR,
   DEMO_LIMITS_AT_LIMIT_ACTOR,
   DEMO_LIMITS_AT_LIMIT_ESCROW_ID,
@@ -426,6 +430,7 @@ import {
 import {
   Escrow,
   GENESIS_PREV_HASH,
+  MAX_OUTBOX_ERROR_LENGTH,
   SettlementEventDedupe,
   allowedEvents,
   approvalStatement,
@@ -4734,8 +4739,9 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
   // Webhook-outbox tail: the segment records three scripted
   // 500s into the outbox (pending, then dead-letter) and clears
   // the recovered pair with its 200; it is followed by the
-  // redrive segment, which drains the dead letter, and then by
-  // the caller-string-length-limits segment and the
+  // error-truncation segment, then the redrive segment, which
+  // drains the dead letter, and then by the
+  // caller-string-length-limits segment and the
   // event-level RBAC segment that now closes the demo.
   assert.match(
     out,
@@ -11030,7 +11036,7 @@ test("demo shows webhook outbox: three 500s dead-letter the pair, one failure th
   assert.deepEqual(outbox.deadLetter(), outboxDeadAfterRedrive);
 
   // The printed section follows the snapshot-comparison segment
-  // and precedes the redrive segment that now follows it.
+  // and precedes the error-truncation segment that now follows it.
   const header =
     "Webhook outbox (SettlementWebhookOutbox: failed deliveries stay pending, then dead-letter):";
   assert.ok(
@@ -11060,6 +11066,100 @@ test("demo shows webhook outbox: three 500s dead-letter the pair, one failure th
       `  recovered event ${DEMO_OUTBOX_RECOVERED_EVENT_ID}: 1 failure (pending, attempts 1), then 200 — the success cleared the pair; ledger ends pending 0, dead letter 1`,
     ),
   );
+});
+
+test("demo shows webhook outbox error truncation: 1500-char failure capped at 1024 with marker, short error verbatim", async () => {
+  const { outboxErrorTruncation, lines } = await runDemo();
+  const text = lines.join("\n");
+
+  // Hand-pinned fixtures: a fixed 1500-char error (one repeated
+  // character, so the truncated prefix is exact), a short error
+  // that must pass through verbatim, and the marker the library
+  // appends to a truncated value.
+  assert.equal(DEMO_OUTBOX_LONG_ERROR, "E".repeat(1500));
+  assert.equal(DEMO_OUTBOX_SHORT_ERROR, "server responded with status 500");
+  assert.equal(DEMO_OUTBOX_ERROR_MARKER, "…[truncated]");
+  assert.equal(MAX_OUTBOX_ERROR_LENGTH, 1024);
+  assert.equal(DEMO_OUTBOX_TRUNCATION_EVENT_ID, "evt_demo_outbox_005");
+
+  // The long error is truncated to exactly the cap: its first
+  // 1012 chars kept, the 12-char marker appended.
+  assert.equal(
+    outboxErrorTruncation.truncatedLongError.length,
+    MAX_OUTBOX_ERROR_LENGTH,
+  );
+  assert.equal(
+    outboxErrorTruncation.truncatedLongError,
+    "E".repeat(MAX_OUTBOX_ERROR_LENGTH - DEMO_OUTBOX_ERROR_MARKER.length) +
+      DEMO_OUTBOX_ERROR_MARKER,
+  );
+  assert.ok(
+    outboxErrorTruncation.truncatedLongError.endsWith(
+      DEMO_OUTBOX_ERROR_MARKER,
+    ),
+  );
+
+  // The short error passes through byte-for-byte, with no marker.
+  assert.equal(outboxErrorTruncation.shortErrorKept, DEMO_OUTBOX_SHORT_ERROR);
+
+  // The same long error recorded in a fresh outbox lands in the
+  // ledger already truncated — the cap is applied at record time.
+  assert.deepEqual(outboxErrorTruncation.ledgerPending, [
+    {
+      endpoint: DEMO_OUTBOX_ENDPOINT,
+      eventId: DEMO_OUTBOX_TRUNCATION_EVENT_ID,
+      attempts: 1,
+      lastError: outboxErrorTruncation.truncatedLongError,
+      lastAt: Date.parse(DEMO_OUTBOX_NOW),
+    },
+  ]);
+
+  // The printed section follows the outbox segment and precedes
+  // the redrive segment.
+  const header =
+    "Webhook outbox error truncation (truncateOutboxError: the failure ledger caps long errors at 1024 chars):";
+  assert.ok(
+    text.indexOf(header) >
+      text.indexOf(
+        "Webhook outbox (SettlementWebhookOutbox: failed deliveries stay pending, then dead-letter):",
+      ),
+    "outbox error-truncation segment must follow the webhook-outbox segment",
+  );
+  assert.ok(
+    text.indexOf(header) <
+      text.indexOf(
+        "Webhook outbox redrive (SettlementWebhookOutbox.redrive: the dead letter comes back to pending):",
+      ),
+    "outbox error-truncation segment must precede the redrive segment",
+  );
+  assert.ok(
+    text.includes(
+      `  long error: 1500 chars -> truncated to 1024 chars, ends with "…[truncated]"`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      `  short error: "server responded with status 500" kept verbatim (32 chars, no marker)`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      "  the same long error recorded in a fresh outbox: ledger lastError is the truncated form (1024 chars)",
+    ),
+  );
+
+  // Determinism: a second run prints the truncation section
+  // byte-identically and reports the same structured result.
+  const again = await runDemo();
+  assert.deepEqual(again.outboxErrorTruncation, outboxErrorTruncation);
+  const slice = (joined: string): string => {
+    const start = joined.indexOf(header);
+    const end = joined.indexOf(
+      "Webhook outbox redrive (SettlementWebhookOutbox.redrive: the dead letter comes back to pending):",
+    );
+    return joined.slice(start, end);
+  };
+  assert.equal(slice(again.lines.join("\n")), slice(text));
 });
 
 test("demo shows webhook outbox redrive: dead-lettered pair returns to pending, then a 200 clears it", async () => {
@@ -11299,13 +11399,13 @@ test("demo shows webhook outbox retry: runner re-delivers the pending pair (500 
 test("demo webhook-outbox segment is deterministic: two runs print byte-identical outbox lines", async () => {
   const header =
     "Webhook outbox (SettlementWebhookOutbox: failed deliveries stay pending, then dead-letter):";
-  const redriveHeader =
-    "Webhook outbox redrive (SettlementWebhookOutbox.redrive: the dead letter comes back to pending):";
-  // The outbox section is followed by the redrive section, so it
-  // runs from the blank line before its header to the blank line
-  // before the redrive header.
+  const truncationHeader =
+    "Webhook outbox error truncation (truncateOutboxError: the failure ledger caps long errors at 1024 chars):";
+  // The outbox section is followed by the error-truncation
+  // section, so it runs from the blank line before its header to
+  // the blank line before the truncation header.
   const segment = (ls: string[]) =>
-    ls.slice(ls.indexOf(header) - 1, ls.indexOf(redriveHeader) - 1);
+    ls.slice(ls.indexOf(header) - 1, ls.indexOf(truncationHeader) - 1);
   const a = await runDemo();
   const b = await runDemo();
   // Blank + header + endpoint line + after-2 line + after-3 line
