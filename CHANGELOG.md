@@ -18,6 +18,19 @@ version changes.
 
 ### Added
 
+- CLI demo amount-strings segment (2026-11-21, backlog #1304):
+  `src/demo.ts` shows `parseMinorUnits` in the fee section — the
+  strict decimal-to-cents path for callers holding amounts as text:
+  `"106.30"` -> 10630, `"0.05"` -> 5, `"106"` -> 10600, with the
+  golden deposit parsed from `"10630.00"` landing on the same
+  1,063,000¢ the integer-cents segment computed, and `"10.005"` /
+  `"abc"` refused with the pinned strict-decimal error. New
+  `DemoResult` fields (`parseMinorUnitsCases`,
+  `parseMinorUnitsGoldenDeposit`, `parseMinorUnitsRejected`), one new
+  demo test (printed lines + fields + position, and a broken pinned
+  expectation verified to fail it), test counts 2487 -> 2488; README
+  demo section updated.
+
 - Snapshot persistence for the settlement/refund reference gates
   (2026-11-19, backlog #1256): `EscrowOptions.requireSettlementRef` /
   `requireRefundRef` are now part of `toJSON()`/`fromJSON()` snapshots

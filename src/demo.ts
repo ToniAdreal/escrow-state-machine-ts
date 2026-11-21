@@ -541,6 +541,7 @@ import {
   MAX_IDEMPOTENCY_KEY_LENGTH,
   nextEscrowDeadline,
   parseEscrowHistory,
+  parseMinorUnits,
   parseRetryAfter,
   parseSettlementReportCsv,
   parseSettlementReportJson,
@@ -4978,6 +4979,24 @@ export interface DemoResult {
    */
   centsCapOverfundError: string;
   /**
+   * The strict-decimal parse vectors the amount-strings segment
+   * prints, in printed order: `"106.30"` -> 10630, `"0.05"` -> 5,
+   * `"106"` -> 10600.
+   */
+  parseMinorUnitsCases: Array<{ input: string; minor: number }>;
+  /**
+   * The golden deposit as a string: `parseMinorUnits("10630.00")`
+   * is 1,063,000 — the same cents the integer-cents segment
+   * computed, so the string and the cents paths agree.
+   */
+  parseMinorUnitsGoldenDeposit: number;
+  /**
+   * The two rejected amount strings, each pinned to its exact
+   * fail-fast wording: `"10.005"` (more than 2 decimal places) and
+   * `"abc"` (not a strict decimal amount at all).
+   */
+  parseMinorUnitsRejected: Array<{ input: string; error: string }>;
+  /**
    * The pinned rejection when the fan-out limit demo calls
    * `deliverSettlementWebhookToMany` with 3 endpoints under
    * `maxEndpoints: 2`: exactly
@@ -5791,6 +5810,86 @@ export async function runDemo(): Promise<DemoResult> {
     `  golden 1.0x: inputs { pool ${centsFees.creatorPoolCents}¢, base ${centsFees.baseFeeCents}¢, mult ${centsFees.complexityMultiplier}, loyalty ${centsFees.loyaltyDiscountCents}¢, oracle ${centsFees.oracleFeeCents}¢ } -> adjustedBaseFeeCents = round(60000 × 1) = ${centsFees.adjustedBaseFeeCents}; depositCents = ${centsFees.creatorPoolCents} + ${centsFees.adjustedBaseFeeCents} − ${centsFees.loyaltyDiscountCents} + ${centsFees.oracleFeeCents} = ${centsFees.depositCents} (== golden deposit ${fees.deposit} × 100, exactly)`,
     `  fractional 1.25x: inputs { pool ${fractionalCentsFees.creatorPoolCents}¢, base ${fractionalCentsFees.baseFeeCents}¢, mult ${fractionalCentsFees.complexityMultiplier}, loyalty ${fractionalCentsFees.loyaltyDiscountCents}¢, oracle ${fractionalCentsFees.oracleFeeCents}¢ } -> raw 59999 × 1.25 = 74998.75, round -> adjustedBaseFeeCents = ${fractionalCentsFees.adjustedBaseFeeCents}; depositCents = ${fractionalCentsFees.creatorPoolCents} + ${fractionalCentsFees.adjustedBaseFeeCents} − ${fractionalCentsFees.loyaltyDiscountCents} + ${fractionalCentsFees.oracleFeeCents} = ${fractionalCentsFees.depositCents} (== fractional deposit ${fractionalFees.deposit} × 100, exactly)`,
     `  cap check: the cents deposit ${centsFees.depositCents}¢ formats as $${formatMinorUnits(centsFees.depositCents)} and does not fit the ${DEMO_FEE_CENTS_CAP_MAX} cap — FUND ${centsDepositDollars} on a fresh maxDeposit-${DEMO_FEE_CENTS_CAP_MAX} escrow -> "${centsCapOverfundError}" (history unchanged, still CREATED)`,
+  );
+
+  // --- Amount strings: the cents path is only half the story ---
+  // Reconciliation and CSV-import callers receive amounts as text,
+  // and going through `Number()` first silently accepted "10.005"
+  // (sub-cent, then rounded by the converter), "1,234.56"
+  // (thousands separator), and "1.2e3" (scientific notation) with no
+  // single answer for any of them. `parseMinorUnits` is the one
+  // strict answer: optional minus, at most 2 decimal places, no
+  // separator, no notation, exact integer arithmetic. The three
+  // printed vectors are the backlog item's pinned cases, and the
+  // golden deposit itself as a string — "10630.00" must parse to the
+  // same 1,063,000 the integer-cents segment computed — so a drift
+  // in either direction fails fast. Rejected shapes are pinned to
+  // their exact fail-fast wording. Any drift fails fast (non-zero
+  // demo exit), exactly like the fee segments' hand-written
+  // expectations above. All inputs pinned, no wall clock, no
+  // randomness, no network.
+  const PARSE_MINOR_UNITS_CASES: Array<{ input: string; minor: number }> =
+    [
+      { input: "106.30", minor: 10630 },
+      { input: "0.05", minor: 5 },
+      { input: "106", minor: 10600 },
+    ];
+  const parseMinorUnitsCases = PARSE_MINOR_UNITS_CASES.map(
+    ({ input, minor }) => {
+      const parsed = parseMinorUnits(input);
+      if (parsed !== minor) {
+        throw new Error(
+          `demo minor-unit parsing segment broken: parseMinorUnits(${JSON.stringify(input)}) is ${parsed}, expected ${minor}`,
+        );
+      }
+      return { input, minor: parsed };
+    },
+  );
+  const parseMinorUnitsGoldenDeposit = parseMinorUnits("10630.00");
+  if (parseMinorUnitsGoldenDeposit !== centsFees.depositCents) {
+    throw new Error(
+      `demo minor-unit parsing segment broken: parseMinorUnits("10630.00") is ${parseMinorUnitsGoldenDeposit}, expected the integer-cents segment's ${centsFees.depositCents}`,
+    );
+  }
+  const PARSE_MINOR_UNITS_REJECTED: Array<{ input: string; error: string }> =
+    [
+      {
+        input: "10.005",
+        error:
+          'invalid minor units amount: "10.005" is not a strict decimal amount (optional minus, at most 2 decimal places, no thousands separator, no scientific notation)',
+      },
+      {
+        input: "abc",
+        error:
+          'invalid minor units amount: "abc" is not a strict decimal amount (optional minus, at most 2 decimal places, no thousands separator, no scientific notation)',
+      },
+    ];
+  const parseMinorUnitsRejected = PARSE_MINOR_UNITS_REJECTED.map(
+    ({ input, error }) => {
+      let caught = "";
+      try {
+        parseMinorUnits(input);
+      } catch (err) {
+        caught = err instanceof Error ? err.message : String(err);
+      }
+      if (caught !== error) {
+        throw new Error(
+          `demo minor-unit parsing segment broken: parseMinorUnits(${JSON.stringify(input)}) was not rejected as expected, got ${caught || "no error"}`,
+        );
+      }
+      return { input, error: caught };
+    },
+  );
+  lines.push(
+    "",
+    "Amount strings (parseMinorUnits — the strict decimal-to-cents path for callers holding text):",
+    ...parseMinorUnitsCases.map(
+      ({ input, minor }) =>
+        `  parseMinorUnits(${JSON.stringify(input)}) = ${minor}`,
+    ),
+    `  golden deposit as text: parseMinorUnits("10630.00") = ${parseMinorUnitsGoldenDeposit} (the same ${centsFees.depositCents}¢ the integer-cents segment computed — the string and the cents paths agree)`,
+    `  parseMinorUnits("10.005") rejected: ${parseMinorUnitsRejected[0].error} (more than 2 decimal places is a caller error, not a rounded amount)`,
+    `  parseMinorUnits("abc") rejected: ${parseMinorUnitsRejected[1].error} (not a strict decimal amount at all)`,
   );
 
   for (const { event, actor, note, at, amount, evidence } of steps) {
@@ -14200,6 +14299,9 @@ export async function runDemo(): Promise<DemoResult> {
     fractionalCentsDepositBreakdown: fractionalCentsFees,
     centsCapEscrow,
     centsCapOverfundError,
+    parseMinorUnitsCases,
+    parseMinorUnitsGoldenDeposit,
+    parseMinorUnitsRejected,
     historyChainVerified,
     tamperedChainVerified,
     tamperedFundAmount,

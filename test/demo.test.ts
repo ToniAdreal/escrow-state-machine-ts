@@ -8944,6 +8944,80 @@ test("demo shows the integer-cents fee segment with cross-checked totals and a r
   assert.ok(breakdownAt < centsAt && centsAt < dispatchAt);
 });
 
+test("demo shows the amount-strings segment: parseMinorUnits vectors, golden-deposit cross-check, and verbatim rejections", async () => {
+  const {
+    lines,
+    centsDepositBreakdown,
+    parseMinorUnitsCases,
+    parseMinorUnitsGoldenDeposit,
+    parseMinorUnitsRejected,
+  } = await runDemo();
+  const text = lines.join("\n");
+
+  // The segment header names the strict path for callers holding
+  // amounts as text, not integer cents.
+  assert.ok(
+    text.includes(
+      "Amount strings (parseMinorUnits — the strict decimal-to-cents path for callers holding text):",
+    ),
+  );
+  assert.ok(text.includes('  parseMinorUnits("106.30") = 10630'));
+  assert.ok(text.includes('  parseMinorUnits("0.05") = 5'));
+  assert.ok(text.includes('  parseMinorUnits("106") = 10600'));
+  assert.ok(
+    text.includes(
+      `  golden deposit as text: parseMinorUnits("10630.00") = 1063000 (the same 1063000¢ the integer-cents segment computed — the string and the cents paths agree)`,
+    ),
+  );
+  assert.ok(
+    text.includes(
+      '  parseMinorUnits("10.005") rejected: invalid minor units amount: "10.005" is not a strict decimal amount (optional minus, at most 2 decimal places, no thousands separator, no scientific notation) (more than 2 decimal places is a caller error, not a rounded amount)',
+    ),
+  );
+  assert.ok(
+    text.includes(
+      '  parseMinorUnits("abc") rejected: invalid minor units amount: "abc" is not a strict decimal amount (optional minus, at most 2 decimal places, no thousands separator, no scientific notation) (not a strict decimal amount at all)',
+    ),
+  );
+
+  // DemoResult fields mirror the printed vectors, independently of
+  // the printed lines: the golden deposit parsed from its string
+  // agrees with the integer-cents segment's total.
+  assert.deepEqual(parseMinorUnitsCases, [
+    { input: "106.30", minor: 10630 },
+    { input: "0.05", minor: 5 },
+    { input: "106", minor: 10600 },
+  ]);
+  assert.equal(
+    parseMinorUnitsGoldenDeposit,
+    centsDepositBreakdown.depositCents,
+  );
+  assert.deepEqual(parseMinorUnitsRejected, [
+    {
+      input: "10.005",
+      error:
+        'invalid minor units amount: "10.005" is not a strict decimal amount (optional minus, at most 2 decimal places, no thousands separator, no scientific notation)',
+    },
+    {
+      input: "abc",
+      error:
+        'invalid minor units amount: "abc" is not a strict decimal amount (optional minus, at most 2 decimal places, no thousands separator, no scientific notation)',
+    },
+  ]);
+
+  // Position: the amount-strings lines elaborate the fee breakdown,
+  // and the audit trail's dispatch steps only start afterwards.
+  // ("FUND" alone would match the cap-check line above, so the
+  // marker is the first dispatch step's printed line.)
+  const breakdownAt = text.indexOf(
+    "Fee breakdown (calculateDeposit adjustedBaseFee",
+  );
+  const parseAt = text.indexOf("Amount strings (parseMinorUnits");
+  const dispatchAt = text.indexOf("  FUND               CREATED");
+  assert.ok(breakdownAt !== -1 && parseAt !== -1 && dispatchAt !== -1);
+  assert.ok(breakdownAt < parseAt && parseAt < dispatchAt);
+});
+
 test("demo fee-breakdown segment is deterministic: two runs print byte-identical segment lines", async () => {
   const header =
     "Fee breakdown (calculateDeposit adjustedBaseFee — the intermediate the preview line inlines as a bare product):";
