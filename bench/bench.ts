@@ -1800,6 +1800,19 @@
  *      true) afterwards — the same assertions the historyFreeze unit
  *      tests pin. No network, no randomness, and no wall clock: the
  *      fixture is built once on fixed timestamps.
+ * 100. released-total summation — `releasedAmountFromHistory(history,
+ *      escrowId)` over a fixed 4-shape corpus (a two-tranche release
+ *      summing to the golden 10,630, a single release of 5,000, a funded
+ *      escrow with no release at all, and a PARTIAL_RELEASE recorded
+ *      without an amount; composition and hand-pinned totals / error
+ *      message in the fixture comment below). This is the audit-trail
+ *      scan every settlement report pays per escrow to establish the
+ *      paid-out tranche total (and, against the funded total, the
+ *      still-locked balance) before any report math runs, previously
+ *      visible only inside the `buildSettlementReport` numbers. Every
+ *      timed iteration re-checks each returned total against its
+ *      hand-written expectation and the fail-fast shape against its
+ *      exact hand-written error message.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -1865,6 +1878,7 @@ import {
   parseSettlementReportsSummaryCsv,
   parseSettlementReportsSummaryJson,
   reconcileSettlements,
+  releasedAmountFromHistory,
   renderReport,
   renderReportCsv,
   renderReportJson,
@@ -9513,6 +9527,117 @@ function checkDepositCorpus(): void {
 checkDepositCorpus();
 
 // ---------------------------------------------------------------------
+// releasedAmountFromHistory fixture: a fixed 4-shape corpus of audit
+// histories, built once outside the timed loop by driving real
+// escrows on the shared fixed clock (BASE_MS plus per-step offsets)
+// and detaching plain copies — exactly what a persisted audit log
+// looks like. Hand-pinned expectations, written out here from the
+// documented semantics (the released total is the SUM of every
+// PARTIAL_RELEASE entry's amount; an escrow with no PARTIAL_RELEASE
+// event at all has released 0, not an error — a fresh escrow's
+// released total is 0 by definition — while a PARTIAL_RELEASE entry
+// recorded without an amount is never silently treated as zero),
+// never derived by calling releasedAmountFromHistory itself:
+//   1. two tranches — FUND of the golden 10,630, then PARTIAL_RELEASE
+//      4,252 and the remaining 6,378 (BENCH-RELEASED-TWO, the
+//      settlePartialRelease shape) -> total 10,630.
+//   2. single release — FUND 10,630, one PARTIAL_RELEASE of 5,000
+//      (BENCH-RELEASED-SINGLE) -> total 5,000.
+//   3. no release at all — FUND 10,630 with no PARTIAL_RELEASE
+//      (BENCH-RELEASED-NONE) -> 0.
+//   4. PARTIAL_RELEASE without an amount (BENCH-RELEASED-NOAMT) ->
+//      throws exactly "settlement requires a PARTIAL_RELEASE amount
+//      for BENCH-RELEASED-NOAMT: a PARTIAL_RELEASE event was recorded
+//      without an amount". Dispatch always records an amount on
+//      PARTIAL_RELEASE, so this history is hand-built: a real escrow
+//      is driven through FUND + PARTIAL_RELEASE and the amount is
+//      deleted from a detached plain copy.
+// One bench iteration runs all four shapes: the three totals are the
+// steady-state scan cost, and the fail-fast shape pins the error
+// boundary on every iteration at the same time.
+// ---------------------------------------------------------------------
+function releasedNoAmountHistory(): EscrowHistoryEntry[] {
+  const history = depositCorpusEscrow("BENCH-RELEASED-NOAMT", [
+    { event: "FUND", amount: 10630 },
+    { event: "PARTIAL_RELEASE", amount: 100 },
+  ]);
+  const release = history[1];
+  if (release === undefined) {
+    throw new Error(
+      "benchmark fixture failed: released no-amount history",
+    );
+  }
+  delete release.amount;
+  return history;
+}
+
+const RELEASED_CASES: ReadonlyArray<{
+  escrowId: string;
+  history: EscrowHistoryEntry[];
+  total?: number;
+  error?: string;
+}> = [
+  {
+    escrowId: "BENCH-RELEASED-TWO",
+    history: depositCorpusEscrow("BENCH-RELEASED-TWO", [
+      { event: "FUND", amount: 10630 },
+      { event: "PARTIAL_RELEASE", amount: 4252 },
+      { event: "PARTIAL_RELEASE", amount: 6378 },
+    ]),
+    total: 10630,
+  },
+  {
+    escrowId: "BENCH-RELEASED-SINGLE",
+    history: depositCorpusEscrow("BENCH-RELEASED-SINGLE", [
+      { event: "FUND", amount: 10630 },
+      { event: "PARTIAL_RELEASE", amount: 5000 },
+    ]),
+    total: 5000,
+  },
+  {
+    escrowId: "BENCH-RELEASED-NONE",
+    history: depositCorpusEscrow("BENCH-RELEASED-NONE", [
+      { event: "FUND", amount: 10630 },
+    ]),
+    total: 0,
+  },
+  {
+    escrowId: "BENCH-RELEASED-NOAMT",
+    history: releasedNoAmountHistory(),
+    error:
+      "settlement requires a PARTIAL_RELEASE amount for BENCH-RELEASED-NOAMT: " +
+      "a PARTIAL_RELEASE event was recorded without an amount",
+  },
+];
+
+function checkReleasedCorpus(): void {
+  for (const c of RELEASED_CASES) {
+    if (c.error === undefined) {
+      if (releasedAmountFromHistory(c.history, c.escrowId) !== c.total) {
+        throw new Error(
+          "benchmark self-check failed: releasedAmountFromHistory total",
+        );
+      }
+    } else {
+      let thrown: unknown;
+      try {
+        releasedAmountFromHistory(c.history, c.escrowId);
+      } catch (err) {
+        thrown = err;
+      }
+      if (!(thrown instanceof Error) || thrown.message !== c.error) {
+        throw new Error(
+          "benchmark self-check failed: releasedAmountFromHistory error",
+        );
+      }
+    }
+  }
+}
+// Pre-check outside the timed loop: the whole corpus sums / fails
+// to its hand-pinned expectations before any number is reported.
+checkReleasedCorpus();
+
+// ---------------------------------------------------------------------
 // renderReport fixture: the module-scope `report` above, built once
 // outside the timed loop — the fixed golden released report
 // (escrow BENCH-001, 4-entry history, deposit 10,630 = pool 10,000 +
@@ -11438,16 +11563,18 @@ checkPolicySnapshotRoundTrip(
 //     tampered note the demo pins — is structurally well-formed
 //     but no longer recomputes its stored hash, so the parse
 //     must throw exactly the demo-pinned error
-//     "invalid snapshot: history hash chain is broken (an entry
-//     was tampered with, deleted, or reordered)" — checked once,
-//     outside the timed loop, and the original text must still
-//     parse afterwards, proving the tamper copy was detached.
+//     "invalid snapshot: history[1]: history hash chain is broken
+//     (an entry was tampered with, deleted, or reordered) at entry
+//     seq 2" — the #1296 form naming the first broken entry —
+//     checked once, outside the timed loop, and the original text
+//     must still parse afterwards, proving the tamper copy was
+//     detached.
 // ---------------------------------------------------------------------
 const PARSE_HISTORY_TAMPERED_SEQ = 2;
 const PARSE_HISTORY_TAMPERED_NOTE =
   "REWRITTEN after the fact — milestone note altered";
 const PARSE_HISTORY_TAMPER_ERROR =
-  "invalid snapshot: history hash chain is broken (an entry was tampered with, deleted, or reordered)";
+  "invalid snapshot: history[1]: history hash chain is broken (an entry was tampered with, deleted, or reordered) at entry seq 2";
 const parseHistoryText = JSON.stringify(historyFixture);
 function checkParsedHistory(
   parsed: EscrowHistoryEntry[],
@@ -12458,6 +12585,12 @@ function benchParseSettlementReportCsv(): number {
 function benchDepositAmountFromHistory(): number {
   return measure(() => {
     checkDepositCorpus();
+  }, ITERATIONS);
+}
+
+function benchReleasedAmountFromHistory(): number {
+  return measure(() => {
+    checkReleasedCorpus();
   }, ITERATIONS);
 }
 
@@ -17027,6 +17160,7 @@ const results: Array<{ path: string; ops: number }> = [
   { path: "approveSigned (5 of 5 signers, Ed25519 verify to threshold)", ops: benchApproveSignedToThreshold() },
   { path: "truncateOutboxError (3-case corpus, short/at-cap/10 KB)", ops: benchTruncateOutboxError() },
   { path: "history getter (defensive copy, 64 entries)", ops: benchHistoryGetter() },
+  { path: "releasedAmountFromHistory (4-shape corpus)", ops: benchReleasedAmountFromHistory() },
 ];
 
 console.log("path                                              throughput");

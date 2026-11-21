@@ -18,6 +18,24 @@ version changes.
 
 ### Added
 
+- `releasedAmountFromHistory` benchmark row (2026-11-21,
+  backlog #1305): `bench/bench.ts` gains a released-total row over
+  a fixed 4-shape corpus — two PARTIAL_RELEASE tranches summing to
+  the golden 10,630 (4,252 + 6,378), a single release of 5,000, a
+  funded escrow with no release at all (0, not an error), and a
+  PARTIAL_RELEASE recorded without an amount (exact fail-fast
+  error) — measured ~3,628 ops/sec (275.64 µs/op) on this run
+  (Node v24.22.1, AMD EPYC 9D25, machine-local, not a guarantee),
+  with every total re-checked against hand-pinned expectations and
+  the fail-fast shape against its exact error message on every
+  iteration. README Benchmarks table + narrative updated; a broken
+  total expectation was verified to fail the bench at the row's
+  self-check (exit 1) before restoring. Also fixed in the same
+  commit: the bench's pinned `parseEscrowHistory` tamper error
+  still carried the pre-#1296 generic message, so `npm run bench`
+  failed at module load on clean HEAD — updated to the #1296 form
+  naming the first broken entry (`history[1]: … at entry seq 2`).
+
 - CLI demo amount-strings segment (2026-11-21, backlog #1304):
   `src/demo.ts` shows `parseMinorUnits` in the fee section — the
   strict decimal-to-cents path for callers holding amounts as text:
