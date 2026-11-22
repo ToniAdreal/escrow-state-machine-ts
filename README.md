@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2531 tests, all local
+npm test   # 2552 tests, all local
 ```
 
 ## Quickstart
@@ -1260,6 +1260,8 @@ For a whole batch, `buildSettlementWebhooks(buildSettlementReports(inputs), { se
 
 Option typos fail closed on the build side too: `buildSettlementWebhook` and `buildSettlementWebhooks` scan their options against their known keys (`secret`, `now`, `eventId` / `secret`, `now`, `eventIdFactory`) before any signing, and an unknown key throws `cannot build settlement webhook(s): unknown option "<key>"`. A typo'd `secrett` is therefore reported as itself instead of surfacing as a bare `TypeError` on the missing secret, and a typo'd `eventIdFactory` can never silently fall back to the default `randomUUID` factory. A missing or non-string/Buffer `secret` likewise throws a configuration error, never a bare `TypeError`.
 
+A hand-built report is validated before it is signed: `buildSettlementWebhook` (and the batch and fan-out paths, which share the same payload builder) checks that the report is an object with a non-empty-string `escrowId`, an `outcome` in the `SettlementOutcome` union (`released`, `refunded`, `expired`, `partially-released`), an object `deposit` with a finite non-negative `deposit`, and an array `parties` whose entries are objects with finite `inflow`/`outflow`/`net`. A malformed report throws a `cannot build settlement webhook: …` configuration error before anything is signed, so it can neither crash the signer with a bare `TypeError` nor ship a signed webhook whose figures are nonsense. Reports built by `buildSettlementReport` always pass this check.
+
 `checkAndRecord(eventId)` returns `false` on first sighting and `true`
 for a repeat within the TTL ("true = is a replay"); at exactly `ttlMs`
 the record has expired and the id counts as unseen again, and a
@@ -2167,7 +2169,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2531 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2552 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

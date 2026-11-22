@@ -274,6 +274,98 @@ function sign(body: string, secret: string | Buffer): string {
 }
 
 /**
+ * Validate the shape of a report before any webhook is signed from it
+ * (backlog #1329). A hand-built report is untrusted input: until now
+ * `buildPayload` dereferenced `report.currency`, `report.deposit.deposit`,
+ * `report.parties.map(...)`, and `report.outcome` with no shape checks, so
+ * a malformed report either crashed the signer with a bare `TypeError`
+ * (`null`, `{}`, a non-array `parties`) or — worse — was signed anyway
+ * with a missing deposit, a `null` deposit, or a meaningless outcome,
+ * producing a webhook whose signature verifies but whose figures are
+ * nonsense. Every failure here is a `cannot build settlement webhook: …`
+ * configuration error, never a bare `TypeError`, and nothing is signed.
+ * The outcome set is the full `SettlementOutcome` union: a
+ * `"partially-released"` report is a real report `buildSettlementReport`
+ * can mint and the payload documents verbatim (see
+ * `SettlementWebhookPayload.outcome`), so it is accepted here — the
+ * backlog item's three-value list omits it, and rejecting it would break
+ * the library's own partial-release webhook flow.
+ */
+function assertSettlementReportShape(report: SettlementReport): void {
+  if (report === null || typeof report !== "object" || Array.isArray(report)) {
+    throw new Error(
+      "cannot build settlement webhook: report must be an object",
+    );
+  }
+  // Mirror the report builder's identity rule (#1091): a non-empty
+  // string. Checked first so every message below can safely interpolate
+  // `escrowId`.
+  if (typeof report.escrowId !== "string" || report.escrowId.length === 0) {
+    throw new Error(
+      "cannot build settlement webhook: escrowId must be a non-empty string",
+    );
+  }
+  const escrowId = report.escrowId;
+  const validOutcomes: readonly string[] = [
+    "released",
+    "refunded",
+    "expired",
+    "partially-released",
+  ];
+  if (
+    typeof report.outcome !== "string" ||
+    !validOutcomes.includes(report.outcome)
+  ) {
+    const shown =
+      typeof report.outcome === "string"
+        ? JSON.stringify(report.outcome)
+        : String(report.outcome);
+    throw new Error(
+      `cannot build settlement webhook: invalid settlement outcome for ${escrowId}: ${shown} must be one of "released", "refunded", "expired", "partially-released"`,
+    );
+  }
+  if (
+    report.deposit === null ||
+    typeof report.deposit !== "object" ||
+    Array.isArray(report.deposit)
+  ) {
+    throw new Error(
+      `cannot build settlement webhook: 'deposit' must be an object for ${escrowId}`,
+    );
+  }
+  if (
+    typeof report.deposit.deposit !== "number" ||
+    !Number.isFinite(report.deposit.deposit) ||
+    report.deposit.deposit < 0
+  ) {
+    throw new Error(
+      `cannot build settlement webhook: 'deposit.deposit' must be a finite non-negative number for ${escrowId}, got ${String(report.deposit.deposit)}`,
+    );
+  }
+  if (!Array.isArray(report.parties)) {
+    throw new Error(
+      `cannot build settlement webhook: 'parties' must be an array for ${escrowId}`,
+    );
+  }
+  for (let i = 0; i < report.parties.length; i++) {
+    const party = report.parties[i];
+    if (party === null || typeof party !== "object" || Array.isArray(party)) {
+      throw new Error(
+        `cannot build settlement webhook: parties[${i}] must be an object for ${escrowId}`,
+      );
+    }
+    for (const field of ["inflow", "outflow", "net"] as const) {
+      const value = party[field];
+      if (typeof value !== "number" || !Number.isFinite(value)) {
+        throw new Error(
+          `cannot build settlement webhook: parties[${i}].${field} must be a finite number for ${escrowId}, got ${String(value)}`,
+        );
+      }
+    }
+  }
+}
+
+/**
  * Build the (unsigned) payload body for a report. Shared by
  * {@link buildSettlementWebhook} and the fan-out delivery, which builds
  * the body exactly once and signs that same body per endpoint.
@@ -283,6 +375,10 @@ function buildPayload(
   report: SettlementReport,
   options: { now?: Date | string; eventId?: string },
 ): SettlementWebhookPayload {
+  // Shape first (#1329): the `now`/`eventId`/currency checks below all
+  // read `report.escrowId` into their messages, so a malformed report
+  // must fail here rather than surfacing as a bare TypeError there.
+  assertSettlementReportShape(report);
   const when = options.now === undefined ? new Date() : new Date(options.now);
   if (Number.isNaN(when.getTime())) {
     throw new Error(
@@ -362,7 +458,15 @@ function buildPayload(
  * secret throws a configuration error, never a bare `TypeError`, and an
  * unknown option key throws
  * `cannot build settlement webhook: unknown option "<key>"` before the
- * secret is read (#1272).
+ * secret is read (#1272). A malformed report — not an object, a missing
+ * or empty `escrowId`, an outcome outside the `SettlementOutcome` union,
+ * a missing/non-object `deposit` or a non-finite/negative
+ * `deposit.deposit`, a non-array `parties`, or a party entry that is not
+ * an object or carries a non-finite `inflow`/`outflow`/`net` — likewise
+ * throws a `cannot build settlement webhook: …` configuration error
+ * before anything is signed (#1329), so a hand-built report can neither
+ * crash the signer with a bare `TypeError` nor ship a signed webhook
+ * whose figures are nonsense.
  */
 export function buildSettlementWebhook(
   report: SettlementReport,

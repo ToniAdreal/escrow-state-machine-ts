@@ -194,6 +194,26 @@ version changes.
 
 ### Fixed
 
+- `buildSettlementWebhook` validates the report shape before signing
+  (2026-11-22, backlog #1329): a hand-built report used to crash the
+  signer with a bare `TypeError` (`null`, `{}`, a non-array `parties`)
+  or — worse — be signed anyway with a missing deposit, a `null`
+  deposit, or a meaningless outcome, producing a webhook whose
+  signature verifies but whose figures are nonsense. The shared payload
+  builder now checks, before anything is signed, that the report is an
+  object with a non-empty-string `escrowId`, an `outcome` in the
+  `SettlementOutcome` union, an object `deposit` with a finite
+  non-negative `deposit`, and a `parties` array of objects with finite
+  `inflow`/`outflow`/`net`; every failure is a
+  `cannot build settlement webhook: …` configuration error, and the
+  batch path records it per entry without blocking later reports. The
+  outcome set is the full union — a `partially-released` report is a
+  real report the library can mint, so it is accepted (the item's
+  three-value list omits it). New
+  `test/buildWebhookReportShape.test.ts` (21 cases), test counts
+  2531 -> 2552; weakening the deposit guard turns 3 of the new tests
+  red (mutation-checked).
+
 - Delivery timers obey the Node `setTimeout` ceiling (2026-11-22,
   backlog #1326): Node stores timer delays in a 32-bit signed
   integer, so a wait above 2^31 - 1 ms (~24.8 days) warns
