@@ -652,7 +652,11 @@ export function buildSettlementWebhooks(
  * secret during the rotation window — any candidate that matches returns
  * `true`; all-mismatch returns `false` (fail-closed). An empty `secrets`
  * array (or an empty secret inside it) is a caller configuration error and
- * throws, never silently passes.
+ * throws, never silently passes. The same holds for the shape: `secrets`
+ * must be an array and every entry a non-empty string/Buffer — a
+ * wrong-typed entry, a non-array/missing `secrets`, or a non-string/Buffer
+ * third argument all throw `cannot verify settlement webhook: …`, never a
+ * bare TypeError (#1323, mirrors dataquest `verifyPayoutWebhook`).
  *
  * Freshness (opt-in replay bound): pass `{ secrets, maxAgeMs, now? }`.
  * The signature is checked FIRST; only when it matches does the `at`
@@ -708,17 +712,42 @@ export function verifySettlementWebhook(
   signature: string,
   secretOrOptions: string | Buffer | VerifyWebhookOptions,
 ): boolean {
-  const secrets: (string | Buffer)[] =
-    typeof secretOrOptions === "string" || Buffer.isBuffer(secretOrOptions)
-      ? [secretOrOptions]
-      : secretOrOptions.secrets;
+  // Secrets shape guard (#1323, mirrors dataquest `verifyPayoutWebhook`):
+  // the options form must carry a non-empty array, and every entry must
+  // be a non-empty string/Buffer. A numeric/object/null entry used to
+  // slip past the length check and surface later as a bare TypeError
+  // from `createHmac`, and a non-array/missing `secrets` (or a numeric
+  // third argument) threw a bare TypeError from `.length`/`.secrets` —
+  // all from a function whose JSDoc promises hostile input can never
+  // turn verification into an unhandled exception. Every shape problem
+  // is a caller configuration error with the `cannot verify …` prefix.
+  let secrets: (string | Buffer)[];
+  if (
+    typeof secretOrOptions === "string" ||
+    Buffer.isBuffer(secretOrOptions)
+  ) {
+    secrets = [secretOrOptions];
+  } else if (
+    secretOrOptions !== null &&
+    typeof secretOrOptions === "object" &&
+    Array.isArray(secretOrOptions.secrets)
+  ) {
+    secrets = secretOrOptions.secrets;
+  } else {
+    throw new Error(
+      "cannot verify settlement webhook: secrets must be a non-empty array",
+    );
+  }
   if (secrets.length === 0) {
     throw new Error(
       "cannot verify settlement webhook: secrets must be a non-empty array",
     );
   }
   secrets.forEach((secret, i) => {
-    if (secret.length === 0) {
+    if (
+      (typeof secret !== "string" && !Buffer.isBuffer(secret)) ||
+      secret.length === 0
+    ) {
       throw new Error(
         `cannot verify settlement webhook: secrets[${i}] must not be empty`,
       );
