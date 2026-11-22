@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2510 tests, all local
+npm test   # 2531 tests, all local
 ```
 
 ## Quickstart
@@ -1675,7 +1675,13 @@ retries across processes or restarts. A 429 `Retry-After` response header
 (delay seconds or an HTTP-date) takes precedence over the backoff; an
 absent or unparsable value falls back to it. The honored hint is clamped to
 `maxRetryDelayMs` (default 60,000ms): a faulty or hostile server returning
-`Retry-After: 31536000` can never stall the delivery promise beyond the cap. Other 3xx/4xx throw
+`Retry-After: 31536000` can never stall the delivery promise beyond the cap.
+Every wait the delivery arms — backoff sleeps, the per-attempt timeout,
+and the fan-out deadline — is additionally capped at the Node `setTimeout`
+ceiling (2^31 - 1 ms, about 24.8 days): an exponential schedule that grows
+past it waits the ceiling instead of misfiring after 1ms, and an
+above-ceiling timeout or deadline still enforces its wait up to the
+ceiling. Other 3xx/4xx throw
 immediately without retrying, and redirects are never followed: a 3xx
 response is returned as-is (the signed payload is never re-posted to a
 third-party redirect target), surfacing as `failed with status 301 (not
@@ -1746,6 +1752,9 @@ deadline — the stopped endpoint reports
 endpoints that already completed keep their results, and the
 aggregate carries `deadlineExceeded: true`. Both options are
 call-level configuration: invalid values throw before any request.
+The deadline timer is additionally capped at the Node `setTimeout`
+ceiling (2^31 - 1 ms), so an above-ceiling budget still stops hanging
+endpoints, just no later than the ceiling.
 
 Pass `maxConcurrency` to cap how many deliveries run at once: the
 fan-out then runs as a bounded pool (a new endpoint starts only when
@@ -2158,7 +2167,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2510 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2531 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

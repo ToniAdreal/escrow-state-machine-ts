@@ -194,6 +194,23 @@ version changes.
 
 ### Fixed
 
+- Delivery timers obey the Node `setTimeout` ceiling (2026-11-22,
+  backlog #1326): Node stores timer delays in a 32-bit signed
+  integer, so a wait above 2^31 - 1 ms (~24.8 days) warns
+  (`TimeoutOverflowWarning`) and fires after 1ms — an exponential
+  backoff grown from ordinary options (`backoffMs: 60_000` with
+  `retries: 17` reaches 3,932,160,000ms) would have become an
+  immediate-retry storm, and an above-ceiling `timeoutMs` would have
+  misreported a healthy request as timed out after 1ms. Every timer
+  this module arms — backoff sleeps (via `sleepAbortable`, which the
+  outbox runner's default sleep shares), the per-attempt timeout, and
+  the fan-out overall deadline — is now clamped to 2^31 - 1 ms at the
+  `setTimeout` call site; small waits keep their exact schedule and
+  error messages keep reporting the configured value. New
+  `test/webhookDeliveryTimerCeiling.test.ts` (9 cases), test counts
+  2522 -> 2531; removing the clamp turns 7 of the 9 new tests red
+  (mutation-checked).
+
 - `parseRetryAfter` fails closed on a non-finite `nowMs` (2026-11-22,
   backlog #1319): an explicitly passed NaN/Infinity clock used to make
   the HTTP-date branch return NaN, which `retryDelayMs` passed through

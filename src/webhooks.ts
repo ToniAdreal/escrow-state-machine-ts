@@ -3054,7 +3054,10 @@ export interface SettlementWebhookOutboxRetryOptions {
    * round `r` (1-based, i.e. the second round waits `backoffMs`, the
    * third `backoffMs * 2`) is `backoffMs * 2^(r-1)` — the same
    * exponential schedule as {@link deliverSettlementWebhook}'s
-   * per-attempt backoff. Default 1000. May be 0 in tests.
+   * per-attempt backoff. Default 1000. May be 0 in tests. The default
+   * sleep caps the armed wait at the Node `setTimeout` ceiling
+   * (2^31 - 1 ms, ~24.8 days); an injected `sleepImpl` is the caller's
+   * own timer and is not capped by this module.
    */
   backoffMs?: number;
   /**
@@ -3455,10 +3458,19 @@ export interface DeliverWebhookOptions {
   retries?: number;
   /**
    * Base backoff between retries in milliseconds. Retry n (1-based) waits
-   * `backoffMs * 2^(n-1)`. Default 1000. May be 0 in tests.
+   * `backoffMs * 2^(n-1)`. Default 1000. May be 0 in tests. The armed
+   * sleep is capped at the Node `setTimeout` ceiling (2^31 - 1 ms,
+   * ~24.8 days): an exponential schedule that grows past it waits the
+   * ceiling instead of misfiring after 1ms — a long retry stays a long
+   * retry, never an immediate one.
    */
   backoffMs?: number;
-  /** Per-attempt request timeout in milliseconds. Default 10000. */
+  /**
+   * Per-attempt request timeout in milliseconds. Default 10000. The
+   * armed timer is capped at the Node `setTimeout` ceiling (2^31 - 1 ms):
+   * a larger value still reports itself in the timeout error text, but
+   * the timer that enforces it never exceeds the ceiling.
+   */
   timeoutMs?: number;
   /**
    * Cap, in milliseconds, on the `Retry-After` wait honored on a 429.
@@ -3467,9 +3479,10 @@ export interface DeliverWebhookOptions {
    * attempt. The
    * hint is clamped with `Math.min` before sleeping; default 60000.
    * Must be a finite non-negative number (`0` disables any Retry-After
-   * wait, retrying immediately). Only the 429 hint is clamped — the
-   * exponential backoff used when the hint is absent/unparsable is
-   * unaffected.
+   * wait, retrying immediately). Only the 429 hint is clamped by this
+   * cap — the exponential backoff used when the hint is absent/unparsable
+   * is unaffected by it. (Every wait is still bounded by the Node
+   * `setTimeout` ceiling; see `sleepAbortable`.)
    */
   maxRetryDelayMs?: number;
   /**
@@ -3571,7 +3584,9 @@ export function parseRetryAfter(
  * `Math.random() * jitterMs` spread when `jitterMs > 0`. The default
  * `jitterMs` of `0` keeps the deterministic pure-exponential schedule;
  * the jitter is never applied to a 429 `Retry-After` hint, which is
- * computed by {@link retryDelayMs} separately.
+ * computed by {@link retryDelayMs} separately. The value returned here
+ * is a requested wait, not the armed one: `sleepAbortable` caps it at
+ * the Node `setTimeout` ceiling (2^31 - 1 ms) before arming the timer.
  */
 function jitteredBackoffMs(
   attemptIndex: number,
@@ -3607,10 +3622,40 @@ function retryDelayMs(
 }
 
 /**
+ * Largest delay `setTimeout` can actually arm: Node stores timer delays
+ * in a 32-bit signed integer, so anything above `2^31 - 1` ms (~24.8 days)
+ * triggers a `TimeoutOverflowWarning` and fires after 1ms instead of the
+ * requested wait (verified on this machine: `setTimeout(3e9)` warns and
+ * fires after ~1ms). A backoff computed as `backoffMs * 2^attempt` grows
+ * past the ceiling from ordinary-looking options (`backoffMs: 60_000`
+ * with `retries: 17` reaches 3,932,160,000ms), and a caller-supplied
+ * `timeoutMs`/`overallDeadlineMs` above the ceiling would likewise
+ * misfire as a 1ms timeout. Every timer this module arms is therefore
+ * clamped to this ceiling at the `setTimeout` call site: the wait still
+ * happens (a long retry stays a long retry, never an immediate one),
+ * only capped at the longest delay the platform can honor. Error
+ * messages keep reporting the configured value; only the armed timer
+ * is capped.
+ */
+const MAX_NODE_TIMER_MS = 2 ** 31 - 1;
+
+/**
+ * Clamp a caller-supplied wait to the longest delay `setTimeout` can
+ * arm. Values at or below the ceiling pass through unchanged, so small
+ * backoffs and timeouts keep their exact schedule.
+ */
+function clampTimerMs(ms: number): number {
+  return Math.min(ms, MAX_NODE_TIMER_MS);
+}
+
+/**
  * Sleep between retries, interruptible by an external abort signal.
  * Rejects with `webhook delivery aborted` if the signal is already aborted
  * or aborts while the sleep is pending (the pending timer is cleared, so no
- * further attempt fires). Without a signal this is a plain sleep.
+ * further attempt fires). Without a signal this is a plain sleep. The
+ * armed timer is clamped to the Node `setTimeout` ceiling
+ * (`MAX_NODE_TIMER_MS`): an exponential backoff that grows past it waits
+ * the ceiling instead of misfiring after 1ms.
  */
 function sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -3625,7 +3670,7 @@ function sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> {
     const timer = setTimeout(() => {
       signal?.removeEventListener("abort", onAbort);
       resolve();
-    }, ms);
+    }, clampTimerMs(ms));
     // The timer deliberately stays ref'd: an awaited delivery must keep
     // the process alive until the backoff settles. With an unref'd timer
     // the event loop can drain mid-backoff (stubbed fetch, no live
@@ -3809,7 +3854,10 @@ function assertDeliverOptionValues(
  *   backoff wait by up to that many extra milliseconds
  *   (`backoffMs * 2^(n-1) + Math.random() * jitterMs`, default 0 for the
  *   exact deterministic schedule); it is never added to a `Retry-After`
- *   hint, which is waited exactly.
+ *   hint, which is waited exactly. Every wait is additionally capped at
+ *   the Node `setTimeout` ceiling (2^31 - 1 ms, ~24.8 days), so an
+ *   exponential schedule that grows past it waits the ceiling instead
+ *   of misfiring after 1ms.
  * - Other 3xx/4xx (400, 404, …) → the request itself is at fault; throws
  *   immediately, no retry. Redirects are never followed (`redirect:
  *   "manual"`): a 3xx response is returned as-is and lands in this branch,
@@ -4088,7 +4136,10 @@ export interface DeliverSettlementWebhookToManyOptions
    * instead of the plain abort text, and the aggregate result carries
    * `deadlineExceeded: true`. Endpoints that already completed keep
    * their results, and `delivered`/`failed` count exactly what
-   * happened. Must be a positive number when present. Honest limit:
+   * happened. Must be a positive number when present. The armed timer
+   * is capped at the Node `setTimeout` ceiling (2^31 - 1 ms): a larger
+   * budget still reports itself in the deadline error text, but the
+   * timer that enforces it never exceeds the ceiling. Honest limit:
    * the deadline aborts via the fetch signal, exactly like an
    * external abort — a fetch implementation that ignores its signal
    * cannot be force-stopped by the deadline either.
@@ -4335,10 +4386,13 @@ export async function deliverSettlementWebhookToMany(
   if (opts.overallDeadlineMs !== undefined) {
     const deadlineController = new AbortController();
     deadlineSignal = deadlineController.signal;
+    // Clamped to the Node `setTimeout` ceiling: an above-ceiling
+    // deadline (e.g. 3e9) would otherwise warn and fire after 1ms,
+    // aborting every endpoint before any of them could answer.
     deadlineTimer = setTimeout(() => {
       deadlineExceeded = true;
       deadlineController.abort();
-    }, opts.overallDeadlineMs);
+    }, clampTimerMs(opts.overallDeadlineMs));
   }
 
   // One endpoint's delivery, in input position `index`. Every failure
@@ -4512,10 +4566,13 @@ async function postOnce(
 ): Promise<Response> {
   const controller = new AbortController();
   let timedOut = false;
+  // Clamped to the Node `setTimeout` ceiling: an above-ceiling
+  // `timeoutMs` (e.g. 3e9) would otherwise warn and fire after 1ms,
+  // misreporting a healthy request as timed out.
   const timer = setTimeout(() => {
     timedOut = true;
     controller.abort();
-  }, timeoutMs);
+  }, clampTimerMs(timeoutMs));
   // No unref(): the timeout timer can be the only handle that settles
   // an awaited attempt (e.g. a fetch that only settles via this abort),
   // and unref'ing it lets the event loop drain first. The timer is
