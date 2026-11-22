@@ -194,6 +194,19 @@ version changes.
 
 ### Fixed
 
+- `verifySettlementWebhook` no longer throws on a non-serializable
+  object body (2026-11-22, backlog #1317): an object body holding a
+  `BigInt` value, a circular reference, or a throwing `toJSON` used to
+  escape `canonicalJson` (bare `JSON.stringify`) as an unhandled
+  `TypeError`, breaking the JSDoc promise that a hostile input can
+  never turn verification into an unhandled exception. Serialization
+  failure now fails closed as `false` — such a body could never have
+  produced a matching signature — while string bodies, valid object
+  bodies, and configuration errors (empty secrets) behave exactly as
+  before. New `test/verifyWebhookNonSerializableBody.test.ts`
+  (10 cases), test counts 2492 -> 2502; removing the guard turns 6 of
+  the 10 new tests red (mutation-checked).
+
 - `settlementReportDiffShape` wall-clock flake removed (2026-11-22,
   backlog #1316): the `releasedReport()` fixture dispatched on the live
   wall clock, so two calls straddling a millisecond boundary produced
