@@ -194,6 +194,18 @@ version changes.
 
 ### Fixed
 
+- `parseRetryAfter` fails closed on a non-finite `nowMs` (2026-11-22,
+  backlog #1319): an explicitly passed NaN/Infinity clock used to make
+  the HTTP-date branch return NaN, which `retryDelayMs` passed through
+  to `setTimeout(NaN)` — silently collapsing a server-prescribed 429
+  backoff into an immediate retry. The function now throws a
+  configuration `Error` naming `parseRetryAfter` and `nowMs` before any
+  parsing, so the delay-seconds path and an absent value fail closed
+  too; the default `Date.now()` clock and all finite clocks behave
+  exactly as before. New `test/parseRetryAfterClock.test.ts`
+  (8 cases), test counts 2502 -> 2510; removing the guard turns 6 of
+  the 8 new tests red (mutation-checked).
+
 - `verifySettlementWebhook` no longer throws on a non-serializable
   object body (2026-11-22, backlog #1317): an object body holding a
   `BigInt` value, a circular reference, or a throwing `toJSON` used to
