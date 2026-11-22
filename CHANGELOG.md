@@ -194,6 +194,17 @@ version changes.
 
 ### Fixed
 
+- `settlementReportDiffShape` wall-clock flake removed (2026-11-22,
+  backlog #1316): the `releasedReport()` fixture dispatched on the live
+  wall clock, so two calls straddling a millisecond boundary produced
+  reports whose audit windows differed by 1ms and the
+  self-inconsistent-reports diff test intermittently saw
+  `firstEventAtChanged`/`lastEventAtChanged` (full suite 2487/2488
+  once). The fixture now dispatches on pinned `DispatchOptions.at`
+  timestamps (2026-03-01T09:00:00–03Z), so every call is byte-identical;
+  a new determinism test pins that and proves a 1ms window shift is
+  still reported. No `src/` change; test counts 2491 -> 2492.
+
 - `parseEscrowHistory()` / `Escrow.fromJSON()` name the first entry
   where the hash chain breaks (2026-11-21, backlog #1296, the escrow
   mirror of dataquest #1285): a broken chain previously failed with

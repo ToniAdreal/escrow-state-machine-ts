@@ -52,12 +52,31 @@ function goldenDeposit() {
   });
 }
 
+// Backlog #1316: pinned clock. The fixture used to dispatch on the
+// live wall clock, so two `releasedReport()` calls straddling a
+// millisecond boundary produced reports whose audit windows
+// (`firstEventAt`/`lastEventAt`, taken from `history[0].at` /
+// `history[last].at`) differed by 1ms — and the "self-inconsistent
+// reports still diff" test intermittently saw `firstEventAtChanged` /
+// `lastEventAtChanged` alongside the moved field (full-suite
+// 2487/2488, single-file 10/10). Pinning `at` through the
+// `DispatchOptions.at` injection point (the same fixed-timestamp
+// idiom the demo uses) makes every call byte-identical; the diff's
+// own window-move detection is untouched — a 1ms shift in either
+// window is still reported, see the determinism test below.
+const FIXED_AT = [
+  "2026-03-01T09:00:00.000Z",
+  "2026-03-01T09:00:01.000Z",
+  "2026-03-01T09:00:02.000Z",
+  "2026-03-01T09:00:03.000Z",
+] as const;
+
 function releasedReport(id = "esc-10630"): SettlementReport {
   const e = new Escrow(id);
-  e.dispatch("FUND");
-  e.dispatch("SUBMIT_MILESTONE");
-  e.dispatch("VERIFY_PASS");
-  e.dispatch("RELEASE");
+  e.dispatch("FUND", undefined, undefined, { at: FIXED_AT[0] });
+  e.dispatch("SUBMIT_MILESTONE", undefined, undefined, { at: FIXED_AT[1] });
+  e.dispatch("VERIFY_PASS", undefined, undefined, { at: FIXED_AT[2] });
+  e.dispatch("RELEASE", undefined, undefined, { at: FIXED_AT[3] });
   return buildSettlementReport({
     escrowId: e.id,
     history: e.history,
@@ -247,6 +266,24 @@ test("shape-valid but self-inconsistent reports still diff: comparison, not vali
     diffSettlementReports(releasedReport(), unbalanced),
     { totalOutflowChanged: { from: 10630, to: 1 } },
   );
+});
+
+test("the fixture is deterministic: two released reports are byte-identical, and a 1ms window shift still diffs", () => {
+  // Backlog #1316: the two `releasedReport()` calls inside the
+  // self-inconsistent test above used to straddle a millisecond
+  // boundary and leak `firstEventAtChanged`/`lastEventAtChanged`
+  // into the diff. The pinned clock makes them identical — and the
+  // second half proves the fix did not neuter the diff: shifting
+  // one window edge by 1ms is still reported as a move.
+  assert.deepEqual(releasedReport(), releasedReport());
+  const shifted = clone(releasedReport());
+  shifted.lastEventAt = "2026-03-01T09:00:03.001Z";
+  assert.deepEqual(diffSettlementReports(releasedReport(), shifted), {
+    lastEventAtChanged: {
+      from: "2026-03-01T09:00:03.000Z",
+      to: "2026-03-01T09:00:03.001Z",
+    },
+  });
 });
 
 test("a legal diff is unchanged: identical diffs to {}, one moved field reports only itself", () => {
