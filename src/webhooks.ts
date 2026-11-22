@@ -3213,7 +3213,10 @@ export interface SettlementWebhookOutboxRetryOptions {
    * on the attempts the runner records. Defaults to `Date.now`.
    * Inject a fake clock for deterministic tests. This is the
    * runner's clock only — the outbox keeps the clock it was built
-   * with for attempts recorded without an explicit `at`.
+   * with for attempts recorded without an explicit `at`. A reading
+   * that is not a finite number throws a configuration error at
+   * the round boundary, before any pair in that round is delivered
+   * (backlog #1332); a dry run never reads the clock.
    */
   now?: () => number;
   /**
@@ -3317,6 +3320,11 @@ export interface SettlementWebhookOutboxRetrySummary {
  *   {@link SettlementWebhookOutboxRetryOptions.signal}): already-made
  *   attempts keep their results, and the summary reports
  *   `aborted: true`.
+ * - The runner clock is resolved once per round, before any pair
+ *   in that round is delivered: a non-finite reading throws a
+ *   configuration error and the run fails there, with earlier
+ *   rounds' attempts kept in the ledger (backlog #1332). A dry
+ *   run never reads the clock.
  * - Dry run (`opts.dryRun: true`): the safe rehearsal port — one
  *   pass over `outbox.pending()` is reported as `wouldRetry`
  *   entries on the summary, and nothing is delivered, recorded,
@@ -3334,6 +3342,33 @@ export interface SettlementWebhookOutboxRetrySummary {
  * build them over shared storage (a database outbox table, a
  * queue, …) instead.
  */
+
+/**
+ * Resolve one reading of the retry runner's clock, fail-closed
+ * (backlog #1332, same contract as
+ * {@link SettlementEventDedupe}'s `resolveNow`): the reading must
+ * be a finite number of milliseconds since the epoch. A bad clock
+ * throws a configuration `Error` here — at the round boundary,
+ * before any pair in that round is delivered — instead of
+ * surfacing mid-round as `recordAttempt`'s "at must be a finite
+ * number", which escapes the per-pair worker, rejects the
+ * runner's `Promise.all`, and kills the whole multi-pair run
+ * with no summary. The resolved value is the `at` stamped on
+ * every attempt the round records, so a clock that goes bad
+ * mid-round cannot corrupt this round's ledger: the failure
+ * surfaces at the next round's boundary, with earlier rounds'
+ * results kept.
+ */
+function resolveRunnerNow(clock: () => number): number {
+  const t = clock();
+  if (typeof t !== "number" || !Number.isFinite(t)) {
+    throw new Error(
+      `retrySettlementWebhookOutbox: now must return a finite number of milliseconds since the epoch, got ${String(t)}`,
+    );
+  }
+  return t;
+}
+
 export async function retrySettlementWebhookOutbox(
   outbox: SettlementWebhookOutbox,
   deliverOne: SettlementWebhookOutboxDeliverOne,
@@ -3452,6 +3487,14 @@ export async function retrySettlementWebhookOutbox(
     }
     const entries = outbox.pending();
     if (entries.length === 0) break;
+    // One clock reading per round, resolved before any pair in
+    // this round is delivered (backlog #1332): a non-finite
+    // reading fails the run here as a configuration error, and
+    // the resolved value stamps every attempt this round
+    // records. A clock that goes bad mid-run therefore fails at
+    // the next round's boundary, with earlier rounds' results
+    // kept in the ledger.
+    const roundNow = resolveRunnerNow(clock);
     // Bounded pool over this round's snapshot (default serial): a
     // worker takes the next entry only when one settles, and the
     // single-worker loop assigns indices without awaiting between
@@ -3477,7 +3520,7 @@ export async function retrySettlementWebhookOutbox(
             eventId: entry.eventId,
             ok: false,
             error: err instanceof Error ? err.message : String(err),
-            at: clock(),
+            at: roundNow,
           });
           continue;
         }
@@ -3495,7 +3538,7 @@ export async function retrySettlementWebhookOutbox(
             endpoint: entry.endpoint,
             eventId: entry.eventId,
             ok: false,
-            at: clock(),
+            at: roundNow,
           });
         }
       }
