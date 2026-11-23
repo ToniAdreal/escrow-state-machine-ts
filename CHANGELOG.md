@@ -194,6 +194,21 @@ version changes.
 
 ### Fixed
 
+- `calculateDeposit` / `calculateDepositCents` reject non-object inputs
+  (2026-11-23, backlog #1356): both fee calculators started with
+  `Object.entries(inputs)` and no shape guard, so a null input surfaced
+  a bare `TypeError` from the entries call, and a string input died as
+  the misleading field error `0 must be a finite non-negative number`
+  (`Object.entries("x")` yields `[["0", "x"]]`). Each function now
+  applies a shared `assertFeeInputs` guard first (`<fn>: inputs must
+  be an object, got ...`, `got` rendered via `JSON.stringify` like
+  `buildSettlementReport`); field validation and fee math are
+  unchanged. New `test/feeCalculatorShape.test.ts` (14 tests:
+  null/string/number/array/undefined inputs per function with verbatim
+  messages and plain-`Error`-not-`TypeError` checks, empty-object
+  pre-existing errors unchanged, both golden vectors unchanged),
+  test counts 2670 -> 2684.
+
 - `settle*` settlement helpers reject non-object inputs (2026-11-23,
   backlog #1348): `settleRelease`, `settleRefund`, `settlePartialRelease`,
   and `settlePartialReleases` destructured `inputs` on their first line,

@@ -68,7 +68,31 @@ function assertMoneyCents(name: string, v: number): void {
     throw new Error(`${name} must be a finite non-negative integer number of cents`);
 }
 
+/**
+ * Shape guard shared by the two fee calculators: a non-object `inputs`
+ * is the caller's bug and must fail as a named error, not as a bare
+ * TypeError from `Object.entries` on the first line of each function
+ * (and not as a misleading field error — `Object.entries("x")` yields
+ * `[["0", "x"]]`, so a string input used to die as `0 must be a finite
+ * non-negative number`). Same fn-prefixed shape as #1348's
+ * `assertSettlementInputs`, with the `got` value rendered via
+ * `JSON.stringify` like `buildSettlementReport` (#1347). Arrays are
+ * rejected too: their entries would only yield misleading field errors.
+ */
+function assertFeeInputs(
+  fn: string,
+  inputs: unknown,
+): asserts inputs is Record<string, unknown> {
+  if (typeof inputs !== "object" || inputs === null || Array.isArray(inputs)) {
+    throw new Error(
+      `${fn}: inputs must be an object, got ${JSON.stringify(inputs)}`,
+    );
+  }
+}
+
 export function calculateDeposit(inputs: FeeInputs): FeeBreakdown {
+  // Shape first, before the `Object.entries` scan: see `assertFeeInputs`.
+  assertFeeInputs("calculateDeposit", inputs);
   for (const [k, v] of Object.entries(inputs)) assertMoney(k, v as number);
   if (inputs.complexityMultiplier <= 0)
     throw new Error("complexityMultiplier must be positive");
@@ -114,6 +138,8 @@ export function calculateDeposit(inputs: FeeInputs): FeeBreakdown {
  * loyalty −3,000¢, oracle +6,000¢ → deposit 1,063,000¢.
  */
 export function calculateDepositCents(inputs: FeeInputsCents): FeeBreakdownCents {
+  // Shape first, before the `Object.entries` scan: see `assertFeeInputs`.
+  assertFeeInputs("calculateDepositCents", inputs);
   for (const [k, v] of Object.entries(inputs)) {
     if (k === "complexityMultiplier") continue;
     assertMoneyCents(k, v as number);
