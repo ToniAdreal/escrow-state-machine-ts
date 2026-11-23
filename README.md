@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2562 tests, all local
+npm test   # 2574 tests, all local
 ```
 
 ## Quickstart
@@ -1015,7 +1015,17 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   window (boundary inclusive) they stop counting toward the threshold —
   `hasQuorum()` can fall back to false — but they stay in `approvalLog()`,
   and re-approving records a fresh timestamp; revoking an expired
-  approval is allowed and removes its entries. A caller that needs to
+  approval is allowed and removes its entries. The injected clock must
+  return a finite number of milliseconds since the epoch: a `NaN`,
+  `Infinity`, or non-number reading fails closed with
+  `quorum: now must return a finite number of milliseconds since the epoch, got …`
+  — at `approve()` / `approveSigned()` before anything is recorded, and
+  at the counting reads (`hasQuorum()` / `approvalCount()` / `approvals()` /
+  `remainingApprovals()`) instead of silently reporting the approvals as
+  expired — so a bad clock can never silently lock the quorum at zero
+  votes, and the audit log can never be poisoned with an unprintable
+  timestamp (the same fail-closed contract as
+  `SettlementEventDedupe.resolveNow`). A caller that needs to
   show how many votes are still missing reads `remainingApprovals()` —
   `Math.max(0, threshold - approvalCount())` from the same counted set,
   so expired approvals are excluded automatically and it reads 0 exactly
@@ -2169,7 +2179,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2562 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2574 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

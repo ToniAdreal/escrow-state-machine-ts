@@ -194,6 +194,29 @@ version changes.
 
 ### Fixed
 
+- Quorum validates the injected clock's readings (2026-11-23,
+  backlog #1336): `assertValidConfig` only checked `config.now`
+  is a function and never inspected what it returned, so a `NaN`
+  clock recorded approvals that could never count inside a
+  `maxApprovalAgeMs` window (`now() - e.atMs <= maxAge` is false
+  for every entry) — the quorum silently locked at zero votes
+  forever — while `approvalLog()` / `snapshot()` threw a bare
+  `RangeError: Invalid time value` on the poisoned timestamps.
+  Every clock read inside `buildQuorum` now goes through a
+  `resolveNow()` with the same contract as
+  `SettlementEventDedupe.resolveNow` (#1289): a non-finite or
+  non-number reading throws `quorum: now must return a finite
+  number of milliseconds since the epoch, got …` as a
+  configuration error — at `approve()` / `approveSigned()` before
+  anything is recorded, and at the counting reads (`hasQuorum()` /
+  `approvalCount()` / `approvals()` / `remainingApprovals()`)
+  instead of silently reporting recorded approvals as expired.
+  A clock that goes bad after valid approvals were recorded fails
+  the reads while the audit trail stays readable. New
+  `test/quorumClock.test.ts` (12 cases), test counts 2562 -> 2574;
+  bypassing `resolveNow` in the counting path turns 2 of the new
+  tests red (mutation-checked).
+
 - `retrySettlementWebhookOutbox` fails closed on a non-finite
   runner clock (2026-11-22, backlog #1332): the runner used to
   check `opts.now` only as "is a function" and never inspect what

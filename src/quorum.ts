@@ -68,7 +68,12 @@ export interface QuorumConfig {
   /**
    * Clock for approval timestamps, in milliseconds since the Unix epoch.
    * Defaults to `Date.now`. Inject a fixed sequence in tests for
-   * deterministic audit logs.
+   * deterministic audit logs. Every reading must be a finite number:
+   * a clock that returns `NaN`, `Infinity`, or a non-number fails
+   * closed at the read (backlog #1336) — a non-finite reading would
+   * otherwise make every approval look expired inside an expiry
+   * window (silently locking the quorum) and would poison the audit
+   * log with an unprintable timestamp.
    */
   now?: () => number;
   /**
@@ -446,6 +451,30 @@ function buildQuorum(
   const signers = new Set<string>(signerList);
   const now = config.now ?? Date.now;
   const maxAge = config.maxApprovalAgeMs;
+  /**
+   * Resolve one clock reading, fail-closed (backlog #1336, same
+   * contract as `SettlementEventDedupe.resolveNow` in
+   * `src/webhooks.ts`): the injected clock must return a finite
+   * number of milliseconds since the epoch. A non-finite reading
+   * throws a configuration `Error` before anything is recorded or
+   * counted — `NaN` would make `now() - e.atMs <= maxAge` false
+   * for every approval (silently locking the quorum at zero votes
+   * forever) and would poison the audit log with an unprintable
+   * timestamp (`new Date(NaN).toISOString()` throws a bare
+   * `RangeError`). Every clock read in this closure goes through
+   * `resolveNow`, so a clock that goes bad after valid approvals
+   * were recorded fails the reads instead of silently reporting
+   * the approvals as expired.
+   */
+  const resolveNow = (): number => {
+    const t = now();
+    if (typeof t !== "number" || !Number.isFinite(t)) {
+      throw new Error(
+        `quorum: now must return a finite number of milliseconds since the epoch, got ${String(t)}`,
+      );
+    }
+    return t;
+  };
   // Defensive copy: a caller mutating its record after construction
   // must not silently re-key the quorum.
   const publicKeys = new Map<string, KeyObject>(
@@ -463,7 +492,7 @@ function buildQuorum(
     return latest;
   };
   const isCounted = (e: TimedApproval): boolean =>
-    maxAge === undefined || now() - e.atMs <= maxAge;
+    maxAge === undefined || resolveNow() - e.atMs <= maxAge;
   const countedApprovals = (): TimedApproval[] => {
     const latest = latestBySigner();
     // Log order of each signer's latest entry (a re-approval after
@@ -482,7 +511,7 @@ function buildQuorum(
       if (current !== undefined && isCounted(current)) return; // still counts — no-op, evidence unchanged
       log.push({
         signerId,
-        atMs: now(),
+        atMs: resolveNow(),
         ...(evidence !== undefined ? { evidence } : {}),
       });
     },
@@ -530,7 +559,7 @@ function buildQuorum(
       }
       log.push({
         signerId,
-        atMs: now(),
+        atMs: resolveNow(),
         ...(evidence !== undefined ? { evidence } : {}),
         verified: true,
       });
