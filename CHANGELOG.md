@@ -194,6 +194,26 @@ version changes.
 
 ### Fixed
 
+- `summarizeSettlementReports` / `buildSettlementReports` reject
+  non-array batches (2026-11-23, backlog #1358): both batch entry
+  points started by iterating their batch argument with no array
+  check, so a null batch surfaced a bare `TypeError` (`results is
+  not iterable` / `inputsList is not iterable`), and a string batch
+  was worse — the summarizer silently returned an all-zero summary
+  for it. Both now share a `assertBatchArray` guard at the top of
+  each function (`invalid <fn>: <param> must be an array, got ...`,
+  the same wording `reconcileSettlements` uses, #1343), running
+  before any iteration, duplicate check, or per-entry validation;
+  the guard lives in a helper rather than inline because an inline
+  `Array.isArray` check narrows the caller's parameter to `any[]`,
+  which breaks the typed `outcomes[report.outcome]` indexing below.
+  New `test/settlementReportsBatchShape.test.ts` (12 tests:
+  null/string/number/object batches per function, a legal
+  three-report build + summarize unchanged, empty-batch behavior
+  unchanged, duplicate-escrowId fail-closed and per-entry-error
+  behavior unchanged, mutation check with both guards removed fails
+  8 of 12), test counts 2697 -> 2709.
+
 - `createQuorum` / `restoreQuorum` reject non-object configs
   (2026-11-23, backlog #1357): both entry points read `config` fields
   with no body guard, so a null config surfaced a bare `TypeError`

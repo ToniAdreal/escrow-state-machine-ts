@@ -797,6 +797,29 @@ export type SettlementReportResult =
   | { escrowId: string; report?: undefined; error: string };
 
 /**
+ * Shared batch-array guard (backlog #1358): the batch entry points in
+ * this file throw a named error (`invalid <fn>: <param> must be an
+ * array`) for a non-array batch instead of surfacing a bare `TypeError`
+ * from the iteration — the same wording `reconcileSettlements` uses
+ * for its own batch inputs (#1343). Kept as a helper (rather than an
+ * inline `Array.isArray` check) because an inline check narrows the
+ * caller's parameter to `any[]`, which then breaks the typed indexing
+ * below (`outcomes[report.outcome]`); inside the helper the narrowing
+ * stays local and the caller's type is untouched.
+ */
+function assertBatchArray(
+  fnName: string,
+  paramName: string,
+  value: unknown,
+): void {
+  if (!Array.isArray(value)) {
+    throw new Error(
+      `invalid ${fnName}: ${paramName} must be an array, got ${value === null ? "null" : typeof value}`,
+    );
+  }
+}
+
+/**
  * Batch settlement reporting: build one report per escrow from a list of
  * {@link SettlementReportInputs} — the exact same input shape (and
  * semantics) as the single-escrow {@link buildSettlementReport}, one entry
@@ -813,7 +836,9 @@ export type SettlementReportResult =
  * Pure: building a report never mutates any escrow state or history, and
  * this batch wrapper adds no mutation of its own — the input list and its
  * entries are only read. The result has one entry per input, in input
- * order, each carrying the input's `escrowId`. An empty or overlong
+ * order, each carrying the input's `escrowId`. Fail-fast: a batch that is
+ * not an array throws `invalid buildSettlementReports: inputsList must
+ * be an array` before any entry is attempted (backlog #1358). An empty or overlong
  * `escrowId` is a per-entry failure like any other (the single-escrow
  * builder throws it, the wrapper records it) — it never aborts the
  * batch; only a repeated `escrowId` does, per the exception below. A per-escrow `auditKey`
@@ -834,6 +859,12 @@ export type SettlementReportResult =
 export function buildSettlementReports(
   inputsList: readonly SettlementReportInputs[],
 ): SettlementReportResult[] {
+  // Fail-fast (backlog #1358): a non-array batch throws a named error
+  // (`invalid buildSettlementReports: inputsList must be an array`)
+  // instead of surfacing a bare `TypeError` from the iteration below
+  // (`inputsList is not iterable` / `.map is not a function`) — the
+  // same wording `reconcileSettlements` uses for its own batch inputs.
+  assertBatchArray("buildSettlementReports", "inputsList", inputsList);
   const seen = new Set<string>();
   const duplicates: string[] = [];
   for (const inputs of inputsList) {
@@ -967,6 +998,11 @@ export interface SettlementReportsSummary {
  *
  * Pure: the results array and the reports inside it are only read.
  *
+ * Fail-fast: a batch that is not an array throws `invalid
+ * summarizeSettlementReports: results must be an array` before any
+ * figure is summed (backlog #1358) — a string batch previously
+ * returned an all-zero summary instead of failing.
+ *
  * A duplicated report is rejected before any figure is summed: if two
  * results carry reports for the same `escrowId`, the call throws
  * `invalid summarizeSettlementReports: duplicate report escrowId: "<id>"`
@@ -999,6 +1035,11 @@ export interface SettlementReportsSummary {
 export function summarizeSettlementReports(
   results: readonly SettlementReportResult[],
 ): SettlementReportsSummary {
+  // Fail-fast (backlog #1358): a non-array batch throws a named error
+  // (`invalid summarizeSettlementReports: results must be an array`)
+  // instead of surfacing a bare `TypeError` from the iteration below —
+  // and a string batch no longer silently returns an all-zero summary.
+  assertBatchArray("summarizeSettlementReports", "results", results);
   // Fail-closed overflow guard (backlog #1098): every money
   // accumulation below goes through `addChecked`, and every rounded
   // figure on its way out goes through `roundChecked`, so no
