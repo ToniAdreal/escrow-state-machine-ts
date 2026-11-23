@@ -318,7 +318,9 @@ export interface Quorum {
  * the approval-expiry window so approvals never expired, the second
  * quietly leaving the threshold at 1 so a single vote reached quorum.
  * The snapshot side (`validateQuorumSnapshotShape`) already rejected
- * unknown fields; the config side now matches it.
+ * unknown fields; the config side now matches it. The body-shape guard
+ * (#1357) runs before even this scan: a null/non-object/array config
+ * is rejected as `quorum: config must be an object, got …`.
  */
 const QUORUM_CONFIG_FIELDS = new Set([
   "threshold",
@@ -340,6 +342,26 @@ const QUORUM_SIGNED_SNAPSHOT_EXPORT_OPTION_FIELDS = new Set([
 ]);
 
 function assertValidConfig(config: QuorumConfig): void {
+  // Body shape first, before any field is read (backlog #1357): a
+  // null/non-object config used to die as a bare TypeError from
+  // Object.keys below, and an array died as the misleading field
+  // error "quorum signers must be a non-empty array" — an array has
+  // no `signers` field, so the report blamed a field the caller
+  // never had. The quorum is the last gate before escrow funds
+  // release, so the caller gets a named error naming the shape it
+  // actually passed. `createQuorum` (via `buildQuorum`) and
+  // `restoreQuorum` both enter here before the unknown-field scan,
+  // the #1336 clock check and every field validation; the
+  // signed-restore path inherits the guard via `restoreQuorum`.
+  if (
+    typeof config !== "object" ||
+    config === null ||
+    Array.isArray(config)
+  ) {
+    throw new Error(
+      `quorum: config must be an object, got ${JSON.stringify(config)}`,
+    );
+  }
   // Unknown config fields fail closed (see QUORUM_CONFIG_FIELDS),
   // checked before any field is consumed so a typo is reported as
   // itself, not as a silently dropped risk control.

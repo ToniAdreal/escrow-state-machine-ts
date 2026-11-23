@@ -194,6 +194,23 @@ version changes.
 
 ### Fixed
 
+- `createQuorum` / `restoreQuorum` reject non-object configs
+  (2026-11-23, backlog #1357): both entry points read `config` fields
+  with no body guard, so a null config surfaced a bare `TypeError`
+  from `Object.keys` inside `assertValidConfig`, and an array config
+  died as the misleading field error `quorum signers must be a
+  non-empty array` (an array has no `signers` field). Both now share
+  a body guard at the top of `assertValidConfig` (`quorum: config
+  must be an object, got ...`, `got` rendered via `JSON.stringify`
+  like the fee calculators), running before the unknown-field scan,
+  the #1336 clock check and every field validation; the
+  signed-restore path inherits it via `restoreQuorum`. New
+  `test/quorumConfigShape.test.ts` (13 tests: null/string/number/
+  array configs per function, guard-before-snapshot ordering, legal
+  create/restore round-trips unchanged, #1336 bad-clock error
+  unchanged, mutation check with the guard removed fails 10 of 13),
+  test counts 2684 -> 2697.
+
 - `calculateDeposit` / `calculateDepositCents` reject non-object inputs
   (2026-11-23, backlog #1356): both fee calculators started with
   `Object.entries(inputs)` and no shape guard, so a null input surfaced
