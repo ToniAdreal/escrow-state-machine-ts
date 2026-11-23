@@ -1494,6 +1494,29 @@ function computeSnapshotMac(
  * process the store is exact: an id is a duplicate if and only if
  * it was recorded within the TTL and has not since been evicted.
  */
+/**
+ * Shared shape guard for the webhook-infra constructors (backlog
+ * #1361): an options argument must be an object — `null`, an array, a
+ * number, a string, … is a caller bug and must be reported as itself,
+ * never as the bare `TypeError` the first field read would otherwise
+ * throw (`Cannot convert undefined or null to object` from the
+ * unknown-option scan's `Object.keys(opts)`), and never as a silently
+ * accepted default (a number or array carries no option keys, so it
+ * used to construct with every default in place). Mirrors the
+ * dataquest `PayoutEventDedupe` / `PayoutWebhookOutbox` guard
+ * (`assertOptionsObject`, #1330) verbatim, including the array
+ * rejection. The guard runs before any field is read; an omitted
+ * options argument never reaches it (the default parameter turns it
+ * into `{}`), and `undefined` passed explicitly takes the same
+ * default path. `restore()` / `restoreSignedSnapshot()` inherit it
+ * through the constructor.
+ */
+function assertWebhookOptionsObject(opts: unknown, caller: string): void {
+  if (opts === null || typeof opts !== "object" || Array.isArray(opts)) {
+    throw new Error(`${caller}: opts must be an object`);
+  }
+}
+
 /** Allowlist of `SettlementEventDedupeOptions` keys (#1265). */
 const SETTLEMENT_EVENT_DEDUPE_OPTION_FIELDS = new Set([
   "ttlMs",
@@ -1511,6 +1534,12 @@ export class SettlementEventDedupe {
   private evictions = 0;
 
   constructor(opts: SettlementEventDedupeOptions = {}) {
+    // A null/non-object options value is a caller bug (#1361): fail
+    // closed before any field is read, never as `Cannot convert
+    // undefined or null to object` from `Object.keys(opts)` below.
+    // `restore()` / `restoreSignedSnapshot()` inherit this guard
+    // through this constructor.
+    assertWebhookOptionsObject(opts, "SettlementEventDedupe");
     // Unknown option keys fail closed (#1265, see
     // SETTLEMENT_EVENT_DEDUPE_OPTION_FIELDS), checked before any
     // field is read: a typo'd `ttl` would otherwise silently fall
@@ -2428,6 +2457,12 @@ export class SettlementWebhookOutbox {
   >();
 
   constructor(opts: SettlementWebhookOutboxOptions = {}) {
+    // A null/non-object options value is a caller bug (#1361): fail
+    // closed before any field is read, never as `Cannot convert
+    // undefined or null to object` from `Object.keys(opts)` below.
+    // `restore()` / `restoreSignedSnapshot()` inherit this guard
+    // through this constructor.
+    assertWebhookOptionsObject(opts, "SettlementWebhookOutbox");
     // Unknown option keys fail closed (#1284, see
     // SETTLEMENT_WEBHOOK_OUTBOX_OPTION_FIELDS), checked before any
     // field is read: a typo'd `maxAttempt` would otherwise silently

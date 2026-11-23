@@ -194,6 +194,26 @@ version changes.
 
 ### Fixed
 
+- `SettlementEventDedupe` / `SettlementWebhookOutbox` constructors
+  reject null/non-object opts (2026-11-23, backlog #1361): both
+  constructors started with the unknown-option scan's
+  `Object.keys(opts)` and no shape check, so a null options value
+  surfaced a bare `TypeError` (`Cannot convert undefined or null to
+  object`); the gap was wider than null — a string surfaced the
+  misleading `unknown option "0"`, while a number or an array carried
+  no option keys and silently constructed with every default in
+  place. Both now share the `assertWebhookOptionsObject` guard at the
+  top of each constructor (`<Class>: opts must be an object`, verbatim
+  the dataquest `PayoutEventDedupe` / `PayoutWebhookOutbox` wording,
+  #1330), running before the unknown-option scan and any field read;
+  `restore()` / `restoreSignedSnapshot()` inherit it through the
+  constructor. New `test/webhookInfraOptsShape.test.ts` (14 tests:
+  null/string/number/array per constructor, guard-before-scan
+  ordering, unknown keys still fail closed, legal default/custom/
+  explicit-undefined construction unchanged, restore inherits the
+  guard; mutation check with both guard calls removed fails 10 of
+  14), test counts 2742 -> 2756.
+
 - `nextEscrowDeadline` / `settlementAging` / `unreconciledSettlements`
   reject non-array batches (2026-11-23, backlog #1360): the three
   remaining batch entry points on the settlement/patrol read path
