@@ -4649,6 +4649,48 @@ export class Escrow {
 }
 
 /**
+ * Shared batch guard for the batch selectors (`expiredEscrows`,
+ * `escrowsByState`, `escrowsByActor`, `escrowsByEvent`,
+ * `escrowsBySettlementRef`, `escrowsByFilters`,
+ * `escrowsApproachingDeadline`, `staleEscrows`).
+ *
+ * The selectors only ever validated their filter parameters, never the
+ * batch itself, so a `null` batch surfaced as a bare `TypeError`
+ * (`reading 'filter'`) and — worse — `escrowsByFilters([null], {})`
+ * silently returned `[null]` when no filter axis was set, handing the
+ * caller a `null` to use as an escrow. The guard runs first, before
+ * any filter-parameter validation, so a malformed batch is never
+ * masked by (or mistaken for) a bad filter value.
+ *
+ * Entries are checked with `instanceof Escrow`, not a shape scan:
+ * the selectors read `state`, `history`, `isTerminal`, and
+ * `getDeadline()`, which only a real `Escrow` guarantees, and no
+ * caller in this repo (tests included) passes a plain-object
+ * stand-in to a selector — unlike dataquest's `reconcilePayouts`
+ * (#1337), where stand-ins forced a shape guard. A plain object
+ * with the right fields is therefore rejected here, deliberately:
+ * it is not an escrow, and silently treating it as one would let a
+ * hand-built object bypass the state machine's invariants.
+ */
+function assertEscrowBatch(
+  fnName: string,
+  escrows: readonly Escrow[],
+): void {
+  if (!Array.isArray(escrows)) {
+    throw new Error(
+      `invalid ${fnName}: escrows must be an array, got ${escrows === null ? "null" : typeof escrows}`,
+    );
+  }
+  for (let i = 0; i < escrows.length; i++) {
+    if (!(escrows[i] instanceof Escrow)) {
+      throw new Error(
+        `invalid ${fnName}: escrows[${i}] must be an Escrow, got ${escrows[i] === null ? "null" : typeof escrows[i]}`,
+      );
+    }
+  }
+}
+
+/**
  * Is the escrow currently past its deadline?
  *
  * Returns false when no deadline is set, and false for terminal states —
@@ -4682,12 +4724,16 @@ export function isOverdue(escrow: Escrow, now: Date = new Date()): boolean {
  * the error per escrow and keeps going.
  *
  * Pure: reads the escrows, never mutates or dispatches. The `now` default
- * is the real clock, so unit tests pin it to a fixed date.
+ * is the real clock, so unit tests pin it to a fixed date. The batch is
+ * validated before anything is read: a non-array batch or a non-`Escrow`
+ * entry throws a named `invalid expiredEscrows: ...` error instead of a
+ * bare `TypeError`.
  */
 export function expiredEscrows(
   escrows: readonly Escrow[],
   now: Date = new Date()
 ): Escrow[] {
+  assertEscrowBatch("expiredEscrows", escrows);
   return escrows.filter((escrow) => isOverdue(escrow, now));
 }
 
@@ -5034,11 +5080,15 @@ export function nextEscrowDeadline(
  * "FUNDEDD") cannot masquerade as "no escrows in this state".
  * Terminal states filter exactly like any other state — unlike the
  * watchdog screens, this helper has no terminal exclusion to apply.
+ * The batch is validated before the state: a non-array batch or a
+ * non-`Escrow` entry throws a named `invalid escrowsByState: ...`
+ * error instead of a bare `TypeError`.
  */
 export function escrowsByState(
   escrows: readonly Escrow[],
   state: EscrowState,
 ): Escrow[] {
+  assertEscrowBatch("escrowsByState", escrows);
   if (!ESCROW_STATES.has(state)) {
     throw new Error(`invalid escrowsByState: unknown state "${String(state)}"`);
   }
@@ -5069,12 +5119,15 @@ export function escrowsByState(
  * attributed to anyone. An empty or non-string actor fails fast
  * instead of silently returning an empty list, so a typo or a
  * missing variable cannot masquerade as "this actor touched
- * nothing".
+ * nothing". The batch is validated before the actor: a non-array
+ * batch or a non-`Escrow` entry throws a named
+ * `invalid escrowsByActor: ...` error instead of a bare `TypeError`.
  */
 export function escrowsByActor(
   escrows: readonly Escrow[],
   actor: string,
 ): Escrow[] {
+  assertEscrowBatch("escrowsByActor", escrows);
   if (typeof actor !== "string" || actor.length === 0) {
     throw new Error(
       `invalid escrowsByActor: actor must be a non-empty string, got ${JSON.stringify(actor)}`,
@@ -5112,12 +5165,15 @@ export function escrowsByActor(
  * (anything outside the EscrowEvent set, including a state name
  * such as "DISPUTED") fails fast instead of silently returning an
  * empty list, so a typo ("DISPUT") cannot masquerade as \"no escrow
- * ever saw this event\".
+ * ever saw this event\". The batch is validated before the event: a
+ * non-array batch or a non-`Escrow` entry throws a named
+ * `invalid escrowsByEvent: ...` error instead of a bare `TypeError`.
  */
 export function escrowsByEvent(
   escrows: readonly Escrow[],
   event: EscrowEvent,
 ): Escrow[] {
+  assertEscrowBatch("escrowsByEvent", escrows);
   if (!ESCROW_EVENTS.has(event)) {
     throw new Error(
       `invalid escrowsByEvent: unknown event "${String(event)}"`,
@@ -5162,12 +5218,16 @@ export function escrowsByEvent(
  * silently returning an empty list, so a typo or a missing variable
  * cannot masquerade as "no escrow settled under this transfer".
  * No length cap is imposed here: this only reads a ref, never
- * persists one (see {@link MAX_SETTLEMENT_REF_LENGTH}).
+ * persists one (see {@link MAX_SETTLEMENT_REF_LENGTH}). The batch is
+ * validated before the ref: a non-array batch or a non-`Escrow`
+ * entry throws a named `invalid escrowsBySettlementRef: ...` error
+ * instead of a bare `TypeError`.
  */
 export function escrowsBySettlementRef(
   escrows: readonly Escrow[],
   settlementRef: string,
 ): Escrow[] {
+  assertEscrowBatch("escrowsBySettlementRef", escrows);
   if (typeof settlementRef !== "string" || settlementRef.length === 0) {
     throw new Error(
       `invalid escrowsBySettlementRef: settlementRef must be a non-empty string, got ${JSON.stringify(settlementRef)}`,
@@ -5255,13 +5315,18 @@ export interface EscrowsByFiltersOptions {
  * non-object `filters` argument throws instead of surfacing a
  * `TypeError` from the first property read. Mirrors the dataquest
  * lifecycle's `tasksByFilters`, whose `payoutRef` axis is this
- * escrow's `settlementRef` counterpart.
+ * escrow's `settlementRef` counterpart. The batch is validated
+ * before the filters: a non-array batch or a non-`Escrow` entry
+ * throws a named `invalid escrowsByFilters: ...` error instead of a
+ * bare `TypeError`, so a `null` entry can no longer slip through an
+ * empty filter object and come back as if it were an escrow.
  */
 export function escrowsByFilters(
   escrows: readonly Escrow[],
   filters: EscrowsByFiltersOptions,
   now: Date = new Date(),
 ): Escrow[] {
+  assertEscrowBatch("escrowsByFilters", escrows);
   if (
     typeof filters !== "object" ||
     filters === null ||
@@ -5383,12 +5448,18 @@ export function escrowsByFilters(
  *
  *   const atRisk = escrowsApproachingDeadline(allEscrows, 24 * 3600_000, now);
  *   // nudge the parties, before the deadline passes
+ *
+ * The batch is validated before `withinMs`: a non-array batch or a
+ * non-`Escrow` entry throws a named
+ * `invalid escrowsApproachingDeadline: ...` error instead of a bare
+ * `TypeError`.
  */
 export function escrowsApproachingDeadline(
   escrows: readonly Escrow[],
   withinMs: number,
   now: Date = new Date()
 ): Escrow[] {
+  assertEscrowBatch("escrowsApproachingDeadline", escrows);
   if (
     typeof withinMs !== "number" ||
     !Number.isFinite(withinMs) ||
@@ -5478,13 +5549,17 @@ function assertMaxAgeByState(
  *
  * The `now` default is the real clock, so unit tests pin it to a fixed
  * date. Configuration is validated fail-fast before any escrow is
- * read: an unknown state name or a negative/NaN budget throws.
+ * read: an unknown state name or a negative/NaN budget throws. The
+ * batch itself is validated before the configuration: a non-array
+ * batch or a non-`Escrow` entry throws a named
+ * `invalid staleEscrows: ...` error instead of a bare `TypeError`.
  */
 export function staleEscrows(
   escrows: readonly Escrow[],
   maxAgeByState: Partial<Record<EscrowState, number>>,
   now: Date = new Date()
 ): Escrow[] {
+  assertEscrowBatch("staleEscrows", escrows);
   assertMaxAgeByState(maxAgeByState);
   const nowMs = now.getTime();
   if (!Number.isFinite(nowMs)) {

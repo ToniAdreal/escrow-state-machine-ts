@@ -194,6 +194,32 @@ version changes.
 
 ### Fixed
 
+- Batch selectors reject a malformed batch (2026-11-23,
+  backlog #1340): the eight batch selectors (`expiredEscrows`,
+  `escrowsByState`, `escrowsByActor`, `escrowsByEvent`,
+  `escrowsBySettlementRef`, `escrowsByFilters`,
+  `escrowsApproachingDeadline`, `staleEscrows`) only validated
+  their filter parameters, never the batch itself, so a `null`
+  batch surfaced as a bare `TypeError` (`reading 'filter'`) and
+  `escrowsByFilters([null], {})` silently returned `[null]` when
+  no filter axis was set. A shared `assertEscrowBatch` guard now
+  runs first in every selector, before any filter-parameter
+  validation: a non-array batch throws
+  `invalid <fn>: escrows must be an array`, a non-`Escrow` entry
+  throws `invalid <fn>: escrows[N] must be an Escrow` naming its
+  index. Entries are checked with `instanceof Escrow`, not a
+  shape scan: the selectors read `state`, `history`,
+  `isTerminal`, and `getDeadline()`, which only a real `Escrow`
+  guarantees, and no caller in this repo passes a plain-object
+  stand-in to a selector, so a hand-built object with the right
+  fields is rejected on purpose. The guard also covers the
+  executors that screen through these selectors
+  (`expireOverdueEscrows` via `expiredEscrows`,
+  `actOnStaleEscrows` via `staleEscrows`). New
+  `test/batchSelectorShape.test.ts` (45 tests, incl. a mutation
+  check: with the guard removed, 36 of the 45 go red), test
+  counts 2574 -> 2619.
+
 - Quorum validates the injected clock's readings (2026-11-23,
   backlog #1336): `assertValidConfig` only checked `config.now`
   is a function and never inspected what it returned, so a `NaN`
