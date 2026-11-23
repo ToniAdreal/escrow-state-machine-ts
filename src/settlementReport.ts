@@ -2889,8 +2889,22 @@ export function parseSettlementReportJson(text: string): SettlementReport {
   return parsed;
 }
 
-/** Render the report as plain human-readable text. */
+/**
+ * Render the report as plain human-readable text.
+ *
+ * Before rendering, the report is shape-checked with the same
+ * {@link assertReportShape} the JSON renderer applies (see below):
+ * a non-object report, an empty `escrowId`, an illegal `outcome`, an
+ * empty `parties` array, an unknown party role, or a non-finite money
+ * figure throws `cannot render settlement report: …` instead of
+ * failing on the first field access with a bare `TypeError` — the
+ * same named-error contract the CSV and JSON renderers already
+ * keep, so all three exits reject a malformed report the same way.
+ *
+ * Pure: the report is only read, never mutated.
+ */
 export function renderReport(report: SettlementReport): string {
+  assertReportShape(report, "cannot render settlement report");
   const d = report.deposit;
   const lines: string[] = [
     `Escrow settlement report — ${report.escrowId}`,

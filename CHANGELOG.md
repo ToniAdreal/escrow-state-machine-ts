@@ -194,6 +194,18 @@ version changes.
 
 ### Fixed
 
+- `renderReport` rejects a non-object report (2026-11-23,
+  backlog #1346): the text renderer read `report.deposit` with no
+  shape guard, so `renderReport(null)` surfaced a bare `TypeError`
+  while its CSV and JSON siblings already throw named errors. It now
+  applies the same `assertReportShape` first, with prefix `cannot
+  render settlement report: …`, so all three renderers reject a
+  malformed report the same way; rendering logic and output bytes
+  are unchanged. New `test/renderReportShape.test.ts` (9 tests:
+  null/string/number/empty-object/non-finite-deposit named errors,
+  byte-identical released/refunded/expired text, unchanged CSV/JSON
+  outputs), test counts 2626 -> 2635.
+
 - `reconcileSettlements` rejects a non-array batch (2026-11-23,
   backlog #1343): the function iterated `reports` and `ledger` with
   no array guard, so `reconcileSettlements(null, [])` and
