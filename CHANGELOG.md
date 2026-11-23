@@ -194,6 +194,19 @@ version changes.
 
 ### Fixed
 
+- `buildSettlementReport` rejects non-object inputs and deposit (2026-11-23,
+  backlog #1347): the builder destructured `inputs` with no shape guard,
+  so `buildSettlementReport(null)` surfaced a bare `TypeError` from the
+  destructure and a missing/non-object `deposit` surfaced `reading
+  'deposit'` before any named check could run. It now rejects a
+  non-object `inputs` (and a missing/non-object `deposit`) first with
+  `cannot build settlement report: …`, reusing the file's `isRecord`
+  guard; escrowId/currency/chain checks and money math are unchanged.
+  New `test/buildSettlementReportShape.test.ts` (9 tests:
+  null/string/number/array inputs and missing/null/string deposit named
+  errors, released/refunded/expired reports byte-identical in figures),
+  test counts 2635 -> 2644.
+
 - `renderReport` rejects a non-object report (2026-11-23,
   backlog #1346): the text renderer read `report.deposit` with no
   shape guard, so `renderReport(null)` surfaced a bare `TypeError`

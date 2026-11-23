@@ -460,12 +460,17 @@ function ledger(
  * a keyed escrow previously could not be reported at all, because the
  * report path had no way to pass the key through.
  *
- * The report identity is checked first of all: an empty or overlong
- * `escrowId` (over `MAX_ESCROW_ID_LENGTH`, 256) throws `cannot build
- * settlement report: …` before the currency check, the chain check, or
- * any money math runs — a report the library builds must always pass
- * the library's own parsers and `reconcileSettlements`, so the build
- * path enforces the same identity cap those paths enforce.
+ * The report identity is checked first among the report's own fields:
+ * an empty or overlong `escrowId` (over `MAX_ESCROW_ID_LENGTH`, 256)
+ * throws `cannot build settlement report: …` before the currency check,
+ * the chain check, or any money math runs — a report the library builds
+ * must always pass the library's own parsers and `reconcileSettlements`,
+ * so the build path enforces the same identity cap those paths enforce.
+ * Before even that, the `inputs` object itself is shape-checked: a null,
+ * string, number, or array `inputs` — or a missing or non-object
+ * `deposit` — throws `cannot build settlement report: …` instead of a
+ * bare `TypeError` from destructuring, so a caller bug surfaces as a
+ * named configuration error.
  *
  * The one non-terminal report is the partial release: a FUNDED escrow
  * plus `partialRelease` inputs yields outcome `"partially-released"`,
@@ -492,7 +497,22 @@ function ledger(
 export function buildSettlementReport(
   inputs: SettlementReportInputs,
 ): SettlementReport {
+  // Shape first, before destructuring: a non-object `inputs` is the
+  // caller's bug and must fail as a named configuration error, not as a
+  // bare TypeError from the destructure below.
+  if (!isRecord(inputs)) {
+    throw new Error(
+      `cannot build settlement report: inputs must be an object, got ${JSON.stringify(inputs)}`,
+    );
+  }
   const { escrowId, history, finalState, deposit, auditKey, currency } = inputs;
+  // Same for the deposit: `{}` or a missing/non-object `deposit` must
+  // fail named here, not as `reading 'deposit'` on the next line.
+  if (!isRecord(deposit)) {
+    throw new Error(
+      `cannot build settlement report: deposit must be an object, got ${JSON.stringify(deposit)}`,
+    );
+  }
   const depositAmount = deposit.deposit;
 
   // Report identity first: an empty or overlong escrowId is the caller's

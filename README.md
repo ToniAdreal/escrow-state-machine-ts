@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2635 tests, all local
+npm test   # 2644 tests, all local
 ```
 
 ## Quickstart
@@ -1927,8 +1927,11 @@ instead of only at reconciliation. The build path enforces it too:
 `buildSettlementReport` throws `cannot build settlement report: …` on an
 empty or overlong `escrowId` before the currency check, the chain check,
 or any money math runs, so a report the library builds can always be
-parsed and reconciled by the library itself; in the batch wrapper that
-failure is recorded per escrow, never aborting the batch. The history
+parsed and reconciled by the library itself; before even that, a
+non-object `inputs` (or a missing/non-object `deposit`) throws the same
+named family instead of a bare `TypeError` from destructuring. In the
+batch wrapper a build failure is recorded per escrow, never aborting
+the batch. The history
 helpers `depositAmountFromHistory` / `releasedAmountFromHistory` validate
 an explicitly passed label the same way; omit the label and the default
 `"escrow"` is only an error-message label, not a report identity. When both sides carry a currency
@@ -2179,7 +2182,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2635 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2644 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
