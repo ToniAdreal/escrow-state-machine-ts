@@ -194,6 +194,19 @@ version changes.
 
 ### Fixed
 
+- `settle*` settlement helpers reject non-object inputs (2026-11-23,
+  backlog #1348): `settleRelease`, `settleRefund`, `settlePartialRelease`,
+  and `settlePartialReleases` destructured `inputs` on their first line,
+  so a null/non-object input surfaced a bare `TypeError` from the
+  destructure while the field checks in the same file are all named
+  errors. Each function now applies a shared `assertSettlementInputs`
+  guard first (`<fn>: invalid settlement inputs: inputs must be an
+  object`); field validation and settlement math are unchanged. New
+  `test/settleInputsShape.test.ts` (26 tests: null/string/number/array/
+  undefined inputs per function, golden vectors and multi-tranche
+  totals unchanged, empty-object field errors still named), test counts
+  2644 -> 2670.
+
 - `buildSettlementReport` rejects non-object inputs and deposit (2026-11-23,
   backlog #1347): the builder destructured `inputs` with no shape guard,
   so `buildSettlementReport(null)` surfaced a bare `TypeError` from the

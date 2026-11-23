@@ -6,6 +6,24 @@
  * referral credits, paid out on escrow release.
  */
 
+/**
+ * Shape guard shared by the four pure settlement helpers: a non-object
+ * `inputs` is the caller's bug and must fail as a named error, not as a
+ * bare TypeError from the destructure on the first line of each function.
+ * Arrays are rejected too: destructuring an array would only yield
+ * `undefined` fields and fail later with a misleading field error.
+ */
+function assertSettlementInputs(
+  fn: string,
+  inputs: unknown,
+): asserts inputs is Record<string, unknown> {
+  if (typeof inputs !== "object" || inputs === null || Array.isArray(inputs)) {
+    throw new Error(
+      `${fn}: invalid settlement inputs: inputs must be an object`,
+    );
+  }
+}
+
 export interface SettlementInputs {
   gross: number;
   /** Platform fee in basis points, e.g. 500 = 5% */
@@ -50,6 +68,7 @@ export interface PartialSettlement {
 export function settlePartialRelease(
   inputs: PartialSettlementInputs,
 ): PartialSettlement {
+  assertSettlementInputs("settlePartialRelease", inputs);
   const { gross, released, proFeeBps, referralCredits = 0 } = inputs;
   if (!Number.isFinite(gross) || gross < 0)
     throw new Error("gross must be a finite non-negative number");
@@ -129,6 +148,7 @@ export interface PartialReleases {
 export function settlePartialReleases(
   inputs: PartialReleasesInputs,
 ): PartialReleases {
+  assertSettlementInputs("settlePartialReleases", inputs);
   const { gross, releases, proFeeBps, referralCredits = 0 } = inputs;
   if (!Number.isFinite(gross) || gross < 0)
     throw new Error("gross must be a finite non-negative number");
@@ -217,6 +237,7 @@ export interface RefundSettlement {
  * change escrow state — state advancement still goes through `dispatch`.
  */
 export function settleRefund(inputs: RefundSettlementInputs): RefundSettlement {
+  assertSettlementInputs("settleRefund", inputs);
   const { deposit } = inputs;
   if (!Number.isFinite(deposit) || deposit < 0)
     throw new Error("deposit must be a finite non-negative number");
@@ -241,6 +262,7 @@ function round2(n: number): number {
 }
 
 export function settleRelease(inputs: SettlementInputs): Settlement {
+  assertSettlementInputs("settleRelease", inputs);
   const { gross, proFeeBps, referralCredits = 0 } = inputs;
   if (!Number.isFinite(gross) || gross < 0)
     throw new Error("gross must be a finite non-negative number");
