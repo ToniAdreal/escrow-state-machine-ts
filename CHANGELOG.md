@@ -194,6 +194,28 @@ version changes.
 
 ### Fixed
 
+- `nextEscrowDeadline` / `settlementAging` / `unreconciledSettlements`
+  reject non-array batches (2026-11-23, backlog #1360): the three
+  remaining batch entry points on the settlement/patrol read path
+  iterated their batch with no array check, so a null batch surfaced
+  a bare `TypeError` (`escrows is not iterable` / `reading
+  'filter'`), a string batch surfaced `escrow.getDeadline is not a
+  function` / `escrow.history is not iterable`, and `[null]`
+  surfaced `reading 'isTerminal'` / `reading 'state'`. All three
+  now share the #1340 `assertEscrowBatch` guard at the top of each
+  function (`invalid <fn>: escrows must be an array, got ...` /
+  `invalid <fn>: escrows[N] must be an Escrow, got ...`), running
+  before the `now` check and any scan. Premise correction: the item
+  described `unreconciledSettlements` as reading reports/ledger, but
+  it reads escrow state and audit history — the reports/ledger guard
+  belongs to `reconcileSettlements` (#1343) — so all three take the
+  `instanceof Escrow` guard, and a plain-object stand-in is rejected
+  on purpose. New `test/settlementBatchReadShape.test.ts` (20 tests:
+  null/string/number/undefined batches per function, `[null]` and
+  mixed-batch index naming, stand-in rejection, guard-before-`now`
+  ordering, legal batches unchanged, mutation check with all three
+  guards removed fails 14 of 20), test counts 2722 -> 2742.
+
 - `depositAmountFromHistory` / `releasedAmountFromHistory` reject
   non-array histories (2026-11-23, backlog #1359): both settlement
   amount readers started by reading their `history` argument with no

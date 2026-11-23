@@ -5027,12 +5027,17 @@ export interface NextEscrowDeadline {
  * something that should no longer expire. An invalid `now` throws
  * fail-fast, matching `staleEscrows()`. Returns undefined when no
  * escrow qualifies. The `now` default is the real clock, so unit
- * tests pin it to a fixed date.
+ * tests pin it to a fixed date. The batch is validated before
+ * anything is read — including before the `now` check: a non-array
+ * batch or a non-`Escrow` entry throws a named
+ * `invalid nextEscrowDeadline: ...` error instead of a bare
+ * `TypeError`.
  */
 export function nextEscrowDeadline(
   escrows: readonly Escrow[],
   now: Date = new Date()
 ): NextEscrowDeadline | undefined {
+  assertEscrowBatch("nextEscrowDeadline", escrows);
   const nowMs = now.getTime();
   if (!Number.isFinite(nowMs)) {
     throw new Error("invalid now: expected a valid Date");
@@ -5631,6 +5636,10 @@ export interface SettlementAgingResult {
  * Pure: reads the escrows, never mutates or dispatches. An invalid
  * `now` fails fast instead of returning an empty result. The `now`
  * default is the real clock, so unit tests pin it to a fixed date.
+ * The batch is validated before anything is read — including before
+ * the `now` check: a non-array batch or a non-`Escrow` entry throws
+ * a named `invalid settlementAging: ...` error instead of a bare
+ * `TypeError`.
  *
  *   const aging = settlementAging(allEscrows, now);
  *   // chase over30Days first, then days7To30, then under7Days
@@ -5639,6 +5648,7 @@ export function settlementAging(
   escrows: readonly Escrow[],
   now: Date = new Date(),
 ): SettlementAgingResult {
+  assertEscrowBatch("settlementAging", escrows);
   const nowMs = now.getTime();
   if (!Number.isFinite(nowMs)) {
     throw new Error("invalid now: expected a valid Date");
@@ -5710,11 +5720,18 @@ export function settlementAging(
  * input returns an empty array. The returned array holds the same
  * escrow objects, in input order. Mirrors the dataquest lifecycle's
  * `unreconciledPayouts`, whose `PAYOUT_COMPLETE` entry is this
- * escrow's `RELEASE` counterpart.
+ * escrow's `RELEASE` counterpart. The batch is validated before
+ * anything is read: a non-array batch or a non-`Escrow` entry throws
+ * a named `invalid unreconciledSettlements: ...` error instead of a
+ * bare `TypeError`. The guard is `assertEscrowBatch` (the #1340
+ * `instanceof Escrow` guard), not the reports/ledger guard of
+ * {@link reconcileSettlements} (#1343): this helper reads escrow
+ * state and audit history, never settlement reports or a ledger.
  */
 export function unreconciledSettlements(
   escrows: readonly Escrow[],
 ): Escrow[] {
+  assertEscrowBatch("unreconciledSettlements", escrows);
   return escrows.filter((escrow) => {
     if (escrow.state !== "RELEASED") return false;
     let release: EscrowHistoryEntry | undefined;
