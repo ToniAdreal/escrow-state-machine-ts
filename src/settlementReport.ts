@@ -1275,20 +1275,22 @@ export interface ReconcileSettlementsResult {
  * - A ledger row is `ledgerOnly` only when no report carries its id;
  *   pairing a row never consumes it for other reports.
  *
- * Fail-fast, before any pairing: a report that is not an object, or
- * carries an empty or non-string `escrowId` or a non-finite
- * `totalOutflow`, throws; a ledger row that is not an object, carries
- * an empty or non-string `escrowId`, or carries a non-finite or
- * negative `amount` throws; an `escrowId` longer than
- * {@link MAX_ESCROW_ID_LENGTH} characters on either side throws — the
- * library can never mint an escrow id that long (the constructor caps
- * it at 256), so an overlong id at the reconcile entry is a malformed
- * input, not a pairing to attempt, and the throw happens before either
- * lookup map is consulted, so no partial pairing survives it; an
- * illegal currency code on either side (anything but three uppercase
- * letters) throws `invalid settlement currency: …` via the same shape
- * check the report builder uses; an id appearing twice in the reports
- * throws `duplicate report escrowId` — a duplicated report would
+ * Fail-fast, before any pairing: a `reports` or `ledger` argument that
+ * is not an array throws (`invalid reconcileSettlements: reports/ledger
+ * must be an array`) instead of surfacing a bare `TypeError` from the
+ * iteration; a report that is not an object, or carries an empty or
+ * non-string `escrowId` or a non-finite `totalOutflow`, throws; a ledger
+ * row that is not an object, carries an empty or non-string `escrowId`,
+ * or carries a non-finite or negative `amount` throws; an `escrowId`
+ * longer than {@link MAX_ESCROW_ID_LENGTH} characters on either side
+ * throws — the library can never mint an escrow id that long (the
+ * constructor caps it at 256), so an overlong id at the reconcile entry
+ * is a malformed input, not a pairing to attempt, and the throw happens
+ * before either lookup map is consulted, so no partial pairing survives
+ * it; an illegal currency code on either side (anything but three
+ * uppercase letters) throws `invalid settlement currency: …` via the
+ * same shape check the report builder uses; an id appearing twice in the
+ * reports throws `duplicate report escrowId` — a duplicated report would
  * otherwise be counted once per copy in `matched` (the same settlement
  * tallied twice); and an id appearing twice in the ledger throws
  * `duplicate ledger escrowId` — a duplicated ledger row would otherwise
@@ -1302,6 +1304,16 @@ export function reconcileSettlements(
   reports: readonly SettlementReport[],
   ledger: readonly LedgerSettlement[],
 ): ReconcileSettlementsResult {
+  if (!Array.isArray(reports)) {
+    throw new Error(
+      `invalid reconcileSettlements: reports must be an array, got ${reports === null ? "null" : typeof reports}`,
+    );
+  }
+  if (!Array.isArray(ledger)) {
+    throw new Error(
+      `invalid reconcileSettlements: ledger must be an array, got ${ledger === null ? "null" : typeof ledger}`,
+    );
+  }
   const reportById = new Map<string, SettlementReport>();
   for (const report of reports) {
     if (report === null || typeof report !== "object" || Array.isArray(report)) {

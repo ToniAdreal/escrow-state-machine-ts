@@ -194,6 +194,19 @@ version changes.
 
 ### Fixed
 
+- `reconcileSettlements` rejects a non-array batch (2026-11-23,
+  backlog #1343): the function iterated `reports` and `ledger` with
+  no array guard, so `reconcileSettlements(null, [])` and
+  `reconcileSettlements([], null)` surfaced a bare `TypeError`
+  (`reports/ledger is not iterable`) while every other shape failure
+  at this entry throws a named error. Both arguments are now checked
+  first, before any pairing: a non-array `reports`/`ledger` throws
+  `invalid reconcileSettlements: reports/ledger must be an array,
+  got …`; the per-row object checks, duplicate-id checks, and
+  pairing/grouping logic are unchanged. New
+  `test/reconcileSettlementsShape.test.ts` (7 tests), test counts
+  2619 -> 2626.
+
 - Batch selectors reject a malformed batch (2026-11-23,
   backlog #1340): the eight batch selectors (`expiredEscrows`,
   `escrowsByState`, `escrowsByActor`, `escrowsByEvent`,
