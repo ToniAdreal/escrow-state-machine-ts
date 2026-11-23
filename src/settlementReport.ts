@@ -302,11 +302,21 @@ function totalFundedAmount(
  * one explicitly and it is validated like a report identity (non-empty,
  * at most `MAX_ESCROW_ID_LENGTH` characters); an invalid label throws
  * `cannot read settlement amount: …` before the history is read.
+ *
+ * Fail-fast: a history that is not an array throws
+ * `invalid depositAmountFromHistory: history must be an array` before
+ * any label validation or FUND scan (backlog #1359) — the same wording
+ * the batch entry points use for their own batch inputs (#1343/#1358).
  */
 export function depositAmountFromHistory(
   history: readonly EscrowHistoryEntry[],
   escrowId?: string,
 ): number {
+  // Fail-fast (backlog #1359): a non-array history throws a named error
+  // instead of surfacing a bare `TypeError` from `totalFundedAmount`'s
+  // `.filter` below — and it runs before the label validation, so a
+  // caller passing the wrong shape gets the shape error first.
+  assertBatchArray("depositAmountFromHistory", "history", history);
   const label = escrowId ?? "escrow";
   if (escrowId !== undefined) {
     assertSettlementEscrowId(escrowId, "cannot read settlement amount");
@@ -346,11 +356,25 @@ export function depositAmountFromHistory(
  * one explicitly and it is validated like a report identity (non-empty,
  * at most `MAX_ESCROW_ID_LENGTH` characters); an invalid label throws
  * `cannot read settlement amount: …` before the history is read.
+ *
+ * Fail-fast: a history that is not an array throws
+ * `invalid releasedAmountFromHistory: history must be an array` before
+ * any label validation or scan (backlog #1359) — the same wording the
+ * batch entry points use for their own batch inputs (#1343/#1358).
+ * Without it a string history was worse than a throw: iterating a
+ * string yields its characters, none of them a PARTIAL_RELEASE entry,
+ * so the function silently returned 0 for a caller bug.
  */
 export function releasedAmountFromHistory(
   history: readonly EscrowHistoryEntry[],
   escrowId?: string,
 ): number {
+  // Fail-fast (backlog #1359): a non-array history throws a named error
+  // instead of surfacing a bare `TypeError` from the iteration below
+  // (`history is not iterable`) — and it runs before the label
+  // validation, so a caller passing the wrong shape gets the shape
+  // error first.
+  assertBatchArray("releasedAmountFromHistory", "history", history);
   const label = escrowId ?? "escrow";
   if (escrowId !== undefined) {
     assertSettlementEscrowId(escrowId, "cannot read settlement amount");
@@ -801,10 +825,12 @@ export type SettlementReportResult =
  * this file throw a named error (`invalid <fn>: <param> must be an
  * array`) for a non-array batch instead of surfacing a bare `TypeError`
  * from the iteration — the same wording `reconcileSettlements` uses
- * for its own batch inputs (#1343). Kept as a helper (rather than an
- * inline `Array.isArray` check) because an inline check narrows the
- * caller's parameter to `any[]`, which then breaks the typed indexing
- * below (`outcomes[report.outcome]`); inside the helper the narrowing
+ * for its own batch inputs (#1343). `depositAmountFromHistory` and
+ * `releasedAmountFromHistory` share it for their `history` argument
+ * (#1359). Kept as a helper (rather than an inline `Array.isArray`
+ * check) because an inline check narrows the caller's parameter to
+ * `any[]`, which then breaks the typed indexing below
+ * (`outcomes[report.outcome]`); inside the helper the narrowing
  * stays local and the caller's type is untouched.
  */
 function assertBatchArray(

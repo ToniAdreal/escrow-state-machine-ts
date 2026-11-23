@@ -194,6 +194,25 @@ version changes.
 
 ### Fixed
 
+- `depositAmountFromHistory` / `releasedAmountFromHistory` reject
+  non-array histories (2026-11-23, backlog #1359): both settlement
+  amount readers started by reading their `history` argument with no
+  array check, so a null history surfaced a bare `TypeError`
+  (`Cannot read properties of null (reading 'filter')` /
+  `history is not iterable`), and a string history was worse for the
+  release reader — iterating a string yields its characters, none of
+  them a PARTIAL_RELEASE entry, so it silently returned 0 for a
+  caller bug. Both now share the `assertBatchArray` guard at the top
+  of each function (`invalid <fn>: history must be an array, got ...`,
+  the same wording the batch entry points use, #1343/#1358),
+  running before any label validation or scan. New
+  `test/settlementAmountFromHistoryShape.test.ts` (13 tests:
+  null/string/number/object histories per function, the string-history
+  silent-zero trap, legal FUND/top-up/tranche reads unchanged, the
+  no-FUND / no-amount named errors unchanged, guard-before-label
+  ordering, mutation check with both guards removed fails 4 of 13),
+  test counts 2709 -> 2722.
+
 - `summarizeSettlementReports` / `buildSettlementReports` reject
   non-array batches (2026-11-23, backlog #1358): both batch entry
   points started by iterating their batch argument with no array
