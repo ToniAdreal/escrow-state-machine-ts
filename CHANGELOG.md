@@ -194,6 +194,20 @@ version changes.
 
 ### Fixed
 
+- `truncateOutboxError` rejects non-string input with a named error
+  (2026-11-24, backlog #1364): the helper read `.length`/`.slice`
+  with no type guard, so `null` died as a bare `TypeError`
+  (`Cannot read properties of null (reading 'length')`) and a number
+  or object as `error.slice is not a function`. It now throws
+  `truncateOutboxError: error must be a string, got …` (null reported
+  as `null`, other values by `typeof`) before any length check;
+  truncation semantics (cap, marker, identity at or under the cap)
+  are unchanged. Eight new tests in
+  `test/truncateOutboxErrorShape.test.ts`; `recordAttempt()` already
+  guarded `attempt.error` itself
+  (`SettlementWebhookOutbox: error must be a string`), now pinned by
+  a test that also asserts nothing is recorded.
+
 - `SettlementEventDedupe` / `SettlementWebhookOutbox` constructors
   reject null/non-object opts (2026-11-23, backlog #1361): both
   constructors started with the unknown-option scan's
