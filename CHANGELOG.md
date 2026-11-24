@@ -194,6 +194,25 @@ version changes.
 
 ### Fixed
 
+- `approvalStatement` rejects a non-`signerId` input with a named error
+  (2026-11-24, backlog #1389): the exported helper minted the canonical
+  `escrow-quorum:approve:<signerId>` bytes with no check at all, so
+  `approvalStatement(null)` silently produced
+  `escrow-quorum:approve:null`, `("")` produced a statement for an
+  empty signer, and `(123)` quietly stringified a number — a typo or
+  a `null` slipping through at signing time only surfaced later as a
+  vague `quorum signature verification failed`, and an `""`/`"null"`
+  statement that got signed was indistinguishable from a real signer's
+  in the audit trail. It now throws
+  `invalid approval statement: signerId must be a non-empty string of
+  at most 256 characters, got …` (the same 256 cap and `JSON.stringify`
+  `got …` rendering `assertValidConfig` uses for signer ids), while
+  legal statements — including ids with spaces or Unicode — are
+  byte-identical and `approveSigned()` still verifies them end to end.
+  Eight new tests in `test/approvalStatementShape.test.ts`, including
+  the 256-character boundary and a mutation check (disabling the guard
+  turns five new tests red); test counts 2838 -> 2846.
+
 - `parseRetryAfter` rejects a non-string `value` with a named error
   (2026-11-24, backlog #1386): the function validated `nowMs` but called
   `value.trim()` with no type check, so `parseRetryAfter(120)` /

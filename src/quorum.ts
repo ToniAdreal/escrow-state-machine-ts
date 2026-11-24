@@ -458,8 +458,24 @@ function assertValidEvidence(evidence: string | undefined): void {
  * trailing newline). It binds the signer id only — not an escrow or
  * an outcome — so a signature is meaningful only inside the quorum
  * it was collected for (see `Quorum.approveSigned`).
+ *
+ * Shape guard (backlog #1389): `signerId` must be a non-empty string
+ * of at most {@link MAX_ACTOR_LENGTH} characters (256) — the same
+ * cap `assertValidConfig` applies to signer ids — so a `null` that
+ * slipped through, an empty id, or a number can never be minted into
+ * a statement. An empty id could never belong to a real signer, and
+ * a minted `"null"`/`""` statement that later got signed would be
+ * indistinguishable from a real signer's in the audit trail.
  */
 export function approvalStatement(signerId: string): Buffer {
+  if (
+    typeof signerId !== "string" ||
+    signerId.length === 0 ||
+    signerId.length > MAX_ACTOR_LENGTH
+  )
+    throw new Error(
+      `invalid approval statement: signerId must be a non-empty string of at most ${MAX_ACTOR_LENGTH} characters, got ${JSON.stringify(signerId)}`
+    );
   return Buffer.from(`escrow-quorum:approve:${signerId}`, "utf8");
 }
 
