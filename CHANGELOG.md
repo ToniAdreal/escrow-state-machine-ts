@@ -194,6 +194,24 @@ version changes.
 
 ### Fixed
 
+- `parseRetryAfter` rejects a non-string `value` with a named error
+  (2026-11-24, backlog #1386): the function validated `nowMs` but called
+  `value.trim()` with no type check, so `parseRetryAfter(120)` /
+  `(true)` / `({})` died as a bare `TypeError`
+  (`value.trim is not a function`), carrying no function name — and if a
+  caller treated the throw as "no hint" it silently fell back to
+  exponential backoff, masking a caller bug (a header value parsed into
+  a number upstream) as a missing hint. It now throws
+  `parseRetryAfter: value must be a string, got …` (the same `got …`
+  rendering `truncateOutboxError` uses), checked after the
+  `null`/`undefined` → `undefined` return, so the tolerated cases are
+  unchanged: an absent value and a garbage *string* ("banana") still
+  return `undefined`. Eight new tests in
+  `test/parseRetryAfterShape.test.ts`, including the guard-order check
+  (a bad clock still reports the clock first) and a mutation check
+  (disabling the guard turns the new tests red); test counts
+  2830 -> 2838; README webhook paragraph updated.
+
 - `isOverdue` rejects a non-`Escrow` escrow and an invalid `now` with a
   named error (2026-11-24, backlog #1383): the single-escrow watchdog
   entry read `escrow.getDeadline()` and `now.getTime()` with no guard,

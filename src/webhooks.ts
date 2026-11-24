@@ -3745,6 +3745,13 @@ export interface WebhookDeliveryResult {
  * `setTimeout(NaN)` — silently collapsing a server-prescribed 429 backoff
  * into an immediate retry. The check runs before any parsing, so the
  * delay-seconds path and an absent value fail closed on a broken clock too.
+ * `value` must be a string when present: `null`/`undefined` still return
+ * `undefined` (no hint), but a non-string (a number, boolean, object, or
+ * symbol handed in by a caller that parsed the header itself) throws
+ * `parseRetryAfter: value must be a string, got …` instead of dying as a
+ * bare `TypeError` from `value.trim()` — a garbage *string* ("banana")
+ * still returns `undefined` and falls back to exponential backoff, because
+ * an unparsable value is tolerated but a wrong-typed value is a caller bug.
  */
 export function parseRetryAfter(
   value: string | null | undefined,
@@ -3756,6 +3763,11 @@ export function parseRetryAfter(
     );
   }
   if (value === null || value === undefined) return undefined;
+  if (typeof value !== "string") {
+    throw new Error(
+      `parseRetryAfter: value must be a string, got ${value === null ? "null" : typeof value}`,
+    );
+  }
   const trimmed = value.trim();
   if (/^\d+(\.\d+)?$/.test(trimmed)) {
     const seconds = Number(trimmed);

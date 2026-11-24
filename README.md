@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2830 tests, all local
+npm test   # 2838 tests, all local
 ```
 
 ## Quickstart
@@ -1698,7 +1698,11 @@ receiver on restart. This is best-effort de-synchronization only: it does
 not guarantee a uniform spread of retries, and it does not coordinate
 retries across processes or restarts. A 429 `Retry-After` response header
 (delay seconds or an HTTP-date) takes precedence over the backoff; an
-absent or unparsable value falls back to it. The honored hint is clamped to
+absent or unparsable value falls back to it. A non-string value passed to
+`parseRetryAfter` directly is a caller type error and throws
+`parseRetryAfter: value must be a string, got …` instead of dying as a
+bare `TypeError`; only an absent or unparsable *string* falls back to
+backoff. The honored hint is clamped to
 `maxRetryDelayMs` (default 60,000ms): a faulty or hostile server returning
 `Retry-After: 31536000` can never stall the delivery promise beyond the cap.
 Every wait the delivery arms — backoff sleeps, the per-attempt timeout,
@@ -2199,7 +2203,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2830 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2838 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
