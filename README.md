@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2793 tests, all local
+npm test   # 2803 tests, all local
 ```
 
 ## Quickstart
@@ -1811,7 +1811,11 @@ A repeated `escrowId` among the reports throws
 before any figure is summed — the same settlement must never be counted
 twice in the day-end totals (the batch builder and `reconcileSettlements`
 already refuse duplicates the same way); error entries carry no report
-and never trigger the check.
+and never trigger the check. A null or non-object entry in the batch
+throws `invalid summarizeSettlementReports: results[N] must be an
+object, got …` naming the first offending index, also before any figure
+is summed — a mistyped entry can no longer die as a bare `TypeError` or
+be silently counted as a failed escrow.
 If any running total would leave the finite range — a hand-built or
 upstream report carrying astronomical figures, or a batch whose figures
 sum past `Number.MAX_VALUE` — the call throws
@@ -2188,7 +2192,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2793 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2803 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

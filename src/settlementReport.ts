@@ -1039,6 +1039,16 @@ export interface SettlementReportsSummary {
  * the duplicate check: two failures for the same escrow id are just
  * two counted errors.
  *
+ * A null or non-object entry in the batch throws
+ * `invalid summarizeSettlementReports: results[N] must be an object, got …`
+ * naming the first offending index (backlog #1369) — the same `isRecord`
+ * rule `verifyHistoryChain` applies to history entries (#1368). A null
+ * entry previously surfaced a bare `TypeError` from the `.report` read,
+ * while a string/number/array entry was silently counted as a failed
+ * escrow, corrupting the summary's error count. A plain-object entry
+ * without a `report` keeps the previous behavior: it is counted as an
+ * error entry, never summed.
+ *
  * If any running total would leave the finite range — a hand-built or
  * upstream report carrying astronomical figures, or a batch whose
  * figures sum past `Number.MAX_VALUE` — the function throws
@@ -1117,7 +1127,24 @@ export function summarizeSettlementReports(
   // rule. Error entries carry no report and never participate: two
   // failures for the same id are just two counted errors.
   const seenReportIds = new Set<string>();
-  for (const result of results) {
+  for (let i = 0; i < results.length; i++) {
+    const result = results[i];
+    // Fail-fast entry guard (backlog #1369): a null or non-object entry
+    // throws a named error naming its index instead of surfacing a bare
+    // `TypeError` from the `.report` read below (null) — or, worse,
+    // being silently counted as an error entry (a string/number/array
+    // entry has no `.report`, so it read as a failed escrow and
+    // corrupted the summary's error count). An array entry is not an
+    // object here, the same `isRecord` rule `verifyHistoryChain` uses
+    // for history entries (#1368). The check runs in the pre-pass, so a
+    // malformed batch fails whole before any figure is summed.
+    if (!isRecord(result)) {
+      const shown =
+        result === null ? "null" : Array.isArray(result) ? "array" : typeof result;
+      throw new Error(
+        `invalid summarizeSettlementReports: results[${i}] must be an object, got ${shown}`,
+      );
+    }
     if (!result.report) continue;
     // Fail-closed shape guard (backlog #1278): the same check the
     // JSON/CSV renderers apply, run here before any figure is summed,

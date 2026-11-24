@@ -194,6 +194,22 @@ version changes.
 
 ### Fixed
 
+- `summarizeSettlementReports` rejects null/non-object batch entries with a named error
+  (2026-11-24, backlog #1369): the day-end summary read `result.report`
+  with no entry check, so `[null]` died as a bare `TypeError`
+  (`Cannot read properties of null (reading 'report')`) — and worse, a
+  string/number/array entry (`"x"`, `42`, `[]`) was silently counted as
+  a failed escrow, corrupting the summary's error count. It now throws
+  `invalid summarizeSettlementReports: results[N] must be an object, got …`
+  naming the first offending index (null / string / number / array /
+  undefined spelled out), the same `isRecord` rule `verifyHistoryChain`
+  uses for history entries (#1368), in the pre-pass so a malformed
+  batch fails whole before any figure is summed. A plain-object entry
+  without a `report` keeps the previous behavior (counted as an error,
+  never summed). Ten new tests in
+  `test/summarizeSettlementReportsShape.test.ts`; test counts 2793 ->
+  2803.
+
 - `verifyHistoryChain` rejects non-array histories and non-object entries with a named error
   (2026-11-24, backlog #1368): the audit-chain verifier read
   `history.length` / `history.map(...)` with no shape check, so `null`
