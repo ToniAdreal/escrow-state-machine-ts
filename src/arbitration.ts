@@ -71,6 +71,19 @@ const OUTCOME_EVENTS: Record<ArbitrationOutcome, EscrowEvent> = {
  *
  * - Outcome must be `"release"` or `"refund"`; anything else throws a
  *   caller error (nothing is dispatched).
+ * - `escrow` must be an `Escrow` and `quorum` a `Quorum` (an object
+ *   with `hasQuorum()` / `approvalCount()` / `approvals()`); anything
+ *   else throws `invalid dispatchArbitration: …` — a null or foreign
+ *   object at the arbitration entry used to die as a bare `TypeError`
+ *   (`reading 'dispatch'` / `reading 'hasQuorum'`), never as a caller
+ *   error. The shape guard runs after the outcome/note validation
+ *   above and before the quorum gate below, so an invalid outcome
+ *   still reports its own error first and a below-threshold quorum
+ *   still reports its own error for a well-formed escrow/quorum pair.
+ *   The guard reads only the three `Quorum` methods this function
+ *   itself calls, so a duck-typed quorum with exactly that surface
+ *   still passes; anything missing a method fails here instead of
+ *   crashing mid-message.
  * - If `quorum.hasQuorum()` is false, throws
  *   `arbitration requires quorum: <approvals>/<threshold> approvals` and
  *   the escrow's state and history are left unchanged — the failed gating
@@ -126,6 +139,22 @@ export function dispatchArbitration(
   if (note !== undefined && typeof note !== "string") {
     throw new Error(
       `invalid arbitration note: must be a string, got ${typeof note}`
+    );
+  }
+  if (!(escrow instanceof Escrow)) {
+    throw new Error(
+      `invalid dispatchArbitration: escrow must be an Escrow, got ${escrow === null ? "null" : typeof escrow}`
+    );
+  }
+  if (
+    quorum === null ||
+    typeof quorum !== "object" ||
+    typeof quorum.hasQuorum !== "function" ||
+    typeof quorum.approvalCount !== "function" ||
+    typeof quorum.approvals !== "function"
+  ) {
+    throw new Error(
+      `invalid dispatchArbitration: quorum must be a Quorum, got ${quorum === null ? "null" : typeof quorum}`
     );
   }
   if (!quorum.hasQuorum()) {

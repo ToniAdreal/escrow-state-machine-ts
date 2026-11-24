@@ -194,6 +194,25 @@ version changes.
 
 ### Fixed
 
+- `dispatchArbitration` rejects null/foreign escrow and quorum with a named
+  error (2026-11-24, backlog #1370): the arbitration entry read
+  `quorum.hasQuorum()` and `escrow.dispatch(...)` with no shape check, so
+  `dispatchArbitration(null, quorum, "release")` died as a bare `TypeError`
+  (`Cannot read properties of null (reading 'dispatch')`) and a null quorum
+  as (`reading 'hasQuorum'`). It now throws
+  `invalid dispatchArbitration: escrow must be an Escrow, got …` (an
+  `instanceof Escrow` check, the same rule the batch selectors use, #1340)
+  or `invalid dispatchArbitration: quorum must be a Quorum, got …` (an
+  object carrying the three `Quorum` methods this function itself calls —
+  `hasQuorum()` / `approvalCount()` / `approvals()` — so a half-shaped
+  quorum fails here instead of crashing inside the below-threshold error
+  branch), after the outcome/note validation and before the quorum gate,
+  leaving the escrow untouched. Twelve new tests in
+  `test/dispatchArbitrationShape.test.ts`, including guard ordering (an
+  invalid outcome still reports itself first; a null escrow beats a
+  below-threshold quorum) and the legal release/refund path unchanged;
+  test counts 2803 -> 2815; README arbitration paragraph updated.
+
 - `summarizeSettlementReports` rejects null/non-object batch entries with a named error
   (2026-11-24, backlog #1369): the day-end summary read `result.report`
   with no entry check, so `[null]` died as a bare `TypeError`

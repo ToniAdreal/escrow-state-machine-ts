@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2803 tests, all local
+npm test   # 2815 tests, all local
 ```
 
 ## Quickstart
@@ -1041,7 +1041,10 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   `hasQuorum()` is true and auto-records `quorum <approvals>/<threshold> [signer, …]`
   in the audit note — the counted signers, in approval-time order,
   deduplicated, with expired approvals excluded — so the history alone
-  proves *who* approved, not just how many; an optional final argument forwards retry-safety
+  proves *who* approved, not just how many; a null or foreign escrow/quorum
+  is refused first with a named `invalid dispatchArbitration: …` error
+  (after the outcome check, before the quorum gate) instead of dying as a
+  bare `TypeError`, and the escrow is left untouched. An optional final argument forwards retry-safety
   metadata to the arbitration entry — an injectable audit timestamp /
   actor (the same `at` / `actor` the plain dispatch accepts) plus an
   `idempotencyKey` (a repeated, e.g. timed-out, arbitration call with the
@@ -2192,7 +2195,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2803 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2815 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
