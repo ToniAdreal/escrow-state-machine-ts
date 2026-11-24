@@ -194,6 +194,20 @@ version changes.
 
 ### Fixed
 
+- `allowedEvents` rejects null/unknown states with a named error
+  (2026-11-24, backlog #1366): the UI-gating helper read
+  `Object.keys(TRANSITIONS[state])` with no state guard, so `null`
+  died as a bare `TypeError` (`Cannot convert undefined or null to
+  object`) and a mistyped state (`"x"`, `42`, `"funded"`) the same.
+  It now throws `invalid allowedEvents: unknown state …` before the
+  lookup, with the offending value spelled out (strings quoted);
+  the guard uses `Object.hasOwn`, so prototype-chain names
+  (`"toString"`, `"constructor"`) are rejected as unknown states
+  instead of being read off `Object.prototype`. All eight states
+  keep their previous event lists (terminal states return `[]`).
+  Nine new tests in `test/allowedEventsShape.test.ts`; the
+  dataquest mirror is backlog #1367.
+
 - `transition` rejects null/unknown states with a named error
   (2026-11-24, backlog #1365): the pure transition function read
   `TRANSITIONS[state][event]` with no state guard, so `null` died as

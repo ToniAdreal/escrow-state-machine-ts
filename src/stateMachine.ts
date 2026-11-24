@@ -103,8 +103,24 @@ export function transition(state: EscrowState, event: EscrowEvent): EscrowState 
   return next;
 }
 
-/** Events allowed from a state (for UI gating). */
+/**
+ * Events allowed from a state (for UI gating). An unknown state (anything
+ * outside the transition table) fails fast with a named error instead of
+ * escaping as a bare `TypeError` from `Object.keys(TRANSITIONS[state])` —
+ * same guard shape as {@link transition} (backlog #1365): `typeof state`
+ * plus `Object.hasOwn`, so prototype-chain names such as "toString" are
+ * rejected as unknown states rather than read off `Object.prototype`.
+ */
 export function allowedEvents(state: EscrowState): EscrowEvent[] {
+  if (typeof state !== "string" || !Object.hasOwn(TRANSITIONS, state)) {
+    const got =
+      state === null
+        ? "null"
+        : typeof state === "string"
+          ? `"${state}"`
+          : String(state);
+    throw new Error(`invalid allowedEvents: unknown state ${got}`);
+  }
   return Object.keys(TRANSITIONS[state]) as EscrowEvent[];
 }
 
