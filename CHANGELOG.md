@@ -194,6 +194,24 @@ version changes.
 
 ### Fixed
 
+- `isOverdue` rejects a non-`Escrow` escrow and an invalid `now` with a
+  named error (2026-11-24, backlog #1383): the single-escrow watchdog
+  entry read `escrow.getDeadline()` and `now.getTime()` with no guard,
+  so `isOverdue(null)` died as a bare `TypeError`
+  (`Cannot read properties of null (reading 'getDeadline')`), a plain
+  object with `getDeadline()` was silently treated as an escrow, and an
+  invalid `now` silently returned false (`NaN >= deadline` is always
+  false) — telling a watchdog an overdue escrow was not overdue. It now
+  throws `invalid isOverdue: escrow must be an Escrow, got …` (an
+  `instanceof Escrow` check, the same rule the batch selectors use,
+  #1340, checked before the clock so a malformed escrow is never
+  masked by a bad `now`) or `invalid now: expected a valid Date` (the
+  same wording the other watchdog helpers use). Fifteen new tests in
+  `test/isOverdueShape.test.ts`, including guard ordering, the plain
+  stand-in rejection, the boundary (`now == deadline` counts as
+  overdue), and a `fromJSON`-restored escrow still working; test
+  counts 2815 -> 2830; README Deadlines paragraph updated.
+
 - `dispatchArbitration` rejects null/foreign escrow and quorum with a named
   error (2026-11-24, backlog #1370): the arbitration entry read
   `quorum.hasQuorum()` and `escrow.dispatch(...)` with no shape check, so

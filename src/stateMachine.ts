@@ -4752,8 +4752,28 @@ function assertEscrowBatch(
  * a RELEASED/REFUNDED/EXPIRED escrow is no longer "overdue" even if its
  * deadline passed. Advisory only: it never transitions the escrow; a
  * watchdog dispatches EXPIRE explicitly.
+ *
+ * Fail-fast shape guards, before anything is read: a non-`Escrow`
+ * argument throws `invalid isOverdue: escrow must be an Escrow, got …`
+ * (an `instanceof Escrow` check, the same rule the batch selectors use,
+ * #1340 — a plain object with `getDeadline()` is not an escrow), and
+ * an invalid `now` (not a `Date`, or an invalid `Date`) throws
+ * `invalid now: expected a valid Date`, the same wording the other
+ * watchdog helpers (`expireOverdueEscrows`, `nextEscrowDeadline`,
+ * `staleEscrows`) use. The escrow guard runs first, so a malformed
+ * escrow is never masked by a bad clock. Without the `now` guard an
+ * invalid `now` silently returned false (`NaN >= deadline` is always
+ * false), telling a watchdog an overdue escrow was not overdue.
  */
 export function isOverdue(escrow: Escrow, now: Date = new Date()): boolean {
+  if (!(escrow instanceof Escrow)) {
+    throw new Error(
+      `invalid isOverdue: escrow must be an Escrow, got ${escrow === null ? "null" : typeof escrow}`
+    );
+  }
+  if (!(now instanceof Date) || Number.isNaN(now.getTime())) {
+    throw new Error("invalid now: expected a valid Date");
+  }
   const deadline = escrow.getDeadline();
   if (deadline === undefined) return false;
   if (escrow.isTerminal) return false;

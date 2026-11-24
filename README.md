@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2815 tests, all local
+npm test   # 2830 tests, all local
 ```
 
 ## Quickstart
@@ -624,7 +624,11 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   `isOverdue(escrow)` and dispatches `EXPIRE` explicitly, so expiry stays
   auditable in the append-only history. `isOverdue()` returns false with
   no deadline and for terminal states (a settled escrow is never
-  "overdue"). `expiredEscrows(escrows)` filters a batch down to the
+  "overdue"). It fails fast on bad input instead: a non-`Escrow`
+  argument throws `invalid isOverdue: escrow must be an Escrow, got …`
+  and an invalid `now` throws `invalid now: expected a valid Date`, so a
+  watchdog never mistakes a malformed call for "not overdue".
+  `expiredEscrows(escrows)` filters a batch down to the
   overdue non-terminal ones in one line — it never mutates or dispatches.
   `expireOverdueEscrows(escrows)` goes one step further and performs the
   explicit `EXPIRE` dispatch per overdue escrow, returning per-escrow
@@ -2195,7 +2199,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2815 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2830 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
