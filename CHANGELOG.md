@@ -194,6 +194,22 @@ version changes.
 
 ### Fixed
 
+- `verifyHistoryChain` rejects non-array histories and non-object entries with a named error
+  (2026-11-24, backlog #1368): the audit-chain verifier read
+  `history.length` / `history.map(...)` with no shape check, so `null`
+  died as a bare `TypeError` (`Cannot read properties of null (reading
+  'length')`) — and worse, a hashless non-object entry (`"x"`, `42`,
+  `{}`) silently returned `true`, treated as a legacy hashless history.
+  It now throws `invalid history: history must be an array` for a
+  non-array history and `invalid history: entry[N]: entry must be an
+  object` for a non-object entry (an array entry included), naming the
+  first offending index — the same words `parseEscrowHistory` uses,
+  mirroring the dataquest fix (#1339). A well-shaped history keeps its
+  previous verdict: intact -> `true`, tampered/mixed -> `false`, fully
+  hashless legacy and empty -> `true`; the keyed path is untouched.
+  Eleven new tests in `test/verifyHistoryChainShape.test.ts`; test
+  counts 2782 -> 2793.
+
 - `allowedEvents` rejects null/unknown states with a named error
   (2026-11-24, backlog #1366): the UI-gating helper read
   `Object.keys(TRANSITIONS[state])` with no state guard, so `null`

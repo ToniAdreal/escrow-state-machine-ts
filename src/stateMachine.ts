@@ -2387,18 +2387,38 @@ function findFirstChainBreak(
  * online verifier leaks no per-byte timing signal; unkeyed chains keep
  * plain `===` (tamper evidence, not a MAC).
  *
- * Note: this checks integrity only, not structure. A re-sequenced or
- * structurally invalid history still needs parseEscrowSnapshot
- * (via {@link Escrow.fromJSON}) for the seq/edge/timestamp rules.
- * It answers only whether the chain holds; when the answer is `false`,
- * {@link parseEscrowHistory} names the first entry where the chain
- * breaks (`invalid snapshot: history[N]: … at entry seq <n>`).
+ * Note: beyond the array/object shape below, this checks integrity
+ * only, not structure. A re-sequenced or structurally invalid history
+ * still needs parseEscrowSnapshot (via {@link Escrow.fromJSON}) for the
+ * seq/edge/timestamp rules. It answers only whether the chain holds;
+ * when the answer is `false`, {@link parseEscrowHistory} names the
+ * first entry where the chain breaks (`invalid snapshot: history[N]: …
+ * at entry seq <n>`).
+ *
+ * Shape failures are caller bugs and throw, in the same words as
+ * {@link parseEscrowHistory}: a non-array history throws
+ * `invalid history: history must be an array`, and a non-object entry
+ * throws `invalid history: entry[N]: entry must be an object` naming
+ * the first offending index (an array entry is not an object here).
+ * The checks run after the `key` configuration error, so a bad key is
+ * the error the caller sees even when the history is also malformed.
+ * A history that is well-shaped but whose chain is broken still
+ * returns `false`, never throws: throwing is reserved for input the
+ * function cannot even walk, not for a verdict.
  */
 export function verifyHistoryChain(
   history: readonly EscrowHistoryEntry[],
   key?: AuditKey
 ): boolean {
   if (key !== undefined) assertAuditKey(key);
+  if (!Array.isArray(history)) {
+    throw new Error("invalid history: history must be an array");
+  }
+  for (let i = 0; i < history.length; i++) {
+    if (!isRecord(history[i])) {
+      throw new Error(`invalid history: entry[${i}]: entry must be an object`);
+    }
+  }
   return findFirstChainBreak(history, key) === null;
 }
 

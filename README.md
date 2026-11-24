@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2782 tests, all local
+npm test   # 2793 tests, all local
 ```
 
 ## Quickstart
@@ -329,7 +329,13 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   verifies the chain before producing any accounting (legacy hashless
   snapshots are still accepted and chained on rehydration; mixed
   chained/hashless snapshots are rejected, naming their first
-  off-pattern entry the same way). By default the chain is unkeyed tamper *evidence*, not a
+  off-pattern entry the same way). A malformed history is not a
+  verdict either way: `verifyHistoryChain` throws
+  `invalid history: history must be an array` for a non-array history
+  and `invalid history: entry[N]: entry must be an object` for a
+  non-object entry (an array entry included), the same words
+  `parseEscrowHistory` uses — only a well-shaped history gets a
+  true/false verdict. By default the chain is unkeyed tamper *evidence*, not a
   MAC — see [SECURITY.md](SECURITY.md) for the honest limits. An optional
   keyed mode upgrades it to a real MAC: construct the escrow with
   `new Escrow(id, { auditKey })` and every link becomes HMAC-SHA256 under
@@ -2182,7 +2188,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2782 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2793 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
