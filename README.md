@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2902 tests, all local
+npm test   # 2922 tests, all local
 ```
 
 ## Quickstart
@@ -1174,6 +1174,12 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   `settlement computation overflowed: inputs too large` when the fee or the
   net overflows (a 0 bps fee on a 1e308 gross would otherwise return
   `{ net: Infinity }`, since the negative check never fires on `Infinity`).
+  Unknown keys in fee or settlement inputs are rejected
+  (`<fn>: unknown field "<name>"`) instead of being silently ignored, so a
+  typo'd field can never quietly drop out of the math;
+  `buildSettlementReport` applies the same rule to its own inputs, the
+  `deposit` breakdown, and the nested `settlement` / `partialRelease`
+  objects.
   Invariant tests assert fund conservation within ±1 cent. This is
   not big-decimal arithmetic and has not been audited.
 
@@ -2245,7 +2251,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2902 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2922 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

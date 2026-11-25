@@ -90,9 +90,52 @@ function assertFeeInputs(
   }
 }
 
+/**
+ * Unknown-field fail-closed for the fee calculators: a typo'd field
+ * (`creatorPoll` for `creatorPool`, `tax` for a fee that does not exist)
+ * used to be silently ignored — and worse, `calculateDeposit` spreads
+ * `inputs` into its result, so the typo'd key leaked into the returned
+ * breakdown and from there into settlement reports and webhook payloads.
+ * Unknown keys now throw `${fn}: unknown field "<name>"` before any
+ * value is consumed, so a misspelled field can never silently disable
+ * part of the fee formula. Missing required fields still fail on their
+ * own value check below; only unknown keys are rejected here.
+ */
+function assertKnownFeeFields(
+  fn: string,
+  inputs: Record<string, unknown>,
+  allowed: ReadonlySet<string>,
+): void {
+  for (const key of Object.keys(inputs)) {
+    if (!allowed.has(key)) {
+      throw new Error(`${fn}: unknown field "${key}"`);
+    }
+  }
+}
+
+const FEE_INPUT_FIELDS = new Set([
+  "creatorPool",
+  "baseFee",
+  "complexityMultiplier",
+  "loyaltyDiscount",
+  "oracleFee",
+]);
+
+const FEE_INPUT_CENTS_FIELDS = new Set([
+  "creatorPoolCents",
+  "baseFeeCents",
+  "complexityMultiplier",
+  "loyaltyDiscountCents",
+  "oracleFeeCents",
+]);
+
 export function calculateDeposit(inputs: FeeInputs): FeeBreakdown {
   // Shape first, before the `Object.entries` scan: see `assertFeeInputs`.
   assertFeeInputs("calculateDeposit", inputs);
+  // Unknown fields fail closed before any value is consumed, so a
+  // typo'd key can never be silently ignored (or leaked into the
+  // returned breakdown via the spread below).
+  assertKnownFeeFields("calculateDeposit", inputs, FEE_INPUT_FIELDS);
   for (const [k, v] of Object.entries(inputs)) assertMoney(k, v as number);
   if (inputs.complexityMultiplier <= 0)
     throw new Error("complexityMultiplier must be positive");
@@ -140,6 +183,14 @@ export function calculateDeposit(inputs: FeeInputs): FeeBreakdown {
 export function calculateDepositCents(inputs: FeeInputsCents): FeeBreakdownCents {
   // Shape first, before the `Object.entries` scan: see `assertFeeInputs`.
   assertFeeInputs("calculateDepositCents", inputs);
+  // Unknown fields fail closed before any value is consumed: see
+  // `assertKnownFeeFields` — a typo'd key used to be silently ignored
+  // and leaked into the returned breakdown via the spread below.
+  assertKnownFeeFields(
+    "calculateDepositCents",
+    inputs,
+    FEE_INPUT_CENTS_FIELDS,
+  );
   for (const [k, v] of Object.entries(inputs)) {
     if (k === "complexityMultiplier") continue;
     assertMoneyCents(k, v as number);

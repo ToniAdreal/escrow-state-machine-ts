@@ -213,6 +213,28 @@ version changes.
 
 ### Fixed
 
+- Fee and settlement inputs fail closed on unknown fields (2026-11-25,
+  backlog #1403): `calculateDeposit` / `calculateDepositCents` and all
+  eight settlement helpers (`settleRelease`, `settlePartialRelease`,
+  `settlePartialReleases`, `settleRefund`, and the four `*Cents`
+  variants) now throw `<fn>: unknown field "<name>"` before any value
+  is consumed, so a typo'd key (`creatorPoll`, `proFeeBp`) can never be
+  silently ignored — and `calculateDeposit` no longer leaks the typo'd
+  key into its returned breakdown via the spread. `buildSettlementReport`
+  rejects unknown keys at the top level, inside the `deposit` breakdown
+  (carried verbatim onto the report, webhook payload, and CSV), and
+  inside the nested `settlement` / `partialRelease` parameter objects,
+  as `cannot build settlement report…: unknown field "<name>"`; the
+  batch wrapper records a bad entry per escrow instead of aborting the
+  batch. Legal inputs are byte-identical to before. Twenty new tests in
+  `test/feeSettlementUnknownFields.test.ts` (typo and case-variant
+  rejection, unknown-field-before-value-validation ordering, all eight
+  settlement helpers plus both fee calculators, nested report fields,
+  batch per-entry isolation), mutation verification (dropping the
+  `settleRelease`, `calculateDeposit`, or nested-`settlement` gate turns
+  the corresponding new tests red, restored after); test counts
+  2902 -> 2922.
+
 - Quorum signed statements bind `statementContext` (2026-11-25,
   backlog #1402): `QuorumConfig.statementContext` (optional,
   non-empty, at most 256 characters) is stamped into the canonical

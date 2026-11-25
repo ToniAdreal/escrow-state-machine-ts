@@ -508,7 +508,11 @@ function ledger(
  * string, number, or array `inputs` — or a missing or non-object
  * `deposit` — throws `cannot build settlement report: …` instead of a
  * bare `TypeError` from destructuring, so a caller bug surfaces as a
- * named configuration error.
+ * named configuration error. Unknown keys fail closed at the same point
+ * (`cannot build settlement report: unknown field "…"`), at the top
+ * level, inside the `deposit` breakdown, and inside the nested
+ * `settlement` / `partialRelease` objects — a typo'd key is never
+ * silently ignored.
  *
  * The one non-terminal report is the partial release: a FUNDED escrow
  * plus `partialRelease` inputs yields outcome `"partially-released"`,
@@ -550,12 +554,42 @@ export function buildSettlementReport(
       `cannot build settlement report: inputs must be an object, got ${JSON.stringify(inputs)}`,
     );
   }
+  // Unknown top-level fields fail closed before anything is consumed:
+  // a typo'd key used to be silently ignored here.
+  assertKnownReportFields(
+    "cannot build settlement report",
+    inputs,
+    SETTLEMENT_REPORT_FIELDS,
+  );
   const { escrowId, history, finalState, deposit, auditKey, currency } = inputs;
   // Same for the deposit: `{}` or a missing/non-object `deposit` must
   // fail named here, not as `reading 'deposit'` on the next line.
   if (!isRecord(deposit)) {
     throw new Error(
       `cannot build settlement report: deposit must be an object, got ${JSON.stringify(deposit)}`,
+    );
+  }
+  // The deposit is carried verbatim onto the report (and from there
+  // onto the webhook payload and CSV export), so an unknown key in it
+  // would propagate to receivers: fail closed on the breakdown shape.
+  assertKnownReportFields(
+    "cannot build settlement report: deposit",
+    deposit,
+    SETTLEMENT_REPORT_DEPOSIT_FIELDS,
+  );
+  // The nested settlement parameters get the same treatment: they are
+  // only consumed on the RELEASED branch, but a typo'd key must fail
+  // here, not silently fall through on a refunded escrow.
+  if (inputs.settlement !== undefined) {
+    if (!isRecord(inputs.settlement)) {
+      throw new Error(
+        `cannot build settlement report: settlement must be an object { proFeeBps, referralCredits? }, got ${JSON.stringify(inputs.settlement)}`,
+      );
+    }
+    assertKnownReportFields(
+      "cannot build settlement report: settlement",
+      inputs.settlement,
+      SETTLEMENT_PARAMS_FIELDS,
     );
   }
   const depositAmount = deposit.deposit;
@@ -622,6 +656,14 @@ export function buildSettlementReport(
         `cannot build settlement report for ${escrowId}: partialRelease must be an object { released, proFeeBps, referralCredits? }, got ${JSON.stringify(inputs.partialRelease)}`,
       );
     }
+    // Unknown nested fields fail closed, like the top-level inputs:
+    // a typo'd `release` or `proFeeBp` must not silently fall through
+    // to the settlePartialRelease call below.
+    assertKnownReportFields(
+      `cannot build settlement report for ${escrowId}: partialRelease`,
+      inputs.partialRelease,
+      PARTIAL_RELEASE_PARAMS_FIELDS,
+    );
     if (finalState !== "FUNDED") {
       throw new Error(
         `cannot build settlement report for ${escrowId}: partialRelease is only valid for a FUNDED escrow (state is ${finalState})`,
@@ -1753,6 +1795,62 @@ function sameMoney(a: number, b: number): boolean {
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/**
+ * Unknown-field fail-closed for `buildSettlementReport` (backlog #1403):
+ * the fee and settlement inputs it takes used to ignore keys they did
+ * not know — a typo'd `settlemant` or `proFeeBp` vanished silently, and
+ * the report carried on with the default or the missing field failing
+ * later with a misleading error. The top-level inputs, the `deposit`
+ * breakdown (carried verbatim onto the report, the webhook payload, and
+ * the CSV export, so a smuggled key would propagate to receivers), and
+ * the nested `settlement` / `partialRelease` parameter objects all fail
+ * closed now: any key outside the allowlist throws
+ * `cannot build settlement report…: unknown field "<name>"` before any
+ * money math runs. The batch wrapper routes each entry through this
+ * same function, so a bad entry fails per escrow instead of aborting
+ * the batch.
+ */
+const SETTLEMENT_REPORT_FIELDS = new Set([
+  "escrowId",
+  "history",
+  "finalState",
+  "deposit",
+  "currency",
+  "settlement",
+  "partialRelease",
+  "auditKey",
+]);
+
+const SETTLEMENT_REPORT_DEPOSIT_FIELDS = new Set([
+  "creatorPool",
+  "baseFee",
+  "complexityMultiplier",
+  "loyaltyDiscount",
+  "oracleFee",
+  "adjustedBaseFee",
+  "deposit",
+]);
+
+const SETTLEMENT_PARAMS_FIELDS = new Set(["proFeeBps", "referralCredits"]);
+
+const PARTIAL_RELEASE_PARAMS_FIELDS = new Set([
+  "released",
+  "proFeeBps",
+  "referralCredits",
+]);
+
+function assertKnownReportFields(
+  prefix: string,
+  obj: Record<string, unknown>,
+  allowed: ReadonlySet<string>,
+): void {
+  for (const key of Object.keys(obj)) {
+    if (!allowed.has(key)) {
+      throw new Error(`${prefix}: unknown field "${key}"`);
+    }
+  }
 }
 
 function sameFeeBreakdown(a: FeeBreakdown, b: FeeBreakdown): boolean {

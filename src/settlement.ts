@@ -24,6 +24,62 @@ function assertSettlementInputs(
   }
 }
 
+/**
+ * Unknown-field fail-closed for the settlement helpers: every helper
+ * below destructures only the fields it knows, so a typo'd key
+ * (`proFeeBp` for `proFeeBps`, `grosss` for `gross`) used to be silently
+ * ignored — the misspelled value never reached the math, and the
+ * missing real field then failed later with a misleading value error
+ * (or, when the field was optional, the default quietly applied).
+ * Unknown keys now throw `${fn}: unknown field "<name>"` before any
+ * value is consumed. Each helper passes its own allowed set; the cents
+ * variants use the `*Cents` spellings.
+ */
+function assertKnownSettlementFields(
+  fn: string,
+  inputs: Record<string, unknown>,
+  allowed: ReadonlySet<string>,
+): void {
+  for (const key of Object.keys(inputs)) {
+    if (!allowed.has(key)) {
+      throw new Error(`${fn}: unknown field "${key}"`);
+    }
+  }
+}
+
+const SETTLEMENT_FIELDS = new Set(["gross", "proFeeBps", "referralCredits"]);
+const SETTLEMENT_CENTS_FIELDS = new Set([
+  "grossCents",
+  "proFeeBps",
+  "referralCreditsCents",
+]);
+const PARTIAL_SETTLEMENT_FIELDS = new Set([
+  "gross",
+  "released",
+  "proFeeBps",
+  "referralCredits",
+]);
+const PARTIAL_SETTLEMENT_CENTS_FIELDS = new Set([
+  "grossCents",
+  "releasedCents",
+  "proFeeBps",
+  "referralCreditsCents",
+]);
+const PARTIAL_RELEASES_FIELDS = new Set([
+  "gross",
+  "releases",
+  "proFeeBps",
+  "referralCredits",
+]);
+const PARTIAL_RELEASES_CENTS_FIELDS = new Set([
+  "grossCents",
+  "releasesCents",
+  "proFeeBps",
+  "referralCreditsCents",
+]);
+const REFUND_FIELDS = new Set(["deposit"]);
+const REFUND_CENTS_FIELDS = new Set(["depositCents"]);
+
 export interface SettlementInputs {
   gross: number;
   /** Platform fee in basis points, e.g. 500 = 5% */
@@ -69,6 +125,7 @@ export function settlePartialRelease(
   inputs: PartialSettlementInputs,
 ): PartialSettlement {
   assertSettlementInputs("settlePartialRelease", inputs);
+  assertKnownSettlementFields("settlePartialRelease", inputs, PARTIAL_SETTLEMENT_FIELDS);
   const { gross, released, proFeeBps, referralCredits = 0 } = inputs;
   if (!Number.isFinite(gross) || gross < 0)
     throw new Error("gross must be a finite non-negative number");
@@ -149,6 +206,7 @@ export function settlePartialReleases(
   inputs: PartialReleasesInputs,
 ): PartialReleases {
   assertSettlementInputs("settlePartialReleases", inputs);
+  assertKnownSettlementFields("settlePartialReleases", inputs, PARTIAL_RELEASES_FIELDS);
   const { gross, releases, proFeeBps, referralCredits = 0 } = inputs;
   if (!Number.isFinite(gross) || gross < 0)
     throw new Error("gross must be a finite non-negative number");
@@ -238,6 +296,7 @@ export interface RefundSettlement {
  */
 export function settleRefund(inputs: RefundSettlementInputs): RefundSettlement {
   assertSettlementInputs("settleRefund", inputs);
+  assertKnownSettlementFields("settleRefund", inputs, REFUND_FIELDS);
   const { deposit } = inputs;
   if (!Number.isFinite(deposit) || deposit < 0)
     throw new Error("deposit must be a finite non-negative number");
@@ -274,6 +333,7 @@ function round2(n: number): number {
  */
 export function settleRelease(inputs: SettlementInputs): Settlement {
   assertSettlementInputs("settleRelease", inputs);
+  assertKnownSettlementFields("settleRelease", inputs, SETTLEMENT_FIELDS);
   const { gross, proFeeBps, referralCredits = 0 } = inputs;
   if (!Number.isFinite(gross) || gross < 0)
     throw new Error("gross must be a finite non-negative number");
@@ -438,6 +498,7 @@ export function settleReleaseCents(
   inputs: SettlementInputsCents,
 ): SettlementCents {
   assertSettlementInputs("settleReleaseCents", inputs);
+  assertKnownSettlementFields("settleReleaseCents", inputs, SETTLEMENT_CENTS_FIELDS);
   const { grossCents, proFeeBps, referralCreditsCents = 0 } = inputs;
   assertMoneyCents("grossCents", grossCents);
   assertProFeeBps(proFeeBps);
@@ -460,6 +521,7 @@ export function settlePartialReleaseCents(
   inputs: PartialSettlementInputsCents,
 ): PartialSettlementCents {
   assertSettlementInputs("settlePartialReleaseCents", inputs);
+  assertKnownSettlementFields("settlePartialReleaseCents", inputs, PARTIAL_SETTLEMENT_CENTS_FIELDS);
   const { grossCents, releasedCents, proFeeBps, referralCreditsCents = 0 } =
     inputs;
   assertMoneyCents("grossCents", grossCents);
@@ -497,6 +559,7 @@ export function settlePartialReleasesCents(
   inputs: PartialReleasesInputsCents,
 ): PartialReleasesCents {
   assertSettlementInputs("settlePartialReleasesCents", inputs);
+  assertKnownSettlementFields("settlePartialReleasesCents", inputs, PARTIAL_RELEASES_CENTS_FIELDS);
   const { grossCents, releasesCents, proFeeBps, referralCreditsCents = 0 } =
     inputs;
   assertMoneyCents("grossCents", grossCents);
@@ -562,6 +625,7 @@ export function settleRefundCents(
   inputs: RefundSettlementInputsCents,
 ): RefundSettlementCents {
   assertSettlementInputs("settleRefundCents", inputs);
+  assertKnownSettlementFields("settleRefundCents", inputs, REFUND_CENTS_FIELDS);
   const { depositCents } = inputs;
   assertMoneyCents("depositCents", depositCents);
   const sponsorCents = depositCents;
