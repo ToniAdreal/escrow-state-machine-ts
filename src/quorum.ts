@@ -1378,6 +1378,14 @@ function constantTimeHexEqual(
  * path is unchanged: this envelope is opt-in, and a caller that
  * never signs keeps the old trusted-configuration semantics.
  *
+ * A `quorum` that is not a quorum-shaped object is rejected with a
+ * named error before the secret is checked, so a mistyped argument
+ * is reported as itself instead of dying as a bare `TypeError`
+ * from the `snapshot()` call. Only the `snapshot()` method this
+ * function actually calls is required, so a duck-typed quorum
+ * still exports (backlog #1395, same duck-type trade-off as
+ * `dispatchArbitration`).
+ *
  * `opts` optionally bounds the envelope's life
  * (see {@link QuorumExportSignedSnapshotOptions}): `expiresAt` (an
  * absolute canonical ISO-8601 UTC timestamp) or `maxAgeMs`
@@ -1391,6 +1399,15 @@ export function exportSignedQuorumSnapshot(
   secret: string | Buffer,
   opts?: QuorumExportSignedSnapshotOptions,
 ): QuorumSignedSnapshotEnvelope {
+  if (
+    quorum === null ||
+    typeof quorum !== "object" ||
+    typeof quorum.snapshot !== "function"
+  ) {
+    throw new Error(
+      `Quorum: exportSignedQuorumSnapshot: quorum must be a Quorum, got ${quorum === null ? "null" : typeof quorum}`,
+    );
+  }
   const secretBytes = quorumSignedSnapshotSecretBytes(secret);
   const snapshot = quorum.snapshot();
   const expiresAt = resolveQuorumSignedSnapshotExpiresAt(opts);

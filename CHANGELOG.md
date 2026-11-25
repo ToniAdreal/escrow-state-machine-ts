@@ -194,6 +194,24 @@ version changes.
 
 ### Fixed
 
+- `exportSignedQuorumSnapshot` rejects a null/non-Quorum `quorum`
+  with a named error (2026-11-25, backlog #1395): the signed-snapshot
+  export called `quorum.snapshot()` with no check at all, so
+  `exportSignedQuorumSnapshot(null, secret)` died as a bare
+  `TypeError` (`Cannot read properties of null (reading 'snapshot')`)
+  and `({})` as `quorum.snapshot is not a function`, carrying no
+  function name — and the secret was checked first, so a null quorum
+  with an empty secret was reported as a secret error, pointing the
+  caller at the wrong argument. It now throws
+  `Quorum: exportSignedQuorumSnapshot: quorum must be a Quorum, got
+  <null|typeof>` before the secret is checked, while a duck-typed
+  quorum that only supplies the `snapshot()` method this function
+  actually calls still exports (the same duck-type trade-off as
+  `dispatchArbitration`). Eight new tests in
+  `test/exportSignedQuorumSnapshotShape.test.ts`, including the
+  guard-before-secret ordering and a mutation check (disabling the
+  guard turns five new tests red); test counts 2856 -> 2864.
+
 - `SettlementWebhookOutbox.recordAttempt` rejects a null/non-object
   `attempt` with a named error (2026-11-25, backlog #1392): the method
   destructured its argument as its first statement, so
