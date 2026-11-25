@@ -213,6 +213,29 @@ version changes.
 
 ### Fixed
 
+- Quorum signed statements bind `statementContext` (2026-11-25,
+  backlog #1402): `QuorumConfig.statementContext` (optional,
+  non-empty, at most 256 characters) is stamped into the canonical
+  statement as `escrow-quorum:approve:<signerId>:<statementContext>`,
+  and `approveSigned()` verifies against that context-bound
+  statement only — a signature minted without a context, or under a
+  different context, fails with `quorum signature verification
+  failed for signer "<id>"` and records nothing, so a vote can no
+  longer be replayed across arbitrations. The context comes from the
+  quorum's configuration, never from a per-call argument, so no
+  caller can talk a quorum into accepting another arbitration's vote;
+  without a configured context the legacy signer-only statement is
+  used unchanged. `approvalStatement(signerId, statementContext?)`
+  mints both forms and rejects a bad context instead of minting it.
+  Eleven new tests in `test/quorumStatementContext.test.ts`
+  (byte pins, same-context acceptance, cross-arbitration replay
+  blocked, missing-context fail-closed in both directions, config
+  and helper validation, in-place verified upgrade, restore under
+  the restoring config's context, no residue after rejection),
+  mutation verification (verifying against the context-less
+  statement turns 6 of 11 red, restored after); test counts
+  2891 -> 2902; README quorum section updated.
+
 - Terminal settlement reports account for recorded partial releases
   (2026-11-25, backlog #1400): a RELEASED report settles the whole
   escrow as one cumulative batch per `settlePartialReleases` — the

@@ -9,7 +9,14 @@
  * public keys in `QuorumConfig.signerPublicKeys` and collecting votes
  * with `approveSigned()`: each vote is verified against the canonical
  * approval statement `escrow-quorum:approve:<signerId>` and the log
- * entry is marked `verified: true`. Plain `approve()` entries stay
+ * entry is marked `verified: true`. When the quorum is configured
+ * with `statementContext`, the statement is
+ * `escrow-quorum:approve:<signerId>:<statementContext>` instead, so
+ * a signature minted for one arbitration (escrow, outcome, round —
+ * whatever the caller puts in the context) cannot be replayed into
+ * another quorum that was configured with a different context, or
+ * into one with no context at all: the signed bytes differ, so
+ * verification fails closed. Plain `approve()` entries stay
  * unverified claims — the two kinds count identically toward the
  * threshold, and the log always shows which is which. To act on the
  * count, gate the arbitration dispatch through `dispatchArbitration`
@@ -106,6 +113,32 @@ export interface QuorumConfig {
    * re-verify any signature.
    */
   signerPublicKeys?: Record<string, KeyObject>;
+  /**
+   * Optional context bound into every signed approval statement
+   * (backlog #1402): a caller-chosen label for the arbitration this
+   * quorum is collecting votes for — e.g. an escrow id, an outcome,
+   * or a round, such as `"esc-1:release"`. When set, the canonical
+   * statement becomes
+   * `escrow-quorum:approve:<signerId>:<statementContext>` (see
+   * {@link approvalStatement}), and `approveSigned()` verifies
+   * against that context-bound statement only: a signature minted
+   * without a context, or under a different context, fails
+   * verification with
+   * `quorum signature verification failed for signer "<id>"` and
+   * records nothing — a vote can no longer be replayed across
+   * arbitrations. When unset, the legacy signer-only statement
+   * `escrow-quorum:approve:<signerId>` is used, unchanged.
+   *
+   * Must be a non-empty string of at most {@link MAX_ACTOR_LENGTH}
+   * characters (256) when present — the same cap as signer ids,
+   * because the context is stamped verbatim into signed bytes. The
+   * context is configuration, not snapshot data: snapshots do not
+   * carry it, so a restored quorum verifies new signatures under
+   * the *restoring* config's context, while previously recorded
+   * `verified` flags are carried as-is (the same trust caveat the
+   * snapshot docs already state for those flags).
+   */
+  statementContext?: string;
 }
 
 /** One entry of a quorum's approval audit trail. */
@@ -221,19 +254,29 @@ export interface Quorum {
    * The signature must be an Ed25519 signature over the canonical
    * approval statement `escrow-quorum:approve:<signerId>` (exact
    * bytes, UTF-8, no trailing newline), verified with
-   * `crypto.verify(null, statement, publicKey, signature)`. A failed
-   * verification throws
+   * `crypto.verify(null, statement, publicKey, signature)`. When the
+   * quorum is configured with `statementContext`, the statement is
+   * `escrow-quorum:approve:<signerId>:<statementContext>` instead,
+   * and verification binds that context: a signature minted without
+   * it, or under a different context, fails with the same
+   * verification error and records nothing — the context is taken
+   * from the quorum's configuration, never from a per-call argument,
+   * so no caller can talk this quorum into accepting another
+   * arbitration's vote. A failed verification throws
    * `quorum signature verification failed for signer "<id>"` and
    * records nothing — a bad signature never counts, never lands in
    * the log, and never consumes anything. A non-`Buffer` /
    * non-`Uint8Array` signature is a caller error and throws before
    * any verification is attempted.
    *
-   * The statement binds the signer id only: it does not name an
-   * escrow or an outcome, so a signature is meaningful only inside
-   * the quorum it was collected for — use one quorum per arbitration
-   * (the `dispatchArbitration` pattern) so a vote cannot be replayed
-   * across arbitrations. `evidence` is accepted with the same
+   * Without a configured `statementContext` the statement binds the
+   * signer id only: it does not name an escrow or an outcome, so a
+   * signature is meaningful only inside the quorum it was collected
+   * for — use one quorum per arbitration (the `dispatchArbitration`
+   * pattern) so a vote cannot be replayed across arbitrations.
+   * Configure `statementContext` (e.g. `"esc-1:release"`) when the
+   * same signer keys vote in more than one arbitration, and the
+   * statement itself carries the binding. `evidence` is accepted with the same
    * caller-asserted meaning as on `approve()`.
    *
    * On success the entry is marked `verified: true` in the log (and
@@ -328,6 +371,7 @@ const QUORUM_CONFIG_FIELDS = new Set([
   "now",
   "maxApprovalAgeMs",
   "signerPublicKeys",
+  "statementContext",
 ]);
 
 /**
@@ -370,7 +414,7 @@ function assertValidConfig(config: QuorumConfig): void {
       throw new Error(`quorum: unknown option "${key}"`);
     }
   }
-  const { threshold, signers, now, maxApprovalAgeMs, signerPublicKeys } =
+  const { threshold, signers, now, maxApprovalAgeMs, signerPublicKeys, statementContext } =
     config;
   if (!Array.isArray(signers) || signers.length === 0)
     throw new Error("quorum signers must be a non-empty array");
@@ -401,6 +445,15 @@ function assertValidConfig(config: QuorumConfig): void {
       maxApprovalAgeMs <= 0)
   )
     throw new Error("quorum maxApprovalAgeMs must be a positive finite number");
+  if (
+    statementContext !== undefined &&
+    (typeof statementContext !== "string" ||
+      statementContext.length === 0 ||
+      statementContext.length > MAX_ACTOR_LENGTH)
+  )
+    throw new Error(
+      `quorum statementContext must be a non-empty string of at most ${MAX_ACTOR_LENGTH} characters, got ${JSON.stringify(statementContext)}`
+    );
   if (signerPublicKeys !== undefined) {
     if (
       typeof signerPublicKeys !== "object" ||
@@ -455,9 +508,17 @@ function assertValidEvidence(evidence: string | undefined): void {
 /**
  * Canonical approval statement a signer signs for `approveSigned()`:
  * the exact bytes `escrow-quorum:approve:<signerId>` (UTF-8, no
- * trailing newline). It binds the signer id only — not an escrow or
- * an outcome — so a signature is meaningful only inside the quorum
- * it was collected for (see `Quorum.approveSigned`).
+ * trailing newline) when no context is given, or
+ * `escrow-quorum:approve:<signerId>:<statementContext>` when one is
+ * (backlog #1402). The context segment binds the signature to one
+ * arbitration: a signature minted for context A verifies only in a
+ * quorum configured with context A — a context-less signature, or
+ * one minted under a different context, has different bytes and
+ * fails verification. Callers that configure a quorum with
+ * `statementContext` must mint signatures with the same context
+ * passed here; the quorum itself never accepts a per-call context
+ * override, so a caller cannot talk a context-B quorum into
+ * accepting a context-A signature by passing A at vote time.
  *
  * Shape guard (backlog #1389): `signerId` must be a non-empty string
  * of at most {@link MAX_ACTOR_LENGTH} characters (256) — the same
@@ -465,9 +526,16 @@ function assertValidEvidence(evidence: string | undefined): void {
  * slipped through, an empty id, or a number can never be minted into
  * a statement. An empty id could never belong to a real signer, and
  * a minted `"null"`/`""` statement that later got signed would be
- * indistinguishable from a real signer's in the audit trail.
+ * indistinguishable from a real signer's in the audit trail. The
+ * same bar applies to `statementContext` when given: a non-string,
+ * empty, or overlong context throws
+ * `invalid approval statement: statementContext must be …` instead
+ * of being minted into a statement that could never verify.
  */
-export function approvalStatement(signerId: string): Buffer {
+export function approvalStatement(
+  signerId: string,
+  statementContext?: string,
+): Buffer {
   if (
     typeof signerId !== "string" ||
     signerId.length === 0 ||
@@ -476,7 +544,21 @@ export function approvalStatement(signerId: string): Buffer {
     throw new Error(
       `invalid approval statement: signerId must be a non-empty string of at most ${MAX_ACTOR_LENGTH} characters, got ${JSON.stringify(signerId)}`
     );
-  return Buffer.from(`escrow-quorum:approve:${signerId}`, "utf8");
+  if (
+    statementContext !== undefined &&
+    (typeof statementContext !== "string" ||
+      statementContext.length === 0 ||
+      statementContext.length > MAX_ACTOR_LENGTH)
+  )
+    throw new Error(
+      `invalid approval statement: statementContext must be a non-empty string of at most ${MAX_ACTOR_LENGTH} characters, got ${JSON.stringify(statementContext)}`
+    );
+  return Buffer.from(
+    statementContext === undefined
+      ? `escrow-quorum:approve:${signerId}`
+      : `escrow-quorum:approve:${signerId}:${statementContext}`,
+    "utf8",
+  );
 }
 
 function buildQuorum(
@@ -489,6 +571,11 @@ function buildQuorum(
   const signers = new Set<string>(signerList);
   const now = config.now ?? Date.now;
   const maxAge = config.maxApprovalAgeMs;
+  // Context bound into every signed statement this quorum verifies
+  // (backlog #1402): read once from the validated config, never from
+  // a per-call argument, so a caller cannot override the binding at
+  // vote time. `undefined` keeps the legacy signer-only statement.
+  const statementContext = config.statementContext;
   /**
    * Resolve one clock reading, fail-closed (backlog #1336, same
    * contract as `SettlementEventDedupe.resolveNow` in
@@ -575,7 +662,7 @@ function buildQuorum(
       try {
         ok = verify(
           null,
-          approvalStatement(signerId),
+          approvalStatement(signerId, statementContext),
           publicKey,
           signature
         );

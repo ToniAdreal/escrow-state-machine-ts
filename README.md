@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2891 tests, all local
+npm test   # 2902 tests, all local
 ```
 
 ## Quickstart
@@ -1010,17 +1010,28 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   keys in `QuorumConfig.signerPublicKeys` and collect votes with
   `approveSigned(signerId, signature)` — each vote is verified against
   the canonical statement `escrow-quorum:approve:<signerId>` (exact
-  bytes; see the exported `approvalStatement()` helper) and the log
-  entry is marked `verified: true`. A failed verification throws and
+  bytes; see the exported `approvalStatement()` helper), or
+  `escrow-quorum:approve:<signerId>:<statementContext>` when the
+  quorum is configured with `statementContext` — a signature minted
+  for one arbitration then cannot be replayed into another quorum
+  configured with a different context, or with no context at all —
+  and the log entry is marked `verified: true`.
+  A failed verification throws and
   records nothing; a signer with no registered key cannot use
   `approveSigned()` at all, and non-Ed25519 or private keys are
   rejected at construction. Verified and unverified approvals count
   identically toward the threshold — the flag only records *how* the
-  vote was proven. Two honest limits: the statement binds the signer
-  id only, not an escrow or outcome, so use one quorum per arbitration
-  (the `dispatchArbitration` pattern); and a snapshot carries the
+  vote was proven. Two honest limits: without a configured
+  `statementContext` the statement binds the signer id only, not an
+  escrow or outcome, so use one quorum per arbitration (the
+  `dispatchArbitration` pattern) unless the context is set — with it,
+  the same signer keys can vote in several arbitrations and the
+  statement itself carries the binding; and a snapshot carries the
   recorded `verified` flags as data without re-verifying them, so a
   restored flag is only as trustworthy as the snapshot itself.
+  (`statementContext` itself is configuration, not snapshot data: a
+  restored quorum verifies new signatures under the restoring
+  config's context.)
   An optional `maxApprovalAgeMs` gives approvals a shelf life: past the
   window (boundary inclusive) they stop counting toward the threshold —
   `hasQuorum()` can fall back to false — but they stay in `approvalLog()`,
@@ -2234,7 +2245,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2891 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2902 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
