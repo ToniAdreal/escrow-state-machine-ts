@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2876 tests, all local
+npm test   # 2891 tests, all local
 ```
 
 ## Quickstart
@@ -1140,6 +1140,21 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   past `Number.MAX_SAFE_INTEGER` throw instead of rounding, and
   `parseMinorUnits(formatMinorUnits(n)) === n` round-trips, including
   negatives). Both mirror the dataquest sibling's helpers.
+  The settlement path has the same integer-cents form:
+  `settleReleaseCents` / `settlePartialReleaseCents` /
+  `settlePartialReleasesCents` / `settleRefundCents` take and return
+  whole cents (`grossCents` / `releasedCents` / `depositCents`, the
+  `proFeeBps` unchanged), round the fee a single time, half-up, in
+  exact integer arithmetic (`BigInt`, so even a
+  `Number.MAX_SAFE_INTEGER` gross stays exact) — and agree with the
+  dollar helpers to the cent on the same inputs, except where the
+  float version's dust flips a half-cent: gross 1.15 at 5000 bps fees
+  0.57 in `settleRelease` but 58 cents exactly here, which is why the
+  cents form is the recommended path for new callers. The dollar
+  helpers stay unchanged for existing callers. The batch helper's
+  cumulative guard compares against `grossCents - cumulative` instead
+  of adding first, so a batch near the safe-integer ceiling cannot
+  over-pay by float addition rounding either.
   Finite-but-huge fee inputs that would overflow the deposit computation
   to `Infinity` are rejected: `calculateDeposit` throws
   `deposit computation overflowed: inputs too large` instead of returning
@@ -2219,7 +2234,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2876 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2891 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

@@ -261,6 +261,17 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
+/**
+ * Gross-to-net settlement on release, in float dollars.
+ *
+ * New callers that already keep money as integer cents should use
+ * {@link settleReleaseCents} instead: the fee here is computed as
+ * `round2(gross * proFeeBps / 10000)` on binary floats, and on some
+ * cent-exact inputs that dust flips the half-cent (gross 1.15 at
+ * 5000 bps fees 0.57 here, 58 cents exactly in the cents version).
+ * This function stays unchanged for existing dollar-denominated
+ * callers; see the cents version for the exact-arithmetic path.
+ */
 export function settleRelease(inputs: SettlementInputs): Settlement {
   assertSettlementInputs("settleRelease", inputs);
   const { gross, proFeeBps, referralCredits = 0 } = inputs;
@@ -288,4 +299,284 @@ export function settleRelease(inputs: SettlementInputs): Settlement {
     throw new Error("settlement computation overflowed: inputs too large");
   if (net < 0) throw new Error("net payout would be negative");
   return { gross, proFee, referralCredits, net };
+}
+
+// ---------------------------------------------------------------------------
+// Integer minor-unit (cents) settlement.
+//
+// The dollar helpers above compute the fee as `round2(gross * bps / 10000)`
+// on binary floats. That is fine for most inputs, but on cent-exact inputs
+// the float dust can flip a half-cent: gross 1.15 at 5000 bps fees 0.57 in
+// `settleRelease` (1.15 * 5000 / 10000 * 100 is 57.49999999999999, so
+// Math.round takes 57), while the exact half-up fee is 58 cents. The cents
+// helpers below are the exact-arithmetic counterparts, in the same shape as
+// `calculateDepositCents` in feeCalculator.ts: every money field is a whole
+// number of cents in and out, the fee is rounded a single time, half-up, to
+// the nearest cent, and the two APIs agree to the cent on the same inputs
+// except where the float version's dust flips a half-cent — there the cents
+// version is right by construction. This is the recommended path for new
+// callers; the dollar helpers stay unchanged for existing callers.
+// ---------------------------------------------------------------------------
+
+export interface SettlementInputsCents {
+  /** Gross amount in integer cents, e.g. 1999 for $19.99. */
+  grossCents: number;
+  /** Platform fee in basis points, e.g. 500 = 5% */
+  proFeeBps: number;
+  referralCreditsCents?: number | undefined;
+}
+
+export interface SettlementCents {
+  grossCents: number;
+  proFeeCents: number;
+  referralCreditsCents: number;
+  netCents: number;
+}
+
+export interface PartialSettlementInputsCents {
+  grossCents: number;
+  /** Amount released now, in integer cents; the rest stays locked. */
+  releasedCents: number;
+  /** Platform fee in basis points, e.g. 500 = 5%; charged on the released amount only. */
+  proFeeBps: number;
+  referralCreditsCents?: number | undefined;
+}
+
+export interface PartialSettlementCents {
+  releasedCents: number;
+  proFeeCents: number;
+  referralCreditsCents: number;
+  netCents: number;
+  remainingCents: number;
+}
+
+export interface PartialReleasesInputsCents {
+  grossCents: number;
+  /**
+   * Release amounts in order, in integer cents; each tranche settles
+   * against the balance still locked after the previous ones.
+   */
+  releasesCents: number[];
+  /** Platform fee in basis points, e.g. 500 = 5%; charged on each released amount, never on the whole gross. */
+  proFeeBps: number;
+  /**
+   * Referral credits for the batch, in integer cents, applied to the
+   * first tranche only. Credits with no releases throw instead of
+   * being silently dropped.
+   */
+  referralCreditsCents?: number | undefined;
+}
+
+export interface PartialReleasesCents {
+  grossCents: number;
+  /** Per-tranche ledger, in the order the releases were given. */
+  releases: PartialSettlementCents[];
+  totalReleasedCents: number;
+  totalProFeeCents: number;
+  totalReferralCreditsCents: number;
+  totalNetCents: number;
+  remainingCents: number;
+}
+
+export interface RefundSettlementInputsCents {
+  /** Locked deposit to return in full, in integer cents. */
+  depositCents: number;
+}
+
+export interface RefundSettlementCents {
+  depositCents: number;
+  /** Full deposit returned to the sponsor (depositor). */
+  sponsorCents: number;
+  /** Always 0 on a refund: no creator payout on this path. */
+  creatorCents: number;
+  /** Always 0 on a refund: no platform fee is charged on this path. */
+  platformCents: number;
+  /** Always 0 on a refund: no referral credit is paid out on this path. */
+  referrerCents: number;
+  /** Sum of the party amounts; equals `depositCents` when balanced. */
+  totalOutflowCents: number;
+  /** True when `totalOutflowCents` equals `depositCents` exactly. */
+  balanced: boolean;
+}
+
+function assertMoneyCents(name: string, v: number): void {
+  if (!Number.isSafeInteger(v) || v < 0)
+    throw new Error(
+      `${name} must be a finite non-negative integer number of cents`,
+    );
+}
+
+function assertProFeeBps(proFeeBps: number): void {
+  if (!Number.isInteger(proFeeBps) || proFeeBps < 0 || proFeeBps > 10000)
+    throw new Error("proFeeBps must be an integer in [0, 10000]");
+}
+
+/**
+ * Exact half-up fee in cents: `round(grossCents * proFeeBps / 10000)`.
+ * Computed in BigInt so even a `Number.MAX_SAFE_INTEGER` gross stays
+ * exact (the float product would lose low bits long before that). The
+ * result can never exceed `grossCents` (bps <= 10000), so it is always
+ * a safe integer when the gross is.
+ */
+function feeCents(grossCents: number, proFeeBps: number): number {
+  return Number(
+    (BigInt(grossCents) * BigInt(proFeeBps) + 5000n) / 10000n,
+  );
+}
+
+/**
+ * Integer-cents version of {@link settleRelease}: the same gross-to-net
+ * settlement, but every money field is a whole number of cents in and
+ * out. The fee is rounded a single time, half-up, to the nearest cent
+ * (exact integer arithmetic, no float dust), the net is an exact
+ * subtraction, and a negative net throws the same
+ * `net payout would be negative` error as the dollar version.
+ * Inputs that are not whole cents, negative, or not safe integers fail
+ * fast, as does a `proFeeBps` outside [0, 10000].
+ */
+export function settleReleaseCents(
+  inputs: SettlementInputsCents,
+): SettlementCents {
+  assertSettlementInputs("settleReleaseCents", inputs);
+  const { grossCents, proFeeBps, referralCreditsCents = 0 } = inputs;
+  assertMoneyCents("grossCents", grossCents);
+  assertProFeeBps(proFeeBps);
+  assertMoneyCents("referralCreditsCents", referralCreditsCents);
+  const proFeeCents = feeCents(grossCents, proFeeBps);
+  const netCents = grossCents - proFeeCents - referralCreditsCents;
+  if (netCents < 0) throw new Error("net payout would be negative");
+  return { grossCents, proFeeCents, referralCreditsCents, netCents };
+}
+
+/**
+ * Integer-cents version of {@link settlePartialRelease}: split out one
+ * release from a larger locked gross without touching escrow state. The
+ * fee is charged on the released amount only, via
+ * {@link settleReleaseCents} with gross = released, so the two paths
+ * cannot drift apart on fee or net semantics; the remaining balance is
+ * an exact integer subtraction, never a `round2`.
+ */
+export function settlePartialReleaseCents(
+  inputs: PartialSettlementInputsCents,
+): PartialSettlementCents {
+  assertSettlementInputs("settlePartialReleaseCents", inputs);
+  const { grossCents, releasedCents, proFeeBps, referralCreditsCents = 0 } =
+    inputs;
+  assertMoneyCents("grossCents", grossCents);
+  assertMoneyCents("releasedCents", releasedCents);
+  if (releasedCents > grossCents)
+    throw new Error("releasedCents must not exceed grossCents");
+  const { proFeeCents, netCents } = settleReleaseCents({
+    grossCents: releasedCents,
+    proFeeBps,
+    referralCreditsCents,
+  });
+  return {
+    releasedCents,
+    proFeeCents,
+    referralCreditsCents,
+    netCents,
+    remainingCents: grossCents - releasedCents,
+  };
+}
+
+/**
+ * Integer-cents version of {@link settlePartialReleases}: settle a whole
+ * list of releases against one locked gross in a single call, with an
+ * exact cumulative guard. The guard compares `releasedCents` against
+ * `grossCents - cumulative` instead of adding first, so even a batch
+ * whose running total approaches `Number.MAX_SAFE_INTEGER` cannot lose
+ * a cent to float addition rounding — the comparison operands are exact
+ * integer differences of safe integers. Each tranche delegates to
+ * {@link settlePartialReleaseCents} against the still-locked balance,
+ * so fee, net, and rounding semantics cannot drift from the single
+ * path. Pure arithmetic only: state advancement still goes through
+ * `dispatch`.
+ */
+export function settlePartialReleasesCents(
+  inputs: PartialReleasesInputsCents,
+): PartialReleasesCents {
+  assertSettlementInputs("settlePartialReleasesCents", inputs);
+  const { grossCents, releasesCents, proFeeBps, referralCreditsCents = 0 } =
+    inputs;
+  assertMoneyCents("grossCents", grossCents);
+  if (!Array.isArray(releasesCents))
+    throw new Error("releasesCents must be an array of numbers");
+  assertProFeeBps(proFeeBps);
+  assertMoneyCents("referralCreditsCents", referralCreditsCents);
+  if (releasesCents.length === 0 && referralCreditsCents !== 0)
+    throw new Error(
+      "referralCreditsCents require at least one release: credits are applied to the first tranche and there is none",
+    );
+  let cumulative = 0;
+  let totalProFeeCents = 0;
+  let totalNetCents = 0;
+  const settled: PartialSettlementCents[] = [];
+  for (let i = 0; i < releasesCents.length; i++) {
+    const releasedCents = releasesCents[i];
+    assertMoneyCents(`releasesCents[${i}]`, releasedCents);
+    // Exact cumulative guard, checked before any per-tranche math so the
+    // batch fails as a whole. `grossCents - cumulative` is exact (both
+    // safe integers), so this never admits an over-pay by float dust.
+    if (releasedCents > grossCents - cumulative) {
+      // The would-be total is rendered via BigInt: cumulative and the
+      // tranche are each safe integers, but their sum need not be, and a
+      // float-rounded figure in an error message would misstate the
+      // over-pay by a cent at the top of the range.
+      const wouldBe = BigInt(cumulative) + BigInt(releasedCents);
+      throw new Error(
+        `cumulative released ${wouldBe} exceeds gross ${grossCents} (release ${i + 1} of ${releasesCents.length}: ${releasedCents} would bring the total to ${wouldBe})`,
+      );
+    }
+    const tranche = settlePartialReleaseCents({
+      grossCents: grossCents - cumulative,
+      releasedCents,
+      proFeeBps,
+      referralCreditsCents: i === 0 ? referralCreditsCents : 0,
+    });
+    settled.push(tranche);
+    cumulative += releasedCents;
+    totalProFeeCents += tranche.proFeeCents;
+    totalNetCents += tranche.netCents;
+  }
+  return {
+    grossCents,
+    releases: settled,
+    totalReleasedCents: cumulative,
+    totalProFeeCents,
+    totalReferralCreditsCents:
+      releasesCents.length === 0 ? 0 : referralCreditsCents,
+    totalNetCents,
+    remainingCents: grossCents - cumulative,
+  };
+}
+
+/**
+ * Integer-cents version of {@link settleRefund}: return the locked
+ * deposit to the sponsor in full. Amounts pass through exactly (no
+ * cent rounding), so the result can never drift from the deposit
+ * recorded in the audit history. Pure arithmetic only: state
+ * advancement still goes through `dispatch`.
+ */
+export function settleRefundCents(
+  inputs: RefundSettlementInputsCents,
+): RefundSettlementCents {
+  assertSettlementInputs("settleRefundCents", inputs);
+  const { depositCents } = inputs;
+  assertMoneyCents("depositCents", depositCents);
+  const sponsorCents = depositCents;
+  const creatorCents = 0;
+  const platformCents = 0;
+  const referrerCents = 0;
+  const totalOutflowCents =
+    sponsorCents + creatorCents + platformCents + referrerCents;
+  return {
+    depositCents,
+    sponsorCents,
+    creatorCents,
+    platformCents,
+    referrerCents,
+    totalOutflowCents,
+    balanced: totalOutflowCents === depositCents,
+  };
 }

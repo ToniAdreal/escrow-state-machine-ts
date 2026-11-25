@@ -18,6 +18,25 @@ version changes.
 
 ### Added
 
+- Integer-cents settlement helpers (2026-11-25, backlog #1401):
+  `settleReleaseCents` / `settlePartialReleaseCents` /
+  `settlePartialReleasesCents` / `settleRefundCents` in
+  `src/settlement.ts` take and return whole cents and round the fee a
+  single time, half-up, in exact integer arithmetic (`BigInt`), so the
+  float dust in the dollar helpers cannot flip a half-cent — gross
+  1.15 at 5000 bps fees 0.57 in `settleRelease` but 58 cents exactly
+  here, and a `Number.MAX_SAFE_INTEGER` gross stays exact. The batch
+  helper's cumulative guard compares against `grossCents - cumulative`
+  instead of adding first. The dollar helpers stay unchanged for
+  existing callers; the cents form is the recommended path for new
+  callers. Fifteen new tests in `test/settleReleaseCents.test.ts`
+  (19.99 golden, half-cent boundary, float-divergence pin, credits,
+  negative net, invalid inputs, MAX_SAFE_INTEGER exactness,
+  dollar/cents agreement table, partial + batch + refund), mutation
+  verification (removing the half-up `+ 5000n` turns the 19.99 test
+  red: fee 99 vs 100, restored after); test counts 2876 -> 2891;
+  README "How precise is the money math?" section updated.
+
 - CLI demo settlement/refund reference-gate segment (2026-11-21,
   backlog #1313): `src/demo.ts` shows `requireSettlementRef` /
   `requireRefundRef` on branch escrows — a reference-free RELEASE /
