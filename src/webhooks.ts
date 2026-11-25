@@ -2523,8 +2523,8 @@ export class SettlementWebhookOutbox {
    * the stored `lastError` — and any snapshot exported from it —
    * stays bounded.
    *
-   * Caller bugs fail fast: an empty/non-string `endpoint` or
-   * `eventId`, an `eventId` longer than
+   * Caller bugs fail fast: a null/non-object `attempt`, an
+   * empty/non-string `endpoint` or `eventId`, an `eventId` longer than
    * {@link MAX_EVENT_ID_LENGTH} characters, a non-boolean `ok`, a
    * non-finite `status`/`at`, or a non-string `error` throws before
    * anything is recorded — silently accepting a malformed attempt
@@ -2532,6 +2532,30 @@ export class SettlementWebhookOutbox {
    * most.
    */
   recordAttempt(attempt: SettlementWebhookOutboxAttempt): void {
+    // A null/non-object attempt is a caller bug (backlog #1392):
+    // fail closed before destructuring, never as `Cannot destructure
+    // property 'endpoint' of 'attempt' as it is null`. A string still
+    // flows into the field checks below, which reject it as a
+    // non-empty `endpoint` — the pre-existing behaviour for that
+    // input — and an array is rejected outright, matching the
+    // `assertFeeInputs` "arrays are not objects" rule.
+    if (
+      attempt === null ||
+      attempt === undefined ||
+      Array.isArray(attempt) ||
+      typeof attempt === "number" ||
+      typeof attempt === "boolean"
+    ) {
+      throw new Error(
+        `SettlementWebhookOutbox: attempt must be an object, got ${
+          attempt === null
+            ? "null"
+            : Array.isArray(attempt)
+              ? "array"
+              : typeof attempt
+        }`,
+      );
+    }
     const { endpoint, eventId, ok } = attempt;
     if (typeof endpoint !== "string" || endpoint.length === 0) {
       throw new Error(

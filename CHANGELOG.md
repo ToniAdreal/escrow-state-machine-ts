@@ -194,6 +194,24 @@ version changes.
 
 ### Fixed
 
+- `SettlementWebhookOutbox.recordAttempt` rejects a null/non-object
+  `attempt` with a named error (2026-11-25, backlog #1392): the method
+  destructured its argument as its first statement, so
+  `recordAttempt(null)` / `(undefined)` died as a bare `TypeError`
+  (`Cannot destructure property 'endpoint' of 'attempt' as it is
+  null`), carrying no class name — and a `null` slipping through the
+  `retrySettlementWebhookOutbox` failure path would have crashed the
+  runner instead of recording one more failed attempt. It now throws
+  `SettlementWebhookOutbox: attempt must be an object, got
+  <null|undefined|number|boolean|array>` before any field is read
+  (arrays rejected outright, matching the `assertFeeInputs`
+  "arrays are not objects" rule), while a string attempt keeps its
+  pre-existing behaviour — it falls through to the field checks,
+  which reject it as a non-empty `endpoint`. Ten new tests in
+  `test/recordAttemptShape.test.ts`, including a mutation check
+  (disabling the guard turns the new tests red); test counts
+  2846 -> 2856.
+
 - `approvalStatement` rejects a non-`signerId` input with a named error
   (2026-11-24, backlog #1389): the exported helper minted the canonical
   `escrow-quorum:approve:<signerId>` bytes with no check at all, so
