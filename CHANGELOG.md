@@ -194,6 +194,28 @@ version changes.
 
 ### Fixed
 
+- Terminal settlement reports account for recorded partial releases
+  (2026-11-25, backlog #1400): a RELEASED report settles the whole
+  escrow as one cumulative batch per `settlePartialReleases` — the
+  recorded tranches plus the still-locked remainder as the final
+  tranche — so the platform fee is never charged twice on a released
+  slice (previously the terminal settlement charged the fee on the
+  full deposit, including money already paid out); a REFUNDED /
+  EXPIRED report refunds only the still-locked remainder, with the
+  released total shown on the creator's row as money already paid out
+  (previously it credited the sponsor with the full deposit, including
+  money that had already left the escrow). The prior tranches' fee
+  splits are re-derived at the terminal settlement's rate (the trail
+  records only the released amounts, not the rate each slice was
+  reported at); referral credits are counted exactly once, on the
+  first tranche. An over-released trail fails closed in both branches.
+  New `test/terminalSettlementWithPartialReleases.test.ts` (12 cases:
+  two-tranche and golden-slice releases, credits-once, non-clean
+  amounts pinning per-tranche cent rounding vs the single-shot fee,
+  full-deposit tranches, arbitration release, both refund outcomes,
+  no-tranche byte-identical regressions, over-release throws);
+  test counts 2864 -> 2876; README settlement section updated.
+
 - `exportSignedQuorumSnapshot` rejects a null/non-Quorum `quorum`
   with a named error (2026-11-25, backlog #1395): the signed-snapshot
   export called `quorum.snapshot()` with no check at all, so

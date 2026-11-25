@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2864 tests, all local
+npm test   # 2876 tests, all local
 ```
 
 ## Quickstart
@@ -2116,7 +2116,23 @@ fails with the cumulative figures in the error); each tranche still
 settles through `settlePartialRelease`, so fee and net semantics cannot
 drift from the single path. Referral credits for the batch land on the
 first tranche only, so the total is never double-counted, and credits
-with no releases throw instead of being silently dropped.
+with no releases throw instead of being silently dropped. A terminal
+report accounts for recorded tranches the same way: a RELEASED report
+settles the whole escrow as one cumulative batch — the recorded
+tranches plus the still-locked remainder as the final tranche — so the
+platform fee is never charged twice on a released slice and the
+`settlement` figures are the lifetime totals (the prior tranches'
+splits are re-derived at the terminal settlement's rate: the trail
+records only the released amounts, not the rate each slice was
+reported at). A REFUNDED / EXPIRED report refunds only the
+still-locked remainder, with the released total shown on the creator's
+row as money already paid out (same limitation: the prior fee split is
+not recorded, so the platform fee portion of prior tranches is folded
+into that figure while the sponsor's own figures stay exact). An
+over-released trail — recorded tranches totalling more than the
+deposit, possible only in a hand-built history since dispatch caps
+every tranche at the locked balance — fails closed in both branches
+instead of settling or refunding a negative remainder.
 Reconciliation is the one exception to the full-deposit ledger: a
 `partially-released` report pairs against a ledger row carrying the
 released slice, not the deposit (see the reconciliation paragraph
@@ -2203,7 +2219,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2864 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2876 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
