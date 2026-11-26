@@ -39,8 +39,12 @@ quorum approvals (`approveSigned()`).
   and throws without recording anything on failure. The statement
   binds the signer id only — not an escrow or outcome — so a signature
   is meaningful only inside the quorum it was collected for; use one
-  quorum per arbitration. A snapshot carries recorded `verified`
-  flags as data and restoring one does not re-verify signatures.
+  quorum per arbitration. An unsigned `restoreQuorum()` drops the
+  recorded `verified` flags — the snapshot carries no signature to
+  re-verify, so every restored approval is an unverified claim until
+  a fresh `approveSigned()` re-earns the flag; only the HMAC-signed
+  envelope restore keeps them, because its MAC authenticates the
+  snapshot.
   When the snapshot crosses an untrusted boundary, wrap it in the
   HMAC-signed envelope (`exportSignedQuorumSnapshot` /
   `restoreSignedQuorumSnapshot`, same shape as the escrow envelope):

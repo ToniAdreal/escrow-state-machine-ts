@@ -7,8 +7,11 @@
  * including the `verified: true` flags recorded by `approveSigned()`,
  * and nothing in it is authenticated — a rewritten persisted
  * snapshot could flip an unverified claim to "verified", invent
- * approvals, or drop a revocation, and `restoreQuorum` would accept
- * it as long as the shape is valid. Rules under test:
+ * approvals, or drop a revocation. The unsigned restore no longer
+ * trusts the flag (backlog #1419): it drops every `verified` flag
+ * and restores each approval as an unverified claim, so a flipped
+ * flag cannot survive — but an invented approval still counts as a
+ * claim, which is why the envelope exists. Rules under test:
  *  - `exportSignedQuorumSnapshot(quorum, secret)` returns
  *    `{ v: 1, snapshot, mac }` with `mac` = HMAC-SHA256 over the
  *    canonical JSON of the snapshot; the secret is never written
@@ -30,9 +33,10 @@
  *    `expiresAt` still succeeds; `expiresAt` / `maxAgeMs` are
  *    mutually exclusive and invalid values fail fast on export
  *  - an empty (or wrongly typed) secret is rejected on both sides
- *  - the unsigned path is unchanged, and the two forms do not
- *    accept each other — a signed restore cannot silently
- *    downgrade to trusted configuration
+ *  - the unsigned path drops the `verified` flags (backlog #1419)
+ *    while keeping counting, timestamps, and evidence, and the two
+ *    forms do not accept each other — a signed restore cannot
+ *    silently downgrade to trusted configuration
  *  - approval expiry keeps aging from the original timestamps
  *    across a signed restore, never refreshed by it
  */
@@ -449,11 +453,28 @@ test("an empty or wrongly typed secret is rejected on both sides", () => {
   );
 });
 
-test("the unsigned path is unchanged and does not accept a signed envelope", () => {
+test("the unsigned path drops verified flags and does not accept a signed envelope", () => {
   const { quorum, config } = seededQuorum();
   const plain = quorum.snapshot();
   const restored = restoreQuorum(config, clone(plain));
-  assert.deepEqual(restored.approvalLog(), quorum.approvalLog());
+  // Counting, timestamps, and evidence survive the unsigned restore;
+  // the verified flag does not (backlog #1419): the snapshot carries
+  // no signature to re-verify, so dao-1's verified vote comes back
+  // as an unverified claim.
+  assert.equal(restored.approvalCount(), 3);
+  assert.equal(restored.hasQuorum(), true);
+  assert.deepEqual(
+    restored
+      .approvalLog()
+      .map(({ signerId, at, evidence }) => ({ signerId, at, evidence })),
+    quorum
+      .approvalLog()
+      .map(({ signerId, at, evidence }) => ({ signerId, at, evidence })),
+  );
+  assert.deepEqual(
+    restored.approvalLog().map((entry) => entry.verified),
+    [undefined, undefined, undefined],
+  );
   const envelope = exportSignedQuorumSnapshot(quorum, SECRET);
   assert.throws(
     () => restoreQuorum(config, clone(envelope) as unknown as QuorumSnapshot),

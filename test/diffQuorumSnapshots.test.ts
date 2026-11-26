@@ -193,12 +193,20 @@ describe("diffQuorumSnapshots", () => {
     ]);
     assert.equal(diff.approvalsAdded, undefined);
     assert.equal(diff.approvalsRemoved, undefined);
-    // The restored quorum agrees: the same diff through restore.
+    // The unsigned restore drops the flag again (backlog #1419):
+    // before-vs-restored shows no change — the late flag did not
+    // survive the restore — while after-vs-restored reports the
+    // downgrade as one modified entry, so the loss is visible.
     const restored = restoreQuorum(config, JSON.parse(JSON.stringify(after)));
-    assert.deepEqual(
-      diffQuorumSnapshots(before, restored.snapshot()),
-      diff,
-    );
+    assert.deepEqual(diffQuorumSnapshots(before, restored.snapshot()), {
+      approvalsChanged: false,
+    });
+    assert.deepEqual(diffQuorumSnapshots(after, restored.snapshot()), {
+      approvalsChanged: true,
+      approvalsModified: [
+        { signerId: "dao-1", at: after.approvals[0].at },
+      ],
+    });
   });
 
   it("rejects malformed snapshots instead of silently comparing them", () => {

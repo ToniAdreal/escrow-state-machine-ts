@@ -380,7 +380,7 @@ test("expired verified approval re-approveSigned appends a fresh verified entry"
   ]);
 });
 
-test("snapshot round-trip preserves the verified flag; keys are never in the snapshot", () => {
+test("snapshot round-trip drops the verified flag; keys are never in the snapshot", () => {
   const { quorum, keys } = keyedQuorum(2, ["dao-1"], {
     now: scriptedClock([1_000, 2_000]),
   });
@@ -399,9 +399,17 @@ test("snapshot round-trip preserves the verified flag; keys are never in the sna
     },
     snapshot
   );
-  assert.deepStrictEqual(restored.approvalLog(), quorum.approvalLog());
+  // The unsigned restore drops the verified flag (backlog #1419):
+  // the snapshot carries no signature to re-verify, so dao-1's
+  // verified vote comes back as an unverified claim. Counting,
+  // timestamps, and order are unchanged.
+  assert.deepStrictEqual(restored.approvalLog(), [
+    { signerId: "dao-1", at: new Date(1_000).toISOString() },
+    { signerId: "dao-2", at: new Date(2_000).toISOString() },
+  ]);
   assert.equal(restored.approvalCount(), 2);
-  // The restored quorum can still collect a fresh verified vote.
+  // The restored quorum can still collect a fresh verified vote,
+  // re-earning the flag on the same entry.
   restored.approveSigned("dao-1", signApproval(pair, "dao-1"));
   assert.equal(restored.approvalLog().length, 2); // upgrade in place, no new entry
   assert.equal(restored.approvalLog()[0].verified, true);

@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2958 tests, all local
+npm test   # 2967 tests, all local
 ```
 
 ## Quickstart
@@ -1045,10 +1045,13 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   signer id only, not an escrow or outcome, so use one quorum per
   arbitration (the `dispatchArbitration` pattern) unless one of them
   is set — with either set, the same signer keys can vote in several
-  arbitrations and the statement itself carries the binding; and a
-  snapshot carries the recorded `verified` flags as data without
-  re-verifying them, so a restored flag is only as trustworthy as
-  the snapshot itself.
+  arbitrations and the statement itself carries the binding; and an
+  unsigned `restoreQuorum()` drops the recorded `verified` flags —
+  the snapshot carries no signature to re-verify, so every restored
+  approval is an unverified claim until a fresh `approveSigned()`
+  re-earns the flag (the HMAC-signed envelope restore is the one
+  exception: its MAC authenticates the snapshot, so the flags it
+  carries survive).
   (`statementContext` and `statementScope` are configuration, not
   snapshot data: a restored quorum verifies new signatures under
   the restoring config's context and scope.)
@@ -1119,9 +1122,12 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   written into the envelope — the MAC is
   integrity protection only, not encryption. The snapshot is an
   export format, not a built-in store, and restored approvals are
-  still caller-persisted data: a restored `verified` flag was not
-  re-verified on restore (the public keys live in the config, never
-  in the snapshot). Two stored snapshots can be compared without
+  still caller-persisted data: an unsigned `restoreQuorum()` drops
+  the recorded `verified` flags — the snapshot carries no signature
+  to re-verify, so every restored approval is an unverified claim
+  until a fresh `approveSigned()` re-earns the flag; only the
+  HMAC-signed envelope restore keeps them, because its MAC
+  authenticates the snapshot. Two stored snapshots can be compared without
   hand-written field compares: `diffQuorumSnapshots(a, b)` reports
   only what moved — `thresholdChanged` / `signersChanged` (compared
   as a set, so a pure reorder is not a change) /
@@ -2277,7 +2283,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2958 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2967 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

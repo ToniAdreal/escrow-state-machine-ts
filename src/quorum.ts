@@ -18,7 +18,12 @@
  * into one with no context at all: the signed bytes differ, so
  * verification fails closed. Plain `approve()` entries stay
  * unverified claims — the two kinds count identically toward the
- * threshold, and the log always shows which is which. To act on the
+ * threshold, and the log always shows which is which. A `verified`
+ * flag does not survive an unsigned `restoreQuorum()`: the snapshot
+ * carries no signature to re-verify, so every restored approval is
+ * an unverified claim until a fresh `approveSigned()` re-earns the
+ * flag. The HMAC-signed envelope restore is the exception — its MAC
+ * authenticates the snapshot, so the flags it carries survive. To act on the
  * count, gate the arbitration dispatch through `dispatchArbitration`
  * (src/arbitration.ts) — it refuses to dispatch until `hasQuorum()` is
  * true and leaves the escrow untouched otherwise, so a caller can never
@@ -141,8 +146,10 @@ export interface QuorumConfig {
    * misconfigured quorum fails fast instead of failing open at vote
    * time. Public keys are configuration, not data: they are never
    * written into a snapshot — a snapshot carries only the `verified`
-   * flags recorded on its entries, and restoring one does not
-   * re-verify any signature.
+   * flags recorded on its entries, and an unsigned
+   * {@link restoreQuorum} drops those flags (the snapshot carries no
+   * signature to re-verify); the signed-envelope restore keeps them
+   * because its MAC authenticates the snapshot.
    */
   signerPublicKeys?: Record<string, KeyObject>;
   /**
@@ -167,8 +174,8 @@ export interface QuorumConfig {
    * context is configuration, not snapshot data: snapshots do not
    * carry it, so a restored quorum verifies new signatures under
    * the *restoring* config's context, while previously recorded
-   * `verified` flags are carried as-is (the same trust caveat the
-   * snapshot docs already state for those flags).
+   * `verified` flags are dropped by an unsigned restore (see
+   * {@link restoreQuorum}).
    */
   statementContext?: string;
   /**
@@ -244,17 +251,25 @@ export interface ApprovalLogEntry {
  * the counting rule mid-arbitration.
  *
  * Honest scope: a snapshot is an export format, not a built-in store,
- * and approvals in it are still caller-persisted data — restoring one
- * carries the recorded `verified` flags as-is and does not re-verify
- * any signature (the public keys live in `QuorumConfig`, never in the
- * snapshot). A `verified: true` flag in a restored snapshot is only as
- * trustworthy as the snapshot itself, exactly like the `evidence`
- * strings it carries. When the snapshot crosses an untrusted boundary
- * (a persisted file, a queue, another service), wrap it in the
- * HMAC-signed envelope instead — see
+ * and approvals in it are still caller-persisted data — an unsigned
+ * {@link restoreQuorum} drops the recorded `verified` flags instead
+ * of trusting them, because the snapshot carries no signature to
+ * re-verify: every restored approval is an unverified claim until a
+ * fresh `approveSigned()` re-earns the flag (backlog #1419). Only the
+ * HMAC-signed envelope restore keeps the flags, because its MAC
+ * authenticates the snapshot — see
  * {@link exportSignedQuorumSnapshot} /
- * {@link restoreSignedQuorumSnapshot} — so a rewritten snapshot
- * (including a forged `verified: true` flag) fails closed at restore.
+ * {@link restoreSignedQuorumSnapshot}. A `verified: true` flag in a
+ * restored snapshot is therefore only as trustworthy as the restore
+ * path that carried it: untrusted on the plain path, authenticated
+ * on the signed path. When the snapshot crosses an untrusted
+ * boundary (a persisted file, a queue, another service), wrap it in
+ * the HMAC-signed envelope instead, so a rewritten snapshot
+ * (including a forged `verified: true` flag) fails closed at
+ * restore. The counting rule is unaffected by the downgrade:
+ * verified and unverified approvals count identically, so a
+ * downgraded approval still counts toward the threshold — it is
+ * the flag, not the vote, that is dropped.
  */
 export interface QuorumSnapshot {
   /** Snapshot schema version; only `1` exists. */
@@ -1215,6 +1230,23 @@ function validateQuorumSnapshotShape(snapshot: unknown): {
  * age, so an approval that had expired when the snapshot was taken is
  * still expired after the restore.
  *
+ * `verified` does not survive this restore (backlog #1419): the
+ * snapshot carries no signature, so a `verified: true` flag in it —
+ * whether written by `snapshot()` or hand-written by anyone with a
+ * text editor — is dropped and every restored approval enters as an
+ * unverified claim, exactly as if it had been recorded by plain
+ * `approve()`. The count is unchanged (verified and unverified
+ * approvals count identically), only the flag is dropped, and a
+ * restored entry can re-earn it: `approveSigned()` on a
+ * still-counted signer upgrades the entry in place, keeping its
+ * original timestamp. The HMAC-signed envelope restore
+ * ({@link restoreSignedQuorumSnapshot}) is the one exception — its
+ * MAC authenticates the snapshot, so the flags it carries survive.
+ * A snapshot taken before this restore and one taken after it
+ * therefore diff as one modified entry per verified approval in
+ * {@link diffQuorumSnapshots} — the downgrade is visible, not
+ * silent.
+ *
  * The structural half of this validation lives in
  * {@link validateQuorumSnapshotShape} (shared with
  * {@link diffQuorumSnapshots}); this function adds only the
@@ -1223,6 +1255,24 @@ function validateQuorumSnapshotShape(snapshot: unknown): {
 export function restoreQuorum(
   config: QuorumConfig,
   snapshot: unknown
+): Quorum {
+  return restoreQuorumInternal(config, snapshot, false);
+}
+
+/**
+ * Shared restore body for {@link restoreQuorum} and
+ * {@link restoreSignedQuorumSnapshot}. `keepVerified` is true only
+ * on the signed path, after the envelope MAC has authenticated the
+ * snapshot — the flags there were written by the quorum itself and
+ * cannot have been rewritten without the secret. The unsigned path
+ * always passes false: a hand-written `verified: true` must never
+ * survive (backlog #1419). Not exported: no caller may opt into
+ * trusting unverified snapshot data.
+ */
+function restoreQuorumInternal(
+  config: QuorumConfig,
+  snapshot: unknown,
+  keepVerified: boolean
 ): Quorum {
   assertValidConfig(config);
   const validated = validateQuorumSnapshotShape(snapshot);
@@ -1248,7 +1298,9 @@ export function restoreQuorum(
     signerId: e.signerId,
     atMs: Date.parse(e.at),
     ...(e.evidence !== undefined ? { evidence: e.evidence } : {}),
-    ...(e.verified === true ? { verified: true as const } : {}),
+    ...(keepVerified && e.verified === true
+      ? { verified: true as const }
+      : {}),
   }));
   return buildQuorum(config, entries);
 }
@@ -1295,9 +1347,13 @@ export interface QuorumSnapshotDiff {
    * `verified` upgrade: `approveSigned()` on a still-counted
    * approval flips its flag without appending a new entry, so the
    * entry's identity (signer + timestamp) is unchanged while the
-   * snapshot moved — reporting it as an add plus a remove would
-   * double-count one vote's proof arriving late. The `b` version
-   * is reported.
+   * content moved — reporting it as an add plus a remove would
+   * double-count one vote's proof arriving late. The same shape
+   * reports the unsigned restore downgrade in the other direction
+   * (backlog #1419): a snapshot taken before `restoreQuorum()` and
+   * one taken after it differ by exactly one modified entry per
+   * verified approval, because the restore drops the flags.
+   * The `b` version is reported.
    */
   approvalsModified?: ApprovalLogEntry[];
   /**
@@ -1438,8 +1494,11 @@ export function diffQuorumSnapshots(
  * audit trail, including the `verified: true` flags recorded by
  * `approveSigned()`, and nothing in it is authenticated — a
  * rewritten persisted snapshot could flip an unverified claim to
- * "verified", invent approvals, or drop a revocation, and
- * `restoreQuorum` would accept it as long as the shape is valid.
+ * "verified", invent approvals, or drop a revocation, and the
+ * unsigned {@link restoreQuorum} would still accept the invented
+ * approval as an unverified claim as long as the shape is valid
+ * (a flipped `verified` flag no longer survives an unsigned restore
+ * — backlog #1419 — but the approval itself still counts).
  * The envelope MAC covers the whole snapshot, so any such rewrite
  * fails closed at restore.
  *
@@ -1884,7 +1943,12 @@ export function restoreSignedQuorumSnapshot(
       "Quorum: signed snapshot MAC mismatch: the snapshot was tampered with or the secret is wrong",
     );
   // MAC verified — now the expiry check, then the same strict
-  // structural validation as restoreQuorum().
+  // structural validation as restoreQuorum(). The flags survive
+  // here (and only here): the MAC proves this snapshot was written
+  // by the quorum itself, so a `verified: true` in it was recorded
+  // by a real approveSigned() — unlike the unsigned path, which
+  // drops the flags because its input carries no such proof
+  // (backlog #1419).
   if (expiresAt !== undefined) {
     const now = opts?.now ?? Date.now();
     if (typeof now !== "number" || !Number.isFinite(now))
@@ -1896,5 +1960,5 @@ export function restoreSignedQuorumSnapshot(
         `Quorum: signed snapshot envelope expired at ${expiresAt}`,
       );
   }
-  return restoreQuorum(config, snapshot);
+  return restoreQuorumInternal(config, snapshot, true);
 }
