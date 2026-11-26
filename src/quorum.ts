@@ -54,8 +54,40 @@
  * when dispatching.
  */
 
-import { createHmac, KeyObject, timingSafeEqual, verify } from "node:crypto";
+import { createHash, createHmac, KeyObject, timingSafeEqual, verify } from "node:crypto";
 import { MAX_ACTOR_LENGTH, MAX_EVIDENCE_LENGTH } from "./stateMachine.js";
+
+/**
+ * Outcomes a statement scope can bind a quorum to (backlog #1418).
+ * `"release"` / `"refund"` pin one arbitration direction;
+ * `"arbitration"` binds the escrow but leaves the direction open, so
+ * the same quorum can dispatch either outcome for that escrow.
+ */
+export type QuorumStatementOutcome = "release" | "refund" | "arbitration";
+
+/**
+ * Scope bound into every signed approval statement (backlog #1418):
+ * the escrow the votes are for, and optionally the arbitration
+ * outcome. A signature minted under one scope verifies only in a
+ * quorum configured with the same scope — the same signer key voting
+ * in two escrows (or for release in one and refund in the other)
+ * mints different bytes, so a vote can no longer be replayed across
+ * escrows or across directions. `escrowId` is required; `outcome`
+ * is optional and, when omitted, the statement carries no outcome
+ * segment at all (an escrow-only binding) — an explicit
+ * `"arbitration"` mints the word instead. Both leave the direction
+ * open at dispatch time, but the bytes differ, so a signature
+ * minted under one does not verify under the other. Scope is
+ * configuration, not snapshot data: snapshots do not carry it, so a
+ * restored quorum verifies new signatures under the *restoring*
+ * config's scope.
+ */
+export interface QuorumStatementScope {
+  /** Escrow the votes are bound to (non-empty, at most 256 chars). */
+  escrowId: string;
+  /** Arbitration outcome the votes are bound to, when pinned. */
+  outcome?: QuorumStatementOutcome;
+}
 
 export interface QuorumConfig {
   /** Approvals required, 1 ≤ threshold ≤ signers.length */
@@ -139,6 +171,27 @@ export interface QuorumConfig {
    * snapshot docs already state for those flags).
    */
   statementContext?: string;
+  /**
+   * Optional scope bound into every signed approval statement
+   * (backlog #1418): the escrow id — and, when pinned, the
+   * arbitration outcome — this quorum collects votes for. When set,
+   * the canonical statement gains the scope segments (see
+   * {@link approvalStatement}), and `approveSigned()` verifies
+   * against the scoped statement only: a signature minted for a
+   * different escrow, or for the other outcome, fails verification
+   * with `quorum signature verification failed for signer "<id>"`
+   * and records nothing — one signature can no longer be reused
+   * across escrows or across release/refund. When unset, the
+   * statement carries no scope and a scoped signature is rejected,
+   * exactly as a context-bound signature is rejected by a
+   * context-less quorum. `dispatchArbitration` (src/arbitration.ts)
+   * additionally checks the scope against the escrow and outcome it
+   * is asked to dispatch, so a quorum scoped to escrow A can never
+   * release escrow B even if its count was reached. The scope is
+   * configuration, not snapshot data (same rule as
+   * `statementContext` above).
+   */
+  statementScope?: QuorumStatementScope;
 }
 
 /** One entry of a quorum's approval audit trail. */
@@ -225,6 +278,16 @@ export interface Quorum {
   readonly threshold: number;
   readonly signerCount: number;
   /**
+   * Statement scope this quorum was configured with (backlog
+   * #1418), or `undefined` when unscoped. Returns a defensive copy
+   * — mutating it cannot re-scope the quorum. `dispatchArbitration`
+   * reads this to refuse a quorum scoped to a different escrow or
+   * outcome; a duck-typed quorum without this method is treated as
+   * unscoped (the legacy behavior). Present on every quorum built
+   * by `createQuorum` / `restoreQuorum`.
+   */
+  statementScope(): QuorumStatementScope | undefined;
+  /**
    * Record an approval. Idempotent while the signer's current approval
    * still counts: re-approving is a no-op and does not replace the
    * evidence recorded on the original entry (revoke, then approve
@@ -279,6 +342,29 @@ export interface Quorum {
    * statement itself carries the binding. `evidence` is accepted with the same
    * caller-asserted meaning as on `approve()`.
    *
+   * When the quorum is configured with `statementScope` (backlog
+   * #1418), the statement additionally carries the scope segments
+   * (see {@link approvalStatement}), so the signature is bound to
+   * one escrow and, when pinned, one outcome — the same signer key
+   * voting in two escrows mints different bytes and a vote cannot
+   * be replayed across them. The scope is taken from the quorum's
+   * configuration, never from a per-call argument.
+   *
+   * The optional `nonce` (backlog #1418) binds a caller-supplied
+   * single-use token into the statement. A nonce is consumed when
+   * its signature verifies: presenting the same nonce again throws
+   * `quorum approveSigned: nonce … has already been used` and
+   * records nothing — even while the signer's approval still
+   * counts, so a captured (nonce, signature) pair cannot be
+   * re-submitted. A nonce is also the way back in after a revoke:
+   * Ed25519 signatures are deterministic, so re-signing the same
+   * statement yields byte-identical bytes that the revoke
+   * tombstone (see {@link Quorum.revoke}) must refuse — a fresh
+   * nonce mints a fresh statement and a fresh signature instead.
+   * Nonces are instance state, not snapshot data: a restored quorum
+   * does not inherit consumed nonces, exactly as it does not
+   * inherit revoked-signature tombstones.
+   *
    * On success the entry is marked `verified: true` in the log (and
    * in snapshots). If the signer's current approval still counts, a
    * valid signature upgrades that entry in place — same timestamp,
@@ -291,7 +377,8 @@ export interface Quorum {
   approveSigned(
     signerId: string,
     signature: Buffer | Uint8Array,
-    evidence?: string
+    evidence?: string,
+    nonce?: string
   ): void;
   /**
    * Withdraw a previously recorded approval (real multi-sigs let signers
@@ -300,6 +387,19 @@ export interface Quorum {
    * was never cast is a caller error, not a no-op. Revoking an *expired*
    * approval is allowed and behaves the same: all of the signer's log
    * entries are removed, exactly as for a live approval.
+   *
+   * Replay resistance (backlog #1418): revoking a signature-verified
+   * approval tombstones the SHA-256 digest of its signature, and a
+   * later `approveSigned()` presenting that exact signature throws
+   * `quorum approveSigned: signature for signer "…" was revoked and
+   * cannot be replayed` and records nothing — a stale relayer cannot
+   * resurrect a withdrawn vote. The signer can still vote again with
+   * a fresh signature (a new nonce, see {@link Quorum.approveSigned}).
+   * Plain `approve()` entries carry no signature, so there is nothing
+   * to tombstone for them. Tombstones are instance state, not snapshot
+   * data: a restored quorum never saw the revoked signatures, so it
+   * cannot refuse their replay — restore into a fresh quorum only
+   * from snapshots you trust, as the snapshot docs already state.
    */
   revoke(signerId: string): void;
   /**
@@ -372,6 +472,7 @@ const QUORUM_CONFIG_FIELDS = new Set([
   "maxApprovalAgeMs",
   "signerPublicKeys",
   "statementContext",
+  "statementScope",
 ]);
 
 /**
@@ -384,6 +485,53 @@ const QUORUM_SIGNED_SNAPSHOT_EXPORT_OPTION_FIELDS = new Set([
   "maxAgeMs",
   "now",
 ]);
+
+const QUORUM_STATEMENT_OUTCOMES: readonly QuorumStatementOutcome[] = [
+  "release",
+  "refund",
+  "arbitration",
+];
+
+/**
+ * Shared shape bar for a statement scope (backlog #1418), used by
+ * both `assertValidConfig` and {@link approvalStatement} so the two
+ * entry points reject the same malformed scope with the same
+ * wording, differing only in the label prefix. Unknown fields fail
+ * closed — a typo'd `escrowID` is reported as itself, never
+ * silently dropped — and `outcome`, when present, must be one of
+ * the three known outcomes.
+ */
+function assertValidStatementScope(scope: unknown, label: string): void {
+  if (typeof scope !== "object" || scope === null || Array.isArray(scope))
+    throw new Error(
+      `${label} must be an object with an escrowId, got ${JSON.stringify(scope)}`
+    );
+  for (const key of Object.keys(scope)) {
+    if (key !== "escrowId" && key !== "outcome") {
+      throw new Error(`${label} has unknown field "${key}"`);
+    }
+  }
+  const { escrowId, outcome } = scope as {
+    escrowId?: unknown;
+    outcome?: unknown;
+  };
+  if (
+    typeof escrowId !== "string" ||
+    escrowId.length === 0 ||
+    escrowId.length > MAX_ACTOR_LENGTH
+  )
+    throw new Error(
+      `${label} escrowId must be a non-empty string of at most ${MAX_ACTOR_LENGTH} characters, got ${JSON.stringify(escrowId)}`
+    );
+  if (
+    outcome !== undefined &&
+    (typeof outcome !== "string" ||
+      !(QUORUM_STATEMENT_OUTCOMES as readonly string[]).includes(outcome))
+  )
+    throw new Error(
+      `${label} outcome must be "release", "refund", or "arbitration", got ${JSON.stringify(outcome)}`
+    );
+}
 
 function assertValidConfig(config: QuorumConfig): void {
   // Body shape first, before any field is read (backlog #1357): a
@@ -414,7 +562,7 @@ function assertValidConfig(config: QuorumConfig): void {
       throw new Error(`quorum: unknown option "${key}"`);
     }
   }
-  const { threshold, signers, now, maxApprovalAgeMs, signerPublicKeys, statementContext } =
+  const { threshold, signers, now, maxApprovalAgeMs, signerPublicKeys, statementContext, statementScope } =
     config;
   if (!Array.isArray(signers) || signers.length === 0)
     throw new Error("quorum signers must be a non-empty array");
@@ -454,6 +602,8 @@ function assertValidConfig(config: QuorumConfig): void {
     throw new Error(
       `quorum statementContext must be a non-empty string of at most ${MAX_ACTOR_LENGTH} characters, got ${JSON.stringify(statementContext)}`
     );
+  if (statementScope !== undefined)
+    assertValidStatementScope(statementScope, "quorum statementScope");
   if (signerPublicKeys !== undefined) {
     if (
       typeof signerPublicKeys !== "object" ||
@@ -484,6 +634,13 @@ interface TimedApproval {
   readonly evidence?: string;
   /** True only for entries recorded via `approveSigned()`. */
   readonly verified?: boolean;
+  /**
+   * SHA-256 hex digest of the signature that recorded this entry
+   * (backlog #1418). Internal only — never written into the log or
+   * a snapshot — so `revoke()` can tombstone the exact signature
+   * bytes it removes and `approveSigned()` can refuse their replay.
+   */
+  readonly signatureSha256?: string;
 }
 
 /**
@@ -531,10 +688,33 @@ function assertValidEvidence(evidence: string | undefined): void {
  * empty, or overlong context throws
  * `invalid approval statement: statementContext must be …` instead
  * of being minted into a statement that could never verify.
+ *
+ * Scope (backlog #1418): when `scope` is given, a literal `scope`
+ * marker plus the escrow id are appended after the context slot —
+ * `escrow-quorum:approve:<signerId>[:<statementContext>]:scope:<escrowId>[:<outcome>]`.
+ * The marker keeps the scope segments unambiguous against a
+ * free-text context, and the outcome is minted only when pinned:
+ * an escrow-only scope mints different bytes from an
+ * outcome-pinned one, so a release signature cannot verify in an
+ * escrow-only quorum or vice versa. The scope is validated by the
+ * same bar as the config side (`assertValidStatementScope`):
+ * unknown fields fail closed and a bad `escrowId` / `outcome`
+ * throws `invalid approval statement: statementScope …`.
+ *
+ * Nonce (backlog #1418): when `nonce` is given, a final
+ * `nonce:<nonce>` segment is appended. A nonce must be a non-empty
+ * string of at most {@link MAX_ACTOR_LENGTH} characters. The
+ * statement is a canonical byte string verified by exact
+ * recomputation — no parser reads the segments back — so distinct
+ * inputs mint distinct bytes for every configuration a quorum can
+ * actually be built with (context and scope are fixed per quorum,
+ * the nonce is supplied per call).
  */
 export function approvalStatement(
   signerId: string,
   statementContext?: string,
+  scope?: QuorumStatementScope,
+  nonce?: string,
 ): Buffer {
   if (
     typeof signerId !== "string" ||
@@ -553,12 +733,29 @@ export function approvalStatement(
     throw new Error(
       `invalid approval statement: statementContext must be a non-empty string of at most ${MAX_ACTOR_LENGTH} characters, got ${JSON.stringify(statementContext)}`
     );
-  return Buffer.from(
-    statementContext === undefined
-      ? `escrow-quorum:approve:${signerId}`
-      : `escrow-quorum:approve:${signerId}:${statementContext}`,
-    "utf8",
-  );
+  if (scope !== undefined)
+    assertValidStatementScope(scope, "invalid approval statement: statementScope");
+  if (
+    nonce !== undefined &&
+    (typeof nonce !== "string" ||
+      nonce.length === 0 ||
+      nonce.length > MAX_ACTOR_LENGTH)
+  )
+    throw new Error(
+      `invalid approval statement: nonce must be a non-empty string of at most ${MAX_ACTOR_LENGTH} characters, got ${JSON.stringify(nonce)}`
+    );
+  const parts = [`escrow-quorum:approve:${signerId}`];
+  if (statementContext !== undefined) parts.push(statementContext);
+  if (scope !== undefined) {
+    // The literal "scope" marker keeps the escrow segment
+    // unambiguous against a free-text context; the outcome is
+    // minted only when pinned, so an escrow-only scope mints
+    // different bytes from an outcome-pinned one.
+    parts.push("scope", scope.escrowId);
+    if (scope.outcome !== undefined) parts.push(scope.outcome);
+  }
+  if (nonce !== undefined) parts.push(`nonce:${nonce}`);
+  return Buffer.from(parts.join(":"), "utf8");
 }
 
 function buildQuorum(
@@ -576,6 +773,21 @@ function buildQuorum(
   // a per-call argument, so a caller cannot override the binding at
   // vote time. `undefined` keeps the legacy signer-only statement.
   const statementContext = config.statementContext;
+  // Scope bound into every signed statement (backlog #1418): same
+  // read-once rule as the context. `undefined` keeps the legacy
+  // statement bytes.
+  const statementScope = config.statementScope;
+  // Revoked-signature tombstones (backlog #1418): SHA-256 hex digests
+  // of signatures removed by `revoke()`. Presenting one again is
+  // refused before any crypto runs. Instance state only — never
+  // written into the log or a snapshot.
+  const revokedSignatures = new Set<string>();
+  // Consumed single-use nonces (backlog #1418): keys are
+  // `JSON.stringify([signerId, nonce])`, so two signers may reuse
+  // the same nonce string without colliding. Consumed only when the
+  // signature verifies; a failed verification consumes nothing.
+  // Instance state only, like the tombstones.
+  const consumedNonces = new Set<string>();
   /**
    * Resolve one clock reading, fail-closed (backlog #1336, same
    * contract as `SettlementEventDedupe.resolveNow` in
@@ -628,6 +840,11 @@ function buildQuorum(
   return {
     threshold,
     signerCount: signers.size,
+    statementScope(): QuorumStatementScope | undefined {
+      // Defensive copy: the scope is two strings, so a shallow copy
+      // fully detaches the caller's object from the quorum.
+      return statementScope === undefined ? undefined : { ...statementScope };
+    },
     approve(signerId: string, evidence?: string): void {
       if (!signers.has(signerId))
         throw new Error(`unknown quorum signer: ${JSON.stringify(signerId)}`);
@@ -643,7 +860,8 @@ function buildQuorum(
     approveSigned(
       signerId: string,
       signature: Buffer | Uint8Array,
-      evidence?: string
+      evidence?: string,
+      nonce?: string
     ): void {
       if (!signers.has(signerId))
         throw new Error(`unknown quorum signer: ${JSON.stringify(signerId)}`);
@@ -658,14 +876,40 @@ function buildQuorum(
         throw new Error(
           "quorum approveSigned: signature must be a Buffer or Uint8Array"
         );
+      // The statement is built first so a malformed nonce or scope
+      // fails closed here with approvalStatement's own wording,
+      // before any crypto runs or any state is touched.
+      const statement = approvalStatement(
+        signerId,
+        statementContext,
+        statementScope,
+        nonce
+      );
+      // Single-use nonce (backlog #1418): a consumed nonce is refused
+      // before crypto — even while the signer's approval still counts
+      // — so a captured (nonce, signature) pair cannot be
+      // re-submitted. Checked before the tombstone below: a revoked
+      // signature that also carries a spent nonce reports the nonce
+      // first.
+      const nonceKey =
+        nonce === undefined ? undefined : JSON.stringify([signerId, nonce]);
+      if (nonceKey !== undefined && consumedNonces.has(nonceKey))
+        throw new Error(
+          `quorum approveSigned: nonce ${JSON.stringify(nonce)} has already been used`
+        );
+      // Revoked-signature tombstone (backlog #1418): the digest of a
+      // signature removed by revoke() is refused before any crypto
+      // runs, so a stale relayer cannot resurrect a withdrawn vote.
+      const signatureSha256 = createHash("sha256")
+        .update(signature)
+        .digest("hex");
+      if (revokedSignatures.has(signatureSha256))
+        throw new Error(
+          `quorum approveSigned: signature for signer ${JSON.stringify(signerId)} was revoked and cannot be replayed`
+        );
       let ok = false;
       try {
-        ok = verify(
-          null,
-          approvalStatement(signerId, statementContext),
-          publicKey,
-          signature
-        );
+        ok = verify(null, statement, publicKey, signature);
       } catch {
         ok = false;
       }
@@ -673,13 +917,17 @@ function buildQuorum(
         throw new Error(
           `quorum signature verification failed for signer ${JSON.stringify(signerId)}`
         );
+      // The signature verified: only now is the nonce spent — a
+      // failed verification consumes nothing.
+      if (nonceKey !== undefined) consumedNonces.add(nonceKey);
       const current = latestBySigner().get(signerId);
       if (current !== undefined && isCounted(current)) {
         // Still counts: upgrade the entry in place — same timestamp,
         // same evidence, now verified. The approval happened when it
-        // happened; the signature only proves it later.
+        // happened; the signature only proves it later. The digest
+        // is recorded so revoke() can tombstone this signature too.
         const idx = log.lastIndexOf(current);
-        log[idx] = { ...current, verified: true };
+        log[idx] = { ...current, verified: true, signatureSha256 };
         return;
       }
       log.push({
@@ -687,6 +935,7 @@ function buildQuorum(
         atMs: resolveNow(),
         ...(evidence !== undefined ? { evidence } : {}),
         verified: true,
+        signatureSha256,
       });
     },
     revoke(signerId: string): void {
@@ -701,6 +950,16 @@ function buildQuorum(
             signerId
           )} has not approved`
         );
+      // Replay resistance (backlog #1418): tombstone the digest of
+      // every signature-verified entry removed, so the same signature
+      // cannot be re-presented after the revoke. Plain approve()
+      // entries carry no signature and tombstone nothing.
+      for (const entry of log)
+        if (
+          entry.signerId === signerId &&
+          entry.signatureSha256 !== undefined
+        )
+          revokedSignatures.add(entry.signatureSha256);
       for (let i = log.length - 1; i >= 0; i--)
         if (log[i].signerId === signerId) log.splice(i, 1);
     },

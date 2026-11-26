@@ -84,6 +84,8 @@ export type {
   QuorumConfig,
   QuorumSnapshot,
   QuorumSnapshotDiff,
+  QuorumStatementOutcome,
+  QuorumStatementScope,
   ApprovalLogEntry,
   QuorumSignedSnapshotEnvelope,
   QuorumExportSignedSnapshotOptions,

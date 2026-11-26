@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2941 tests, all local
+npm test   # 2958 tests, all local
 ```
 
 ## Quickstart
@@ -1016,22 +1016,42 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   for one arbitration then cannot be replayed into another quorum
   configured with a different context, or with no context at all —
   and the log entry is marked `verified: true`.
+  A quorum can also be bound to one escrow — and, when pinned, one
+  arbitration outcome — with `QuorumConfig.statementScope:
+  { escrowId, outcome? }` (`outcome` is `"release"`, `"refund"`, or
+  `"arbitration"`): the scope is minted into every signed statement,
+  so a vote for escrow A cannot verify in a quorum scoped to escrow
+  B, or for the other outcome, and `dispatchArbitration` refuses a
+  quorum scoped to a different escrow or outcome before it checks the
+  count. Without a scope the statement carries no escrow or outcome
+  segment, exactly as a context-less statement carries no context.
+  `approveSigned()` also accepts an optional single-use `nonce`,
+  minted into the statement and consumed only when the signature
+  verifies, so a captured (nonce, signature) pair cannot be
+  re-submitted. Revoking a signature-verified approval tombstones
+  the SHA-256 digest of its signature, so replaying that exact
+  signature after the revoke is refused — Ed25519 signatures are
+  deterministic, so re-signing the same statement mints identical
+  bytes and is not a way back in; a fresh nonce is. Tombstones and
+  consumed nonces are instance state, never written into the log or
+  a snapshot.
   A failed verification throws and
   records nothing; a signer with no registered key cannot use
   `approveSigned()` at all, and non-Ed25519 or private keys are
   rejected at construction. Verified and unverified approvals count
   identically toward the threshold — the flag only records *how* the
   vote was proven. Two honest limits: without a configured
-  `statementContext` the statement binds the signer id only, not an
-  escrow or outcome, so use one quorum per arbitration (the
-  `dispatchArbitration` pattern) unless the context is set — with it,
-  the same signer keys can vote in several arbitrations and the
-  statement itself carries the binding; and a snapshot carries the
-  recorded `verified` flags as data without re-verifying them, so a
-  restored flag is only as trustworthy as the snapshot itself.
-  (`statementContext` itself is configuration, not snapshot data: a
-  restored quorum verifies new signatures under the restoring
-  config's context.)
+  `statementContext` or `statementScope` the statement binds the
+  signer id only, not an escrow or outcome, so use one quorum per
+  arbitration (the `dispatchArbitration` pattern) unless one of them
+  is set — with either set, the same signer keys can vote in several
+  arbitrations and the statement itself carries the binding; and a
+  snapshot carries the recorded `verified` flags as data without
+  re-verifying them, so a restored flag is only as trustworthy as
+  the snapshot itself.
+  (`statementContext` and `statementScope` are configuration, not
+  snapshot data: a restored quorum verifies new signatures under
+  the restoring config's context and scope.)
   An optional `maxApprovalAgeMs` gives approvals a shelf life: past the
   window (boundary inclusive) they stop counting toward the threshold —
   `hasQuorum()` can fall back to false — but they stay in `approvalLog()`,
@@ -2257,7 +2277,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2941 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2958 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

@@ -24,7 +24,7 @@ import {
   type EscrowEvent,
   type EscrowState,
 } from "./stateMachine.js";
-import type { Quorum } from "./quorum.js";
+import type { Quorum, QuorumStatementScope } from "./quorum.js";
 
 /** The two arbitration outcomes the DISPUTED state can reach. */
 export type ArbitrationOutcome = "release" | "refund";
@@ -67,6 +67,40 @@ const OUTCOME_EVENTS: Record<ArbitrationOutcome, EscrowEvent> = {
 };
 
 /**
+ * Read a quorum's statement scope, if it reports one (backlog #1418).
+ * `createQuorum` / `restoreQuorum` always provide `statementScope()`;
+ * a duck-typed quorum without it is treated as unscoped (the legacy
+ * behavior). A scope that is present but malformed fails closed
+ * instead of being trusted — a hand-built quorum object must not be
+ * able to smuggle a bogus scope past the gate.
+ */
+function readQuorumScope(quorum: Quorum): QuorumStatementScope | undefined {
+  const statementScope = quorum.statementScope;
+  if (statementScope === undefined) return undefined;
+  if (typeof statementScope !== "function")
+    throw new Error(
+      `invalid dispatchArbitration: quorum statementScope must be a function, got ${typeof statementScope}`
+    );
+  const scope = statementScope.call(quorum);
+  if (scope === undefined) return undefined;
+  if (
+    typeof scope !== "object" ||
+    scope === null ||
+    Array.isArray(scope) ||
+    typeof (scope as QuorumStatementScope).escrowId !== "string" ||
+    (scope as QuorumStatementScope).escrowId.length === 0 ||
+    ((scope as QuorumStatementScope).outcome !== undefined &&
+      (scope as QuorumStatementScope).outcome !== "release" &&
+      (scope as QuorumStatementScope).outcome !== "refund" &&
+      (scope as QuorumStatementScope).outcome !== "arbitration")
+  )
+    throw new Error(
+      `invalid dispatchArbitration: quorum statementScope is malformed, got ${JSON.stringify(scope)}`
+    );
+  return scope as QuorumStatementScope;
+}
+
+/**
  * Dispatch an arbitration event only if the quorum has been reached.
  *
  * - Outcome must be `"release"` or `"refund"`; anything else throws a
@@ -84,6 +118,15 @@ const OUTCOME_EVENTS: Record<ArbitrationOutcome, EscrowEvent> = {
  *   itself calls, so a duck-typed quorum with exactly that surface
  *   still passes; anything missing a method fails here instead of
  *   crashing mid-message.
+ * - Scope binding (backlog #1418): when the quorum reports a
+ *   `statementScope()` (every quorum built by `createQuorum` /
+ *   `restoreQuorum` does), the scope must name this escrow's id and,
+ *   when an outcome is pinned, this outcome — an `"arbitration"`
+ *   outcome or an absent one leaves the direction open. A mismatch
+ *   throws `arbitration quorum scope mismatch: …` and the escrow is
+ *   left untouched. The check runs after the shape guard above and
+ *   before the quorum gate below. A duck-typed quorum without
+ *   `statementScope()` is treated as unscoped (legacy behavior).
  * - If `quorum.hasQuorum()` is false, throws
  *   `arbitration requires quorum: <approvals>/<threshold> approvals` and
  *   the escrow's state and history are left unchanged — the failed gating
@@ -156,6 +199,28 @@ export function dispatchArbitration(
     throw new Error(
       `invalid dispatchArbitration: quorum must be a Quorum, got ${quorum === null ? "null" : typeof quorum}`
     );
+  }
+  // Scope binding (backlog #1418): a quorum configured with a
+  // statementScope only votes for that escrow — and, when the outcome
+  // is pinned, only for that outcome ("arbitration" or an absent
+  // outcome leaves the direction open). Checked before the quorum
+  // gate, so a quorum scoped to another escrow can never release
+  // this one even if its count was reached; the escrow is left
+  // untouched on a mismatch.
+  const scope = readQuorumScope(quorum);
+  if (scope !== undefined) {
+    if (scope.escrowId !== escrow.id)
+      throw new Error(
+        `arbitration quorum scope mismatch: quorum is scoped to escrow ${JSON.stringify(scope.escrowId)} but dispatch targets escrow ${JSON.stringify(escrow.id)}`
+      );
+    if (
+      scope.outcome !== undefined &&
+      scope.outcome !== "arbitration" &&
+      scope.outcome !== outcome
+    )
+      throw new Error(
+        `arbitration quorum scope mismatch: quorum is scoped to outcome ${JSON.stringify(scope.outcome)} but dispatch outcome is ${JSON.stringify(outcome)}`
+      );
   }
   if (!quorum.hasQuorum()) {
     throw new Error(

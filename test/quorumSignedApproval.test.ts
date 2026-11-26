@@ -332,15 +332,32 @@ test("a wrong-length signature fails closed and records nothing", () => {
   assert.deepStrictEqual(quorum.approvalLog(), []);
 });
 
-test("revoke removes a verified entry; re-approveSigned records it fresh", () => {
+test("revoke removes a verified entry; the same signature cannot be replayed, a fresh nonce re-approves", () => {
   const { quorum, keys } = keyedQuorum(1, ["dao-1"], {
     now: scriptedClock([1_000, 2_000]),
   });
-  quorum.approveSigned("dao-1", signApproval(keys.get("dao-1")!, "dao-1"));
+  const pair = keys.get("dao-1")!;
+  quorum.approveSigned("dao-1", signApproval(pair, "dao-1"));
   quorum.revoke("dao-1");
   assert.equal(quorum.approvalCount(), 0);
   assert.deepStrictEqual(quorum.approvalLog(), []);
-  quorum.approveSigned("dao-1", signApproval(keys.get("dao-1")!, "dao-1"));
+  // The revoked signature is tombstoned (backlog #1418): Ed25519 is
+  // deterministic, so re-signing the same statement mints byte-identical
+  // bytes — replaying them must stay refused, exactly as a stale
+  // relayer re-submitting the withdrawn vote would be.
+  assert.throws(
+    () => quorum.approveSigned("dao-1", signApproval(pair, "dao-1")),
+    /quorum approveSigned: signature for signer "dao-1" was revoked and cannot be replayed/
+  );
+  assert.equal(quorum.approvalCount(), 0);
+  // A fresh nonce mints a fresh statement and a fresh signature: the
+  // signer can vote again, which is the documented way back in.
+  const fresh = sign(
+    null,
+    approvalStatement("dao-1", undefined, undefined, "n-2"),
+    pair.privateKey
+  );
+  quorum.approveSigned("dao-1", fresh, undefined, "n-2");
   assert.deepStrictEqual(quorum.approvalLog(), [
     { signerId: "dao-1", at: new Date(2_000).toISOString(), verified: true },
   ]);
