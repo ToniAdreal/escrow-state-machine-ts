@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2931 tests, all local
+npm test   # 2941 tests, all local
 ```
 
 ## Quickstart
@@ -1137,10 +1137,16 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   `complexityMultiplier` unchanged), applies the multiplier once and
   rounds a single time, half-up, to the nearest cent — so it agrees
   with `calculateDeposit` to the cent on the same inputs, with no
-  `0.1 + 0.2` dust to mop up. The golden vector is 1,063,000 cents.
-  Non-integer, negative, or non-finite cent inputs fail fast, as do a
-  non-positive multiplier, a negative deposit, and an overflowing
-  computation (same error messages as the dollar version).
+  `0.1 + 0.2` dust to mop up. The product and the sum are computed in
+  exact `BigInt` (the multiplier is read as the rational named by its
+  shortest decimal string, so `100¢ × 1.005` is exactly 101¢), and
+  money inputs must be safe integers: a value past
+  `Number.MAX_SAFE_INTEGER` fails at the input gate, and an exact
+  result past the ceiling throws instead of returning a rounded-off
+  amount. The golden vector is 1,063,000 cents.
+  Non-integer, negative, non-safe-integer, or non-finite cent inputs
+  fail fast, as do a non-positive multiplier, a negative deposit, and
+  an overflowing computation (same error messages as the dollar version).
   Integer cents can be rendered exactly for statements and
   reconciliation text with `formatMinorUnits` (`1,063,000` cents →
   `"10630.00"`: exactly two decimals, no thousands separator, no
@@ -2251,7 +2257,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2931 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2941 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

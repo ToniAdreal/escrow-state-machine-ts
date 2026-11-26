@@ -152,30 +152,32 @@ test("complexityMultiplier 1e308 overflows the deposit computation and throws", 
   );
 });
 
-test("overflow also triggers via huge pool plus huge base fee (finite inputs)", () => {
-  // Unlike the dollar version there is no x100 step here, so a single
-  // 1e307-scale input stays finite; overflow needs the *sum* past
-  // Number.MAX_VALUE: 1.7e308 + 1e308 is Infinity.
+test("overflow also triggers via huge pool plus huge base fee (safe-integer inputs)", () => {
+  // Both inputs are safe integers now (the input gate rejects anything
+  // past the ceiling before the math runs), but their exact sum is
+  // twice MAX_SAFE_INTEGER — unrepresentable, so it overflows.
   assert.throws(
     () =>
       calculateDepositCents({
         ...GOLDEN_CENTS,
-        creatorPoolCents: 1.7e308,
-        baseFeeCents: 1e308,
+        creatorPoolCents: Number.MAX_SAFE_INTEGER,
+        baseFeeCents: Number.MAX_SAFE_INTEGER,
+        complexityMultiplier: 1,
       }),
     /deposit computation overflowed: inputs too large/,
   );
 });
 
 test("overflow also triggers via a huge baseFeeCents (adjusted fee overflows first)", () => {
-  // 1e308 cents x a 1e308 multiplier overflows the product to Infinity,
-  // so the adjusted fee — and then the deposit — is non-finite.
+  // MAX_SAFE_INTEGER cents x a 2x multiplier overflows the adjusted
+  // fee itself, so the overflow fires before the deposit sum is even
+  // attempted.
   assert.throws(
     () =>
       calculateDepositCents({
         ...GOLDEN_CENTS,
-        baseFeeCents: 1e308,
-        complexityMultiplier: 1e308,
+        baseFeeCents: Number.MAX_SAFE_INTEGER,
+        complexityMultiplier: 2,
       }),
     /deposit computation overflowed: inputs too large/,
   );
@@ -195,9 +197,14 @@ test("the overflow error message is exact and no partial breakdown escapes", () 
 });
 
 test("a huge loyaltyDiscountCents goes the negative route, not the overflow route", () => {
+  // A discount past the golden deposit still reports "deposit would
+  // be negative" rather than overflow: the negative check runs before
+  // the overflow check on the exact sum. (A discount past the
+  // safe-integer ceiling itself is rejected earlier, at the input
+  // gate — see test/feeCalculatorCentsSafeInteger.test.ts.)
   assert.throws(
     () =>
-      calculateDepositCents({ ...GOLDEN_CENTS, loyaltyDiscountCents: 1e308 }),
+      calculateDepositCents({ ...GOLDEN_CENTS, loyaltyDiscountCents: 2_000_000 }),
     /deposit would be negative/,
   );
 });

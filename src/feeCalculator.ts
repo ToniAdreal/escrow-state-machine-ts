@@ -64,7 +64,13 @@ function assertMoney(name: string, v: number): void {
 }
 
 function assertMoneyCents(name: string, v: number): void {
-  if (!Number.isInteger(v) || v < 0)
+  // Safe-integer, not merely integer: a double past
+  // Number.MAX_SAFE_INTEGER (e.g. the literal 9007199254740993, which
+  // arrives as 9007199254740992) is an integer but no longer names a
+  // single cent value, so accepting it would let the arithmetic below
+  // silently return a rounded-off amount. Same gate as settlement.ts's
+  // assertMoneyCents.
+  if (!Number.isSafeInteger(v) || v < 0)
     throw new Error(`${name} must be a finite non-negative integer number of cents`);
 }
 
@@ -129,6 +135,14 @@ const FEE_INPUT_CENTS_FIELDS = new Set([
   "oracleFeeCents",
 ]);
 
+/**
+ * Dollar version of the fee formula (see the module doc): float
+ * arithmetic with a single final `round2`, unchanged for existing
+ * dollar-denominated callers. Callers holding large amounts or
+ * needing cent-exact results should use {@link calculateDepositCents}
+ * instead — it computes the same formula in `BigInt` and fails
+ * loudly past `Number.MAX_SAFE_INTEGER` instead of silently rounding.
+ */
 export function calculateDeposit(inputs: FeeInputs): FeeBreakdown {
   // Shape first, before the `Object.entries` scan: see `assertFeeInputs`.
   assertFeeInputs("calculateDeposit", inputs);
@@ -157,6 +171,36 @@ export function calculateDeposit(inputs: FeeInputs): FeeBreakdown {
 }
 
 /**
+ * The multiplier as an exact rational, read off its shortest
+ * round-trip decimal string: `String(1.005)` is `"1.005"`, so the
+ * multiplier the caller wrote is 1005/1000 — not the binary double
+ * 1.004999999999999893..., which no decimal literal can name. Every
+ * finite positive double has such a string (`"1.5"`, `"1e+308"`,
+ * `"5e-324"`), so the conversion never guesses: the numerator and
+ * denominator below are exactly the decimal the caller sees. A
+ * non-finite multiplier never reaches here (the caller-facing guard
+ * rejects it first with the finite-positive error), so an unmatched
+ * string is a bug, not a caller value, and fails the same way.
+ */
+function multiplierToRational(multiplier: number): {
+  numerator: bigint;
+  denominator: bigint;
+} {
+  const text = String(multiplier);
+  const match = /^(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/i.exec(text);
+  if (match === null)
+    throw new Error(
+      `complexityMultiplier must be a finite positive number, got ${text}`,
+    );
+  const digits = match[1] + (match[2] ?? "");
+  const exponent = (match[3] === undefined ? 0 : Number(match[3])) - (match[2]?.length ?? 0);
+  const numerator = BigInt(digits);
+  if (exponent >= 0)
+    return { numerator: numerator * 10n ** BigInt(exponent), denominator: 1n };
+  return { numerator, denominator: 10n ** BigInt(-exponent) };
+}
+
+/**
  * Integer-cents version of {@link calculateDeposit}: the same formula,
  * but every money field is a whole number of cents in and out.
  *
@@ -170,6 +214,24 @@ export function calculateDeposit(inputs: FeeInputs): FeeBreakdown {
  * inputs (no per-item rounding, no accumulated error). With integer-cent
  * inputs there is no `0.1 + 0.2` dust to mop up afterwards: a caller
  * holding cents end to end never leaves the integer domain.
+ *
+ * Exactness contract (backlog #1417): the product and the sum are
+ * computed in `BigInt`, mirroring `settlement.ts`'s `feeCents` — the
+ * multiplier is first converted to the exact rational named by its
+ * shortest decimal string (see {@link multiplierToRational}), so
+ * `100¢ × 1.005` is exactly 100.5¢ and rounds half-up to 101¢, where
+ * the old float product (`100 * 1.005 === 100.49999999999999`)
+ * rounded down to 100¢. Money inputs must be safe integers
+ * (`Number.isSafeInteger`): a value past the safe-integer ceiling
+ * fails at the input gate with the integer-cents error instead of
+ * silently rounding. Any exact result past
+ * `Number.MAX_SAFE_INTEGER` — an adjusted fee or a deposit total —
+ * throws `deposit computation overflowed: inputs too large` (the safe
+ * ceiling is part of the overflow contract, not just `Infinity`):
+ * `Number.MAX_SAFE_INTEGER × 1.5` is exactly 13,510,798,882,111,487¢,
+ * which no double can hold, so it throws instead of returning the
+ * float's off-by-one 13,510,798,882,111,486¢. A deposit that would go
+ * negative still reports `deposit would be negative` first.
  *
  * This is the recommended path for new callers; `calculateDeposit`
  * stays unchanged for existing dollar-denominated callers. Inputs that
@@ -198,21 +260,39 @@ export function calculateDepositCents(inputs: FeeInputsCents): FeeBreakdownCents
   if (!Number.isFinite(inputs.complexityMultiplier) || inputs.complexityMultiplier <= 0)
     throw new Error("complexityMultiplier must be a finite positive number");
 
-  // Inputs are non-negative integers and the multiplier is positive, so
-  // the product is non-negative and Math.round is half-up here.
-  const adjustedBaseFeeCents = Math.round(
-    inputs.baseFeeCents * inputs.complexityMultiplier,
+  // Exact half-up product in BigInt: roundHalfUp(base × num/den) is
+  // floor((2 × base × num + den) / (2 × den)) for non-negative inputs
+  // — the same single-final-rounding shape as the dollar version's
+  // `round2`, with no float product in between. Mirrors
+  // settlement.ts's `feeCents` (which adds half the divisor before
+  // dividing); the doubled form here keeps the tie (exact .5) rounding
+  // up, as `Math.round` does on non-negative inputs.
+  const { numerator, denominator } = multiplierToRational(
+    inputs.complexityMultiplier,
   );
-  const depositCents =
-    inputs.creatorPoolCents +
-    adjustedBaseFeeCents -
-    inputs.loyaltyDiscountCents +
-    inputs.oracleFeeCents;
+  const adjustedBaseFeeCents = Number(
+    (2n * BigInt(inputs.baseFeeCents) * numerator + denominator) /
+      (2n * denominator),
+  );
+  // The adjusted fee is itself a returned money value, so it must fit
+  // the safe-integer range on its own — checked before the sum, so a
+  // huge base fee fails here even when a huge discount would have made
+  // the deposit negative (same overflow message as the dollar version).
+  if (!Number.isSafeInteger(adjustedBaseFeeCents))
+    throw new Error("deposit computation overflowed: inputs too large");
+  const depositCents = Number(
+    BigInt(inputs.creatorPoolCents) +
+      BigInt(adjustedBaseFeeCents) -
+      BigInt(inputs.loyaltyDiscountCents) +
+      BigInt(inputs.oracleFeeCents),
+  );
   if (depositCents < 0) throw new Error("deposit would be negative");
-  // Same overflow guard as the dollar version: finite-but-huge inputs can
-  // push the intermediate arithmetic past Number.MAX_VALUE. An infinite
-  // deposit would poison every downstream money sum, so fail fast.
-  if (!Number.isFinite(depositCents))
+  // Same overflow guard as the dollar version, now on the exact sum:
+  // safe inputs can still add past Number.MAX_SAFE_INTEGER (pool at
+  // the ceiling plus any oracle fee), and the exact total is
+  // unrepresentable, so fail fast instead of returning a rounded-off
+  // deposit that would poison every downstream money sum.
+  if (!Number.isSafeInteger(depositCents))
     throw new Error("deposit computation overflowed: inputs too large");
   return { ...inputs, adjustedBaseFeeCents, depositCents };
 }

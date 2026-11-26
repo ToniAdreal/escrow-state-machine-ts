@@ -213,6 +213,37 @@ version changes.
 
 ### Fixed
 
+- `calculateDepositCents` is exact at the safe-integer ceiling instead of silently rounding (2026-11-26,
+  backlog #1417): the product (`baseFeeCents × complexityMultiplier`)
+  and the deposit sum ran in float with only a finiteness guard, so
+  near `Number.MAX_SAFE_INTEGER` the results came back a cent short
+  and non-safe with no complaint (probe: `MAX_SAFE_INTEGER × 1.5`
+  returned 13,510,798,882,111,486 instead of the exact
+  13,510,798,882,111,487; pool `MAX_SAFE_INTEGER` + oracle 2 returned
+  9,007,199,254,740,992 instead of 9,007,199,254,740,993). The
+  multiplier is now converted to the exact rational named by its
+  shortest decimal string and the product and sum are computed in
+  `BigInt` (mirroring `settlement.ts`'s `feeCents`), with a single
+  half-up rounding — `100¢ × 1.005` is exactly 101¢, where the old
+  float product rounded down to 100¢. Money inputs must now be safe
+  integers at the input gate (same error message as before), and any
+  exact result past the ceiling throws
+  `deposit computation overflowed: inputs too large` instead of
+  returning a rounded-off amount. The dollar `calculateDeposit` is
+  unchanged (float is its existing contract); its JSDoc now points
+  large-amount callers at the cents version. Ten new tests in
+  `test/feeCalculatorCentsSafeInteger.test.ts` (ceiling product and sum
+  overflow, ceiling itself passes, golden vector byte-identical, 1.005
+  decimal boundary, scientific-notation multipliers, negative route,
+  non-safe-integer input gate, Infinity multiplier guard), plus the
+  three 1e308-scale overflow tests in
+  `test/feeCalculatorCents.test.ts` rewritten at safe-integer scale
+  (their inputs are now rejected at the gate); mutation verification
+  (dropping the half-up term turns four rounding tests red; dropping
+  the safe-integer gate turns the input-gate test red, both restored
+  after); test counts 2931 -> 2941; README test counts and the money
+  precision section updated.
+
 - `partially-released` report counts prior tranches against the deposit (2026-11-26,
   backlog #1416): the FUNDED branch of `buildSettlementReport` used to
   settle the reported slice against the full deposit and ignore
