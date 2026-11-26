@@ -34,8 +34,10 @@ import {
  *    and returns an all-zero summary
  *  - a `deliverOne` that throws is recorded as a failed attempt
  *    (with its message as `lastError`), never a runner crash; a
- *    `deliverOne` that resolves to a non-boolean is a caller bug
- *    and throws before anything is recorded for that pair
+ *    `deliverOne` that resolves to a non-boolean is recorded the
+ *    same way (named error, per-pair failure) — see
+ *    `test/settlementWebhookOutboxRetryNonBoolean.test.ts`
+ *    (backlog #1420)
  *  - `maxConcurrency` bounds the in-flight re-deliveries (default
  *    serial); invalid options throw before any call is made
  */
@@ -407,25 +409,6 @@ test("a throwing deliverOne is recorded as a failed attempt, not a crash", async
   const pending = outbox.pending();
   assert.equal(pending[0].attempts, 2);
   assert.equal(pending[0].lastError, "boom: connection reset");
-});
-
-test("a non-boolean deliverOne result throws before anything is recorded", async () => {
-  const outbox = new SettlementWebhookOutbox({ maxAttempts: 3 });
-  fail(outbox, A, EVT_1);
-  fail(outbox, B, EVT_2);
-
-  await assert.rejects(
-    retrySettlementWebhookOutbox(
-      outbox,
-      async () => undefined as unknown as boolean,
-      {},
-    ),
-    /deliverOne must resolve to a boolean, got undefined/,
-  );
-  // The run aborted on the first pair's caller bug; both pairs are
-  // untouched (the second was never attempted).
-  assert.equal(outbox.pending().length, 2);
-  assert.ok(outbox.pending().every((e) => e.attempts === 1));
 });
 
 test("maxConcurrency bounds the in-flight re-deliveries", async () => {

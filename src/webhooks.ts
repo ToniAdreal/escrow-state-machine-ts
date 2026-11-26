@@ -3205,7 +3205,10 @@ export class SettlementWebhookOutbox {
  * whether the receiver accepted it (`true` = 2xx). The runner does
  * not build or sign the payload — wrap {@link deliverSettlementWebhook}
  * (or any transport that returns a boolean) so the runner stays
- * transport-agnostic and testable with a stub.
+ * transport-agnostic and testable with a stub. A resolution to a
+ * non-boolean is recorded as a failed attempt for that pair (with a
+ * named error) and the run continues with the remaining pairs — it
+ * never throws out of the runner (backlog #1420).
  */
 export type SettlementWebhookOutboxDeliverOne = (
   endpoint: string,
@@ -3375,13 +3378,16 @@ export interface SettlementWebhookOutboxRetrySummary {
  * - A successful re-delivery (`deliverOne` resolves `true`) calls
  *   `outbox.acknowledge(endpoint, eventId)`, clearing the pair so a
  *   later failure counts from 1 again.
- * - A failed re-delivery (`false`, or a `deliverOne` that throws)
- *   calls `outbox.recordAttempt({ endpoint, eventId, ok: false,
+ * - A failed re-delivery (`false`, a `deliverOne` that throws, or
+ *   a `deliverOne` that resolves to a non-boolean) calls
+ *   `outbox.recordAttempt({ endpoint, eventId, ok: false,
  *   error?, at })`, pushing the pair one step toward the dead
- *   letter; a thrown error is recorded with its message and never
- *   crashes the run. A `deliverOne` that resolves to a non-boolean
- *   is a caller bug and throws before anything is recorded for
- *   that pair.
+ *   letter; a thrown error is recorded with its message, and a
+ *   non-boolean resolution with a named `deliverOne must resolve
+ *   to a boolean, got …` error — neither crashes the run
+ *   (backlog #1420, mirroring dataquest #1407). A misshapen
+ *   return from one transport must not abort the whole round and
+ *   starve the remaining pairs.
  * - Between rounds the runner sleeps the exponential backoff
  *   (`backoffMs * 2^(r-1)`, plus opt-in `jitterMs`); with the
  *   default `maxRounds: 1` there is no sleep at all.
@@ -3593,12 +3599,23 @@ export async function retrySettlementWebhookOutbox(
           });
           continue;
         }
-        if (typeof ok !== "boolean") {
-          throw new Error(
-            `retrySettlementWebhookOutbox: deliverOne must resolve to a boolean, got ${typeof ok}`,
-          );
-        }
+        // A `deliverOne` that resolves to a non-boolean is a failed
+        // attempt for this pair only, not a runner crash (backlog
+        // #1420, mirroring dataquest #1407): record it with a named
+        // error and keep going, so one misshapen transport return
+        // cannot abort the whole round and starve the remaining
+        // pairs.
         attempted += 1;
+        if (typeof ok !== "boolean") {
+          outbox.recordAttempt({
+            endpoint: entry.endpoint,
+            eventId: entry.eventId,
+            ok: false,
+            error: `retrySettlementWebhookOutbox: deliverOne must resolve to a boolean, got ${typeof ok}`,
+            at: roundNow,
+          });
+          continue;
+        }
         if (ok) {
           outbox.acknowledge(entry.endpoint, entry.eventId);
           acknowledged += 1;
