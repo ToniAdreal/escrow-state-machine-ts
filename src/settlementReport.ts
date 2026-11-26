@@ -27,7 +27,15 @@
  *   the slice pro fee, referral credits go to the referrer, and the sponsor
  *   keeps the `remaining` balance locked — the sponsor's ledger row shows
  *   that remaining amount as still held, so the report still balances over
- *   the full deposit.
+ *   the full deposit. The reported slice is incremental: PARTIAL_RELEASE
+ *   tranches already in the trail count against the deposit too, so
+ *   `remaining` is the deposit minus every released tranche (prior ones
+ *   plus this slice), and a slice that would push the cumulative total
+ *   past the deposit fails closed instead of stamping an over-release as
+ *   balanced (backlog #1416). With prior tranches the slice report's
+ *   ledger covers only this slice plus the still-locked remainder, so
+ *   `balanced` is true only when there is no prior tranche — the prior
+ *   tranches were already reported on their own reports.
  * - On ARBITRATE_REFUND / EXPIRE the still-locked remainder returns to
  *   the sponsor; money already paid out in PARTIAL_RELEASE tranches
  *   stays paid out and is shown on the creator's row as the released
@@ -179,7 +187,13 @@ export interface SettlementReportInputs {
    * figures can never drift from the pure function's own math: the fee
    * is charged on the released amount only, `released` must not exceed
    * the deposit, and a negative net or overflow fails fast there. The
-   * escrow itself stays FUNDED — a partial release does not advance
+   * slice is incremental: PARTIAL_RELEASE tranches already in the audit
+   * history count against the deposit too (backlog #1416), so
+   * `released` here is this slice only and the cumulative total of
+   * prior tranches plus this slice must not exceed the deposit — a
+   * slice that would over-release fails closed with
+   * `cannot build settlement report for …: partial releases total …`.
+   * The escrow itself stays FUNDED — a partial release does not advance
    * state, and the report is evidence of the slice, not a state change.
    * Supplying this with a terminal `finalState` (RELEASED / REFUNDED /
    * EXPIRED) throws: a settled escrow's money is already fully
@@ -255,15 +269,26 @@ export interface SettlementReport {
   /**
    * Present only for the `partially-released` outcome: the
    * `settlePartialRelease` result for the reported slice (`released`,
-   * `proFee`, `referralCredits`, `net`, `remaining`).
+   * `proFee`, `referralCredits`, `net`), except `remaining`, which is
+   * the cumulative still-locked remainder — the deposit minus every
+   * released tranche, prior ones plus this slice (backlog #1416) —
+   * not the slice's own remainder, so it matches the report's
+   * top-level `remaining` and the sponsor's ledger inflow exactly.
    */
   partialSettlement?: PartialSettlement;
   /**
    * Amount still locked in escrow after the reported partial release
-   * (`deposit.deposit` minus the released slice). Present only for the
+   * (`deposit.deposit` minus every released tranche: the prior
+   * PARTIAL_RELEASE entries in the audit history plus the reported
+   * slice — backlog #1416). Present only for the
    * `partially-released` outcome; the sponsor's ledger row carries the
    * same figure as its inflow (money still held on the sponsor's
-   * behalf), so the report still balances over the full deposit.
+   * behalf), and the slice's `partialSettlement.remaining` carries it
+   * too, so the three cannot drift apart. With no prior tranche this
+   * is the slice's own remainder and the report balances over the full
+   * deposit; with prior tranches the ledger covers only this slice
+   * plus the still-locked remainder, so `balanced` is false and the
+   * prior tranches' money is accounted for on their own reports.
    */
   remaining?: number;
   parties: PartyLedger[];
@@ -930,24 +955,73 @@ export function buildSettlementReport(
       throw new Error(
         `cannot build settlement report for ${escrowId}: state is FUNDED but the audit history contains a release event`,
       );
+    // The reported slice is incremental, not the whole release to date
+    // (backlog #1416): the trail may already hold PARTIAL_RELEASE
+    // tranches from earlier slices, and those count against the deposit
+    // too. `settlePartialRelease` only guards one slice at a time
+    // (released ≤ gross), so a second slice that on its own fits the
+    // deposit could still push the cumulative total past it — and the
+    // old code then reported the slice's own remainder as if the prior
+    // tranches had never happened, stamping an over-release as
+    // balanced. Read the prior total first (this also throws on an
+    // amountless PARTIAL_RELEASE entry, the same fail-closed shape the
+    // terminal branches rely on) and fail closed on a cumulative
+    // over-release with the terminal branches' wording.
+    const priorReleased = releasedAmountFromHistory(history, escrowId);
+    const cumulativeReleased = round2(
+      priorReleased + inputs.partialRelease.released,
+    );
+    if (
+      !Number.isFinite(cumulativeReleased) ||
+      cumulativeReleased > depositAmount
+    ) {
+      throw new Error(
+        `cannot build settlement report for ${escrowId}: partial releases total ${cumulativeReleased} but the deposit is ${depositAmount} (the released total must not exceed the deposit)`,
+      );
+    }
     // Gross is always the locked deposit, never the caller's word for
     // it; settlePartialRelease re-validates the slice (released ≤ gross,
     // fee bounds, no negative net, no overflow).
-    const partialSettlement = settlePartialRelease({
+    const sliceSettlement = settlePartialRelease({
       gross: depositAmount,
       released: inputs.partialRelease.released,
       proFeeBps: inputs.partialRelease.proFeeBps,
       referralCredits: inputs.partialRelease.referralCredits,
     });
-    // Ledger over the full deposit, so the report still balances:
-    // the sponsor's outflow is the whole locked deposit (what left the
-    // sponsor), the sponsor's inflow is the amount still held on their
-    // behalf, and the released slice flows out to creator / platform /
-    // referrer exactly as a full release would split it. With released
-    // === deposit the remaining is 0 and this is byte-for-byte the
-    // released outcome's ledger (minus releasePath/settlement).
+    // The still-locked remainder is the deposit minus every released
+    // tranche — prior ones plus this slice — not the slice's own
+    // remainder. A negative remainder is excluded by the cumulative
+    // check above, so only a non-finite one can still fail here. All
+    // three places that carry the remainder (the slice's `remaining`,
+    // the report's top-level `remaining`, the sponsor's inflow) take
+    // this one figure, so they cannot drift apart.
+    const remaining = round2(
+      depositAmount - priorReleased - inputs.partialRelease.released,
+    );
+    if (!Number.isFinite(remaining)) {
+      throw new Error(
+        `cannot build settlement report for ${escrowId}: settlement computation overflowed: inputs too large`,
+      );
+    }
+    const partialSettlement: PartialSettlement = {
+      ...sliceSettlement,
+      remaining,
+    };
+    // Ledger over the full deposit, so the report still balances when
+    // there is no prior tranche: the sponsor's outflow is the whole
+    // locked deposit (what left the sponsor), the sponsor's inflow is
+    // the amount still held on their behalf, and the released slice
+    // flows out to creator / platform / referrer exactly as a full
+    // release would split it. With released === deposit the remaining
+    // is 0 and this is byte-for-byte the released outcome's ledger
+    // (minus releasePath/settlement). With a prior tranche the ledger
+    // covers only this slice plus the still-locked remainder — the
+    // prior tranches' money was already reported on their own reports
+    // — so totalInflow is the deposit minus the prior total and
+    // `balanced` is false, honestly: this slice report alone does not
+    // reconcile the full deposit.
     const parties = [
-      ledger("sponsor", partialSettlement.remaining, depositAmount),
+      ledger("sponsor", remaining, depositAmount),
       ledger("creator", partialSettlement.net, 0),
       ledger("platform", partialSettlement.proFee, 0),
       ledger("referrer", partialSettlement.referralCredits, 0),
@@ -958,12 +1032,13 @@ export function buildSettlementReport(
       ...base,
       outcome: "partially-released",
       partialSettlement,
-      remaining: partialSettlement.remaining,
+      remaining,
       parties,
       totalInflow,
       totalOutflow,
-      // remaining + released === depositAmount by settlePartialRelease's
-      // own arithmetic, so both totals equal the deposit.
+      // remaining + released === depositAmount only with no prior
+      // tranche (by settlePartialRelease's own arithmetic); with prior
+      // tranches totalInflow is the deposit minus that prior total.
       balanced: totalInflow === depositAmount && totalOutflow === depositAmount,
     };
   }

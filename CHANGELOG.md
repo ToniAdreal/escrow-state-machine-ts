@@ -213,6 +213,32 @@ version changes.
 
 ### Fixed
 
+- `partially-released` report counts prior tranches against the deposit (2026-11-26,
+  backlog #1416): the FUNDED branch of `buildSettlementReport` used to
+  settle the reported slice against the full deposit and ignore
+  PARTIAL_RELEASE tranches already in the audit history, so a second
+  slice could over-release the escrow and still be stamped
+  `balanced: true` (probe: deposit 10630, prior tranche 6000, second
+  slice 6000 → remaining 4630, balanced true, true balance −1370). The
+  branch now reads the prior total via `releasedAmountFromHistory`
+  first and fails closed with the terminal branches' wording
+  (`partial releases total … but the deposit is …`) when prior tranches
+  plus this slice exceed the deposit; `remaining` is the deposit minus
+  every released tranche, carried identically on
+  `partialSettlement.remaining`, the top-level `remaining`, and the
+  sponsor's ledger inflow. With no prior tranche the figures are
+  byte-identical to before. With a prior tranche the slice report's
+  ledger covers only this slice plus the still-locked remainder, so
+  `balanced` is honestly false — the prior tranches were already
+  reported on their own reports. Nine new tests in
+  `test/partialReleaseReportCumulative.test.ts` (byte-identical
+  no-prior report, cumulative remaining, exact-balance slice, over by
+  one cent, two prior tranches, research-round probe, per-slice
+  referral credits, no report on over-release, amountless hand-built
+  tranche), mutation verification (restoring the slice-only remainder
+  turns the four cumulative tests red, restored after); test counts
+  2922 -> 2931; README test counts updated.
+
 - Fee and settlement inputs fail closed on unknown fields (2026-11-25,
   backlog #1403): `calculateDeposit` / `calculateDepositCents` and all
   eight settlement helpers (`settleRelease`, `settlePartialRelease`,

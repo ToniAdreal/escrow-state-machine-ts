@@ -165,11 +165,14 @@ test("released = gross equals the full-release report's ledger", () => {
   assert.equal(full.settlement?.net, settleRelease({ gross: 10630, proFeeBps: 500, referralCredits: 50 }).net);
 });
 
-test("released above the deposit throws (delegated to settlePartialRelease)", () => {
+test("released above the deposit throws with the cumulative total (backlog #1416)", () => {
   const escrow = fundedEscrow("esc-partial-over");
+  // The cumulative guard now runs before settlePartialRelease, so the
+  // error names the cumulative total in the terminal branches' wording
+  // (with no prior tranche the cumulative total is the slice itself).
   assert.throws(
     () => partialReport(escrow, { released: 10631, proFeeBps: 500 }),
-    /released must not exceed gross/,
+    /cannot build settlement report for esc-partial-over: partial releases total 10631 but the deposit is 10630/,
   );
   // No report was produced and the escrow is untouched.
   assert.equal(escrow.state, "FUNDED");
