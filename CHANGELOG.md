@@ -18,6 +18,35 @@ version changes.
 
 ### Added
 
+- Terminal settlement at per-tranche actual rates (2026-11-26, backlog
+  #1421): `buildSettlementReport` accepts an optional
+  `priorTrancheSettlements` array — each prior PARTIAL_RELEASE
+  tranche's actual `{ released, proFeeBps, referralCredits? }`, in
+  trail order — so a RELEASED report settles each prior tranche at the
+  rate it was really reported at and only the still-locked remainder
+  at the terminal rate, instead of restating every earlier slice at
+  the terminal rate; a REFUNDED / EXPIRED report splits the released
+  total into the tranches' net total (creator row) and pro-fee total
+  (platform row) instead of folding the fee into the creator row.
+  Without the splits both branches keep their previous behavior
+  exactly (now documented as the folded fallback). A supplied split
+  whose amount or count does not line up with the trail's tranches
+  fails closed, as does supplying splits for a non-terminal escrow;
+  each tranche settles through `settlePartialRelease`, so fee
+  rounding and the negative-net guard match every other settlement
+  path. Twelve new tests in
+  `test/terminalSettlementTrancheRates.test.ts` (backlog probe:
+  deposit 10000, tranche 5000 at 500bps, terminal at 1000bps —
+  lifetime fee 750, not the restated 1000; same-rate byte-identity
+  regression; per-tranche referral credits counted once; two-tranche
+  accumulation; REFUNDED / EXPIRED row splits; amount and count
+  mismatch fail-closed; bad shape and out-of-range rate fail closed;
+  non-terminal use fails closed; summarize / reconcile unchanged;
+  empty splits behave like omitting them), mutation verification
+  (forcing prior tranches to 10000bps turns 7 of the 12 tests red,
+  restored after); test counts 2974 -> 2986; README terminal-report
+  paragraph updated.
+
 - Integer-cents settlement helpers (2026-11-25, backlog #1401):
   `settleReleaseCents` / `settlePartialReleaseCents` /
   `settlePartialReleasesCents` / `settleRefundCents` in

@@ -18,9 +18,14 @@
  *   the whole escrow as one cumulative batch per `settlePartialReleases`
  *   — the recorded tranches plus the still-locked remainder as the final
  *   tranche — so the fee is never charged twice on a released slice and
- *   the lifetime totals are the batch totals (the prior tranches' splits
- *   are re-derived at the terminal settlement's rate: the trail records
- *   only the released amounts, not the rate each slice was reported at).
+ *   the lifetime totals are the batch totals. By default the prior
+ *   tranches' splits are re-derived at the terminal settlement's rate:
+ *   the trail records only the released amounts, not the rate each slice
+ *   was reported at. When the caller supplies
+ *   `priorTrancheSettlements`, each prior tranche is instead settled at
+ *   the rate it was actually reported at and only the still-locked
+ *   remainder is settled at the terminal rate, so a rate change between
+ *   tranches no longer restates earlier slices (backlog #1421).
  * - On a partial release the escrow stays FUNDED and `buildSettlementReport`
  *   reports the released slice per `settlePartialRelease` (fee charged on
  *   the slice only): creator receives the slice `net`, the platform takes
@@ -40,9 +45,12 @@
  *   the sponsor; money already paid out in PARTIAL_RELEASE tranches
  *   stays paid out and is shown on the creator's row as the released
  *   total — the trail records only the released amounts, not the fee
- *   split of the prior tranches, so the platform fee portion of those
- *   tranches is folded into that figure while the sponsor's own figures
- *   stay exact.
+ *   split of the prior tranches, so without `priorTrancheSettlements`
+ *   the platform fee portion of those tranches is folded into that
+ *   figure while the sponsor's own figures stay exact. With
+ *   `priorTrancheSettlements` supplied, the creator row instead shows
+ *   the tranches' net total and the platform row their pro-fee total
+ *   (backlog #1421).
  * - The oracle fee bundled into the deposit is NOT attributed to a separate
  *   party: this is an off-chain reproduction, not the on-chain contract, and
  *   splitting it would double-count. See README "Limitations (honest)".
@@ -140,6 +148,20 @@ function assertSettlementEscrowId(
   }
 }
 
+/**
+ * Settlement parameters of one PARTIAL_RELEASE tranche already recorded
+ * in the audit history, as reported when that tranche settled (backlog
+ * #1421). `released` is the tranche amount from the trail;
+ * `proFeeBps` the platform fee rate that tranche was actually charged
+ * at; `referralCredits` the credits that tranche actually paid, if any.
+ * See {@link SettlementReportInputs.priorTrancheSettlements}.
+ */
+export interface PriorTrancheSettlement {
+  released: number;
+  proFeeBps: number;
+  referralCredits?: number;
+}
+
 export interface SettlementReportInputs {
   /**
    * Identity of the escrow this report is about. Must be a non-empty
@@ -201,6 +223,34 @@ export interface SettlementReportInputs {
    * keeps its previous behavior (no settlement has happened yet).
    */
   partialRelease?: { released: number; proFeeBps: number; referralCredits?: number };
+  /**
+   * Actual settlement parameters of the PARTIAL_RELEASE tranches already
+   * recorded in the audit history, in trail order — the rate (and any
+   * referral credits) each slice was really reported at (backlog #1421).
+   * The trail records only the released amounts, so without this the
+   * terminal branches must re-derive every prior tranche's fee split at
+   * the terminal settlement's rate, restating a slice reported earlier
+   * at a different rate; with it, each prior tranche is settled at its
+   * own rate and only the still-locked remainder is settled at the
+   * terminal rate (RELEASED), and a REFUNDED / EXPIRED report splits
+   * the released total into the tranches' net total (creator row) and
+   * pro-fee total (platform row) instead of folding the fee into the
+   * creator row. Each entry's `released` must match the corresponding
+   * PARTIAL_RELEASE amount in the trail at cent precision, and the
+   * entry count must equal the tranche count — a mismatch fails closed
+   * (`cannot build settlement report for …: priorTrancheSettlements…`)
+   * instead of silently settling the wrong amounts. Referral credits
+   * are per tranche here: the credits a tranche actually paid, counted
+   * once on that tranche — unlike `settlePartialReleases`, which takes
+   * one batch-level figure and lands it on the first tranche. The
+   * terminal settlement's own `referralCredits` still land on the final
+   * (remainder) tranche, so the lifetime credit total is the sum of the
+   * per-tranche figures plus the terminal one, never double-counted.
+   * Only valid for a terminal `finalState` (RELEASED / REFUNDED /
+   * EXPIRED); supplying it for a FUNDED escrow throws. Omit it and
+   * both terminal branches keep their previous behavior exactly.
+   */
+  priorTrancheSettlements?: PriorTrancheSettlement[];
   /**
    * Key for a keyed (HMAC) audit hash chain, as produced by an escrow
    * constructed with `EscrowOptions.auditKey`. A keyed history must be
@@ -294,7 +344,16 @@ export interface SettlementReport {
   parties: PartyLedger[];
   totalInflow: number;
   totalOutflow: number;
-  /** Conservation check: every cent that flowed out flowed in somewhere. */
+  /**
+   * Conservation check: every cent that flowed out flowed in somewhere.
+   * Note the refunded / expired caveat: when prior PARTIAL_RELEASE
+   * tranches exist and no `priorTrancheSettlements` were supplied, the
+   * creator row carries the released total with the tranches' platform
+   * fee folded into it (the trail records only the released amounts,
+   * not the fee split) — that row is money already paid out, not the
+   * creator's net. Supply `priorTrancheSettlements` to split it into
+   * the tranches' net total (creator) and pro-fee total (platform).
+   */
   balanced: boolean;
   eventCount: number;
   firstEventAt?: string;
@@ -510,6 +569,116 @@ function ledger(
 }
 
 /**
+ * Shape validation for `priorTrancheSettlements` (backlog #1421): an
+ * array of records with only `released` / `proFeeBps` /
+ * `referralCredits`, each amount a finite non-negative number. Runs
+ * before any money math, so a typo'd key or a string amount fails as a
+ * named configuration error. The value ranges (proFeeBps an integer in
+ * [0, 10000], referralCredits non-negative, no negative net) are left
+ * to `settlePartialRelease`, which re-validates them per tranche when
+ * the splits are actually settled — the same split of duties as the
+ * `settlement` / `partialRelease` parameter objects above.
+ */
+function assertPriorTrancheSettlementsShape(
+  supplied: unknown,
+  escrowId: string,
+): asserts supplied is PriorTrancheSettlement[] {
+  if (!Array.isArray(supplied)) {
+    throw new Error(
+      `cannot build settlement report for ${escrowId}: priorTrancheSettlements must be an array of { released, proFeeBps, referralCredits? }, got ${JSON.stringify(supplied)}`,
+    );
+  }
+  for (let i = 0; i < supplied.length; i++) {
+    const entry: unknown = supplied[i];
+    if (!isRecord(entry)) {
+      throw new Error(
+        `cannot build settlement report for ${escrowId}: priorTrancheSettlements[${i}] must be an object { released, proFeeBps, referralCredits? }, got ${JSON.stringify(entry)}`,
+      );
+    }
+    assertKnownReportFields(
+      `cannot build settlement report for ${escrowId}: priorTrancheSettlements[${i}]`,
+      entry,
+      PRIOR_TRANCHE_SETTLEMENT_FIELDS,
+    );
+    if (
+      typeof entry.released !== "number" ||
+      !Number.isFinite(entry.released) ||
+      entry.released < 0
+    ) {
+      throw new Error(
+        `cannot build settlement report for ${escrowId}: priorTrancheSettlements[${i}].released must be a finite non-negative number, got ${JSON.stringify(entry.released)}`,
+      );
+    }
+    if (
+      typeof entry.proFeeBps !== "number" ||
+      !Number.isFinite(entry.proFeeBps)
+    ) {
+      throw new Error(
+        `cannot build settlement report for ${escrowId}: priorTrancheSettlements[${i}].proFeeBps must be a finite number, got ${JSON.stringify(entry.proFeeBps)}`,
+      );
+    }
+    if (
+      entry.referralCredits !== undefined &&
+      (typeof entry.referralCredits !== "number" ||
+        !Number.isFinite(entry.referralCredits) ||
+        entry.referralCredits < 0)
+    ) {
+      throw new Error(
+        `cannot build settlement report for ${escrowId}: priorTrancheSettlements[${i}].referralCredits must be a finite non-negative number, got ${JSON.stringify(entry.referralCredits)}`,
+      );
+    }
+  }
+}
+
+/**
+ * Settle the prior tranches at the rates they were actually reported at
+ * (backlog #1421): each entry of `supplied` must line up with the
+ * corresponding PARTIAL_RELEASE amount in the trail, in order and at
+ * cent precision — the trail is the evidence for the amounts, the
+ * caller only supplies the rates. A count or amount mismatch fails
+ * closed instead of settling the wrong slices. Each tranche is settled
+ * through `settlePartialRelease`, so fee rounding, the proFeeBps range,
+ * and the negative-net guard are the same as every other settlement
+ * path; the per-tranche `remaining` is not used (only proFee /
+ * referralCredits / net feed the lifetime totals). Totals are rounded
+ * to cents as they accumulate, so the sum of cent-rounded tranche
+ * figures cannot drift by float dust.
+ */
+function sumPriorTrancheSettlements(
+  priorAmounts: readonly number[],
+  supplied: readonly PriorTrancheSettlement[],
+  depositAmount: number,
+  escrowId: string,
+): { totalProFee: number; totalReferralCredits: number; totalNet: number } {
+  if (supplied.length !== priorAmounts.length) {
+    throw new Error(
+      `cannot build settlement report for ${escrowId}: priorTrancheSettlements has ${supplied.length} ${supplied.length === 1 ? "entry" : "entries"} but the audit history has ${priorAmounts.length} PARTIAL_RELEASE ${priorAmounts.length === 1 ? "tranche" : "tranches"} (one entry per tranche, in trail order)`,
+    );
+  }
+  let totalProFee = 0;
+  let totalReferralCredits = 0;
+  let totalNet = 0;
+  for (let i = 0; i < priorAmounts.length; i++) {
+    const entry = supplied[i];
+    if (round2(entry.released) !== round2(priorAmounts[i])) {
+      throw new Error(
+        `cannot build settlement report for ${escrowId}: priorTrancheSettlements[${i}].released ${entry.released} does not match the audit history PARTIAL_RELEASE amount ${priorAmounts[i]} (amounts must match at cent precision)`,
+      );
+    }
+    const slice = settlePartialRelease({
+      gross: depositAmount,
+      released: priorAmounts[i],
+      proFeeBps: entry.proFeeBps,
+      referralCredits: entry.referralCredits,
+    });
+    totalProFee = round2(totalProFee + slice.proFee);
+    totalReferralCredits = round2(totalReferralCredits + slice.referralCredits);
+    totalNet = round2(totalNet + slice.net);
+  }
+  return { totalProFee, totalReferralCredits, totalNet };
+}
+
+/**
  * Build the settlement report. Throws when the escrow has not reached a
  * terminal state, when the audit history's hash chain is broken or mixes
  * chained and hashless entries (tampered, deleted, or reordered entries —
@@ -696,6 +865,25 @@ export function buildSettlementReport(
     }
   }
 
+  // Prior-tranche settlements only make sense for a terminal escrow:
+  // they describe how money already paid out was split, and a FUNDED
+  // escrow's slice report settles only its own slice (backlog #1421).
+  // Shape-checked here, before any money math; the match against the
+  // trail's tranche amounts is checked inside each terminal branch,
+  // where the tranche list is read.
+  if (inputs.priorTrancheSettlements !== undefined) {
+    assertPriorTrancheSettlementsShape(inputs.priorTrancheSettlements, escrowId);
+    if (
+      finalState !== "RELEASED" &&
+      finalState !== "REFUNDED" &&
+      finalState !== "EXPIRED"
+    ) {
+      throw new Error(
+        `cannot build settlement report for ${escrowId}: priorTrancheSettlements is only valid for a terminal escrow (state is ${finalState})`,
+      );
+    }
+  }
+
   const base = {
     escrowId,
     // Omitted entirely when no currency was supplied, so a
@@ -731,15 +919,21 @@ export function buildSettlementReport(
     // remainder as the final tranche — per `settlePartialReleases`,
     // so the lifetime totals are the batch totals and referral credits
     // are counted exactly once, on the first tranche, by that
-    // function's own convention. The fee split of the prior tranches
-    // is re-derived at this settlement's proFeeBps: the trail records
-    // only the released amounts, not the rate each slice was reported
-    // at, so a slice reported earlier at a different rate is restated
-    // at the terminal rate here. With no prior tranche the batch is a
-    // single tranche and the figures are byte-identical to the plain
-    // `settleRelease` below. An over-released trail (hand-built
-    // history only — dispatch caps every tranche at the locked
-    // balance) fails closed instead of settling a negative remainder.
+    // function's own convention. By default the fee split of the prior
+    // tranches is re-derived at this settlement's proFeeBps: the trail
+    // records only the released amounts, not the rate each slice was
+    // reported at, so a slice reported earlier at a different rate is
+    // restated at the terminal rate here. When the caller supplies
+    // `priorTrancheSettlements` (backlog #1421), each prior tranche is
+    // instead settled at the rate it was actually reported at and only
+    // the remainder is settled at the terminal rate — the lifetime
+    // totals are then the per-tranche actuals, and a rate change
+    // between tranches no longer restates earlier slices. With no prior
+    // tranche the batch is a single tranche and the figures are
+    // byte-identical to the plain `settleRelease` below. An
+    // over-released trail (hand-built history only — dispatch caps
+    // every tranche at the locked balance) fails closed instead of
+    // settling a negative remainder.
     const releasedTotal = releasedAmountFromHistory(history, escrowId);
     const priorAmounts: number[] = [];
     for (const entry of history) {
@@ -760,6 +954,22 @@ export function buildSettlementReport(
         `cannot build settlement report for ${escrowId}: partial releases total ${releasedTotal} but the deposit is ${depositAmount} (the released total must not exceed the deposit)`,
       );
     }
+    // Per-tranche actuals (backlog #1421): settle the prior tranches
+    // at their recorded rates — checked here, before the settlement
+    // computation below, so a supplied split that does not line up
+    // with the trail fails closed even when no tranche was ever
+    // released (a non-empty split list for a tranche-less escrow is a
+    // caller bug, not a no-op). With no splits supplied this is
+    // undefined and the batch path below runs unchanged.
+    const prior =
+      inputs.priorTrancheSettlements !== undefined
+        ? sumPriorTrancheSettlements(
+            priorAmounts,
+            inputs.priorTrancheSettlements,
+            depositAmount,
+            escrowId,
+          )
+        : undefined;
     const settlement =
       priorAmounts.length === 0
         ? settleRelease({
@@ -767,20 +977,43 @@ export function buildSettlementReport(
             proFeeBps: inputs.settlement.proFeeBps,
             referralCredits: inputs.settlement.referralCredits,
           })
-        : (() => {
-            const batch = settlePartialReleases({
-              gross: depositAmount,
-              releases: [...priorAmounts, remaining],
-              proFeeBps: inputs.settlement.proFeeBps,
-              referralCredits: inputs.settlement.referralCredits,
-            });
-            return {
-              gross: depositAmount,
-              proFee: batch.totalProFee,
-              referralCredits: batch.totalReferralCredits,
-              net: batch.totalNet,
-            };
-          })();
+        : prior !== undefined
+          ? (() => {
+              // Per-tranche actuals: each prior tranche at its own
+              // recorded rate, the remainder at the terminal rate. The
+              // terminal settlement's referralCredits land on the
+              // remainder tranche here (not the first, as the batch
+              // below does) — the lifetime totals are the same either
+              // way, since the report only carries totals.
+              const remainderSlice = settlePartialRelease({
+                gross: depositAmount,
+                released: remaining,
+                proFeeBps: inputs.settlement.proFeeBps,
+                referralCredits: inputs.settlement.referralCredits,
+              });
+              return {
+                gross: depositAmount,
+                proFee: round2(prior.totalProFee + remainderSlice.proFee),
+                referralCredits: round2(
+                  prior.totalReferralCredits + remainderSlice.referralCredits,
+                ),
+                net: round2(prior.totalNet + remainderSlice.net),
+              };
+            })()
+          : (() => {
+              const batch = settlePartialReleases({
+                gross: depositAmount,
+                releases: [...priorAmounts, remaining],
+                proFeeBps: inputs.settlement.proFeeBps,
+                referralCredits: inputs.settlement.referralCredits,
+              });
+              return {
+                gross: depositAmount,
+                proFee: batch.totalProFee,
+                referralCredits: batch.totalReferralCredits,
+                net: batch.totalNet,
+              };
+            })();
     const prev = history.length >= 2 ? history[history.length - 2].event : null;
     // The report keeps the pointer to the real-world payment: the
     // terminal RELEASE entry's `settlementRef`, when it carries one.
@@ -881,16 +1114,52 @@ export function buildSettlementReport(
     // (backlog #1400): money already paid out in tranches cannot be
     // refunded again, so only the still-locked remainder returns to the
     // sponsor — crediting the full deposit would hand the sponsor money
-    // that already left the escrow. The released total is shown on the
-    // creator's row as money already paid out: the trail records only
-    // the released amounts, not the fee split of the prior tranches, so
-    // the platform fee portion of those tranches is folded into that
-    // figure and the sponsor's own figures stay exact (outflow the
-    // deposit, inflow the remainder). An over-released trail (hand-built
-    // history only — dispatch caps every tranche at the locked balance)
-    // fails closed instead of refunding a negative remainder. With no
-    // prior tranche the figures below are the previous ones exactly.
+    // that already left the escrow. By default the released total is
+    // shown on the creator's row as money already paid out: the trail
+    // records only the released amounts, not the fee split of the prior
+    // tranches, so the platform fee portion of those tranches is folded
+    // into that figure and the sponsor's own figures stay exact
+    // (outflow the deposit, inflow the remainder) — the report's
+    // `parties` documentation says so explicitly. When the caller
+    // supplies `priorTrancheSettlements` (backlog #1421), the released
+    // total is instead split into the tranches' net total (creator row)
+    // and pro-fee total (platform row), with referral credits on the
+    // referrer row, so the creator row is the actual net paid out. An
+    // over-released trail (hand-built history only — dispatch caps
+    // every tranche at the locked balance) fails closed instead of
+    // refunding a negative remainder. With no prior tranche the figures
+    // below are the previous ones exactly.
     const releasedTotal = releasedAmountFromHistory(history, escrowId);
+    // Per-tranche actuals (backlog #1421): read the tranche list and,
+    // when the caller supplied the prior splits, settle them at their
+    // recorded rates — checked here, before the no-tranche early return
+    // below, so a supplied split that does not line up with the trail
+    // fails closed even when no tranche was ever released. The helper
+    // throws on a count or amount mismatch; with no tranches and no
+    // splits supplied it returns zeros and the figures below are the
+    // previous ones exactly.
+    const priorAmounts: number[] = [];
+    for (const entry of history) {
+      if (entry.event !== "PARTIAL_RELEASE") continue;
+      if (entry.amount === undefined) {
+        // Unreachable after `releasedAmountFromHistory` above, which
+        // throws on exactly this shape — kept so the scan never
+        // silently drops an amountless tranche.
+        throw new Error(
+          `settlement requires a PARTIAL_RELEASE amount for ${escrowId}: a PARTIAL_RELEASE event was recorded without an amount`,
+        );
+      }
+      priorAmounts.push(entry.amount);
+    }
+    const prior =
+      inputs.priorTrancheSettlements !== undefined
+        ? sumPriorTrancheSettlements(
+            priorAmounts,
+            inputs.priorTrancheSettlements,
+            depositAmount,
+            escrowId,
+          )
+        : undefined;
     if (releasedTotal === 0) {
       const parties = [
         ledger("sponsor", depositAmount, depositAmount),
@@ -916,11 +1185,16 @@ export function buildSettlementReport(
         `cannot build settlement report for ${escrowId}: partial releases total ${releasedTotal} but the deposit is ${depositAmount} (the released total must not exceed the deposit)`,
       );
     }
+    // Per-tranche actuals (backlog #1421): with the prior splits
+    // supplied, the creator row is the tranches' net total and the
+    // platform row their pro-fee total, instead of the released total
+    // with the fee folded in. Without them the folded figures below
+    // are the previous ones exactly (see the comment above).
     const parties = [
       ledger("sponsor", remaining, depositAmount),
-      ledger("creator", releasedTotal, 0),
-      ledger("platform", 0, 0),
-      ledger("referrer", 0, 0),
+      ledger("creator", prior ? prior.totalNet : releasedTotal, 0),
+      ledger("platform", prior ? prior.totalProFee : 0, 0),
+      ledger("referrer", prior ? prior.totalReferralCredits : 0, 0),
     ];
     const totalInflow = round2(parties.reduce((s, p) => s + p.inflow, 0));
     const totalOutflow = round2(parties.reduce((s, p) => s + p.outflow, 0));
@@ -1895,6 +2169,7 @@ const SETTLEMENT_REPORT_FIELDS = new Set([
   "currency",
   "settlement",
   "partialRelease",
+  "priorTrancheSettlements",
   "auditKey",
 ]);
 
@@ -1911,6 +2186,12 @@ const SETTLEMENT_REPORT_DEPOSIT_FIELDS = new Set([
 const SETTLEMENT_PARAMS_FIELDS = new Set(["proFeeBps", "referralCredits"]);
 
 const PARTIAL_RELEASE_PARAMS_FIELDS = new Set([
+  "released",
+  "proFeeBps",
+  "referralCredits",
+]);
+
+const PRIOR_TRANCHE_SETTLEMENT_FIELDS = new Set([
   "released",
   "proFeeBps",
   "referralCredits",

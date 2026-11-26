@@ -97,6 +97,7 @@ export type {
   LedgerSettlement,
   PartyLedger,
   PartyRole,
+  PriorTrancheSettlement,
   ReconcileSettlementsResult,
   SettlementAmountMismatch,
   SettlementCurrencyMismatch,
