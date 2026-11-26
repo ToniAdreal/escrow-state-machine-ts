@@ -148,14 +148,19 @@ describe("expireOverdueEscrows dryRun", () => {
     assert.equal(escrow.state, "FUNDED");
   });
 
-  it("VERIFIED overdue: wouldExpire false with the live run's exact error wording", () => {
-    const build = () => verifiedWithDeadline("verified", PAST);
-    const [dry] = expireOverdueEscrows([build()], NOW, { dryRun: true });
-    assert.equal(dry.wouldExpire, false);
+  it("VERIFIED overdue: wouldExpire true, and the live run expires (backlog #1422)", () => {
+    const [dry] = expireOverdueEscrows([verifiedWithDeadline("verified", PAST)], NOW, {
+      dryRun: true,
+    });
+    assert.equal(dry.wouldExpire, true);
     assert.equal(dry.expired, false);
     assert.equal("entry" in dry, false);
-    assert.equal(dry.error, liveError(build, NOW));
-    assert.match(dry.error ?? "", /invalid transition: EXPIRE from VERIFIED/);
+    assert.equal(dry.error, undefined);
+    const [live] = expireOverdueEscrows([verifiedWithDeadline("verified", PAST)], NOW);
+    assert.equal(live.expired, true);
+    assert.equal(live.error, undefined);
+    assert.equal(live.entry?.event, "EXPIRE");
+    assert.equal(live.entry?.from, "VERIFIED");
   });
 
   it("DISPUTED overdue: wouldExpire false with the live run's exact error wording", () => {
@@ -200,7 +205,7 @@ describe("expireOverdueEscrows dryRun", () => {
   it("dry run notifies no subscriber; the live run right after notifies once per expiry", () => {
     const a = fundedWithDeadline("a", PAST);
     const b = fundedWithDeadline("b", PAST);
-    const stuck = verifiedWithDeadline("stuck", PAST);
+    const stuck = disputedWithDeadline("stuck", PAST);
     let notifications = 0;
     for (const escrow of [a, b, stuck]) {
       escrow.subscribe(() => {
@@ -226,7 +231,7 @@ describe("expireOverdueEscrows dryRun", () => {
   it("a dry run leaves no residue: the same batch then expires in full live", () => {
     const a = fundedWithDeadline("a", PAST);
     const b = fundedWithDeadline("b", PAST);
-    const stuck = verifiedWithDeadline("stuck", PAST);
+    const stuck = disputedWithDeadline("stuck", PAST);
     const beforeLen = new Map([
       ["a", a.history.length],
       ["b", b.history.length],

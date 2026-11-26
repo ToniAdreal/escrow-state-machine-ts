@@ -67,7 +67,20 @@ const TRANSITIONS: Record<
     DISPUTE: "DISPUTED",
     EXPIRE: "EXPIRED",
   },
-  VERIFIED: { RELEASE: "RELEASED", DISPUTE: "DISPUTED" },
+  VERIFIED: {
+    RELEASE: "RELEASED",
+    DISPUTE: "DISPUTED",
+    // Backlog #1422: a verified-but-unreleased escrow that passes its
+    // deadline can EXPIRE back to the sponsor — the milestone was
+    // verified, but nobody released it and the campaign window has
+    // closed, so the still-locked balance is refunded (the EXPIRED
+    // settlement branch already covers this: it refunds only the
+    // balance still locked). DISPUTED deliberately keeps NO edge:
+    // expiry must never let one side unilaterally walk out of an
+    // open arbitration — a disputed escrow stays disputed until an
+    // arbitrator rules.
+    EXPIRE: "EXPIRED",
+  },
   DISPUTED: {
     ARBITRATE_RELEASE: "RELEASED",
     ARBITRATE_REFUND: "REFUNDED",
@@ -4793,8 +4806,9 @@ export function isOverdue(escrow: Escrow, now: Date = new Date()): boolean {
  * NOTE — do not hand-write a dispatch loop over this filter yourself:
  * it is a real trap. This filter only checks the deadline and the terminal
  * flag, but `EXPIRE` is not a legal event from every non-terminal state —
- * `VERIFIED` (and `DISPUTED`) escrows have no `EXPIRE` edge, so the loop
- * throws `invalid transition: EXPIRE from VERIFIED` on the first such
+ * `DISPUTED` escrows have no `EXPIRE` edge (expiry must not let a party
+ * walk out of arbitration unilaterally), so the loop throws
+ * `invalid transition: EXPIRE from DISPUTED` on the first such
  * escrow and aborts the whole batch. {@link expireOverdueEscrows} isolates
  * the error per escrow and keeps going.
  *
@@ -4946,9 +4960,9 @@ function predictExpireOverdueEscrow(
  * This exists because a hand-written loop over `expiredEscrows()` has a
  * real trap: `expiredEscrows()` only checks the deadline and the terminal
  * flag, but `EXPIRE` is not a legal event from every non-terminal state.
- * `VERIFIED` (and `DISPUTED`) escrows have no `EXPIRE` edge in the
+ * `DISPUTED` escrows have no `EXPIRE` edge in the
  * transition table, so `escrow.dispatch("EXPIRE")` throws
- * `invalid transition: EXPIRE from VERIFIED` — a naive loop aborts the
+ * `invalid transition: EXPIRE from DISPUTED` — a naive loop aborts the
  * whole batch on the first such escrow. This executor catches the error
  * per escrow (`expired: false, error: <message>`) and keeps going, so one
  * unexpirable escrow never blocks the rest of the batch.

@@ -387,8 +387,8 @@ import {
   DEMO_TRANSITION_TABLE_EDGE_COUNT,
   DEMO_TRANSITION_TABLE_JSON_BYTES,
   DEMO_UNEXPIRABLE_DEADLINE,
+  DEMO_UNEXPIRABLE_DISPUTE_AT,
   DEMO_UNEXPIRABLE_ESCROW_ID,
-  DEMO_UNEXPIRABLE_VERIFY_AT,
   DEMO_VERIFY_EVIDENCE_DEFAULT_ESCROW_ID,
   DEMO_VERIFY_EVIDENCE_ERROR,
   DEMO_VERIFY_EVIDENCE_ESCROW_ID,
@@ -3226,7 +3226,7 @@ test("demo lines print the stale patrol section after the deadline watchdog", as
   assert.ok(deadlineAt < patrolAt);
 });
 
-test("demo deadline watchdog expires the expirable escrow, isolates the VERIFIED one, and never attempts the stale-only one", async () => {
+test("demo deadline watchdog expires the expirable escrow, isolates the DISPUTED one, and never attempts the stale-only one", async () => {
   const {
     deadlineEscrows,
     deadlineExpiredSelected,
@@ -3266,35 +3266,35 @@ test("demo deadline watchdog expires the expirable escrow, isolates the VERIFIED
   );
   assert.equal(
     deadlineEscrows[0].history[deadlineEscrows[0].history.length - 1].at,
-    DEMO_UNEXPIRABLE_VERIFY_AT,
+    DEMO_UNEXPIRABLE_DISPUTE_AT,
   );
   assert.equal(deadlineEscrows[1].history[0].at, DEMO_EXPIRABLE_FUND_AT);
   assert.equal(deadlineEscrows[2].history[0].at, DEMO_DEADLINE_STALE_FUND_AT);
   // The executor attempted exactly the expired selection, in order:
-  // the VERIFIED escrow first — per-item error, escrow untouched —
+  // the DISPUTED escrow first — per-item error, escrow untouched —
   // and its failure did not block the FUNDED escrow after it.
   assert.equal(deadlineExpireResults.length, 2);
   assert.equal(deadlineExpireResults[0].escrow, deadlineEscrows[0]);
   assert.equal(deadlineExpireResults[0].expired, false);
   assert.match(
     deadlineExpireResults[0].error ?? "",
-    /invalid transition: EXPIRE from VERIFIED/,
+    /invalid transition: EXPIRE from DISPUTED/,
   );
   assert.equal(deadlineExpireResults[1].escrow, deadlineEscrows[1]);
   assert.equal(deadlineExpireResults[1].expired, true);
   assert.equal(deadlineExpireResults[1].error, undefined);
   assert.deepEqual(
     deadlineEscrows.map((e) => e.state),
-    ["VERIFIED", "EXPIRED", "FUNDED"],
+    ["DISPUTED", "EXPIRED", "FUNDED"],
   );
-  // History lengths: the failed attempt appended nothing (3 entries
-  // stay 3), the successful expiry appended exactly the EXPIRE entry
+  // History lengths: the failed attempt appended nothing (2 entries
+  // stay 2), the successful expiry appended exactly the EXPIRE entry
   // (1 -> 2), and the never-attempted escrow is untouched (1).
   // The EXPIRE entry's `at` IS asserted: the executor pins the fixed
   // screening `now` (DEMO_STALE_NOW), so it is deterministic.
   assert.deepEqual(
     deadlineEscrows.map((e) => e.history.length),
-    [3, 2, 1],
+    [2, 2, 1],
   );
   const expireEntry =
     deadlineEscrows[1].history[deadlineEscrows[1].history.length - 1];
@@ -3321,7 +3321,7 @@ test("demo lines print the deadline watchdog section after the stale screening",
   // and both verdicts are pinned, not recomputed from the demo.
   assert.ok(
     text.includes(
-      "  DEMO-ESC-007: state VERIFIED, entered 2026-03-07T09:00:00.000Z, dwell 2 days, deadline 2026-03-08T09:00:00.000Z — expired: true, stale: false",
+      "  DEMO-ESC-007: state DISPUTED, entered 2026-03-07T09:00:00.000Z, dwell 2 days, deadline 2026-03-08T09:00:00.000Z — expired: true, stale: false",
     ),
   );
   assert.ok(
@@ -3342,7 +3342,7 @@ test("demo lines print the deadline watchdog section after the stale screening",
   assert.ok(text.includes("  expireOverdueEscrows: 2 attempted"));
   assert.ok(
     text.includes(
-      "  DEMO-ESC-007: expired false — error: invalid transition: EXPIRE from VERIFIED (escrow unchanged at VERIFIED)",
+      "  DEMO-ESC-007: expired false — error: invalid transition: EXPIRE from DISPUTED (escrow unchanged at DISPUTED)",
     ),
   );
   assert.ok(text.includes("  DEMO-ESC-008: expired true — now EXPIRED"));
@@ -3367,7 +3367,7 @@ test("demo deadline watchdog cites the EXPIRE audit entry per result (backlog #6
   const text = lines.join("\n");
 
   // One citation per attempted escrow, in batch order: the failed
-  // VERIFIED attempt cites no entry (a failed dispatch appends
+  // DISPUTED attempt cites no entry (a failed dispatch appends
   // nothing); the successful FUNDED expiry cites its EXPIRE entry
   // field for field — seq/from/to/at pinned, never recomputed from
   // the executor itself.
@@ -3460,7 +3460,7 @@ test("demo shows the allowed-events listing: every state's events match the hand
       state: "MILESTONE_SUBMITTED",
       events: ["VERIFY_PASS", "VERIFY_FAIL", "PARTIAL_RELEASE", "DISPUTE", "EXPIRE"],
     },
-    { state: "VERIFIED", events: ["RELEASE", "DISPUTE"] },
+    { state: "VERIFIED", events: ["RELEASE", "DISPUTE", "EXPIRE"] },
     {
       state: "DISPUTED",
       events: ["ARBITRATE_RELEASE", "ARBITRATE_REFUND"],
@@ -4059,7 +4059,7 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
   );
   assert.ok(out.includes("  DEMO-ESC-004: acted true — now EXPIRED"));
   // Deadline watchdog tail: the closing section screens three more
-  // escrows by deadline and executes the selection — the VERIFIED
+  // escrows by deadline and executes the selection — the DISPUTED
   // escrow's per-item error printed before the FUNDED escrow's
   // successful expiry, and the stale-only escrow never attempted.
   // (The seq-row count above stays 8: this section prints no
@@ -4075,7 +4075,7 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
   );
   assert.ok(
     out.includes(
-      "  DEMO-ESC-007: expired false — error: invalid transition: EXPIRE from VERIFIED (escrow unchanged at VERIFIED)",
+      "  DEMO-ESC-007: expired false — error: invalid transition: EXPIRE from DISPUTED (escrow unchanged at DISPUTED)",
     ),
   );
   assert.ok(out.includes("  DEMO-ESC-008: expired true — now EXPIRED"));
@@ -4197,7 +4197,7 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
   );
   assert.ok(
     out.includes(
-      "  stateDiagram(): 23 lines, 16 edges (generated from transitionTable() — the Mermaid block the README embeds verbatim)",
+      "  stateDiagram(): 24 lines, 17 edges (generated from transitionTable() — the Mermaid block the README embeds verbatim)",
     ),
   );
   assert.ok(out.includes("  initial transition (line 3): [*] --> CREATED"));
@@ -4206,7 +4206,7 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
   );
   assert.ok(
     out.includes(
-      "  last edge (line 19): DISPUTED --> REFUNDED : ARBITRATE_REFUND",
+      "  last edge (line 20): DISPUTED --> REFUNDED : ARBITRATE_REFUND",
     ),
   );
   assert.ok(out.includes("  last line: ```"));
@@ -4312,12 +4312,12 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
   );
   assert.ok(
     out.includes(
-      "  transitionTableJson(): 1337 bytes, 16 edges (canonical JSON — the machine-readable form of the same table stateDiagram() renders for humans, byte-identical to the committed transition-table snapshot)",
+      "  transitionTableJson(): 1413 bytes, 17 edges (canonical JSON — the machine-readable form of the same table stateDiagram() renders for humans, byte-identical to the committed transition-table snapshot)",
     ),
   );
   assert.ok(
     out.includes(
-      "  parsed back: 16 edges, every (from, event, to) triple matches transitionTable() edge for edge",
+      "  parsed back: 17 edges, every (from, event, to) triple matches transitionTable() edge for edge",
     ),
   );
   assert.ok(out.includes("  first edge: CREATED --FUND--> FUNDED"));
@@ -4879,7 +4879,7 @@ test("demo shows the state diagram generation segment in-process: the generated 
   const { stateDiagramText, stateDiagramEdgeCount, lines } = await runDemo();
   const text = lines.join("\n");
 
-  // Hand-written expectations — the full 23-line Mermaid block
+  // Hand-written expectations — the full 24-line Mermaid block
   // written out here line by line from TRANSITIONS in
   // src/stateMachine.ts, never derived by calling stateDiagram
   // itself. test/diagram.test.ts and the bench stateDiagram
@@ -4902,6 +4902,7 @@ test("demo shows the state diagram generation segment in-process: the generated 
     "    MILESTONE_SUBMITTED --> EXPIRED : EXPIRE",
     "    VERIFIED --> RELEASED : RELEASE",
     "    VERIFIED --> DISPUTED : DISPUTE",
+    "    VERIFIED --> EXPIRED : EXPIRE",
     "    DISPUTED --> RELEASED : ARBITRATE_RELEASE",
     "    DISPUTED --> REFUNDED : ARBITRATE_REFUND",
     "    RELEASED --> [*]",
@@ -4915,7 +4916,7 @@ test("demo shows the state diagram generation segment in-process: the generated 
   // count equals the transition table's edge count.
   assert.equal(stateDiagramText.split("\n")[0], "```mermaid");
   assert.ok(stateDiagramText.includes("stateDiagram-v2"));
-  assert.equal(stateDiagramEdgeCount, 16);
+  assert.equal(stateDiagramEdgeCount, 17);
   assert.equal(stateDiagramEdgeCount, transitionTable().length);
   // Cross-check against the library generator itself — the demo
   // segment is not self-certifying.
@@ -4936,13 +4937,13 @@ test("demo shows the state diagram generation segment in-process: the generated 
     "state-diagram segment must follow the overdue-judgement segment",
   );
   for (const line of [
-    "  stateDiagram(): 23 lines, 16 edges (generated from transitionTable() — the Mermaid block the README embeds verbatim)",
+    "  stateDiagram(): 24 lines, 17 edges (generated from transitionTable() — the Mermaid block the README embeds verbatim)",
     "  first line: ```mermaid",
     "  second line: stateDiagram-v2",
     "  initial transition (line 3): [*] --> CREATED",
     "  first edge (line 4): CREATED --> FUNDED : FUND",
-    "  last edge (line 19): DISPUTED --> REFUNDED : ARBITRATE_REFUND",
-    "  terminal lines (lines 20-22): RELEASED --> [*], REFUNDED --> [*], EXPIRED --> [*]",
+    "  last edge (line 20): DISPUTED --> REFUNDED : ARBITRATE_REFUND",
+    "  terminal lines (lines 21-23): RELEASED --> [*], REFUNDED --> [*], EXPIRED --> [*]",
   ]) {
     assert.ok(text.includes(line), `missing diagram line: ${line}`);
   }
@@ -5426,11 +5427,11 @@ test("demo shows the machine-readable transition table: transitionTableJson pars
   // snapshot test/__snapshots__/transitionTable.snapshot.json,
   // never derived by calling transitionTableJson to produce
   // them. test/transitionSnapshot.test.ts and the diagram
-  // tests pin the same table independently: 16 edges, the
+  // tests pin the same table independently: 17 edges, the
   // first CREATED --FUND--> FUNDED, the last
   // DISPUTED --ARBITRATE_REFUND--> REFUNDED.
-  assert.equal(DEMO_TRANSITION_TABLE_EDGE_COUNT, 16);
-  assert.equal(DEMO_TRANSITION_TABLE_JSON_BYTES, 1337);
+  assert.equal(DEMO_TRANSITION_TABLE_EDGE_COUNT, 17);
+  assert.equal(DEMO_TRANSITION_TABLE_JSON_BYTES, 1413);
   assert.equal(transitionTableEdgeCount, DEMO_TRANSITION_TABLE_EDGE_COUNT);
   assert.equal(transitionTableJsonBytes, DEMO_TRANSITION_TABLE_JSON_BYTES);
   assert.equal(
@@ -5486,8 +5487,8 @@ test("demo shows the machine-readable transition table: transitionTableJson pars
     "money-guard segment must follow the machine-readable transition-table segment",
   );
   for (const line of [
-    "  transitionTableJson(): 1337 bytes, 16 edges (canonical JSON — the machine-readable form of the same table stateDiagram() renders for humans, byte-identical to the committed transition-table snapshot)",
-    "  parsed back: 16 edges, every (from, event, to) triple matches transitionTable() edge for edge",
+    "  transitionTableJson(): 1413 bytes, 17 edges (canonical JSON — the machine-readable form of the same table stateDiagram() renders for humans, byte-identical to the committed transition-table snapshot)",
+    "  parsed back: 17 edges, every (from, event, to) triple matches transitionTable() edge for edge",
     "  first edge: CREATED --FUND--> FUNDED",
     "  last edge: DISPUTED --ARBITRATE_REFUND--> REFUNDED",
   ]) {

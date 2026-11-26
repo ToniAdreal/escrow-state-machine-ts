@@ -39,7 +39,14 @@ function verifiedStale(id: string): Escrow {
   return escrow;
 }
 
-const BUDGET = { FUNDED: 7 * DAY, VERIFIED: 7 * DAY };
+/** FUNDED 40d ago, disputed 30d ago — the state with no EXPIRE edge (backlog #1422). */
+function disputedStale(id: string): Escrow {
+  const escrow = fundedAt(id, daysAgo(40));
+  escrow.dispatch("DISPUTE", undefined, undefined, { at: daysAgo(30) });
+  return escrow;
+}
+
+const BUDGET = { FUNDED: 7 * DAY, VERIFIED: 7 * DAY, DISPUTED: 7 * DAY };
 
 describe("actOnStaleEscrows", () => {
   it("mixed healthy/stale batch: only stale escrows are acted on, in batch order", () => {
@@ -98,9 +105,9 @@ describe("actOnStaleEscrows", () => {
     );
   });
 
-  it("dispatch-style action: EXPIRE succeeds where legal, is reported (not fatal) from VERIFIED", () => {
+  it("dispatch-style action: EXPIRE succeeds where legal, is reported (not fatal) from DISPUTED", () => {
     const expirable = fundedAt("expirable", daysAgo(30)); // FUNDED has an EXPIRE edge
-    const stuck = verifiedStale("stuck-verified"); // VERIFIED has none
+    const stuck = disputedStale("stuck-disputed"); // DISPUTED has none
     const after = fundedAt("after", daysAgo(28));
     const results: StaleEscrowActionResult[] = actOnStaleEscrows(
       [expirable, stuck, after],
@@ -111,10 +118,10 @@ describe("actOnStaleEscrows", () => {
     assert.equal(results[0].acted, true);
     assert.equal(expirable.state, "EXPIRED");
     assert.equal(results[1].acted, false);
-    assert.match(results[1].error ?? "", /invalid transition: EXPIRE from VERIFIED/);
+    assert.match(results[1].error ?? "", /invalid transition: EXPIRE from DISPUTED/);
     // The failed escrow is left untouched and the batch kept going.
-    assert.equal(stuck.state, "VERIFIED");
-    assert.equal(stuck.history.length, 3);
+    assert.equal(stuck.state, "DISPUTED");
+    assert.equal(stuck.history.length, 2);
     assert.equal(results[2].acted, true);
     assert.equal(after.state, "EXPIRED");
   });

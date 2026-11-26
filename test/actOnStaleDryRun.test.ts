@@ -37,7 +37,14 @@ function verifiedStale(id: string): Escrow {
   return escrow;
 }
 
-const BUDGET = { FUNDED: 7 * DAY, VERIFIED: 7 * DAY };
+/** FUNDED 40d ago, disputed 30d ago — the state with no EXPIRE edge (backlog #1422). */
+function disputedStale(id: string): Escrow {
+  const escrow = fundedAt(id, daysAgo(40));
+  escrow.dispatch("DISPUTE", undefined, undefined, { at: daysAgo(30) });
+  return escrow;
+}
+
+const BUDGET = { FUNDED: 7 * DAY, VERIFIED: 7 * DAY, DISPUTED: 7 * DAY };
 
 describe("actOnStaleEscrows dry run", () => {
   it("dry run calls the action zero times and leaves state/history untouched", () => {
@@ -197,11 +204,11 @@ describe("actOnStaleEscrows dry run", () => {
   });
 
   it("wouldAct means selected, not would-succeed: an illegal EXPIRE edge still reports wouldAct", () => {
-    // VERIFIED has no EXPIRE edge, so the live run would report
+    // DISPUTED has no EXPIRE edge, so the live run would report
     // acted: false with an "invalid transition" error — but the dry
     // run cannot know that about an arbitrary action, and reports
     // the selection only. The escrow is untouched either way.
-    const stuck = verifiedStale("stuck-verified");
+    const stuck = disputedStale("stuck-disputed");
     const results = actOnStaleEscrows(
       [stuck],
       (e) => e.dispatch("EXPIRE"),
@@ -213,8 +220,8 @@ describe("actOnStaleEscrows dry run", () => {
       results.map((r) => [r.acted, r.wouldAct, r.error]),
       [[false, true, undefined]]
     );
-    assert.equal(stuck.state, "VERIFIED");
-    assert.equal(stuck.history.length, 3);
+    assert.equal(stuck.state, "DISPUTED");
+    assert.equal(stuck.history.length, 2);
   });
 
   it("a dry run produces zero subscription notifications", () => {

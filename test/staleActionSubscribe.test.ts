@@ -42,13 +42,10 @@ function fundedAt(id: string, at: string, rolePolicy?: RolePolicy): Escrow {
   return escrow;
 }
 
-/** FUNDED 40d ago, milestone submitted 35d ago, verified 30d ago. */
-function verifiedStale(id: string): Escrow {
+/** FUNDED 40d ago, disputed 30d ago — the state with no EXPIRE edge (backlog #1422). */
+function disputedStale(id: string): Escrow {
   const escrow = fundedAt(id, daysAgo(40));
-  escrow.dispatch("SUBMIT_MILESTONE", undefined, undefined, {
-    at: daysAgo(35),
-  });
-  escrow.dispatch("VERIFY_PASS", undefined, undefined, { at: daysAgo(30) });
+  escrow.dispatch("DISPUTE", undefined, undefined, { at: daysAgo(30) });
   return escrow;
 }
 
@@ -77,7 +74,7 @@ function collect(escrow: Escrow): {
   return { seen, unsubscribe };
 }
 
-const BUDGET = { FUNDED: 7 * DAY, VERIFIED: 7 * DAY };
+const BUDGET = { FUNDED: 7 * DAY, VERIFIED: 7 * DAY, DISPUTED: 7 * DAY };
 
 describe("actOnStaleEscrows x subscribe", () => {
   it("dispatch action success: the executor's EXPIRE notifies exactly once, entry matches history and the report", () => {
@@ -174,8 +171,8 @@ describe("actOnStaleEscrows x subscribe", () => {
     assert.equal(seenOpen[0].entry.seq, 2);
   });
 
-  it("failed transition: VERIFIED stale escrow gets zero notifications and is untouched; the batch keeps going", () => {
-    const stuck = verifiedStale("stuck-verified");
+  it("failed transition: DISPUTED stale escrow gets zero notifications and is untouched; the batch keeps going", () => {
+    const stuck = disputedStale("stuck-disputed");
     const after = fundedAt("after", daysAgo(28));
     const seenStuck = collect(stuck).seen;
     const seenAfter = collect(after).seen;
@@ -187,11 +184,11 @@ describe("actOnStaleEscrows x subscribe", () => {
     );
     assert.equal(results.length, 2);
     assert.equal(results[0].acted, false);
-    assert.match(results[0].error ?? "", /invalid transition: EXPIRE from VERIFIED/);
+    assert.match(results[0].error ?? "", /invalid transition: EXPIRE from DISPUTED/);
     assert.equal("entry" in results[0], false);
     assert.equal(seenStuck.length, 0);
-    assert.equal(stuck.state, "VERIFIED");
-    assert.equal(stuck.history.length, 3);
+    assert.equal(stuck.state, "DISPUTED");
+    assert.equal(stuck.history.length, 2);
     assert.equal(results[1].acted, true);
     assert.equal(after.state, "EXPIRED");
     assert.equal(seenAfter.length, 1);

@@ -70,6 +70,11 @@
     "to": "DISPUTED"
   },
   {
+    "from": "VERIFIED",
+    "event": "EXPIRE",
+    "to": "EXPIRED"
+  },
+  {
     "from": "DISPUTED",
     "event": "ARBITRATE_RELEASE",
     "to": "RELEASED"

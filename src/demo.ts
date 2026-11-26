@@ -122,8 +122,9 @@
  * fixed `now` so no wall clock enters the audit history. A final
  * deadline-watchdog section then screens three more escrows with
  * `expiredEscrows` on the same fixed `now` and runs that selection
- * through the `expireOverdueEscrows` executor: the VERIFIED escrow
- * past its deadline has no EXPIRE edge, so it lands as a per-item
+ * through the `expireOverdueEscrows` executor: the DISPUTED escrow
+ * past its deadline has no EXPIRE edge (backlog #1422: expiry must
+ * not let a party walk out of arbitration), so it lands as a per-item
  * error without blocking the past-deadline FUNDED escrow after it,
  * which expires; the third escrow is stale-only (its deadline is
  * still ahead), so the deadline executor never attempts it — the
@@ -195,7 +196,7 @@
  * The demo then shows a state-diagram generation
  * segment: `stateDiagram()` renders the transition table as the
  * Mermaid stateDiagram-v2 block the README embeds verbatim —
- * 23 lines, 16 of them edge lines, one per transition-table
+ * 24 lines, 17 of them edge lines, one per transition-table
  * edge — and the segment asserts, outside the printing, that
  * the edge count equals `transitionTable()`'s edge count, so a
  * diagram whose shape broke would fail the demo itself.
@@ -1097,11 +1098,13 @@ export const DEMO_FRESH_DEADLINE = "2026-04-01T09:00:00.000Z";
  * screening section above, so the two sections compare like with
  * like. Hand-computed expectations — dwell is `now` minus the last
  * history entry's `at`:
- * - DEMO-ESC-007 (expired, unexpirable): VERIFIED at
- *   2026-03-07T09:00 — dwell 2 days, and VERIFIED carries no stale
+ * - DEMO-ESC-007 (expired, unexpirable): DISPUTED at
+ *   2026-03-07T09:00 — dwell 2 days, and DISPUTED carries no stale
  *   budget in the demo map anyway, so not stale; deadline
- *   2026-03-08T09:00 has passed, so expired. But VERIFIED has no
- *   EXPIRE edge, so `expireOverdueEscrows` lands it as
+ *   2026-03-08T09:00 has passed, so expired. But DISPUTED has no
+ *   EXPIRE edge — expiry must not let a party walk out of an open
+ *   arbitration (backlog #1422; a VERIFIED escrow in the same spot
+ *   WOULD expire) — so `expireOverdueEscrows` lands it as
  *   `{expired: false, error}` — and must not block the batch.
  * - DEMO-ESC-008 (expired, expirable): FUNDED at
  *   2026-03-08T09:00 — dwell 1 day, so not stale; deadline
@@ -1121,8 +1124,7 @@ export const DEMO_FRESH_DEADLINE = "2026-04-01T09:00:00.000Z";
  */
 export const DEMO_UNEXPIRABLE_ESCROW_ID = "DEMO-ESC-007";
 export const DEMO_UNEXPIRABLE_FUND_AT = "2026-03-02T09:00:00.000Z";
-export const DEMO_UNEXPIRABLE_SUBMIT_AT = "2026-03-06T09:00:00.000Z";
-export const DEMO_UNEXPIRABLE_VERIFY_AT = "2026-03-07T09:00:00.000Z";
+export const DEMO_UNEXPIRABLE_DISPUTE_AT = "2026-03-07T09:00:00.000Z";
 export const DEMO_UNEXPIRABLE_DEADLINE = "2026-03-08T09:00:00.000Z";
 export const DEMO_EXPIRABLE_ESCROW_ID = "DEMO-ESC-008";
 export const DEMO_EXPIRABLE_FUND_AT = "2026-03-08T09:00:00.000Z";
@@ -1551,8 +1553,8 @@ export const DEMO_SNAPSHOT_SERIALIZED_BYTES = 1344;
  * The segment is pure: no escrow instance, no dispatch, no
  * network, no randomness, no wall clock.
  */
-export const DEMO_TRANSITION_TABLE_EDGE_COUNT = 16;
-export const DEMO_TRANSITION_TABLE_JSON_BYTES = 1337;
+export const DEMO_TRANSITION_TABLE_EDGE_COUNT = 17;
+export const DEMO_TRANSITION_TABLE_JSON_BYTES = 1413;
 
 /**
  * Money-guard expectations for the closing segment:
@@ -3784,7 +3786,7 @@ export interface DemoResult {
   /**
    * The three deadline-watchdog escrows, in batch order
    * (unexpirable, expirable, stale-only), AFTER the executor ran:
-   * VERIFIED (unchanged by its failed attempt), EXPIRED, FUNDED
+   * DISPUTED (unchanged by its failed attempt), EXPIRED, FUNDED
    * (never attempted).
    */
   deadlineEscrows: Escrow[];
@@ -3947,13 +3949,13 @@ export interface DemoResult {
   overdueChecks: Array<{ at: string; overdue: boolean }>;
   /**
    * Full `stateDiagram()` Mermaid block text (no trailing
-   * newline): 23 lines — the fenced stateDiagram-v2 block the
+   * newline): 24 lines — the fenced stateDiagram-v2 block the
    * README embeds verbatim, rendered from `transitionTable()`.
    */
   stateDiagramText: string;
   /**
    * Edge lines inside {@link DemoResult.stateDiagramText}: the
-   * 14 transition edges, equal to `transitionTable().length`.
+   * 17 transition edges, equal to `transitionTable().length`.
    */
   stateDiagramEdgeCount: number;
   /**
@@ -4042,7 +4044,7 @@ export interface DemoResult {
   /**
    * UTF-8 byte count of
    * {@link DemoResult.transitionTableJsonText}:
-   * {@link DEMO_TRANSITION_TABLE_JSON_BYTES} (1,337).
+   * {@link DEMO_TRANSITION_TABLE_JSON_BYTES} (1,413).
    */
   transitionTableJsonBytes: number;
   /**
@@ -8216,7 +8218,7 @@ export async function runDemo(): Promise<DemoResult> {
   // expectations. Both selections are captured BEFORE the executor
   // runs, so the printed comparison is a snapshot of the same
   // pre-action batch. The executor then attempts exactly the
-  // expired selection: the VERIFIED escrow has no EXPIRE edge, so
+  // expired selection: the DISPUTED escrow has no EXPIRE edge, so
   // it lands as a per-item error and the batch continues to the
   // FUNDED escrow after it, which expires. (The executor pins the
   // fixed screening `now` as each EXPIRE entry's `at`, so no wall
@@ -8226,22 +8228,10 @@ export async function runDemo(): Promise<DemoResult> {
     actor: "sponsor",
     at: DEMO_UNEXPIRABLE_FUND_AT,
   });
-  unexpirableEscrow.dispatch(
-    "SUBMIT_MILESTONE",
-    "Deliverable URLs + IPFS metadata hash",
-    undefined,
-    { actor: "creator", at: DEMO_UNEXPIRABLE_SUBMIT_AT },
-  );
-  unexpirableEscrow.dispatch(
-    "VERIFY_PASS",
-    "KPIs validated by oracle",
-    undefined,
-    {
-      actor: "oracle",
-      at: DEMO_UNEXPIRABLE_VERIFY_AT,
-      evidence: "demo-oracle-attestation-002",
-    },
-  );
+  unexpirableEscrow.dispatch("DISPUTE", "Buyer unhappy with the milestone", undefined, {
+    actor: "creator",
+    at: DEMO_UNEXPIRABLE_DISPUTE_AT,
+  });
   unexpirableEscrow.setDeadline(DEMO_UNEXPIRABLE_DEADLINE);
   const expirableEscrow = new Escrow(DEMO_EXPIRABLE_ESCROW_ID);
   expirableEscrow.dispatch("FUND", "Deposit locked (wire received)", 10630, {
@@ -8518,7 +8508,7 @@ export async function runDemo(): Promise<DemoResult> {
   //   CREATED:             FUND, EXPIRE
   //   FUNDED:              FUND, SUBMIT_MILESTONE, DISPUTE, EXPIRE
   //   MILESTONE_SUBMITTED: VERIFY_PASS, VERIFY_FAIL, DISPUTE, EXPIRE
-  //   VERIFIED:            RELEASE, DISPUTE
+  //   VERIFIED:            RELEASE, DISPUTE, EXPIRE
   //   DISPUTED:            ARBITRATE_RELEASE, ARBITRATE_REFUND
   //   RELEASED:            (none — terminal)
   //   REFUNDED:            (none — terminal)
@@ -8923,7 +8913,7 @@ export async function runDemo(): Promise<DemoResult> {
   // Mermaid stateDiagram-v2 block from transitionTable() (the
   // single source of truth), the exact block the README embeds
   // verbatim and test/diagram.test.ts guards against drift.
-  // The demo prints a summary, not the 21-line block: the line
+  // The demo prints a summary, not the 24-line block: the line
   // total and edge count plus the first, second, initial,
   // first-edge, last-edge, terminal, and last lines.
   // Hand-pinned expectations — written out here from
@@ -8931,16 +8921,16 @@ export async function runDemo(): Promise<DemoResult> {
   // stateDiagram itself (the demo tests cross-check the full
   // generated block line by line as well, and bench's
   // stateDiagram fixture pins the same shape independently):
-  //   23 lines in total, 16 of them edge lines
+  //   24 lines in total, 17 of them edge lines
   //   line 1:  ```mermaid (the opening fence)
   //   line 2:  stateDiagram-v2
   //   line 3:      [*] --> CREATED (the initial transition)
   //   line 4:      CREATED --> FUNDED : FUND (the first edge)
-  //   line 19:     DISPUTED --> REFUNDED : ARBITRATE_REFUND (last edge)
-  //   lines 20-22: RELEASED / REFUNDED / EXPIRED --> [*] (terminals)
-  //   line 23: ``` (the closing fence)
+  //   line 20:     DISPUTED --> REFUNDED : ARBITRATE_REFUND (last edge)
+  //   lines 21-23: RELEASED / REFUNDED / EXPIRED --> [*] (terminals)
+  //   line 24: ``` (the closing fence)
   // The edge-line count must equal the transition table's edge
-  // count — the same 16 the committed snapshot pins — and the
+  // count — the same 17 the committed snapshot pins — and the
   // segment asserts that here, outside the printed summary: a
   // diagram whose shape broke would fail the demo itself, not
   // just a test. The segment is pure: no escrow instance, no
@@ -8951,7 +8941,7 @@ export async function runDemo(): Promise<DemoResult> {
   const stateDiagramEdgeCount = stateDiagramEdgeLines.length;
   const stateDiagramTerminalLines = stateDiagramLines.slice(-4, -1);
   if (
-    stateDiagramLines.length !== 23 ||
+    stateDiagramLines.length !== 24 ||
     stateDiagramLines[0] !== "```mermaid" ||
     stateDiagramLines[1] !== "stateDiagram-v2" ||
     stateDiagramLines[2] !== "    [*] --> CREATED" ||
@@ -8964,7 +8954,7 @@ export async function runDemo(): Promise<DemoResult> {
     stateDiagramLines[stateDiagramLines.length - 1] !== "```"
   ) {
     throw new Error(
-      "demo fixture broken: stateDiagram() output does not have the pinned shape (23 lines, mermaid fence, stateDiagram-v2 header, CREATED start, one edge line per transition-table edge, RELEASED/REFUNDED/EXPIRED terminals, closing fence)",
+      "demo fixture broken: stateDiagram() output does not have the pinned shape (24 lines, mermaid fence, stateDiagram-v2 header, CREATED start, one edge line per transition-table edge, RELEASED/REFUNDED/EXPIRED terminals, closing fence)",
     );
   }
   lines.push(
@@ -8975,8 +8965,8 @@ export async function runDemo(): Promise<DemoResult> {
     `  second line: ${stateDiagramLines[1]}`,
     `  initial transition (line 3): ${stateDiagramLines[2].trim()}`,
     `  first edge (line 4): ${stateDiagramEdgeLines[0].trim()}`,
-    `  last edge (line 19): ${stateDiagramEdgeLines.at(-1)!.trim()}`,
-    `  terminal lines (lines 20-22): ${stateDiagramTerminalLines.map((line) => line.trim()).join(", ")}`,
+    `  last edge (line 20): ${stateDiagramEdgeLines.at(-1)!.trim()}`,
+    `  terminal lines (lines 21-23): ${stateDiagramTerminalLines.map((line) => line.trim()).join(", ")}`,
     `  last line: ${stateDiagramLines.at(-1)}`,
   );
 
@@ -9288,13 +9278,13 @@ export async function runDemo(): Promise<DemoResult> {
   // snapshot test/__snapshots__/transitionTable.snapshot.json
   // that test/transitionSnapshot.test.ts guards against
   // drift. The demo prints the serialized byte count and the
-  // edge total, not the 1,337-byte text itself.
+  // edge total, not the 1,413-byte text itself.
   // Hand-pinned expectations — written out here from
   // TRANSITIONS in src/stateMachine.ts, never derived by
   // calling transitionTableJson itself (the transition
   // snapshot tests and bench's transitionTableJson fixture
   // pin the same shape independently):
-  //   16 edges, 1,337 serialized bytes, first edge
+  //   17 edges, 1,413 serialized bytes, first edge
   //   CREATED --FUND--> FUNDED, last edge
   //   DISPUTED --ARBITRATE_REFUND--> REFUNDED, every parsed
   //   edge carrying exactly the keys from/event/to in order
@@ -9345,7 +9335,7 @@ export async function runDemo(): Promise<DemoResult> {
       "DISPUTED:ARBITRATE_REFUND:REFUNDED"
   ) {
     throw new Error(
-      "demo fixture broken: transitionTableJson() output does not have the pinned shape (1,337 bytes, 16 edges matching transitionTable() edge for edge, pinned key order, first CREATED --FUND--> FUNDED, last DISPUTED --ARBITRATE_REFUND--> REFUNDED, exactly one trailing newline)",
+      "demo fixture broken: transitionTableJson() output does not have the pinned shape (1,413 bytes, 17 edges matching transitionTable() edge for edge, pinned key order, first CREATED --FUND--> FUNDED, last DISPUTED --ARBITRATE_REFUND--> REFUNDED, exactly one trailing newline)",
     );
   }
   lines.push(

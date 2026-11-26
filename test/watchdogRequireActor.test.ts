@@ -99,19 +99,15 @@ function staleFundedEscrow(
   return escrow;
 }
 
-/** VERIFIED 30 days ago: overdue by deadline but with no EXPIRE edge. */
-function verifiedOverdueEscrow(id: string): Escrow {
+/** DISPUTED 30 days ago: overdue by deadline but with no EXPIRE edge. */
+function disputedOverdueEscrow(id: string): Escrow {
   const escrow = new Escrow(id);
   escrow.dispatch("FUND", "initial deposit", 1000, {
     actor: "sponsor",
     at: daysAgo(40),
   });
-  escrow.dispatch("SUBMIT_MILESTONE", undefined, undefined, {
+  escrow.dispatch("DISPUTE", undefined, undefined, {
     actor: "creator",
-    at: daysAgo(35),
-  });
-  escrow.dispatch("VERIFY_PASS", undefined, undefined, {
-    actor: "oracle",
     at: daysAgo(30),
   });
   escrow.setDeadline(PAST);
@@ -251,7 +247,7 @@ describe("watchdog executors x requireActor", () => {
     const gated = overdueFundedEscrow("watchdog-ra-batch-ok", {
       requireActor: true,
     });
-    const stuck = verifiedOverdueEscrow("watchdog-ra-batch-stuck");
+    const stuck = disputedOverdueEscrow("watchdog-ra-batch-stuck");
 
     const results = expireOverdueEscrows([stuck, gated], NOW);
     assert.equal(results.length, 2);
@@ -260,9 +256,9 @@ describe("watchdog executors x requireActor", () => {
     assert.equal(results[0].expired, false);
     assert.match(
       results[0].error ?? "",
-      /invalid transition: EXPIRE from VERIFIED/
+      /invalid transition: EXPIRE from DISPUTED/
     );
-    assert.equal(stuck.state, "VERIFIED");
+    assert.equal(stuck.state, "DISPUTED");
 
     // the requireActor sibling still expires in the same batch
     assert.equal(results[1].expired, true);

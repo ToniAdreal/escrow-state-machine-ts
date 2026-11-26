@@ -115,7 +115,7 @@ describe("expireOverdueEscrows pins screening now as EXPIRE entry at", () => {
     );
   });
 
-  it("VERIFIED overdue escrows still fail with invalid transition", () => {
+  it("VERIFIED overdue escrows now expire (backlog #1422)", () => {
     const verified = new Escrow("verified");
     verified.dispatch("FUND", "deposit", 1000, { at: FUND_AT });
     verified.dispatch("SUBMIT_MILESTONE", "done", undefined, {
@@ -126,11 +126,13 @@ describe("expireOverdueEscrows pins screening now as EXPIRE entry at", () => {
     });
     verified.setDeadline(DEADLINE);
     const results = expireOverdueEscrows([verified], NOW);
-    assert.equal(results[0].expired, false);
-    assert.match(
-      results[0].error ?? "",
-      /invalid transition: EXPIRE from VERIFIED/
-    );
+    assert.equal(results[0].expired, true);
+    assert.equal(results[0].error, undefined);
+    assert.equal(verified.state, "EXPIRED");
+    const last = verified.history[verified.history.length - 1];
+    assert.equal(last.event, "EXPIRE");
+    assert.equal(last.from, "VERIFIED");
+    assert.equal(last.at, NOW.toISOString());
   });
 
   it("the pinned entries still pass verifyHistoryChain", () => {

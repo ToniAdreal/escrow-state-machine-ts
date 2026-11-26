@@ -78,6 +78,6 @@ test("terminal states accept no further events", () => {
 
 test("pure transition function + allowed events", () => {
   assert.equal(transition("FUNDED", "SUBMIT_MILESTONE"), "MILESTONE_SUBMITTED");
-  assert.deepEqual(allowedEvents("VERIFIED"), ["RELEASE", "DISPUTE"]);
+  assert.deepEqual(allowedEvents("VERIFIED"), ["RELEASE", "DISPUTE", "EXPIRE"]);
   assert.deepEqual(allowedEvents("RELEASED"), []);
 });

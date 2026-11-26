@@ -1,8 +1,8 @@
 /**
  * expireOverdueEscrows watchdog executor (#101).
  *
- * `expiredEscrows()` is a pure filter, but it has a trap: VERIFIED and
- * DISPUTED escrows have no EXPIRE edge in the transition table, so a
+ * `expiredEscrows()` is a pure filter, but it has a trap: DISPUTED
+ * escrows have no EXPIRE edge in the transition table, so a
  * hand-written `for` loop dispatching EXPIRE aborts the whole batch on
  * the first such escrow. expireOverdueEscrows() reports per-escrow
  * outcomes instead and never lets one bad escrow block the rest.
@@ -24,22 +24,10 @@ const NOW = new Date("2026-06-01T00:00:00.000Z");
 // `at`, and dispatch rejects a backward-moving audit clock.
 const FUND_AT = new Date("2026-01-01T00:00:00.000Z");
 const SUBMIT_AT = new Date("2026-02-01T00:00:00.000Z");
-const VERIFY_AT = new Date("2026-03-01T00:00:00.000Z");
 
 function fundedWithDeadline(id: string, deadline: Date): Escrow {
   const escrow = new Escrow(id);
   escrow.dispatch("FUND", "initial deposit", 1000, { at: FUND_AT });
-  escrow.setDeadline(deadline);
-  return escrow;
-}
-
-function verifiedWithDeadline(id: string, deadline: Date): Escrow {
-  const escrow = new Escrow(id);
-  escrow.dispatch("FUND", "initial deposit", 1000, { at: FUND_AT });
-  escrow.dispatch("SUBMIT_MILESTONE", "milestone done", undefined, {
-    at: SUBMIT_AT,
-  });
-  escrow.dispatch("VERIFY_PASS", undefined, undefined, { at: VERIFY_AT });
   escrow.setDeadline(deadline);
   return escrow;
 }
@@ -64,10 +52,10 @@ describe("expireOverdueEscrows", () => {
     const notOverdue = fundedWithDeadline("not-overdue", FUTURE);
     const noDeadline = new Escrow("no-deadline");
     noDeadline.dispatch("FUND", "initial deposit", 1000);
-    const verified = verifiedWithDeadline("verified", PAST);
+    const disputed = disputedWithDeadline("disputed", PAST);
 
     const results = expireOverdueEscrows(
-      [expirable, notOverdue, noDeadline, verified],
+      [expirable, notOverdue, noDeadline, disputed],
       NOW
     );
 
@@ -78,19 +66,19 @@ describe("expireOverdueEscrows", () => {
     assert.equal(ok.error, undefined);
     assert.equal(ok.escrow.state, "EXPIRED");
 
-    const stuck = byId(results, "verified");
+    const stuck = byId(results, "disputed");
     assert.equal(stuck.expired, false);
     assert.match(
       stuck.error ?? "",
-      /invalid transition: EXPIRE from VERIFIED/
+      /invalid transition: EXPIRE from DISPUTED/
     );
-    // the failed escrow is untouched: still VERIFIED, no new history
-    assert.equal(stuck.escrow.state, "VERIFIED");
+    // the failed escrow is untouched: still DISPUTED, no new history
+    assert.equal(stuck.escrow.state, "DISPUTED");
   });
 
-  it("a failing VERIFIED escrow does not block later escrows in the batch", () => {
+  it("a failing DISPUTED escrow does not block later escrows in the batch", () => {
     const first = fundedWithDeadline("first", PAST);
-    const stuck = verifiedWithDeadline("stuck", PAST);
+    const stuck = disputedWithDeadline("stuck", PAST);
     const last = fundedWithDeadline("last", PAST);
 
     const results = expireOverdueEscrows([first, stuck, last], NOW);
@@ -101,7 +89,7 @@ describe("expireOverdueEscrows", () => {
     assert.equal(byId(results, "last").expired, true);
     assert.equal(first.state, "EXPIRED");
     assert.equal(last.state, "EXPIRED");
-    assert.equal(stuck.state, "VERIFIED");
+    assert.equal(stuck.state, "DISPUTED");
   });
 
   it("DISPUTED overdue escrows also fail gracefully with an error message", () => {
@@ -181,7 +169,7 @@ describe("expireOverdueEscrows", () => {
 
   it("expired:true entries have no error key; failed entries carry a string error", () => {
     const ok = fundedWithDeadline("ok", PAST);
-    const stuck = verifiedWithDeadline("stuck2", PAST);
+    const stuck = disputedWithDeadline("stuck2", PAST);
     const results = expireOverdueEscrows([ok, stuck], NOW);
     const good = byId(results, "ok");
     assert.equal("error" in good, false);

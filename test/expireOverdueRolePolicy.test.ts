@@ -16,7 +16,7 @@
  * `system`.)
  *
  * RBAC is checked after transition legality (see `dispatch`), so a
- * VERIFIED overdue escrow with an EXPIRE policy still fails with the
+ * DISPUTED overdue escrow with an EXPIRE policy still fails with the
  * transition error, not the authorization error — the policy never
  * masks an illegal transition.
  */
@@ -37,7 +37,6 @@ const NOW = new Date("2026-06-01T00:00:00.000Z");
 // `at`, and dispatch rejects a backward-moving audit clock.
 const FUND_AT = new Date("2026-01-01T00:00:00.000Z");
 const SUBMIT_AT = new Date("2026-02-01T00:00:00.000Z");
-const VERIFY_AT = new Date("2026-03-01T00:00:00.000Z");
 
 function fundedOverdue(id: string, rolePolicy?: RolePolicy): Escrow {
   const escrow =
@@ -49,16 +48,14 @@ function fundedOverdue(id: string, rolePolicy?: RolePolicy): Escrow {
   return escrow;
 }
 
-function verifiedOverdue(id: string, rolePolicy?: RolePolicy): Escrow {
+/** DISPUTED overdue: the state with no EXPIRE edge (backlog #1422). */
+function disputedOverdue(id: string, rolePolicy?: RolePolicy): Escrow {
   const escrow =
     rolePolicy === undefined
       ? new Escrow(id)
       : new Escrow(id, { rolePolicy });
   escrow.dispatch("FUND", "initial deposit", 1000, { at: FUND_AT });
-  escrow.dispatch("SUBMIT_MILESTONE", "milestone done", undefined, {
-    at: SUBMIT_AT,
-  });
-  escrow.dispatch("VERIFY_PASS", undefined, undefined, { at: VERIFY_AT });
+  escrow.dispatch("DISPUTE", "buyer unhappy", undefined, { at: SUBMIT_AT });
   escrow.setDeadline(PAST);
   return escrow;
 }
@@ -208,19 +205,19 @@ describe("expireOverdueEscrows x rolePolicy", () => {
     assert.equal(gated.history.length, 1);
   });
 
-  it("transition legality runs before RBAC: a VERIFIED overdue escrow with an EXPIRE policy fails with the transition error, not the authorization error", () => {
-    const verified = verifiedOverdue("verified-gated", {
+  it("transition legality runs before RBAC: a DISPUTED overdue escrow with an EXPIRE policy fails with the transition error, not the authorization error", () => {
+    const disputed = disputedOverdue("disputed-gated", {
       EXPIRE: ["ops-lead"],
     });
 
-    const results = expireOverdueEscrows([verified], NOW);
+    const results = expireOverdueEscrows([disputed], NOW);
     assert.equal(results.length, 1);
     assert.equal(results[0].expired, false);
     assert.match(
       results[0].error ?? "",
-      /invalid transition: EXPIRE from VERIFIED/
+      /invalid transition: EXPIRE from DISPUTED/
     );
-    assert.equal(verified.state, "VERIFIED");
-    assert.equal(verified.history.length, 3);
+    assert.equal(disputed.state, "DISPUTED");
+    assert.equal(disputed.history.length, 2);
   });
 });

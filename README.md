@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2986 tests, all local
+npm test   # 2993 tests, all local
 ```
 
 ## Quickstart
@@ -189,8 +189,9 @@ leaving the other two untouched. The demo then closes with a
 deadline-watchdog section over three more escrows on the same
 fixed `now`: `expiredEscrows` screens the batch by deadline and
 `expireOverdueEscrows` executes that selection with per-item
-isolation — the past-deadline `VERIFIED` escrow has no `EXPIRE`
-edge and lands as `{expired: false, error}` without blocking the
+isolation — the past-deadline `DISPUTED` escrow has no `EXPIRE`
+edge (expiry must not let a party walk out of arbitration) and
+lands as `{expired: false, error}` without blocking the
 past-deadline `FUNDED` escrow after it, which expires, while the
 stale-only escrow (deadline still ahead) is never attempted, so
 the deadline and stale axes pick disjoint subsets of this batch
@@ -272,6 +273,7 @@ stateDiagram-v2
     MILESTONE_SUBMITTED --> EXPIRED : EXPIRE
     VERIFIED --> RELEASED : RELEASE
     VERIFIED --> DISPUTED : DISPUTE
+    VERIFIED --> EXPIRED : EXPIRE
     DISPUTED --> RELEASED : ARBITRATE_RELEASE
     DISPUTED --> REFUNDED : ARBITRATE_REFUND
     RELEASED --> [*]
@@ -279,9 +281,11 @@ stateDiagram-v2
     EXPIRED --> [*]
 ```
 
-(`EXPIRE` is available from `CREATED`, `FUNDED`, and `MILESTONE_SUBMITTED`
-once the campaign deadline passes — not from `VERIFIED`/`DISPUTED`, where the
-outcome is decided by verification or arbitration; terminal states are
+(`EXPIRE` is available from `CREATED`, `FUNDED`, `MILESTONE_SUBMITTED`,
+and `VERIFIED` once the campaign deadline passes — not from `DISPUTED`, where the
+outcome is decided by arbitration (a verified-but-unreleased escrow that
+passes its deadline expires back to the sponsor instead of locking funds
+forever; a disputed escrow never expires out of arbitration); terminal states are
 `RELEASED`, `REFUNDED`, `EXPIRED`. The diagram is generated from
 `transitionTable()` in `src/stateMachine.ts` by `stateDiagram()` — do not
 edit it by hand; regenerate it with `npm run diagram` (prints the block to
@@ -636,10 +640,10 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   also carries `entry`, a frozen detached copy of the appended EXPIRE
   audit entry, so an expiry operations report can cite it without
   re-reading `escrow.history`; failed outcomes leave it absent. The executor exists because of a
-  real trap: `VERIFIED` (and `DISPUTED`) escrows have no `EXPIRE` edge in
+  real trap: `DISPUTED` escrows have no `EXPIRE` edge in
   the transition table, so a naive hand-written loop aborts the whole
   batch on the first such escrow — the executor records
-  `{ expired: false, error: "invalid transition: EXPIRE from VERIFIED" }`
+  `{ expired: false, error: "invalid transition: EXPIRE from DISPUTED" }`
   for it and keeps going. Failed escrows are left untouched.
   The executor pins the screening `now` as the `at` of every `EXPIRE`
   entry it appends (`dispatch("EXPIRE", …, { actor: "system", at: now })`),
@@ -2290,7 +2294,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2986 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 2993 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
@@ -3209,7 +3213,7 @@ The new `dispatchArbitration` rolePolicy row measures the #719 combination as a 
 The new `verifySettlementWebhook` x `SettlementEventDedupe` receiver-flow row measures the #725 test row as a cost path: one measured op is three deliveries against a dedicated dedupe under a fixed injected clock at capacity 100,000 — a first sighting that verifies and records as new, a redelivery that verifies again but reports duplicate, and a tampered body that fails verification and never reaches the dedupe step, proven by the tampered delivery's claimed id still recording as new afterwards. The verify step reuses the fixed signed webhook and its signature; the dedupe step uses per-iteration synthetic ids standing in for `payload.eventId`, because the fixed body's own id can only be first-seen once.
 The new `deliverSettlementWebhookToMany` fan-out x `SettlementEventDedupe` receiver-flow row measures the #741 test row as a cost path and is the escrow-side peer of the dataquest #744 row: one measured op is two fan-outs of the same fresh eventId to the 4 fixed endpoints through a fake global fetch (immediate 200, no network) — the first fan-out delivers 4 / fails 0 with every endpoint's copy verifying under its own secret and recording as a first sighting in that endpoint's own dedupe, and the redelivery delivers 4 / fails 0 again, verifies again, and reports duplicate on all four dedupes. One measured op records exactly one id per dedupe, and warmup + timed calls total 3,200 ops, so 3,200 live entries per dedupe stay far under the 100,000 cap under a fixed injected clock and nothing expires or is evicted in the timed loop. Outside the timed loop, the fixture eventId's first-sighting / redelivery shapes are pinned once.
 The new `actOnStaleEscrows` x `subscribe` row measures the #735 test row as a cost path: one measured op is one batch action over fresh rebuilds of the same 100-escrow watchdog batch, with one collecting listener subscribed to every escrow — 70 stale escrows EXPIRE and exactly 70 notifications arrive, each carrying the appended EXPIRE entry field for field against that escrow's history tail and the executor's report entry. Outside the timed loop, a notify-only action is pinned to zero notifications with all 70 stale escrows still acted, and an unsubscribe-before-the-executor run is pinned to zero notifications with all 70 still expiring.
-The new `expireOverdueEscrows` x `subscribe` row measures the #739 test row as a cost path: one measured op is one batch execution over fresh rebuilds of the same 100-escrow watchdog batch, with one collecting listener subscribed to every escrow — 40 overdue escrows EXPIRE and exactly 40 notifications arrive, each carrying the appended EXPIRE entry field for field against that escrow's history tail and the executor's report entry. Outside the timed loop, a failure-isolated VERIFIED overdue escrow is pinned to zero notifications with the batch still expiring the rest, and an unsubscribe-before-the-executor run is pinned to zero notifications with all 40 still expiring.
+The new `expireOverdueEscrows` x `subscribe` row measures the #739 test row as a cost path: one measured op is one batch execution over fresh rebuilds of the same 100-escrow watchdog batch, with one collecting listener subscribed to every escrow — 40 overdue escrows EXPIRE and exactly 40 notifications arrive, each carrying the appended EXPIRE entry field for field against that escrow's history tail and the executor's report entry. Outside the timed loop, a failure-isolated DISPUTED overdue escrow is pinned to zero notifications with the batch still expiring the rest, and an unsubscribe-before-the-executor run is pinned to zero notifications with all 40 still expiring.
 The new `deliverSettlementWebhookToMany` fan-out x secrets-rotation verify x `SettlementEventDedupe` receiver-flow row measures the #765 combination as a cost path: one measured op is two fan-outs of the same fresh eventId to the 4 fixed rotation endpoints through a fake global fetch (immediate 200, no network) plus one tampered-copy probe per endpoint — the first fan-out delivers 4 / fails 0 with every endpoint's copy verifying under its own [new, old] candidate list (signed under the old secret, so one failed HMAC trial before the match) and recording as a first sighting in that endpoint's own dedupe, the redelivery delivers 4 / fails 0 again, verifies again, and reports duplicate on all four dedupes, and each tampered copy (that endpoint's fresh eventId swapped for a second id in the body, signature untouched) fails verification and records nothing, proven by each tampered id still recording as new afterwards. One measured op records exactly two ids per dedupe, so warmup + timed calls total 3,200 ops and 6,400 live entries per dedupe stay far under the 100,000 cap under a fixed injected clock.
 The new `deliverSettlementWebhookToMany` fan-out limits x `SettlementEventDedupe` receiver-flow row measures the #758 test row as a cost path: one measured op is an over-cap batch plus two fan-outs of the same fresh eventId to the 4 fixed endpoints through a fake global fetch (immediate 200, no network) — the 4-endpoint batch under `maxEndpoints: 3` throws the pinned cap error before any request (0 fetch calls) and records nothing, proven by the in-limit first fan-out recording as a first sighting on all four dedupes, and the redelivery then reports duplicate on all four dedupes. One measured op records exactly one id per dedupe, so warmup + timed calls total 3,200 ops and 3,200 live entries per dedupe stay far under the 100,000 cap under a fixed injected clock. Outside the timed loop, the fixture eventId's cap / first-sighting / redelivery shapes are pinned once, and an invalid `maxEndpoints: 0` is pinned to its exact configuration error with zero fetch calls.
 The new `buildSettlementReports` x top-up row measures the #789 combination as a cost path: one measured op builds a 2-report batch — a topped-up released escrow (FUND 10000 + 630, 5 entries) plus a single-FUND released control (FUND 5000, 4 entries) — and summarizes the two results for the balanced check, pinning the top-up report's deposit at 10630 (the FUND sum, not the first FUND), outcome released, and balanced, the control report's deposit at 5000 and balanced, and the summary at totalDeposit / totalInflow / totalOutflow 15630 with balanced true.

@@ -31,14 +31,12 @@ function overdue(id: string): Escrow {
   return escrow;
 }
 
-function verifiedOverdue(id: string): Escrow {
+/** DISPUTED overdue: the state with no EXPIRE edge (backlog #1422). */
+function disputedOverdue(id: string): Escrow {
   const escrow = new Escrow(id);
   escrow.dispatch("FUND", "deposit", 1000, { at: FUND_AT });
-  escrow.dispatch("SUBMIT_MILESTONE", "done", undefined, {
+  escrow.dispatch("DISPUTE", "buyer unhappy", undefined, {
     at: new Date("2026-02-01T00:00:00.000Z"),
-  });
-  escrow.dispatch("VERIFY_PASS", undefined, undefined, {
-    at: new Date("2026-03-01T00:00:00.000Z"),
   });
   escrow.setDeadline(DEADLINE);
   return escrow;
@@ -61,13 +59,13 @@ describe("expireOverdueEscrows result carries the EXPIRE audit entry", () => {
   });
 
   it("a failed outcome carries no entry field at all", () => {
-    const verified = verifiedOverdue("entry-absent");
-    const results = expireOverdueEscrows([verified], NOW);
+    const disputed = disputedOverdue("entry-absent");
+    const results = expireOverdueEscrows([disputed], NOW);
     const result = results[0];
     assert.equal(result.expired, false);
-    assert.match(result.error ?? "", /invalid transition: EXPIRE from VERIFIED/);
+    assert.match(result.error ?? "", /invalid transition: EXPIRE from DISPUTED/);
     assert.equal("entry" in result, false);
-    assert.equal(verified.state, "VERIFIED");
+    assert.equal(disputed.state, "DISPUTED");
   });
 
   it("entry.at equals the screening now (#552 pinning, via the result itself)", () => {
@@ -97,7 +95,7 @@ describe("expireOverdueEscrows result carries the EXPIRE audit entry", () => {
 
   it("a mixed batch gives entries only to its successes, in batch order", () => {
     const ok = overdue("batch-ok");
-    const bad = verifiedOverdue("batch-bad");
+    const bad = disputedOverdue("batch-bad");
     const results = expireOverdueEscrows([ok, bad], NOW);
     assert.equal(results.length, 2);
     assert.equal(results[0].expired, true);

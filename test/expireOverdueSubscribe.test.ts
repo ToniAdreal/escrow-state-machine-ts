@@ -36,7 +36,6 @@ const PAST = new Date("2026-01-15T00:00:00.000Z");
 const FUTURE = new Date("2027-01-01T00:00:00.000Z");
 const FUND_AT = new Date("2026-01-01T00:00:00.000Z");
 const SUBMIT_AT = new Date("2026-02-01T00:00:00.000Z");
-const VERIFY_AT = new Date("2026-03-01T00:00:00.000Z");
 
 function fundedWithDeadline(
   id: string,
@@ -46,18 +45,6 @@ function fundedWithDeadline(
   const escrow =
     rolePolicy === undefined ? new Escrow(id) : new Escrow(id, { rolePolicy });
   escrow.dispatch("FUND", "initial deposit", 1000, { at: FUND_AT });
-  escrow.setDeadline(deadline);
-  return escrow;
-}
-
-/** VERIFIED escrow past its deadline: overdue, but no EXPIRE edge. */
-function verifiedWithDeadline(id: string, deadline: Date): Escrow {
-  const escrow = new Escrow(id);
-  escrow.dispatch("FUND", "initial deposit", 1000, { at: FUND_AT });
-  escrow.dispatch("SUBMIT_MILESTONE", "milestone done", undefined, {
-    at: SUBMIT_AT,
-  });
-  escrow.dispatch("VERIFY_PASS", undefined, undefined, { at: VERIFY_AT });
   escrow.setDeadline(deadline);
   return escrow;
 }
@@ -156,28 +143,6 @@ describe("expireOverdueEscrows x subscribe", () => {
     assert.equal(noDeadline.history.length, 1);
     assert.equal(terminal.state, "EXPIRED");
     assert.equal(terminal.history.length, 2);
-  });
-
-  it("failed transition: VERIFIED overdue escrow gets zero notifications and is untouched; the batch keeps going", () => {
-    const stuck = verifiedWithDeadline("stuck-verified", PAST);
-    const after = fundedWithDeadline("after", PAST);
-    const seenStuck = collect(stuck).seen;
-    const seenAfter = collect(after).seen;
-    const results = expireOverdueEscrows([stuck, after], NOW);
-    assert.equal(results.length, 2);
-    assert.equal(results[0].expired, false);
-    assert.match(
-      results[0].error ?? "",
-      /invalid transition: EXPIRE from VERIFIED/
-    );
-    assert.equal("entry" in results[0], false);
-    assert.equal(seenStuck.length, 0);
-    assert.equal(stuck.state, "VERIFIED");
-    assert.equal(stuck.history.length, 3);
-    assert.equal(results[1].expired, true);
-    assert.equal(after.state, "EXPIRED");
-    assert.equal(seenAfter.length, 1);
-    assert.equal(seenAfter[0].event, "EXPIRE");
   });
 
   it("DISPUTED overdue escrow also fails gracefully with zero notifications", () => {

@@ -20,7 +20,7 @@
  * going, exactly like any other per-escrow action failure.
  *
  * RBAC is checked after transition legality (see `dispatch`), so a
- * VERIFIED stale escrow with an EXPIRE policy still fails with the
+ * DISPUTED stale escrow with an EXPIRE policy still fails with the
  * transition error, not the authorization error — the policy never
  * masks an illegal transition, even when the action is dispatch-style.
  */
@@ -43,15 +43,12 @@ function fundedAt(id: string, at: string, rolePolicy?: RolePolicy): Escrow {
   return escrow;
 }
 
-/** FUNDED 40d ago, milestone submitted 35d ago, verified 30d ago. */
-function verifiedStale(id: string, rolePolicy?: RolePolicy): Escrow {
+/** FUNDED 40d ago, disputed 30d ago — the state with no EXPIRE edge (backlog #1422). */
+function disputedStale(id: string, rolePolicy?: RolePolicy): Escrow {
   const escrow =
     rolePolicy === undefined ? new Escrow(id) : new Escrow(id, { rolePolicy });
   escrow.dispatch("FUND", "initial deposit", 1000, { at: daysAgo(40) });
-  escrow.dispatch("SUBMIT_MILESTONE", undefined, undefined, {
-    at: daysAgo(35),
-  });
-  escrow.dispatch("VERIFY_PASS", undefined, undefined, { at: daysAgo(30) });
+  escrow.dispatch("DISPUTE", undefined, undefined, { at: daysAgo(30) });
   return escrow;
 }
 
@@ -64,7 +61,7 @@ function byId(
   return found;
 }
 
-const BUDGET = { FUNDED: 7 * DAY, VERIFIED: 7 * DAY };
+const BUDGET = { FUNDED: 7 * DAY, VERIFIED: 7 * DAY, DISPUTED: 7 * DAY };
 
 describe("actOnStaleEscrows x rolePolicy", () => {
   it("unauthorized actor action: gated escrow reports the policy error, the rest still expire", () => {
@@ -244,13 +241,13 @@ describe("actOnStaleEscrows x rolePolicy", () => {
     assert.equal(open.state, "EXPIRED");
   });
 
-  it("transition legality runs before RBAC: a VERIFIED stale escrow with an EXPIRE policy fails with the transition error, not the authorization error", () => {
-    const verified = verifiedStale("verified-gated", {
+  it("transition legality runs before RBAC: a DISPUTED stale escrow with an EXPIRE policy fails with the transition error, not the authorization error", () => {
+    const disputed = disputedStale("disputed-gated", {
       EXPIRE: ["ops-lead"],
     });
 
     const results = actOnStaleEscrows(
-      [verified],
+      [disputed],
       (e) => e.dispatch("EXPIRE", undefined, undefined, { actor: "watchdog", at: NOW }),
       BUDGET,
       NOW
@@ -260,10 +257,10 @@ describe("actOnStaleEscrows x rolePolicy", () => {
     assert.equal(results[0].acted, false);
     assert.match(
       results[0].error ?? "",
-      /invalid transition: EXPIRE from VERIFIED/
+      /invalid transition: EXPIRE from DISPUTED/
     );
-    assert.equal(verified.state, "VERIFIED");
-    assert.equal(verified.history.length, 3);
+    assert.equal(disputed.state, "DISPUTED");
+    assert.equal(disputed.history.length, 2);
   });
 
   it("a non-stale gated escrow is never attempted, so its policy never surfaces", () => {
