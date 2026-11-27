@@ -33,8 +33,11 @@ import type {
 
 /**
  * Maximum length (in UTF-16 code units, i.e. `String.length`) of a
- * settlement webhook `eventId`. The default `eventId` is a UUID (36
- * characters), so 256 leaves orders of magnitude of headroom over any
+ * settlement webhook `eventId`. The default `eventId` is derived
+ * deterministically from the report's settlement-evidence anchor
+ * (`terminalSeq` + `terminalHash`, see {@link defaultEventId}) when
+ * the report carries one, and a UUID (36 characters) only when it
+ * does not, so 256 leaves orders of magnitude of headroom over any
  * honest identifier while bounding what a caller can write verbatim
  * into the signed payload, the receiver-side dedupe key, and the
  * sender-side outbox ledger (and hence into every snapshot that
@@ -60,7 +63,13 @@ export interface SettlementWebhookPayload {
    * `eventId`: `deliverSettlementWebhook` retries with exponential backoff,
    * so a successful retry re-POSTs a byte-different `at` but the same
    * logical event, and retries always reuse the original `eventId`. Two
-   * independent settlements always get different `eventId`s.
+   * independent settlements always get different `eventId`s. Since backlog
+   * #1430 the default `eventId` is derived deterministically from the
+   * report's settlement-evidence anchor (`terminalSeq` + `terminalHash`),
+   * so rebuilding the same settlement re-issues the same `eventId` and a
+   * receiver deduplicating on it correctly drops the rebuild instead of
+   * booking the settlement twice; a report without an anchor (hand-built,
+   * or built from a legacy hashless history) still gets a fresh UUID.
    */
   eventId: string;
   escrowId: string;
@@ -128,9 +137,14 @@ export interface BuildWebhookOptions {
    */
   now?: Date | string;
   /**
-   * Payload `eventId`. Defaults to `crypto.randomUUID()`; inject a fixed
-   * value in tests to make signatures deterministic. Must be a non-empty
-   * string when provided, and no longer than
+   * Payload `eventId`. Defaults to a deterministic id derived from the
+   * report's settlement-evidence anchor — `settlement-<escrowId>-
+   * <terminalSeq>-<first 12 hex of terminalHash>` (see
+   * {@link defaultEventId}) — so rebuilding the same settlement
+   * re-issues the same `eventId`; a report without an anchor falls
+   * back to `crypto.randomUUID()`. Inject a fixed value in tests to
+   * make signatures deterministic, or to override the derived id.
+   * Must be a non-empty string when provided, and no longer than
    * {@link MAX_EVENT_ID_LENGTH} characters.
    */
   eventId?: string;
@@ -363,6 +377,69 @@ function assertSettlementReportShape(report: SettlementReport): void {
       }
     }
   }
+  // Settlement-evidence anchor (backlog #1430): the pair is
+  // all-or-nothing — a report carrying exactly one half names an audit
+  // tip it cannot identify, so it is malformed here exactly as in
+  // `assertReportShape` (settlementReport.ts). This runs before any
+  // signing, so a half-anchor can neither ship nor silently fall back
+  // to a random UUID (which would re-open the double-booking hole).
+  if (
+    (report.terminalSeq === undefined) !== (report.terminalHash === undefined)
+  ) {
+    throw new Error(
+      `cannot build settlement webhook: 'terminalSeq' and 'terminalHash' must appear together when present for ${escrowId}`,
+    );
+  }
+  if (
+    report.terminalSeq !== undefined &&
+    (typeof report.terminalSeq !== "number" ||
+      !Number.isSafeInteger(report.terminalSeq) ||
+      report.terminalSeq < 0)
+  ) {
+    throw new Error(
+      `cannot build settlement webhook: 'terminalSeq' must be a non-negative integer when present for ${escrowId}`,
+    );
+  }
+  if (
+    report.terminalHash !== undefined &&
+    (typeof report.terminalHash !== "string" || report.terminalHash.length === 0)
+  ) {
+    throw new Error(
+      `cannot build settlement webhook: 'terminalHash' must be a non-empty string when present for ${escrowId}`,
+    );
+  }
+}
+
+/**
+ * Default `eventId` for a report (backlog #1430): when the report
+ * carries its settlement-evidence anchor (`terminalSeq` +
+ * `terminalHash`, stamped by `buildSettlementReport` from the audit
+ * chain tip), the id is derived deterministically from it —
+ * `settlement-<escrowId>-<terminalSeq>-<first 12 hex of terminalHash>`
+ * — so rebuilding the same settlement re-issues the same `eventId`
+ * and a receiver deduplicating on `eventId` correctly drops the
+ * rebuild instead of booking the settlement twice. A report without
+ * an anchor (hand-built, or built from a legacy hashless history)
+ * keeps the previous behavior: a fresh `crypto.randomUUID()`.
+ *
+ * The derived id is still bounded by {@link MAX_EVENT_ID_LENGTH}: an
+ * escrowId so long the derived id would overflow it throws instead
+ * of silently falling back to a UUID (which would re-open the
+ * double-booking hole for exactly those escrows) — pass an explicit
+ * short `eventId` for such a report. A half-anchor never reaches
+ * here: `assertSettlementReportShape` rejects it first.
+ */
+function defaultEventId(report: SettlementReport): string {
+  if (report.terminalSeq === undefined || report.terminalHash === undefined) {
+    return randomUUID();
+  }
+  const eventId = `settlement-${report.escrowId}-${report.terminalSeq}-${report.terminalHash.slice(0, 12)}`;
+  if (eventId.length > MAX_EVENT_ID_LENGTH) {
+    throw new Error(
+      `cannot build settlement webhook: derived eventId for ${report.escrowId} is ${eventId.length} characters, over the ${MAX_EVENT_ID_LENGTH}-character limit — pass an explicit short 'eventId'`,
+    );
+  }
+  return eventId;
 }
 
 /**
@@ -400,7 +477,7 @@ function buildPayload(
       `cannot build settlement webhook: 'eventId' must be at most ${MAX_EVENT_ID_LENGTH} characters, got ${options.eventId.length} for ${report.escrowId}`,
     );
   }
-  const eventId = options.eventId ?? randomUUID();
+  const eventId = options.eventId ?? defaultEventId(report);
 
   // Same currency rule as the report builder (mirrored here so a
   // hand-built report carrying a mistyped code can never be signed and
@@ -452,11 +529,19 @@ function buildPayload(
  *
  * Every figure in the payload is derived from the report (which itself is
  * derived from the append-only audit history): nothing is invented here.
- * Throws when the secret is empty, `now` is not a valid timestamp, or an
- * injected `eventId` is not a non-empty string no longer than
- * {@link MAX_EVENT_ID_LENGTH} characters. A missing or non-string/Buffer
- * secret throws a configuration error, never a bare `TypeError`, and an
- * unknown option key throws
+ * The default `eventId` is likewise derived, not random: when the report
+ * carries its settlement-evidence anchor (`terminalSeq` +
+ * `terminalHash`), the id is
+ * `settlement-<escrowId>-<terminalSeq>-<first 12 hex of terminalHash>`
+ * (backlog #1430), so rebuilding the same settlement re-issues the same
+ * `eventId` and a receiver deduplicating on it drops the rebuild; a
+ * report without an anchor falls back to `crypto.randomUUID()`, and an
+ * explicit `eventId` always overrides. Throws when the secret is empty,
+ * `now` is not a valid timestamp, or an injected `eventId` is not a
+ * non-empty string no longer than {@link MAX_EVENT_ID_LENGTH}
+ * characters. A missing or non-string/Buffer secret throws a
+ * configuration error, never a bare `TypeError`, and an unknown option
+ * key throws
  * `cannot build settlement webhook: unknown option "<key>"` before the
  * secret is read (#1272). A malformed report — not an object, a missing
  * or empty `escrowId`, an outcome outside the `SettlementOutcome` union,
@@ -518,7 +603,13 @@ export interface BuildSettlementWebhooksOptions {
    * `eventId`: every settlement in the batch is a DISTINCT event, so a
    * batch must never reuse one `eventId` across reports, or receivers
    * deduplicating on `eventId` would drop all but the first settlement
-   * as apparent duplicates. A factory that returns a non-string or
+   * as apparent duplicates. The batch default stays per-report random
+   * even though the single build's default is deterministic (backlog
+   * #1430): the factory supplies each id, so the single-build
+   * derivation never runs here, and two builds of the same batch mint
+   * fresh ids per entry — rebuild a single report with
+   * {@link buildSettlementWebhook} when the caller needs the same
+   * `eventId` re-issued. A factory that returns a non-string or
    * empty value — or one longer than {@link MAX_EVENT_ID_LENGTH}
    * characters — fails only that report (the single-build validation
    * runs per report); a non-function value is a call-level
@@ -572,7 +663,14 @@ export type BuildSettlementWebhooksResult =
  * {@link BuildSettlementWebhooksOptions.eventIdFactory}); the shared
  * elements are the generation strategy, the secret, and the `now`
  * timestamp, never the value. Each built webhook verifies under the
- * batch secret exactly as a single build does.
+ * batch secret exactly as a single build does. Note the single build's
+ * deterministic default (backlog #1430) does not apply here: the
+ * batch mints each id through the factory (default
+ * `crypto.randomUUID()` per report), so rebuilding the same batch
+ * re-issues fresh ids — a receiver deduplicating on `eventId` treats
+ * a rebuilt batch as new settlements, while a single report rebuilt
+ * with {@link buildSettlementWebhook} re-issues its derived id and
+ * is correctly dropped as a duplicate.
  *
  * Duplicate detection: the batch keeps the set of `eventId`s it has
  * already issued (successfully signed) in this call. When the factory

@@ -44,9 +44,14 @@ function releasedWebhook(id = "esc-10630") {
 }
 
 test("payload mirrors the report: event, eventId, id, outcome, deposit, parties, at", () => {
-  const { signed } = releasedWebhook();
+  const { report, signed } = releasedWebhook();
   assert.equal(signed.payload.event, "escrow.settled");
-  assert.match(signed.payload.eventId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+  // Backlog #1430: the default eventId is derived from the report's
+  // settlement-evidence anchor, not a fresh UUID.
+  assert.equal(
+    signed.payload.eventId,
+    `settlement-esc-10630-${report.terminalSeq}-${report.terminalHash!.slice(0, 12)}`,
+  );
   assert.equal(signed.payload.escrowId, "esc-10630");
   assert.equal(signed.payload.outcome, "released");
   assert.equal(signed.payload.deposit, 10630);
@@ -167,13 +172,18 @@ test("same inputs produce byte-identical signatures when eventId is injected (de
   assert.deepEqual(a.payload, b.payload);
 });
 
-test("default builds are unique: fresh eventId per notification", () => {
+test("default builds are deterministic per settlement: same report re-issues the same eventId", () => {
   const { report } = releasedWebhook("esc-unique");
   const a = buildSettlementWebhook(report, { secret: SECRET, now: FIXED_NOW });
   const b = buildSettlementWebhook(report, { secret: SECRET, now: FIXED_NOW });
-  // Fresh eventId each time => signatures differ even for identical reports.
-  assert.notEqual(a.payload.eventId, b.payload.eventId);
-  assert.notEqual(a.signature, b.signature);
+  // Same settlement, same anchor => same eventId and same signature
+  // (backlog #1430: the default is derived, not a fresh UUID).
+  assert.equal(a.payload.eventId, b.payload.eventId);
+  assert.equal(a.signature, b.signature);
+  // A different settlement still gets a different eventId.
+  const other = releasedWebhook("esc-unique-2");
+  const c = buildSettlementWebhook(other.report, { secret: SECRET, now: FIXED_NOW });
+  assert.notEqual(a.payload.eventId, c.payload.eventId);
 });
 
 test("refunded escrow produces a refunded webhook that verifies", () => {

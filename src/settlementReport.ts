@@ -358,6 +358,35 @@ export interface SettlementReport {
   eventCount: number;
   firstEventAt?: string;
   lastEventAt?: string;
+  /**
+   * Settlement-evidence anchor (backlog #1430): the audit-trail tip
+   * this report summarizes — the `seq` and hash-chain `hash` of the
+   * last history entry the report was built from. For a terminal
+   * report that entry IS the terminal entry (RELEASE /
+   * ARBITRATE_REFUND / EXPIRE — the branch checks in
+   * `buildSettlementReport` enforce last-event-is-terminal); for a
+   * partially-released report it is the reported slice's
+   * PARTIAL_RELEASE entry. `buildSettlementWebhook` derives its
+   * default `eventId` from this pair
+   * (`settlement-<escrowId>-<terminalSeq>-<first 12 hex of terminalHash>`),
+   * so rebuilding the same settlement re-issues the same `eventId`
+   * and a receiver deduplicating on `eventId` correctly drops the
+   * rebuild instead of booking the settlement twice.
+   *
+   * Present only when the history was hash-chained (keyed HMAC or
+   * unkeyed plain-SHA-256 — chaining is the default for every escrow,
+   * keyed or not): a legacy hashless history carries no `hash` to
+   * anchor on, and a `seq`-only anchor would collide across two
+   * different histories of the same escrow that happen to share a
+   * length — so no anchor is stamped and the webhook falls back to a
+   * random UUID, the previous behavior. The two fields are
+   * all-or-nothing: a report carrying exactly one of them is malformed
+   * (see `assertReportShape`).
+   * Hand-built reports carry no anchor unless the caller copies one
+   * in; the webhook then derives from it the same way.
+   */
+  terminalSeq?: number;
+  terminalHash?: string;
 }
 
 /**
@@ -884,6 +913,22 @@ export function buildSettlementReport(
     }
   }
 
+  // Settlement-evidence anchor (backlog #1430): the last history
+  // entry's seq + hash-chain value, stamped onto every report the
+  // builder mints (terminal reports: the terminal entry itself, since
+  // the branch checks below enforce last-event-is-terminal;
+  // partially-released reports: the reported slice's PARTIAL_RELEASE
+  // entry). Only when the entry carries a hash — a legacy hashless
+  // history gets no anchor (see the interface doc above).
+  const lastHistoryEntry = history[history.length - 1];
+  const anchor =
+    lastHistoryEntry !== undefined && lastHistoryEntry.hash !== undefined
+      ? {
+          terminalSeq: lastHistoryEntry.seq,
+          terminalHash: lastHistoryEntry.hash,
+        }
+      : undefined;
+
   const base = {
     escrowId,
     // Omitted entirely when no currency was supplied, so a
@@ -893,6 +938,9 @@ export function buildSettlementReport(
     eventCount: history.length,
     firstEventAt: history[0]?.at,
     lastEventAt: history[history.length - 1]?.at,
+    // Omitted entirely when the history is hashless, so a legacy
+    // report serializes exactly as before.
+    ...(anchor !== undefined ? anchor : {}),
   };
 
   if (finalState === "RELEASED") {
@@ -2123,6 +2171,8 @@ export interface SettlementReportDiff {
   eventCountChanged?: { from: number; to: number };
   firstEventAtChanged?: { from: string | undefined; to: string | undefined };
   lastEventAtChanged?: { from: string | undefined; to: string | undefined };
+  terminalSeqChanged?: { from: number | undefined; to: number | undefined };
+  terminalHashChanged?: { from: string | undefined; to: string | undefined };
 }
 
 /**
@@ -2445,6 +2495,12 @@ export function diffSettlementReports(
   }
   if (a.lastEventAt !== b.lastEventAt) {
     diff.lastEventAtChanged = { from: a.lastEventAt, to: b.lastEventAt };
+  }
+  if (a.terminalSeq !== b.terminalSeq) {
+    diff.terminalSeqChanged = { from: a.terminalSeq, to: b.terminalSeq };
+  }
+  if (a.terminalHash !== b.terminalHash) {
+    diff.terminalHashChanged = { from: a.terminalHash, to: b.terminalHash };
   }
   return diff;
 }
@@ -3504,6 +3560,25 @@ function assertReportShape(
     if (r[key] !== undefined && typeof r[key] !== "string")
       fail(`${key} must be a string when present`);
   }
+  // Settlement-evidence anchor (backlog #1430): all-or-nothing — a
+  // report carrying exactly one half of the pair names an audit tip
+  // it cannot identify, so it is malformed, not a half-anchor.
+  if (
+    (r.terminalSeq === undefined) !== (r.terminalHash === undefined)
+  )
+    fail("terminalSeq and terminalHash must appear together when present");
+  if (
+    r.terminalSeq !== undefined &&
+    (typeof r.terminalSeq !== "number" ||
+      !Number.isSafeInteger(r.terminalSeq) ||
+      r.terminalSeq < 0)
+  )
+    fail("terminalSeq must be a non-negative integer when present");
+  if (
+    r.terminalHash !== undefined &&
+    (typeof r.terminalHash !== "string" || r.terminalHash.length === 0)
+  )
+    fail("terminalHash must be a non-empty string when present");
 }
 
 /**

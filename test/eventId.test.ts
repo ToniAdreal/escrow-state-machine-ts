@@ -39,19 +39,42 @@ function releasedReport(id = "esc-event-id") {
   });
 }
 
-test("eventId: default build generates a UUID v4 delivery ID", () => {
-  const { payload } = buildSettlementWebhook(releasedReport(), {
+test("eventId: default build derives a deterministic delivery ID from the report anchor", () => {
+  const report = releasedReport();
+  const { payload } = buildSettlementWebhook(report, {
     secret: SECRET,
     now: FIXED_NOW,
   });
-  assert.match(payload.eventId, UUID_V4);
+  // Backlog #1430: the default is derived from the settlement-evidence
+  // anchor (terminalSeq + terminalHash), not a fresh UUID.
+  assert.equal(
+    payload.eventId,
+    `settlement-esc-event-id-${report.terminalSeq}-${report.terminalHash!.slice(0, 12)}`,
+  );
 });
 
-test("eventId: two default builds get different eventIds", () => {
+test("eventId: a report without an anchor still gets a fresh UUID v4", () => {
+  const anchored = releasedReport();
+  const { terminalSeq: _seq, terminalHash: _hash, ...report } = anchored;
+  const a = buildSettlementWebhook(report, { secret: SECRET, now: FIXED_NOW });
+  const b = buildSettlementWebhook(report, { secret: SECRET, now: FIXED_NOW });
+  assert.match(a.payload.eventId, UUID_V4);
+  assert.match(b.payload.eventId, UUID_V4);
+  assert.notEqual(a.payload.eventId, b.payload.eventId);
+});
+
+test("eventId: two default builds of the same settlement get the same eventId", () => {
   const report = releasedReport();
   const a = buildSettlementWebhook(report, { secret: SECRET, now: FIXED_NOW });
   const b = buildSettlementWebhook(report, { secret: SECRET, now: FIXED_NOW });
-  assert.notEqual(a.payload.eventId, b.payload.eventId);
+  assert.equal(a.payload.eventId, b.payload.eventId);
+  assert.equal(a.signature, b.signature);
+  // A different settlement still gets a different eventId.
+  const other = buildSettlementWebhook(releasedReport("esc-event-id-2"), {
+    secret: SECRET,
+    now: FIXED_NOW,
+  });
+  assert.notEqual(a.payload.eventId, other.payload.eventId);
 });
 
 test("eventId: injected eventId is used verbatim and signs/validates", () => {
@@ -113,13 +136,18 @@ test("eventId: non-string injected eventId throws a configuration error", () => 
 });
 
 test("eventId: payload type is exported and carries eventId", () => {
-  const { payload } = buildSettlementWebhook(releasedReport(), {
+  const report = releasedReport();
+  const { payload } = buildSettlementWebhook(report, {
     secret: SECRET,
     now: FIXED_NOW,
   });
   // Compile-time: SettlementWebhookPayload import must resolve.
   const typed: SettlementWebhookPayload = payload;
   assert.equal(typeof typed.eventId, "string");
-  // eventId sits in the signed body: signature covers it.
-  assert.equal(payload.eventId.length, 36);
+  // eventId sits in the signed body: signature covers it — and the
+  // default is the anchor-derived id, not a 36-char UUID (backlog #1430).
+  assert.equal(
+    payload.eventId,
+    `settlement-esc-event-id-${report.terminalSeq}-${report.terminalHash!.slice(0, 12)}`,
+  );
 });

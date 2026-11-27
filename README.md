@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 2993 tests, all local
+npm test   # 3006 tests, all local
 ```
 
 ## Quickstart
@@ -1321,9 +1321,17 @@ conversion is performed anywhere. The CSV export carries it too:
 bookkeeping import can tell USD rows from EUR rows, and
 `parseSettlementReportCsv` reads it back.
 
-`eventId` is the receiver's idempotency key: every build generates a fresh
-UUID v4 (inject your own via `BuildWebhookOptions.eventId` for deterministic
-tests), and the signature covers it, so tampering with it fails verification.
+`eventId` is the receiver's idempotency key: for a report built by
+`buildSettlementReport` from a hash-chained history, the default is derived
+deterministically from the report's settlement-evidence anchor
+(`settlement-<escrowId>-<terminalSeq>-<first 12 hex of terminalHash>`), so
+rebuilding the same settlement re-issues the same `eventId` and a receiver
+deduplicating on it drops the rebuild instead of booking the settlement
+twice; a report without an anchor (hand-built, or built from a legacy
+hashless history) still gets a fresh UUID v4. Inject your own via
+`BuildWebhookOptions.eventId` to override either default (for deterministic
+tests, or a short id when the derived one would exceed the length cap),
+and the signature covers it, so tampering with it fails verification.
 Retries of the same notification reuse the original `eventId`; two
 independent settlements never share one. An `eventId` longer than
 `MAX_EVENT_ID_LENGTH` (256 characters) is rejected wherever it can enter
@@ -2294,7 +2302,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 2993 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 3006 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
