@@ -205,7 +205,7 @@ describe("expireOverdueEscrows x rolePolicy", () => {
     assert.equal(gated.history.length, 1);
   });
 
-  it("transition legality runs before RBAC: a DISPUTED overdue escrow with an EXPIRE policy fails with the transition error, not the authorization error", () => {
+  it("transition legality runs before RBAC: a DISPUTED overdue escrow with an EXPIRE policy is classified unexpirable, not rejected on authorization (backlog #1434)", () => {
     const disputed = disputedOverdue("disputed-gated", {
       EXPIRE: ["ops-lead"],
     });
@@ -213,10 +213,12 @@ describe("expireOverdueEscrows x rolePolicy", () => {
     const results = expireOverdueEscrows([disputed], NOW);
     assert.equal(results.length, 1);
     assert.equal(results[0].expired, false);
-    assert.match(
-      results[0].error ?? "",
-      /invalid transition: EXPIRE from DISPUTED/
-    );
+    // The missing edge is evaluated first: the outcome is the
+    // unexpirable classification, not the authorization error a
+    // policy-first check would have produced, and not the old
+    // transition error either — no error is reported at all.
+    assert.equal(results[0].unexpirable, true);
+    assert.equal("error" in results[0], false);
     assert.equal(disputed.state, "DISPUTED");
     assert.equal(disputed.history.length, 2);
   });

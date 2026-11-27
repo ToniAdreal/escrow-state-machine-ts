@@ -145,7 +145,7 @@ describe("expireOverdueEscrows x subscribe", () => {
     assert.equal(terminal.history.length, 2);
   });
 
-  it("DISPUTED overdue escrow also fails gracefully with zero notifications", () => {
+  it("DISPUTED overdue escrow is classified unexpirable with zero notifications (backlog #1434)", () => {
     const disputed = disputedWithDeadline("disputed", PAST);
     const after = fundedWithDeadline("after-disputed", PAST);
     const seenDisputed = collect(disputed).seen;
@@ -153,10 +153,8 @@ describe("expireOverdueEscrows x subscribe", () => {
     const results = expireOverdueEscrows([disputed, after], NOW);
     assert.equal(results.length, 2);
     assert.equal(results[0].expired, false);
-    assert.match(
-      results[0].error ?? "",
-      /invalid transition: EXPIRE from DISPUTED/
-    );
+    assert.equal(results[0].unexpirable, true);
+    assert.equal("error" in results[0], false);
     assert.equal("entry" in results[0], false);
     assert.equal(seenDisputed.length, 0);
     assert.equal(disputed.state, "DISPUTED");

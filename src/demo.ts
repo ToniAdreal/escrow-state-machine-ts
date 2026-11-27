@@ -1104,8 +1104,9 @@ export const DEMO_FRESH_DEADLINE = "2026-04-01T09:00:00.000Z";
  *   2026-03-08T09:00 has passed, so expired. But DISPUTED has no
  *   EXPIRE edge — expiry must not let a party walk out of an open
  *   arbitration (backlog #1422; a VERIFIED escrow in the same spot
- *   WOULD expire) — so `expireOverdueEscrows` lands it as
- *   `{expired: false, error}` — and must not block the batch.
+ *   WOULD expire) — so `expireOverdueEscrows` classifies it as
+ *   `{expired: false, unexpirable: true}` — no error, no dispatch —
+ *   and must not block the batch.
  * - DEMO-ESC-008 (expired, expirable): FUNDED at
  *   2026-03-08T09:00 — dwell 1 day, so not stale; deadline
  *   2026-03-08T12:00 has passed, so expired, and FUNDED does carry
@@ -1115,7 +1116,7 @@ export const DEMO_FRESH_DEADLINE = "2026-04-01T09:00:00.000Z";
  *   2026-04-01 is still ahead, so not expired and the deadline
  *   executor never attempts it.
  * Batch order is deliberate: the unexpirable escrow comes FIRST,
- * so its per-item error visibly does not abort the batch.
+ * so its classification visibly does not block the batch.
  * The executor pins the fixed screening `now` (DEMO_STALE_NOW) as the
  * `at` of every EXPIRE audit entry it dispatches, so those entries are
  * deterministic too — the demo prints each result's entry citation
@@ -3805,18 +3806,18 @@ export interface DemoResult {
   deadlineStaleSelected: Escrow[];
   /**
    * Per-escrow outcomes of `expireOverdueEscrows` over the deadline
-   * batch, in batch order: the VERIFIED escrow first as
-   * `{expired: false, error}`, then the FUNDED escrow expired —
-   * the first entry's error did not block the second.
+   * batch, in batch order: the DISPUTED escrow first as
+   * `{expired: false, unexpirable: true}`, then the FUNDED escrow expired —
+   * the first entry's classification did not block the second.
    */
   deadlineExpireResults: ExpireOverdueResult[];
   /**
    * Audit-entry citations for the deadline watchdog execution
    * (backlog #615): one per attempted escrow, in batch order — the
    * successful FUNDED expiry cites its EXPIRE entry (seq/from/to/at,
-   * identical to the escrow history's last entry); the failed
-   * VERIFIED attempt cites no entry, because a failed dispatch
-   * appends nothing. A reader can cite the expiry from this field
+   * identical to the escrow history's last entry); the unexpirable
+   * DISPUTED attempt cites no entry, because nothing was dispatched
+   * for it. A reader can cite the expiry from this field
    * alone, without re-reading `escrow.history`.
    */
   deadlineExpireEntryRefs: Array<{
@@ -8219,7 +8220,7 @@ export async function runDemo(): Promise<DemoResult> {
   // runs, so the printed comparison is a snapshot of the same
   // pre-action batch. The executor then attempts exactly the
   // expired selection: the DISPUTED escrow has no EXPIRE edge, so
-  // it lands as a per-item error and the batch continues to the
+  // it lands as unexpirable and the batch continues to the
   // FUNDED escrow after it, which expires. (The executor pins the
   // fixed screening `now` as each EXPIRE entry's `at`, so no wall
   // clock enters the audit history; see the fixture comment.)
@@ -8285,9 +8286,9 @@ export async function runDemo(): Promise<DemoResult> {
   );
   // Backlog #615 self-check: a successful result's `entry` must be
   // exactly the escrow history's last entry (the EXPIRE record just
-  // appended, stamped with the pinned screening `now`); a failed
-  // result must carry no entry, because a failed dispatch appends
-  // nothing. Any drift fails the demo outright, so the printed
+  // appended, stamped with the pinned screening `now`); a failed or
+  // unexpirable result must carry no entry, because neither appends
+  // anything. Any drift fails the demo outright, so the printed
   // entry citations below can never disagree with the audit log.
   for (const result of deadlineExpireResults) {
     const lastEntry =
@@ -8308,7 +8309,7 @@ export async function runDemo(): Promise<DemoResult> {
       }
     } else if (result.entry !== undefined) {
       throw new Error(
-        `demo fixture broken: failed expireOverdueEscrows outcome for ${result.escrow.id} must carry no entry`,
+        `demo fixture broken: non-expired expireOverdueEscrows outcome for ${result.escrow.id} must carry no entry`,
       );
     }
   }
@@ -8319,7 +8320,9 @@ export async function runDemo(): Promise<DemoResult> {
     lines.push(
       result.expired
         ? `  ${result.escrow.id}: expired true — now ${result.escrow.state}`
-        : `  ${result.escrow.id}: expired false — error: ${result.error} (escrow unchanged at ${result.escrow.state})`,
+        : result.unexpirable === true
+          ? `  ${result.escrow.id}: expired false — unexpirable: ${result.escrow.state} has no EXPIRE edge (escrow unchanged at ${result.escrow.state})`
+          : `  ${result.escrow.id}: expired false — error: ${result.error} (escrow unchanged at ${result.escrow.state})`,
     );
   }
   lines.push(
@@ -8328,7 +8331,7 @@ export async function runDemo(): Promise<DemoResult> {
   for (const result of deadlineExpireResults) {
     lines.push(
       result.entry === undefined
-        ? `  ${result.escrow.id}: no entry — failed dispatch appends nothing`
+        ? `  ${result.escrow.id}: no entry — no EXPIRE entry was appended`
         : `  ${result.escrow.id}: entry seq ${result.entry.seq} EXPIRE ${result.entry.from} -> ${result.entry.to} at ${result.entry.at} — matches escrow history last entry`,
     );
   }

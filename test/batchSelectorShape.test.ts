@@ -1,7 +1,7 @@
 /**
  * Batch selector batch-shape guards (backlog #1340).
  *
- * The eight batch selectors only ever validated their filter
+ * The nine batch selectors only ever validated their filter
  * parameters, never the batch itself: a `null` batch surfaced as a
  * bare `TypeError` (`reading 'filter'`), and worse,
  * `escrowsByFilters([null], {})` silently returned `[null]` when no
@@ -34,6 +34,7 @@ import {
   expiredEscrows,
   expireOverdueEscrows,
   staleEscrows,
+  stuckEscrows,
 } from "../src/index.js";
 
 const NOW = new Date("2026-10-06T12:00:00.000Z");
@@ -81,6 +82,13 @@ const SELECTORS: Array<{ name: string; call: Selector }> = [
     name: "expiredEscrows",
     call: (escrows) =>
       expiredEscrows(escrows as readonly Escrow[], NOW),
+  },
+  {
+    // Backlog #1434: the unexpirable subset selector shares the
+    // same batch guard as its expiredEscrows companion.
+    name: "stuckEscrows",
+    call: (escrows) =>
+      stuckEscrows(escrows as readonly Escrow[], NOW),
   },
   {
     name: "escrowsByState",
@@ -193,6 +201,8 @@ describe("batch selector batch-shape guards", () => {
           } as never, NOW),
         expiredEscrows: () =>
           expiredEscrows(null as unknown as readonly Escrow[], NOW),
+        stuckEscrows: () =>
+          stuckEscrows(null as unknown as readonly Escrow[], NOW),
       };
       throwsNamed(
         badFilterCalls[name],

@@ -106,16 +106,14 @@ describe("VERIFIED overdue escrows expire (backlog #1422)", () => {
     assert.equal(verified.history.length, 3);
   });
 
-  it("an overdue DISPUTED escrow still fails with invalid transition and the batch continues", () => {
+  it("an overdue DISPUTED escrow is classified unexpirable (not failed) and the batch continues (backlog #1434)", () => {
     const disputed = disputedWithDeadline("disputed", PAST);
     const after = fundedWithDeadline("after", PAST);
     const results = expireOverdueEscrows([disputed, after], NOW);
     assert.equal(results.length, 2);
     assert.equal(results[0].expired, false);
-    assert.match(
-      results[0].error ?? "",
-      /invalid transition: EXPIRE from DISPUTED/,
-    );
+    assert.equal(results[0].unexpirable, true);
+    assert.equal("error" in results[0], false);
     assert.equal(disputed.state, "DISPUTED");
     assert.equal(disputed.history.length, 2);
     assert.equal(results[1].expired, true);

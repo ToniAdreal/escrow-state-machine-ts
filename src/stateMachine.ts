@@ -4809,8 +4809,10 @@ export function isOverdue(escrow: Escrow, now: Date = new Date()): boolean {
  * `DISPUTED` escrows have no `EXPIRE` edge (expiry must not let a party
  * walk out of arbitration unilaterally), so the loop throws
  * `invalid transition: EXPIRE from DISPUTED` on the first such
- * escrow and aborts the whole batch. {@link expireOverdueEscrows} isolates
- * the error per escrow and keeps going.
+ * escrow and aborts the whole batch. {@link expireOverdueEscrows} classifies
+ * those escrows as `unexpirable: true` instead of failing them, and keeps
+ * going; the unexpirable subset on its own is listed by
+ * {@link stuckEscrows}.
  *
  * Pure: reads the escrows, never mutates or dispatches. The `now` default
  * is the real clock, so unit tests pin it to a fixed date. The batch is
@@ -4827,6 +4829,45 @@ export function expiredEscrows(
 }
 
 /**
+ * Watchdog helper: from a batch of escrows, return the ones that are
+ * overdue but can never expire — non-terminal AND past their deadline
+ * AND with no `EXPIRE` edge from their current state.
+ *
+ * Today that is exactly the `DISPUTED` escrows: expiry must not let a
+ * party walk out of an open arbitration unilaterally (backlog #1422),
+ * so `DISPUTED` deliberately keeps no `EXPIRE` edge. The set is read
+ * off the transition table (`allowedEvents`), not hard-coded to
+ * `DISPUTED`, so it stays correct if the table ever gains or loses
+ * an edge.
+ *
+ * This is the companion to {@link expiredEscrows}: the two selectors
+ * partition the overdue batch — every overdue escrow is either in
+ * `stuckEscrows` (unexpirable, needs an arbitrator) or expirable by
+ * {@link expireOverdueEscrows}, never both, never neither. An
+ * operator that only watches `expiredEscrows` re-reads the same
+ * `DISPUTED` escrows every round; screening `stuckEscrows` tells
+ * them which ones to route to arbitration instead of re-trying
+ * expiry.
+ *
+ * Pure: reads the escrows, never mutates or dispatches, returns the
+ * same escrow objects in input order. The `now` default is the real
+ * clock, so unit tests pin it to a fixed date. The batch is
+ * validated before anything is read: a non-array batch or a
+ * non-`Escrow` entry throws a named `invalid stuckEscrows: ...`
+ * error instead of a bare `TypeError`.
+ */
+export function stuckEscrows(
+  escrows: readonly Escrow[],
+  now: Date = new Date()
+): Escrow[] {
+  assertEscrowBatch("stuckEscrows", escrows);
+  return escrows.filter(
+    (escrow) =>
+      isOverdue(escrow, now) && !allowedEvents(escrow.state).includes("EXPIRE")
+  );
+}
+
+/**
  * Per-escrow outcome of {@link expireOverdueEscrows}.
  */
 export interface ExpireOverdueResult {
@@ -4834,8 +4875,25 @@ export interface ExpireOverdueResult {
   escrow: Escrow;
   /** True when the EXPIRE dispatch succeeded and the escrow is now EXPIRED. */
   expired: boolean;
-  /** Set when the EXPIRE dispatch threw; the message of the caught error. */
+  /**
+   * Set when the EXPIRE dispatch threw; the message of the caught error.
+   * Unexpirable escrows carry no error — their outcome is classified
+   * via `unexpirable`, not failed.
+   */
   error?: string;
+  /**
+   * True when the escrow is overdue but its current state has no
+   * `EXPIRE` edge — today that means `DISPUTED` (arbitration must
+   * not be walked out of unilaterally, backlog #1422) — so the
+   * executor classified it instead of failing it: no dispatch was
+   * attempted, no `error` is reported, and the escrow is untouched
+   * (state and history unchanged, no notification). Present only
+   * when true; a live run and a dry run report it the same way, so
+   * a rehearsal and the real run agree about which escrows are
+   * stuck. See {@link stuckEscrows} for the batch selector that
+   * lists exactly these escrows.
+   */
+  unexpirable?: boolean;
   /**
    * The EXPIRE audit entry that the successful dispatch appended — a
    * frozen, detached copy of the escrow's last history entry (the
@@ -4898,8 +4956,9 @@ export interface ExpireOverdueEscrowsOptions {
  *
  * (1) the pinned `at` must not move the audit clock backwards (same
  * check dispatch runs first, same wording); (2) edge legality, read
- * off the transition table via `transition()` (its throw carries the
- * exact message the live run would report); (3) RBAC, read off the
+ * off the transition table via `allowedEvents` — a state with no
+ * `EXPIRE` edge is classified `unexpirable` (no error), the same
+ * classification the live run reports; (3) RBAC, read off the
  * escrow's snapshot policy — the live run dispatches as the `system`
  * actor, so a policy that lists `EXPIRE` must include it. The
  * `requireActor` gate needs no prediction: the live run always passes
@@ -4927,15 +4986,19 @@ function predictExpireOverdueEscrow(
       error: `invalid dispatch options: at ${at} is earlier than the previous entry's at ${last.at}`,
     };
   }
-  // (2) Edge legality from the transition table, no dispatch.
-  try {
-    transition(escrow.state, "EXPIRE");
-  } catch (err) {
+  // (2) Edge legality from the transition table, no dispatch. A
+  // state with no EXPIRE edge is classified `unexpirable`, not
+  // failed — the live run reports the same classification (no error),
+  // so a rehearsal and the real run agree about which escrows are
+  // stuck. The check runs after the clock check above, so a backdated
+  // `at` still surfaces its own error first, exactly as the live run
+  // does (dispatch checks the clock before edge legality).
+  if (!allowedEvents(escrow.state).includes("EXPIRE")) {
     return {
       escrow,
       expired: false,
       wouldExpire: false,
-      error: err instanceof Error ? err.message : String(err),
+      unexpirable: true,
     };
   }
   // (3) RBAC: the live run dispatches as `system`; toJSON writes the
@@ -4961,11 +5024,18 @@ function predictExpireOverdueEscrow(
  * real trap: `expiredEscrows()` only checks the deadline and the terminal
  * flag, but `EXPIRE` is not a legal event from every non-terminal state.
  * `DISPUTED` escrows have no `EXPIRE` edge in the
- * transition table, so `escrow.dispatch("EXPIRE")` throws
- * `invalid transition: EXPIRE from DISPUTED` — a naive loop aborts the
- * whole batch on the first such escrow. This executor catches the error
- * per escrow (`expired: false, error: <message>`) and keeps going, so one
- * unexpirable escrow never blocks the rest of the batch.
+ * transition table — expiry must not let a party walk out of an open
+ * arbitration — so a naive loop dispatching `EXPIRE` aborts the whole
+ * batch on the first such escrow. This executor instead classifies
+ * them as `{ expired: false, unexpirable: true }` (no error, no
+ * dispatch attempted, escrow untouched) and keeps going, so one
+ * unexpirable escrow never blocks the rest of the batch. The two
+ * outcomes are distinct on purpose: `error` means the expiry was
+ * attempted and failed (a backdated `now`, or a `rolePolicy` that
+ * does not admit `system`); `unexpirable` means the escrow can never
+ * expire from its current state and belongs in arbitration, not in a
+ * retry queue. The batch selector for exactly those escrows is
+ * {@link stuckEscrows}.
  *
  * Successful outcomes also carry `entry` — a frozen, detached copy of
  * the EXPIRE audit entry just appended — so a caller can write an
@@ -5007,9 +5077,11 @@ function predictExpireOverdueEscrow(
  * set, in the same order, but dispatches nothing: no state change, no
  * history append, no subscription notification. Each result carries
  * `wouldExpire` (true exactly when the live run would have expired
- * that escrow) and, when false, the same-wording `error` the live run
- * would have reported (no `EXPIRE` edge, backdated `now`, or a
- * `rolePolicy` that does not admit `system`); `expired` is false
+ * that escrow) and, when false, either the same-wording `error` the
+ * live run would have reported (backdated `now`, or a `rolePolicy`
+ * that does not admit `system`) or `unexpirable: true` when the
+ * escrow's state has no `EXPIRE` edge — the live run classifies
+ * those the same way, with no error; `expired` is false
  * throughout and `entry` is never present. The prediction reads edge
  * legality off the transition table and the clock/RBAC checks off the
  * escrow's own history and snapshot policy — it never dispatches, so
@@ -5075,6 +5147,18 @@ export function expireOverdueEscrows(
       const history = escrow.history;
       return { escrow, expired: true, entry: history[history.length - 1] };
     } catch (err) {
+      // A missing EXPIRE edge is a classification, not a failure:
+      // the escrow is overdue but unexpirable (DISPUTED — arbitration
+      // must not be walked out of unilaterally), so report
+      // `unexpirable: true` with no error instead of re-reporting the
+      // transition error every round. Any other dispatch failure
+      // (backdated `at`, a rolePolicy that does not admit `system`)
+      // still reports its error. The edge check runs here, after the
+      // dispatch attempt, so a backdated `at` still surfaces its own
+      // error first — exactly the order the dry-run predictor uses.
+      if (!allowedEvents(escrow.state).includes("EXPIRE")) {
+        return { escrow, expired: false, unexpirable: true };
+      }
       return {
         escrow,
         expired: false,

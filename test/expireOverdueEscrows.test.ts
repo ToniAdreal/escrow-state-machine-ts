@@ -68,11 +68,12 @@ describe("expireOverdueEscrows", () => {
 
     const stuck = byId(results, "disputed");
     assert.equal(stuck.expired, false);
-    assert.match(
-      stuck.error ?? "",
-      /invalid transition: EXPIRE from DISPUTED/
-    );
-    // the failed escrow is untouched: still DISPUTED, no new history
+    // backlog #1434: an overdue DISPUTED escrow is classified
+    // unexpirable, not failed — no error, no dispatch attempted.
+    assert.equal(stuck.unexpirable, true);
+    assert.equal("error" in stuck, false);
+    assert.equal("entry" in stuck, false);
+    // the classified escrow is untouched: still DISPUTED, no new history
     assert.equal(stuck.escrow.state, "DISPUTED");
   });
 
@@ -92,16 +93,17 @@ describe("expireOverdueEscrows", () => {
     assert.equal(stuck.state, "DISPUTED");
   });
 
-  it("DISPUTED overdue escrows also fail gracefully with an error message", () => {
+  it("DISPUTED overdue escrows are classified unexpirable, not failed (backlog #1434)", () => {
     const disputed = disputedWithDeadline("disputed", PAST);
+    const before = disputed.history.length;
     const results = expireOverdueEscrows([disputed], NOW);
     assert.equal(results.length, 1);
     assert.equal(results[0].expired, false);
-    assert.match(
-      results[0].error ?? "",
-      /invalid transition: EXPIRE from DISPUTED/
-    );
+    assert.equal(results[0].unexpirable, true);
+    assert.equal("error" in results[0], false);
+    assert.equal("entry" in results[0], false);
     assert.equal(disputed.state, "DISPUTED");
+    assert.equal(disputed.history.length, before);
   });
 
   it("returns an empty array for an empty batch", () => {
@@ -167,15 +169,17 @@ describe("expireOverdueEscrows", () => {
     );
   });
 
-  it("expired:true entries have no error key; failed entries carry a string error", () => {
+  it("expired:true entries have no error key; unexpirable entries carry unexpirable:true and no error key", () => {
     const ok = fundedWithDeadline("ok", PAST);
     const stuck = disputedWithDeadline("stuck2", PAST);
     const results = expireOverdueEscrows([ok, stuck], NOW);
     const good = byId(results, "ok");
     assert.equal("error" in good, false);
+    assert.equal("unexpirable" in good, false);
     const bad = byId(results, "stuck2");
-    assert.equal(typeof bad.error, "string");
-    assert.ok((bad.error ?? "").length > 0);
+    assert.equal(bad.unexpirable, true);
+    assert.equal("error" in bad, false);
+    assert.equal("entry" in bad, false);
   });
 
   it("result entries reference the exact input escrow instances", () => {

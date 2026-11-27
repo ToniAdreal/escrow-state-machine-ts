@@ -252,12 +252,11 @@ describe("watchdog executors x requireActor", () => {
     const results = expireOverdueEscrows([stuck, gated], NOW);
     assert.equal(results.length, 2);
 
-    // the stuck escrow fails on the missing EXPIRE edge, not the actor gate
+    // the stuck escrow is classified unexpirable on the missing
+    // EXPIRE edge, not the actor gate — and not failed, either
     assert.equal(results[0].expired, false);
-    assert.match(
-      results[0].error ?? "",
-      /invalid transition: EXPIRE from DISPUTED/
-    );
+    assert.equal(results[0].unexpirable, true);
+    assert.equal("error" in results[0], false);
     assert.equal(stuck.state, "DISPUTED");
 
     // the requireActor sibling still expires in the same batch

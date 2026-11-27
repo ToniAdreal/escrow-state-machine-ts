@@ -58,12 +58,13 @@ describe("expireOverdueEscrows result carries the EXPIRE audit entry", () => {
     assert.ok(verifyHistoryChain(escrow.history));
   });
 
-  it("a failed outcome carries no entry field at all", () => {
+  it("an unexpirable outcome carries no entry field at all (backlog #1434)", () => {
     const disputed = disputedOverdue("entry-absent");
     const results = expireOverdueEscrows([disputed], NOW);
     const result = results[0];
     assert.equal(result.expired, false);
-    assert.match(result.error ?? "", /invalid transition: EXPIRE from DISPUTED/);
+    assert.equal(result.unexpirable, true);
+    assert.equal("error" in result, false);
     assert.equal("entry" in result, false);
     assert.equal(disputed.state, "DISPUTED");
   });

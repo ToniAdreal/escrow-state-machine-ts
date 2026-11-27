@@ -6,14 +6,20 @@
  * notifying subscribers. `expireOverdueEscrows(escrows, now,
  * { dryRun: true })` predicts instead — same screened set, same order,
  * zero dispatch — and each result carries `wouldExpire` plus, when
- * false, the same-wording `error` the live run would have reported.
+ * false, either the same-wording `error` the live run would have
+ * reported, or `unexpirable: true` when the escrow's state has no
+ * `EXPIRE` edge (backlog #1434: the live run classifies those the
+ * same way, with no error).
  *
  * The wording pins are the point of this file: for every failure mode
- * (no EXPIRE edge, backdated `now`, a `rolePolicy` that does not admit
- * `system`) a twin escrow is built identically, the live run is
- * executed on the twin, and the dry-run error must equal the live
- * error byte for byte — a rehearsal that disagrees with the real run
- * about WHY an escrow would not expire is worse than no rehearsal.
+ * (backdated `now`, a `rolePolicy` that does not admit `system`) a
+ * twin escrow is built identically, the live run is executed on the
+ * twin, and the dry-run error must equal the live error byte for
+ * byte — a rehearsal that disagrees with the real run about WHY an
+ * escrow would not expire is worse than no rehearsal. The no-edge
+ * mode is pinned the same way, as a classification instead of an
+ * error: the dry run and the live twin must agree on
+ * `unexpirable: true` and on the absence of `error`.
  */
 
 import { describe, it } from "node:test";
@@ -163,12 +169,20 @@ describe("expireOverdueEscrows dryRun", () => {
     assert.equal(live.entry?.from, "VERIFIED");
   });
 
-  it("DISPUTED overdue: wouldExpire false with the live run's exact error wording", () => {
+  it("DISPUTED overdue: wouldExpire false with the live run's exact classification (backlog #1434)", () => {
     const build = () => disputedWithDeadline("disputed", PAST);
     const [dry] = expireOverdueEscrows([build()], NOW, { dryRun: true });
     assert.equal(dry.wouldExpire, false);
-    assert.equal(dry.error, liveError(build, NOW));
-    assert.match(dry.error ?? "", /invalid transition: EXPIRE from DISPUTED/);
+    assert.equal(dry.unexpirable, true);
+    assert.equal("error" in dry, false);
+    // Twin check: the live run classifies the identical escrow the
+    // same way — unexpirable, no error — so the rehearsal and the
+    // real run agree about WHY it would not expire.
+    const [live] = expireOverdueEscrows([build()], NOW);
+    assert.equal(live.expired, false);
+    assert.equal(live.unexpirable, true);
+    assert.equal("error" in live, false);
+    assert.equal(live.escrow.state, "DISPUTED");
   });
 
   it("backdated now: wouldExpire false with the live run's exact error wording", () => {

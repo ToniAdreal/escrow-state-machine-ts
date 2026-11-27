@@ -3271,15 +3271,14 @@ test("demo deadline watchdog expires the expirable escrow, isolates the DISPUTED
   assert.equal(deadlineEscrows[1].history[0].at, DEMO_EXPIRABLE_FUND_AT);
   assert.equal(deadlineEscrows[2].history[0].at, DEMO_DEADLINE_STALE_FUND_AT);
   // The executor attempted exactly the expired selection, in order:
-  // the DISPUTED escrow first — per-item error, escrow untouched —
-  // and its failure did not block the FUNDED escrow after it.
+  // the DISPUTED escrow first — classified unexpirable, escrow
+  // untouched — and its classification did not block the FUNDED
+  // escrow after it.
   assert.equal(deadlineExpireResults.length, 2);
   assert.equal(deadlineExpireResults[0].escrow, deadlineEscrows[0]);
   assert.equal(deadlineExpireResults[0].expired, false);
-  assert.match(
-    deadlineExpireResults[0].error ?? "",
-    /invalid transition: EXPIRE from DISPUTED/,
-  );
+  assert.equal(deadlineExpireResults[0].unexpirable, true);
+  assert.equal("error" in deadlineExpireResults[0], false);
   assert.equal(deadlineExpireResults[1].escrow, deadlineEscrows[1]);
   assert.equal(deadlineExpireResults[1].expired, true);
   assert.equal(deadlineExpireResults[1].error, undefined);
@@ -3342,7 +3341,7 @@ test("demo lines print the deadline watchdog section after the stale screening",
   assert.ok(text.includes("  expireOverdueEscrows: 2 attempted"));
   assert.ok(
     text.includes(
-      "  DEMO-ESC-007: expired false — error: invalid transition: EXPIRE from DISPUTED (escrow unchanged at DISPUTED)",
+      "  DEMO-ESC-007: expired false — unexpirable: DISPUTED has no EXPIRE edge (escrow unchanged at DISPUTED)",
     ),
   );
   assert.ok(text.includes("  DEMO-ESC-008: expired true — now EXPIRED"));
@@ -3366,11 +3365,11 @@ test("demo deadline watchdog cites the EXPIRE audit entry per result (backlog #6
     await runDemo();
   const text = lines.join("\n");
 
-  // One citation per attempted escrow, in batch order: the failed
-  // DISPUTED attempt cites no entry (a failed dispatch appends
-  // nothing); the successful FUNDED expiry cites its EXPIRE entry
-  // field for field — seq/from/to/at pinned, never recomputed from
-  // the executor itself.
+  // One citation per attempted escrow, in batch order: the
+  // unexpirable DISPUTED attempt cites no entry (nothing was
+  // dispatched for it); the successful FUNDED expiry cites its
+  // EXPIRE entry field for field — seq/from/to/at pinned, never
+  // recomputed from the executor itself.
   assert.equal(deadlineExpireEntryRefs.length, 2);
   assert.equal(
     deadlineExpireEntryRefs[0].escrowId,
@@ -3403,7 +3402,7 @@ test("demo deadline watchdog cites the EXPIRE audit entry per result (backlog #6
   );
   assert.ok(
     text.includes(
-      "  DEMO-ESC-007: no entry — failed dispatch appends nothing",
+      "  DEMO-ESC-007: no entry — no EXPIRE entry was appended",
     ),
   );
   assert.ok(
@@ -4060,10 +4059,10 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
   assert.ok(out.includes("  DEMO-ESC-004: acted true — now EXPIRED"));
   // Deadline watchdog tail: the closing section screens three more
   // escrows by deadline and executes the selection — the DISPUTED
-  // escrow's per-item error printed before the FUNDED escrow's
-  // successful expiry, and the stale-only escrow never attempted.
-  // (The seq-row count above stays 8: this section prints no
-  // numbered history rows either.)
+  // escrow's unexpirable classification printed before the FUNDED
+  // escrow's successful expiry, and the stale-only escrow never
+  // attempted. (The seq-row count above stays 8: this section prints
+  // no numbered history rows either.)
   assert.match(
     out,
     /Deadline watchdog \(expiredEscrows screening -> expireOverdueEscrows execution\):/,
@@ -4075,7 +4074,7 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
   );
   assert.ok(
     out.includes(
-      "  DEMO-ESC-007: expired false — error: invalid transition: EXPIRE from DISPUTED (escrow unchanged at DISPUTED)",
+      "  DEMO-ESC-007: expired false — unexpirable: DISPUTED has no EXPIRE edge (escrow unchanged at DISPUTED)",
     ),
   );
   assert.ok(out.includes("  DEMO-ESC-008: expired true — now EXPIRED"));

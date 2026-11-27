@@ -9286,7 +9286,8 @@ checkActOnStaleResults(
 {
   // DISPUTED escrow past its deadline: overdue, but no EXPIRE edge
   // (backlog #1422: expiry must not let a party walk out of
-  // arbitration), so the executor isolates it as a per-item failure.
+  // arbitration), so the executor classifies it as unexpirable
+  // (no error, no dispatch) instead of failing it.
   const stuck = watchdogFunded(
     "BENCH-WD-STUCK-01",
     BASE_MS,
@@ -9310,7 +9311,8 @@ checkActOnStaleResults(
   if (
     results.length !== 2 ||
     results[0].expired !== false ||
-    results[0].error !== "invalid transition: EXPIRE from DISPUTED" ||
+    results[0].unexpirable !== true ||
+    "error" in results[0] ||
     "entry" in results[0] ||
     results[1].expired !== true ||
     results[1].error !== undefined ||
