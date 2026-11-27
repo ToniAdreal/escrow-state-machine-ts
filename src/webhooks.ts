@@ -850,6 +850,14 @@ export function buildSettlementWebhooks(
  * Note: `eventId` is not validated separately — it is part of the signed
  * body, so any tampering with it breaks the signature check above.
  *
+ * This entry point is signature-only by default: the freshness and
+ * `eventId` gates below are opt-in, so a legitimately-signed old or
+ * keyless payload verifies. New receivers should prefer
+ * {@link verifySettlementWebhookStrict}, which switches all three gates on
+ * with safe defaults (5-minute age window, 60-second future-skew
+ * window, `eventId` required) unless the caller explicitly overrides
+ * a field.
+ *
  * Rotation: pass `{ secrets: [newSecret, oldSecret] }` instead of a single
  * secret during the rotation window — any candidate that matches returns
  * `true`; all-mismatch returns `false` (fail-closed). An empty `secrets`
@@ -1064,6 +1072,109 @@ export function verifySettlementWebhook(
   // signature matched: forgeries fail above, never here.
   if (maxAgeMs === undefined && maxFutureSkewMs === undefined) return true;
   return payloadFreshEnough(body, maxAgeMs, maxFutureSkewMs, now);
+}
+
+/**
+ * Default `maxAgeMs` (5 minutes) for {@link verifySettlementWebhookStrict}.
+ * A legitimately-signed payload older than this is rejected unless the
+ * caller explicitly overrides the window.
+ */
+export const STRICT_SETTLEMENT_WEBHOOK_MAX_AGE_MS = 300_000;
+
+/**
+ * Default `maxFutureSkewMs` (60 seconds) for
+ * {@link verifySettlementWebhookStrict}. A legitimately-signed payload whose
+ * `at` lies further in the future than this is rejected unless the
+ * caller explicitly overrides the window.
+ */
+export const STRICT_SETTLEMENT_WEBHOOK_MAX_FUTURE_SKEW_MS = 60_000;
+
+/**
+ * Strict settlement webhook verification (backlog #1432): the recommended
+ * receiver path. It is {@link verifySettlementWebhook} with all three
+ * opt-in gates switched on by default, in one call:
+ *
+ * - `maxAgeMs` defaults to {@link STRICT_SETTLEMENT_WEBHOOK_MAX_AGE_MS}
+ *   (5 minutes): a legitimately-signed payload older than that returns
+ *   `false`, so a captured webhook cannot be replayed indefinitely.
+ * - `maxFutureSkewMs` defaults to
+ *   {@link STRICT_SETTLEMENT_WEBHOOK_MAX_FUTURE_SKEW_MS} (60 seconds): a
+ *   legitimately-signed payload issued further in the future returns
+ *   `false`, so a fast sender clock cannot open a near-unbounded
+ *   replay window.
+ * - `requireEventId` defaults to `true`: a signed payload without a
+ *   usable `eventId` returns `false`, so the receiver always has a key
+ *   to deduplicate on (`SettlementEventDedupe`).
+ *
+ * Every default is overridable per field: pass an explicit `maxAgeMs`
+ * (e.g. one hour accepts a 10-minute-old payload), `maxFutureSkewMs`,
+ * or `requireEventId: false` and that value is used instead. An
+ * explicit `undefined` for a window field means "use the strict
+ * default", exactly like omitting it — except for one combination,
+ * which is a caller configuration error that throws: explicitly
+ * passing `maxAgeMs: undefined` together with `requireEventId: false`
+ * would strip two of the three gates at once, so strict refuses to be
+ * quietly downgraded back toward signature-only verification
+ * (`cannot verify settlement webhook (strict): maxAgeMs must not be
+ * explicitly disabled while requireEventId is false …`). The single-secret
+ * form has no options to downgrade and always runs with the three
+ * defaults.
+ *
+ * Nothing else changes: the signature is still checked first (a
+ * forgery never reaches the gates), unknown option keys and illegal
+ * values still throw the same `verifySettlementWebhook` configuration
+ * errors, secret rotation via `{ secrets }` still composes, and the
+ * legacy `verifySettlementWebhook()` defaults are untouched — receivers
+ * that already rely on signature-only verification keep verifying
+ * exactly as before. Strict is defense-in-depth only: receivers MUST
+ * still deduplicate on `eventId` after a successful verify. Mirrors
+ * the dataquest `verifyPayoutWebhookStrict` (#1427) with this module's
+ * overload shape: a single secret or an options object, and `now` as
+ * epoch milliseconds.
+ */
+export function verifySettlementWebhookStrict(
+  body: string | SettlementWebhookPayload,
+  signature: string,
+  secretOrOptions: string | Buffer | VerifyWebhookOptions,
+): boolean {
+  // Single-secret form: the three strict defaults, no options to
+  // downgrade. A malformed third argument (null, a number, …) is not
+  // a string/Buffer and not an object, so it falls through to
+  // `verifySettlementWebhook`, which rejects it with its own
+  // configuration error — strict never invents one.
+  if (typeof secretOrOptions === "string" || Buffer.isBuffer(secretOrOptions)) {
+    return verifySettlementWebhook(body, signature, {
+      secrets: [secretOrOptions],
+      maxAgeMs: STRICT_SETTLEMENT_WEBHOOK_MAX_AGE_MS,
+      maxFutureSkewMs: STRICT_SETTLEMENT_WEBHOOK_MAX_FUTURE_SKEW_MS,
+      requireEventId: true,
+    });
+  }
+  if (secretOrOptions !== null && typeof secretOrOptions === "object") {
+    // Downgrade guard: explicitly disabling the age window while also
+    // switching the eventId gate off strips two of the three strict
+    // gates at once. Refuse it as a configuration error rather than
+    // silently verifying a payload strict was asked to bound.
+    if (
+      "maxAgeMs" in secretOrOptions &&
+      secretOrOptions.maxAgeMs === undefined &&
+      secretOrOptions.requireEventId === false
+    ) {
+      throw new Error(
+        "cannot verify settlement webhook (strict): maxAgeMs must not be explicitly disabled while requireEventId is false; strict verification cannot be downgraded to signature-only",
+      );
+    }
+    return verifySettlementWebhook(body, signature, {
+      ...secretOrOptions,
+      maxAgeMs:
+        secretOrOptions.maxAgeMs ?? STRICT_SETTLEMENT_WEBHOOK_MAX_AGE_MS,
+      maxFutureSkewMs:
+        secretOrOptions.maxFutureSkewMs ??
+        STRICT_SETTLEMENT_WEBHOOK_MAX_FUTURE_SKEW_MS,
+      requireEventId: secretOrOptions.requireEventId ?? true,
+    });
+  }
+  return verifySettlementWebhook(body, signature, secretOrOptions);
 }
 
 /**

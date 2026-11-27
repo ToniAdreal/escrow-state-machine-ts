@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 3006 tests, all local
+npm test   # 3023 tests, all local
 ```
 
 ## Quickstart
@@ -1705,6 +1705,33 @@ sender's own options, never this receiver-side requirement — so
 enabling it only hardens receivers. Defaults to `false`: without it,
 a keyless payload verifies on its signature alone, exactly as before.
 
+New receivers should prefer the strict entry point instead of
+assembling the three opt-in gates by hand:
+
+```ts
+verifySettlementWebhookStrict(rawBody, receivedSignature, secret);
+// => maxAgeMs 5 * 60_000, maxFutureSkewMs 60_000, requireEventId: true
+```
+
+It is `verifySettlementWebhook` with all three gates switched on by
+default: a legitimately-signed payload older than 5 minutes or more
+than 60 seconds in the future returns `false`, as does a signed
+payload without a usable `eventId`. Each default is overridable per
+field — pass an explicit `maxAgeMs` (one hour accepts a 10-minute-old
+payload), `maxFutureSkewMs`, or `requireEventId: false` — and an
+explicit `undefined` for a window field means "use the strict
+default". One combination throws a configuration error instead of
+verifying: explicitly passing `maxAgeMs: undefined` together with
+`requireEventId: false`, which would strip two of the three gates at
+once, so strict cannot be quietly downgraded back to signature-only
+verification. The defaults themselves are exported as
+`STRICT_SETTLEMENT_WEBHOOK_MAX_AGE_MS` and
+`STRICT_SETTLEMENT_WEBHOOK_MAX_FUTURE_SKEW_MS`. The legacy
+`verifySettlementWebhook()` defaults are unchanged — receivers that
+already rely on signature-only verification keep verifying exactly as
+before. Strict is defense-in-depth only: receivers MUST still
+deduplicate on `eventId` after a successful verify.
+
 Option typos fail closed: the options object is scanned against the
 five known keys (`secrets`, `maxAgeMs`, `maxFutureSkewMs`,
 `requireEventId`, `now`) after the `secrets` non-empty check and
@@ -2302,7 +2329,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 3006 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 3023 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
