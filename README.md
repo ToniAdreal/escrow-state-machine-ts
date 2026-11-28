@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 3040 tests, all local
+npm test   # 3041 tests, all local
 ```
 
 ## Quickstart
@@ -110,7 +110,14 @@ is snapshotted, round-tripped through JSON, and restored with
 path), a below-threshold `dispatchArbitration`
 attempt is refused with the escrow untouched — and the reached quorum
 refunding the sponsor in full to `REFUNDED` with its refund settlement
-report. Right after the refund, the demo seals a fresh 2-of-3 quorum at
+report. Right after the refund, the demo rebuilds the main settlement's
+webhook twice with no `eventId` option: both builds carry the same
+deterministically derived `eventId`
+(`settlement-DEMO-ESC-001-4-b63d4915502f`) and the same signature, the
+dispute escrow's settlement derives a different id, an explicit `eventId`
+still overrides, and a fresh receiver dedupe counts the first build new
+and the rebuild a duplicate — the rebuild is dropped, not booked twice.
+Right after that, the demo seals a fresh 2-of-3 quorum at
 threshold into an HMAC-signed snapshot envelope with
 `exportSignedQuorumSnapshot`: a detached copy with exactly one byte
 changed inside the snapshot is refused at restore with the pinned
@@ -2338,7 +2345,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 3040 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 3041 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

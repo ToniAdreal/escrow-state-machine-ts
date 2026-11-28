@@ -54,8 +54,14 @@
  * arbitration-restart path), with one below-threshold arbitration
  * attempt refused without touching the escrow — and the reached
  * quorum refunds the sponsor in full (REFUNDED), closing with
- * that escrow's refund settlement report. Right after the refund, a
- * fresh 2-of-3 quorum at threshold is sealed into an HMAC-signed
+ * that escrow's refund settlement report. Right after the refund,
+ * the demo rebuilds the main settlement's webhook twice with no
+ * `eventId` option: both builds carry the same deterministically
+ * derived `eventId` and the same signature, the dispute escrow's
+ * settlement derives a different id, an explicit `eventId` still
+ * overrides, and a fresh receiver dedupe counts the first build new
+ * and the rebuild a duplicate — the rebuild is dropped, not booked
+ * twice. Right after that, a fresh 2-of-3 quorum at threshold is sealed into an HMAC-signed
  * snapshot envelope with `exportSignedQuorumSnapshot`: a detached
  * copy with exactly one byte changed inside the snapshot is refused
  * at restore with the pinned MAC-mismatch error, the untampered
@@ -3468,6 +3474,45 @@ export interface DemoResult {
   disputeEscrow: Escrow;
   /** Refund settlement report of the dispute escrow. */
   disputeReport: SettlementReport;
+  /**
+   * First build of the main settlement's webhook with no `eventId`
+   * option (fixed `now`, demo secret): its `eventId` is the
+   * deterministic default derived from the report's anchor —
+   * `settlement-<escrowId>-<terminalSeq>-<first 12 hex of
+   * terminalHash>` — so it equals
+   * {@link DemoResult.webhookDeterministicSecond}'s id and signature.
+   */
+  webhookDeterministicFirst: SettlementWebhook;
+  /**
+   * Second build of the same settlement under the identical options:
+   * same `eventId` and same signature as
+   * {@link DemoResult.webhookDeterministicFirst} — a rebuild
+   * re-issues the notification, it is not a new settlement.
+   */
+  webhookDeterministicSecond: SettlementWebhook;
+  /**
+   * Build of the dispute escrow's settlement under the same options:
+   * a different `eventId` — the derivation covers the escrow id, so
+   * a different settlement never collides with the main one.
+   */
+  webhookDeterministicOther: SettlementWebhook;
+  /**
+   * Build of the main settlement with an explicit `eventId`
+   * ({@link DEMO_WEBHOOK_EVENT_ID}): the explicit id wins over the
+   * derived default.
+   */
+  webhookDeterministicExplicit: SettlementWebhook;
+  /**
+   * `checkAndRecord` of the first build's derived `eventId` on a
+   * fresh dedupe (fixed clock): `false` — new event, book it.
+   */
+  webhookDeterministicDedupeFirst: boolean;
+  /**
+   * `checkAndRecord` of the rebuild's identical `eventId` on the same
+   * dedupe: `true` — duplicate, the rebuild is dropped, not booked
+   * twice.
+   */
+  webhookDeterministicDedupeSecond: boolean;
   /**
    * The 2-of-3 arbitrator quorum, at threshold after two approvals.
    * This is the quorum restored from the mid-collection snapshot
@@ -7152,6 +7197,84 @@ export async function runDemo(): Promise<DemoResult> {
   }
   lines.push("", "Settlement report (dispute refund):");
   lines.push(renderReport(disputeReport));
+
+  // --- Settlement webhook deterministic eventId: the rebuild contract ---
+  // #1430 made the default `eventId` deterministic: it is derived from
+  // the report's settlement-evidence anchor (`terminalSeq` +
+  // `terminalHash`, stamped by `buildSettlementReport` from the audit
+  // chain tip) as `settlement-<escrowId>-<terminalSeq>-<first 12 hex
+  // of terminalHash>`. Rebuilding the SAME settlement (the same report,
+  // fixed `now`, no `eventId` option) must therefore re-issue the SAME
+  // `eventId` and — the payload bytes being identical — the SAME
+  // signature: a redelivery is a redelivery, not a second settlement.
+  // A DIFFERENT escrow's settlement derives a different id, and an
+  // explicit `eventId` still overrides the derived default. The two
+  // rebuilds are then fed to a fresh `SettlementEventDedupe` on the
+  // fixed clock: the first sighting is new, the rebuild is a duplicate,
+  // so the receiver books the settlement once. All shapes are asserted
+  // HERE, outside the printing: a rebuild that minted a fresh id, a
+  // signature that moved, or a dedupe that booked twice would fail the
+  // demo itself, not just a test. No wall clock, randomness, or network
+  // enters it: both builds share the fixed `now`, and the reports carry
+  // their anchors from the hash-chained histories above.
+  const webhookDeterministicFirst = buildSettlementWebhook(report, {
+    secret: DEMO_WEBHOOK_SECRET,
+    now: DEMO_WEBHOOK_AT,
+  });
+  const webhookDeterministicSecond = buildSettlementWebhook(report, {
+    secret: DEMO_WEBHOOK_SECRET,
+    now: DEMO_WEBHOOK_AT,
+  });
+  const webhookDeterministicOther = buildSettlementWebhook(disputeReport, {
+    secret: DEMO_WEBHOOK_SECRET,
+    now: DEMO_WEBHOOK_AT,
+  });
+  const webhookDeterministicExplicit = buildSettlementWebhook(report, {
+    secret: DEMO_WEBHOOK_SECRET,
+    now: DEMO_WEBHOOK_AT,
+    eventId: DEMO_WEBHOOK_EVENT_ID,
+  });
+  const webhookDeterministicDedupe = new SettlementEventDedupe({
+    ttlMs: DEMO_DEDUPE_TTL_MS,
+    now: () => DEMO_DEDUPE_START_MS,
+  });
+  const webhookDeterministicDedupeFirst =
+    webhookDeterministicDedupe.checkAndRecord(
+      webhookDeterministicFirst.payload.eventId,
+    );
+  const webhookDeterministicDedupeSecond =
+    webhookDeterministicDedupe.checkAndRecord(
+      webhookDeterministicSecond.payload.eventId,
+    );
+  if (
+    webhookDeterministicFirst.payload.eventId !==
+      webhookDeterministicSecond.payload.eventId ||
+    webhookDeterministicFirst.signature !==
+      webhookDeterministicSecond.signature ||
+    webhookDeterministicFirst.payload.eventId ===
+      webhookDeterministicOther.payload.eventId ||
+    webhookDeterministicExplicit.payload.eventId !== DEMO_WEBHOOK_EVENT_ID ||
+    webhookDeterministicDedupeFirst !== false ||
+    webhookDeterministicDedupeSecond !== true ||
+    !verifySettlementWebhook(
+      JSON.stringify(webhookDeterministicFirst.payload),
+      webhookDeterministicFirst.signature,
+      DEMO_WEBHOOK_SECRET,
+    )
+  ) {
+    throw new Error(
+      "demo fixture broken: settlement webhook deterministic eventId does not match the pinned shape (rebuilding the same settlement re-issues the same eventId and signature, a different escrow derives a different id, an explicit eventId still overrides, and the receiver dedupe counts the first build new and the rebuild a duplicate)",
+    );
+  }
+  lines.push(
+    "",
+    "Settlement webhook deterministic eventId (same settlement rebuilt, no eventId option):",
+    `  first build:  eventId ${webhookDeterministicFirst.payload.eventId} (signature ${webhookDeterministicFirst.signature})`,
+    `  second build: eventId ${webhookDeterministicSecond.payload.eventId} — identical eventId and signature (a rebuild re-issues the notification, it is not a new settlement)`,
+    `  other escrow: eventId ${webhookDeterministicOther.payload.eventId} (a different settlement derives a different id)`,
+    `  explicit eventId: ${webhookDeterministicExplicit.payload.eventId} (an explicit eventId still overrides the derived default)`,
+    `  receiver dedupe: first delivery new (${webhookDeterministicDedupeFirst}), rebuild duplicate (${webhookDeterministicDedupeSecond}) — the rebuild is dropped, not booked twice`,
+  );
 
   // --- Signed quorum snapshot: HMAC envelope (tamper-evident restart) ---
   // The dispute branch above restarts the quorum through its UNSIGNED
@@ -15024,6 +15147,12 @@ export async function runDemo(): Promise<DemoResult> {
     retryAfterParsed,
     disputeEscrow,
     disputeReport,
+    webhookDeterministicFirst,
+    webhookDeterministicSecond,
+    webhookDeterministicOther,
+    webhookDeterministicExplicit,
+    webhookDeterministicDedupeFirst,
+    webhookDeterministicDedupeSecond,
     disputeQuorum,
     quorumRemainingBeforeFirstVote,
     quorumRemainingAfterFirstVote,

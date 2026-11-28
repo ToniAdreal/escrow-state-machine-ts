@@ -2259,6 +2259,122 @@ test("demo lines print the dispute / quorum / refund branch", async () => {
   assert.ok(text.includes(`Outcome: refunded`));
 });
 
+test("demo rebuilds the same settlement webhook with the same deterministic eventId and signature, and the receiver dedupe drops the rebuild", async () => {
+  const {
+    report,
+    disputeReport,
+    webhookDeterministicFirst,
+    webhookDeterministicSecond,
+    webhookDeterministicOther,
+    webhookDeterministicExplicit,
+    webhookDeterministicDedupeFirst,
+    webhookDeterministicDedupeSecond,
+  } = await runDemo();
+
+  // The derived default is pinned from the reports' own anchors —
+  // `settlement-<escrowId>-<terminalSeq>-<first 12 hex of
+  // terminalHash>` — never hard-coded, so a change to the anchor
+  // stamping surfaces here.
+  assert.equal(
+    webhookDeterministicFirst.payload.eventId,
+    `settlement-${report.escrowId}-${report.terminalSeq}-${report.terminalHash?.slice(0, 12)}`,
+  );
+  assert.equal(
+    webhookDeterministicOther.payload.eventId,
+    `settlement-${disputeReport.escrowId}-${disputeReport.terminalSeq}-${disputeReport.terminalHash?.slice(0, 12)}`,
+  );
+  // Same settlement, rebuilt under identical options: same id, same
+  // signature — a redelivery, not a second settlement.
+  assert.equal(
+    webhookDeterministicSecond.payload.eventId,
+    webhookDeterministicFirst.payload.eventId,
+  );
+  assert.equal(
+    webhookDeterministicSecond.signature,
+    webhookDeterministicFirst.signature,
+  );
+  // A different settlement derives a different id, and an explicit
+  // eventId still overrides the derived default.
+  assert.notEqual(
+    webhookDeterministicOther.payload.eventId,
+    webhookDeterministicFirst.payload.eventId,
+  );
+  assert.equal(
+    webhookDeterministicExplicit.payload.eventId,
+    DEMO_WEBHOOK_EVENT_ID,
+  );
+  // The receiver dedupe books the first build and drops the rebuild.
+  assert.equal(webhookDeterministicDedupeFirst, false);
+  assert.equal(webhookDeterministicDedupeSecond, true);
+  // Independent re-verification of the derived-id webhook agrees.
+  assert.ok(
+    verifySettlementWebhook(
+      JSON.stringify(webhookDeterministicFirst.payload),
+      webhookDeterministicFirst.signature,
+      DEMO_WEBHOOK_SECRET,
+    ),
+  );
+
+  // Lines: the section prints between the dispute refund report and
+  // the signed quorum snapshot segment, and two runs print it
+  // byte-identically.
+  const a = await runDemo();
+  const b = await runDemo();
+  const sectionStart =
+    "Settlement webhook deterministic eventId (same settlement rebuilt, no eventId option):";
+  const sectionEnd =
+    "Signed quorum snapshot (HMAC envelope — a rewritten snapshot fails at restore):";
+  for (const run of [a, b]) {
+    const text = run.lines.join("\n");
+    assert.match(
+      text,
+      /Settlement webhook deterministic eventId \(same settlement rebuilt, no eventId option\):/,
+    );
+    assert.ok(
+      text.includes(
+        `  first build:  eventId ${webhookDeterministicFirst.payload.eventId} (signature ${webhookDeterministicFirst.signature})`,
+      ),
+    );
+    assert.ok(
+      text.includes(
+        `  second build: eventId ${webhookDeterministicSecond.payload.eventId} — identical eventId and signature (a rebuild re-issues the notification, it is not a new settlement)`,
+      ),
+    );
+    assert.ok(
+      text.includes(
+        `  other escrow: eventId ${webhookDeterministicOther.payload.eventId} (a different settlement derives a different id)`,
+      ),
+    );
+    assert.ok(
+      text.includes(
+        `  explicit eventId: ${DEMO_WEBHOOK_EVENT_ID} (an explicit eventId still overrides the derived default)`,
+      ),
+    );
+    assert.ok(
+      text.includes(
+        "  receiver dedupe: first delivery new (false), rebuild duplicate (true) — the rebuild is dropped, not booked twice",
+      ),
+    );
+    // Position: after the dispute refund report, before the signed
+    // quorum snapshot segment.
+    const disputeAt = text.indexOf("Settlement report (dispute refund):");
+    const sectionAt = text.indexOf(sectionStart);
+    const quorumAt = text.indexOf(sectionEnd);
+    assert.ok(disputeAt !== -1 && sectionAt > disputeAt);
+    assert.ok(quorumAt !== -1 && sectionAt < quorumAt);
+  }
+  assert.deepEqual(
+    a.lines.slice(
+      a.lines.indexOf(sectionStart),
+      a.lines.indexOf(sectionEnd),
+    ),
+    b.lines.slice(
+      b.lines.indexOf(sectionStart),
+      b.lines.indexOf(sectionEnd),
+    ),
+  );
+});
+
 test("demo batch section isolates the still-FUNDED escrow's error and still reports the escrow after it", async () => {
   const { pendingEscrow, batchResults } = await runDemo();
 
