@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 3084 tests, all local
+npm test   # 3089 tests, all local
 ```
 
 ## Quickstart
@@ -1072,7 +1072,15 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   signer id only, not an escrow or outcome, so use one quorum per
   arbitration (the `dispatchArbitration` pattern) unless one of them
   is set — with either set, the same signer keys can vote in several
-  arbitrations and the statement itself carries the binding; and an
+  arbitrations and the statement itself carries the binding. The
+  recommendation is to give every escrow its own unique
+  `statementContext` (the escrow id is the natural value): without
+  one, a single captured signature verifies in any quorum that
+  registers the same signer key and can count toward, and dispatch,
+  two different escrows — pinned in
+  `test/quorumNoContextCrossEscrowReuse.test.ts`, which records the
+  default-configuration reuse as-is and the binding once distinct
+  contexts are set; and an
   unsigned `restoreQuorum()` drops the recorded `verified` flags —
   the snapshot carries no signature to re-verify, so every restored
   approval is an unverified claim until a fresh `approveSigned()`
@@ -2360,7 +2368,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 3084 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 3089 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

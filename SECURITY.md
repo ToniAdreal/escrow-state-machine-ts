@@ -39,7 +39,15 @@ quorum approvals (`approveSigned()`).
   and throws without recording anything on failure. The statement
   binds the signer id only — not an escrow or outcome — so a signature
   is meaningful only inside the quorum it was collected for; use one
-  quorum per arbitration. An unsigned `restoreQuorum()` drops the
+  quorum per arbitration. Without a `statementContext` (or a
+  `statementScope`) the same signature verifies in every quorum that
+  registers the same signer key, so one captured vote can count
+  toward — and dispatch — two different escrows. Recommendation:
+  configure a unique `statementContext` per escrow (the escrow id is
+  the natural value) whenever the same signer keys vote in more than
+  one arbitration. `test/quorumNoContextCrossEscrowReuse.test.ts`
+  pins both sides: the reuse under the default configuration, and
+  the binding once distinct contexts are set. An unsigned `restoreQuorum()` drops the
   recorded `verified` flags — the snapshot carries no signature to
   re-verify, so every restored approval is an unverified claim until
   a fresh `approveSigned()` re-earns the flag; only the HMAC-signed
