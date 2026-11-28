@@ -1816,6 +1816,29 @@
  *      timed iteration re-checks each returned total against its
  *      hand-written expectation and the fail-fast shape against its
  *      exact hand-written error message.
+ * 101. cumulative partial-release settlement in integer cents —
+ *      `settlePartialReleasesCents(inputs)` over one fixed set of 4
+ *      representative batches in whole cents (composition and
+ *      hand-computed expectations in the fixture comment below: the
+ *      golden 1,063,000 settled in one batch [425,200, 637,800] at
+ *      500 bps, a mid-size 200,000 batch with 2,500 referral credits,
+ *      one large-gross 100,000,000 batch at 250 bps with 125,025
+ *      credits, and ten 1-cent tranches at 5,000 bps — the #1441
+ *      bound-attaining shape). This is the integer-cents counterpart
+ *      of the dollar row: the batch settlement the hot path actually
+ *      runs — exact `BigInt` fee arithmetic, no float-dollar
+ *      round-trip — had no measured baseline. Every timed iteration
+ *      checks each batch's per-tranche fee / net / remaining and the
+ *      batch totals against the hand-written expectations, re-checks
+ *      net conservation (net + fee + credits = released, remaining =
+ *      gross - released) on every batch, and pins the ten-tranche
+ *      batch's fee exactly 5 cents above the one-shot fee on the
+ *      same 10 cents — the floor(n / 2) divergence bound attained,
+ *      not just respected. The golden batch's totals against the
+ *      dollar `settlePartialReleases` on the same inputs at exactly
+ *      x100 (±0¢) and the over-pay refusal ([60,000, 60,000] against
+ *      a gross of 100,000) are pinned once, outside the timed loop,
+ *      to throw the exact cumulative error.
  *
  * Fixtures are fully deterministic: fixed escrow id, the portfolio
  * golden deposit (10,000 / 600 / 1.0x / -30 / +60 -> 10,630), fixed
@@ -1892,8 +1915,11 @@ import {
   restoreSignedQuorumSnapshot,
   retrySettlementWebhookOutbox,
   settleRelease,
+  settleReleaseCents,
   settlePartialRelease,
+  settlePartialReleaseCents,
   settlePartialReleases,
+  settlePartialReleasesCents,
   settleRefund,
   settlementAging,
   SettlementEventDedupe,
@@ -1923,6 +1949,7 @@ import {
   type SettlementInputs,
   type PartialSettlementInputs,
   type PartialReleasesInputs,
+  type PartialReleasesInputsCents,
   type SettlementReport,
   type SettlementAgingResult,
   type SettlementEventDedupeSignedSnapshotEnvelope,
@@ -14022,6 +14049,347 @@ function benchSettlePartialReleases(): number {
 }
 
 // ---------------------------------------------------------------------
+// settlePartialReleasesCents fixture: 4 fixed representative batch
+// settlements in whole cents — the exact cents mirror of the dollar
+// corpus above (every figure x100), plus the #1441 bound-attaining
+// shape in place of the dollar half-cent edge. Hand-computed
+// expectations (each tranche settles through
+// settlePartialReleaseCents against the still-locked balance:
+// proFeeCents = half-up(releasedCents * proFeeBps / 10000) in exact
+// BigInt arithmetic; netCents = releasedCents - proFeeCents -
+// referralCreditsCents; remainingCents = grossCents - cumulative
+// released; batch referral credits land on the first tranche only;
+// expectations written by hand here, never re-derived through
+// settlePartialReleasesCents itself — the same hand-calc tradition
+// as the golden 10630 deposit and the dollar bench row):
+//   1. golden batch: gross 1,063,000, releases [425,200, 637,800] at
+//      500 bps, no credits -> tranches (21,260 / 403,940,
+//      remaining 637,800) and (31,890 / 605,910, remaining 0);
+//      totals released 1,063,000, proFee 53,150, net 1,009,850,
+//      remaining 0 — the same split as the single-release fee and
+//      net, so batching never double-charges the fee, and exactly
+//      x100 the dollar golden batch (±0¢).
+//   2. mid-size with credits: gross 200,000, releases [50,000,
+//      50,000] at 500 bps, credits 2,500 on the first tranche only
+//      -> tranches (2,500 / 45,000, remaining 150,000) and (2,500 /
+//      47,500, remaining 100,000); totals released 100,000, proFee
+//      5,000, credits 2,500, net 92,500, remaining 100,000.
+//   3. large gross: gross 100,000,000, releases [40,000,000,
+//      60,000,000] at 250 bps, credits 125,025 -> tranches
+//      (1,000,000 / 38,874,975, remaining 60,000,000) and
+//      (1,500,000 / 58,500,000, remaining 0); totals released
+//      100,000,000, proFee 2,500,000, net 97,374,975, remaining 0.
+//   4. ten 1-cent tranches at 5,000 bps: gross 10, releases [1 x 10]
+//      -> each tranche's exact fee is 0.5 cents, half-up rounded to
+//      1, so the batch charges 10 cents where the one-shot fee on
+//      the same 10 cents is 5 — divergence 5 = floor(10 / 2), the
+//      #1441 bound attained exactly; totals released 10, proFee 10,
+//      net 0, remaining 0.
+// ---------------------------------------------------------------------
+const SETTLE_PARTIAL_RELEASES_CENTS_CASES: ReadonlyArray<{
+  inputs: PartialReleasesInputsCents;
+  tranches: ReadonlyArray<{
+    proFeeCents: number;
+    netCents: number;
+    remainingCents: number;
+  }>;
+  totalReleasedCents: number;
+  totalProFeeCents: number;
+  totalReferralCreditsCents: number;
+  totalNetCents: number;
+  remainingCents: number;
+}> = [
+  {
+    inputs: {
+      grossCents: 1_063_000,
+      releasesCents: [425_200, 637_800],
+      proFeeBps: 500,
+    },
+    tranches: [
+      { proFeeCents: 21_260, netCents: 403_940, remainingCents: 637_800 },
+      { proFeeCents: 31_890, netCents: 605_910, remainingCents: 0 },
+    ],
+    totalReleasedCents: 1_063_000,
+    totalProFeeCents: 53_150,
+    totalReferralCreditsCents: 0,
+    totalNetCents: 1_009_850,
+    remainingCents: 0,
+  },
+  {
+    inputs: {
+      grossCents: 200_000,
+      releasesCents: [50_000, 50_000],
+      proFeeBps: 500,
+      referralCreditsCents: 2_500,
+    },
+    tranches: [
+      { proFeeCents: 2_500, netCents: 45_000, remainingCents: 150_000 },
+      { proFeeCents: 2_500, netCents: 47_500, remainingCents: 100_000 },
+    ],
+    totalReleasedCents: 100_000,
+    totalProFeeCents: 5_000,
+    totalReferralCreditsCents: 2_500,
+    totalNetCents: 92_500,
+    remainingCents: 100_000,
+  },
+  {
+    inputs: {
+      grossCents: 100_000_000,
+      releasesCents: [40_000_000, 60_000_000],
+      proFeeBps: 250,
+      referralCreditsCents: 125_025,
+    },
+    tranches: [
+      {
+        proFeeCents: 1_000_000,
+        netCents: 38_874_975,
+        remainingCents: 60_000_000,
+      },
+      { proFeeCents: 1_500_000, netCents: 58_500_000, remainingCents: 0 },
+    ],
+    totalReleasedCents: 100_000_000,
+    totalProFeeCents: 2_500_000,
+    totalReferralCreditsCents: 125_025,
+    totalNetCents: 97_374_975,
+    remainingCents: 0,
+  },
+  {
+    inputs: {
+      grossCents: 10,
+      releasesCents: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+      proFeeBps: 5000,
+    },
+    tranches: [
+      { proFeeCents: 1, netCents: 0, remainingCents: 9 },
+      { proFeeCents: 1, netCents: 0, remainingCents: 8 },
+      { proFeeCents: 1, netCents: 0, remainingCents: 7 },
+      { proFeeCents: 1, netCents: 0, remainingCents: 6 },
+      { proFeeCents: 1, netCents: 0, remainingCents: 5 },
+      { proFeeCents: 1, netCents: 0, remainingCents: 4 },
+      { proFeeCents: 1, netCents: 0, remainingCents: 3 },
+      { proFeeCents: 1, netCents: 0, remainingCents: 2 },
+      { proFeeCents: 1, netCents: 0, remainingCents: 1 },
+      { proFeeCents: 1, netCents: 0, remainingCents: 0 },
+    ],
+    totalReleasedCents: 10,
+    totalProFeeCents: 10,
+    totalReferralCreditsCents: 0,
+    totalNetCents: 0,
+    remainingCents: 0,
+  },
+];
+
+function checkSettlePartialReleasesCentsCase(
+  result: {
+    grossCents: number;
+    releases: Array<{
+      releasedCents: number;
+      proFeeCents: number;
+      referralCreditsCents: number;
+      netCents: number;
+      remainingCents: number;
+    }>;
+    totalReleasedCents: number;
+    totalProFeeCents: number;
+    totalReferralCreditsCents: number;
+    totalNetCents: number;
+    remainingCents: number;
+  },
+  expected: (typeof SETTLE_PARTIAL_RELEASES_CENTS_CASES)[number],
+): void {
+  if (
+    result.grossCents !== expected.inputs.grossCents ||
+    result.releases.length !== expected.inputs.releasesCents.length ||
+    result.totalReleasedCents !== expected.totalReleasedCents ||
+    result.totalProFeeCents !== expected.totalProFeeCents ||
+    result.totalReferralCreditsCents !==
+      expected.totalReferralCreditsCents ||
+    result.totalNetCents !== expected.totalNetCents ||
+    result.remainingCents !== expected.remainingCents ||
+    result.totalNetCents + result.totalProFeeCents +
+      result.totalReferralCreditsCents !==
+      result.totalReleasedCents ||
+    result.remainingCents !==
+      result.grossCents - result.totalReleasedCents
+  ) {
+    throw new Error(
+      "benchmark self-check failed: settlePartialReleasesCents",
+    );
+  }
+  for (let i = 0; i < expected.tranches.length; i++) {
+    const tranche = result.releases[i];
+    const want = expected.tranches[i];
+    const wantCredits =
+      i === 0 ? (expected.inputs.referralCreditsCents ?? 0) : 0;
+    if (
+      tranche.releasedCents !== expected.inputs.releasesCents[i] ||
+      tranche.proFeeCents !== want.proFeeCents ||
+      tranche.referralCreditsCents !== wantCredits ||
+      tranche.netCents !== want.netCents ||
+      tranche.remainingCents !== want.remainingCents ||
+      tranche.netCents + tranche.proFeeCents +
+        tranche.referralCreditsCents !==
+        tranche.releasedCents
+    ) {
+      throw new Error(
+        "benchmark self-check failed: settlePartialReleasesCents",
+      );
+    }
+  }
+}
+
+// Pre-check outside timing: every fixture batch settles to its
+// hand-written expectations before any number is reported, the
+// golden batch's tranches cross-check against the single
+// settlePartialReleaseCents helper and its totals against the
+// single-release split, the golden batch agrees with the dollar
+// settlePartialReleases on the same inputs at exactly x100 (±0¢),
+// the ten-tranche batch attains the floor(n / 2) divergence bound
+// exactly against the one-shot fee, and the over-pay batch is
+// refused with the exact cumulative error (never timed).
+for (const c of SETTLE_PARTIAL_RELEASES_CENTS_CASES) {
+  checkSettlePartialReleasesCentsCase(
+    settlePartialReleasesCents(c.inputs),
+    c,
+  );
+}
+{
+  const golden = SETTLE_PARTIAL_RELEASES_CENTS_CASES[0];
+  const batch = settlePartialReleasesCents(golden.inputs);
+  const first = settlePartialReleaseCents({
+    grossCents: golden.inputs.grossCents,
+    releasedCents: golden.inputs.releasesCents[0],
+    proFeeBps: golden.inputs.proFeeBps,
+  });
+  const second = settlePartialReleaseCents({
+    grossCents:
+      golden.inputs.grossCents - golden.inputs.releasesCents[0],
+    releasedCents: golden.inputs.releasesCents[1],
+    proFeeBps: golden.inputs.proFeeBps,
+  });
+  const single = settleReleaseCents({
+    grossCents: golden.inputs.grossCents,
+    proFeeBps: golden.inputs.proFeeBps,
+  });
+  const dollar = settlePartialReleases({
+    gross: golden.inputs.grossCents / 100,
+    releases: golden.inputs.releasesCents.map((r) => r / 100),
+    proFeeBps: golden.inputs.proFeeBps,
+  });
+  if (
+    first.proFeeCents !== batch.releases[0].proFeeCents ||
+    first.netCents !== batch.releases[0].netCents ||
+    second.proFeeCents !== batch.releases[1].proFeeCents ||
+    second.netCents !== batch.releases[1].netCents ||
+    batch.totalProFeeCents !== single.proFeeCents ||
+    batch.totalNetCents !== single.netCents ||
+    batch.totalProFeeCents !== dollar.totalProFee * 100 ||
+    batch.totalNetCents !== dollar.totalNet * 100 ||
+    batch.totalReleasedCents !== dollar.totalReleased * 100 ||
+    batch.remainingCents !== dollar.remaining * 100
+  ) {
+    throw new Error(
+      "benchmark self-check failed: settlePartialReleasesCents tranche cross-check",
+    );
+  }
+}
+{
+  const bound = SETTLE_PARTIAL_RELEASES_CENTS_CASES[3];
+  const batch = settlePartialReleasesCents(bound.inputs);
+  const oneShot = settleReleaseCents({
+    grossCents: bound.totalReleasedCents,
+    proFeeBps: bound.inputs.proFeeBps,
+  });
+  if (
+    Math.abs(batch.totalProFeeCents - oneShot.proFeeCents) !==
+    Math.floor(bound.inputs.releasesCents.length / 2)
+  ) {
+    throw new Error(
+      "benchmark self-check failed: settlePartialReleasesCents divergence bound",
+    );
+  }
+}
+try {
+  settlePartialReleasesCents({
+    grossCents: 100_000,
+    releasesCents: [60_000, 60_000],
+    proFeeBps: 500,
+  });
+  throw new Error(
+    "benchmark self-check failed: settlePartialReleasesCents guard",
+  );
+} catch (e) {
+  if (
+    !(e instanceof Error) ||
+    e.message !==
+      "cumulative released 120000 exceeds gross 100000 (release 2 of 2: 60000 would bring the total to 120000)"
+  ) {
+    throw e;
+  }
+}
+
+function benchSettlePartialReleasesCents(): number {
+  return measure(() => {
+    for (const c of SETTLE_PARTIAL_RELEASES_CENTS_CASES) {
+      checkSettlePartialReleasesCentsCase(
+        settlePartialReleasesCents(c.inputs),
+        c,
+      );
+    }
+    // Per-iteration self-check: the golden batch's tranches match the
+    // single settlePartialReleaseCents helper tranche for tranche,
+    // the batch totals match the single-release split, and the
+    // ten-tranche batch's fee sits exactly floor(10 / 2) = 5 cents
+    // above the one-shot fee on the same 10 cents — the divergence
+    // bound attained, so batching a release never silently changes
+    // its fee or net by more than the pinned bound.
+    const golden = SETTLE_PARTIAL_RELEASES_CENTS_CASES[0];
+    const batch = settlePartialReleasesCents(golden.inputs);
+    const first = settlePartialReleaseCents({
+      grossCents: golden.inputs.grossCents,
+      releasedCents: golden.inputs.releasesCents[0],
+      proFeeBps: golden.inputs.proFeeBps,
+    });
+    const second = settlePartialReleaseCents({
+      grossCents:
+        golden.inputs.grossCents - golden.inputs.releasesCents[0],
+      releasedCents: golden.inputs.releasesCents[1],
+      proFeeBps: golden.inputs.proFeeBps,
+    });
+    const single = settleReleaseCents({
+      grossCents: golden.inputs.grossCents,
+      proFeeBps: golden.inputs.proFeeBps,
+    });
+    if (
+      first.proFeeCents !== batch.releases[0].proFeeCents ||
+      first.netCents !== batch.releases[0].netCents ||
+      second.proFeeCents !== batch.releases[1].proFeeCents ||
+      second.netCents !== batch.releases[1].netCents ||
+      batch.totalProFeeCents !== single.proFeeCents ||
+      batch.totalNetCents !== single.netCents
+    ) {
+      throw new Error(
+        "benchmark self-check failed: settlePartialReleasesCents tranche cross-check",
+      );
+    }
+    const bound = SETTLE_PARTIAL_RELEASES_CENTS_CASES[3];
+    const boundBatch = settlePartialReleasesCents(bound.inputs);
+    const oneShot = settleReleaseCents({
+      grossCents: bound.totalReleasedCents,
+      proFeeBps: bound.inputs.proFeeBps,
+    });
+    if (
+      Math.abs(boundBatch.totalProFeeCents - oneShot.proFeeCents) !==
+      Math.floor(bound.inputs.releasesCents.length / 2)
+    ) {
+      throw new Error(
+        "benchmark self-check failed: settlePartialReleasesCents divergence bound",
+      );
+    }
+  }, ITERATIONS);
+}
+
+// ---------------------------------------------------------------------
 // reconcileSettlements fixture: 3 settled reports against a 3-row
 // external ledger, one representative per group (the #863 helper's
 // bench counterpart, mirroring the demo's reconciliation segment
@@ -17195,6 +17563,10 @@ const results: Array<{ path: string; ops: number }> = [
   {
     path: "settlePartialReleases (4 fixed batches)",
     ops: benchSettlePartialReleases(),
+  },
+  {
+    path: "settlePartialReleasesCents (4 fixed batches, integer cents)",
+    ops: benchSettlePartialReleasesCents(),
   },
   { path: "buildSettlementReport (4 entries)", ops: benchBuildSettlementReport() },
   { path: "buildSettlementReport releasePath (released report)", ops: benchBuildSettlementReportReleasePath() },

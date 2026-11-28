@@ -2433,6 +2433,21 @@ golden batch's tranches re-checked against the single
 single-release split, and the [600, 600]-against-1,000 over-pay
 pinned once outside the timed loop to throw the exact cumulative
 error),
+cumulative partial-release settlement in integer cents
+(`settlePartialReleasesCents` over 4 fixed representative batches
+in whole cents — the golden 1,063,000 settled in one batch
+[425,200, 637,800] at 500 bps, a mid-size 200,000 batch with
+2,500 referral credits, a large gross of 100,000,000 at 250 bps
+with 125,025 credits, and ten 1-cent tranches at 5,000 bps — each
+checked against hand-computed per-tranche proFee / net / remaining
+and batch totals on every iteration, with net conservation
+re-checked on every batch, the ten-tranche batch's fee pinned
+exactly 5 cents above the one-shot fee on the same 10 cents — the
+⌊n/2⌋ divergence bound attained, not just respected — the golden
+batch's totals re-checked against the dollar
+`settlePartialReleases` on the same inputs at exactly ×100 (±0¢),
+and the [60,000, 60,000]-against-100,000 over-pay pinned once
+outside the timed loop to throw the exact cumulative error),
 settlement reconciliation (`reconcileSettlements` over a fixed
 3-report / 3-row fixture — one matched, one report-only, one
 amount mismatch, plus one ledger-only row — with the four group
@@ -3480,6 +3495,7 @@ One real run on 2026-11-04:
 | settleRefund (4 fixed inputs) | ~1,065,105 ops/sec (0.94 µs/op) |
 | settlePartialRelease (4 fixed inputs, 2 tranches) | ~1,303,036 ops/sec (0.77 µs/op) |
 | settlePartialReleases (4 fixed batches) | ~453,228 ops/sec (2.21 µs/op) |
+| settlePartialReleasesCents (4 fixed batches, integer cents) | ~134,860 ops/sec (7.42 µs/op) |
 | buildSettlementReport (4 entries) | ~19,663 ops/sec (50.86 µs/op) |
 | buildSettlementReport releasePath (released report) | ~29,806 ops/sec (33.55 µs/op) |
 | buildSettlementReport audit window (eventCount/firstEventAt/lastEventAt) | ~24,927 ops/sec (40.12 µs/op) |
@@ -3612,7 +3628,7 @@ and the settlePartialRelease row above were measured on
 escrowsByEvent row above were measured on 2026-11-06 runs; the
 settlePartialReleases row above was measured on a 2026-11-08 run; the
 escrowsByFilters and settlementAging rows above were measured on a
-2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the signed-snapshot rows above were measured on a 2026-11-11 run; the diffSettlementReports row above was measured on a 2026-11-13 run; the renderSettlementReportsSummary and diffSettlementReportsSummaries rows above were measured on a 2026-11-13 run; the unreconciledSettlements row above was measured on a 2026-11-14 run; the stateAt row above was measured on a 2026-11-15 run; the stateAtFromHistory row above was measured on a 2026-11-15 run; the formatMinorUnits x parseMinorUnits round-trip row above was measured on a 2026-11-15 run; the quorum signed-snapshot round-trip row above was measured on a 2026-11-15 run; the calculateDepositCents row above was measured on a 2026-11-15 run; the escrowsBySettlementRef row above was measured on a 2026-11-15 run; the parseSettlementReportsSummaryCsv and parseSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the renderSettlementReportsSummaryCsv and renderSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the approvalStatement row above was measured on a 2026-11-15 run; the truncateOutboxError row above was measured on a 2026-11-15 run; the verifySettlementWebhook requireEventId row above was measured on a 2026-11-16 run; the diffQuorumSnapshots row above was measured on a 2026-11-16 run; the SettlementEventDedupe.has row above was measured on a 2026-11-16 run; the approveSigned row above was measured on a 2026-11-16 run; the dispatch maxVisitsByState row above was measured on a 2026-11-17 run; the retrySettlementWebhookOutbox row above was measured on a 2026-11-17 run; the SettlementWebhookOutbox.stats row above was measured on a 2026-11-18 run; the quorum remainingApprovals row above was measured on a 2026-11-18 run; the remainingVisits row above was measured on a 2026-11-18 run; the policy snapshot round-trip row above was measured on a 2026-11-18 run; the history getter row above was measured on a 2026-11-18 run; the releasedAmountFromHistory row above was measured on a 2026-11-21 run; the stuckEscrows row above was measured on a 2026-11-28 run (Node v24.22.1, AMD EPYC 9D25); the rest of the table is the 2026-11-04 run. Those runs' other rows
+2026-11-09 run; the outbox rows above were measured on a 2026-11-10 run; the signed-snapshot rows above were measured on a 2026-11-11 run; the diffSettlementReports row above was measured on a 2026-11-13 run; the renderSettlementReportsSummary and diffSettlementReportsSummaries rows above were measured on a 2026-11-13 run; the unreconciledSettlements row above was measured on a 2026-11-14 run; the stateAt row above was measured on a 2026-11-15 run; the stateAtFromHistory row above was measured on a 2026-11-15 run; the formatMinorUnits x parseMinorUnits round-trip row above was measured on a 2026-11-15 run; the quorum signed-snapshot round-trip row above was measured on a 2026-11-15 run; the calculateDepositCents row above was measured on a 2026-11-15 run; the escrowsBySettlementRef row above was measured on a 2026-11-15 run; the parseSettlementReportsSummaryCsv and parseSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the renderSettlementReportsSummaryCsv and renderSettlementReportsSummaryJson rows above were measured on a 2026-11-15 run; the approvalStatement row above was measured on a 2026-11-15 run; the truncateOutboxError row above was measured on a 2026-11-15 run; the verifySettlementWebhook requireEventId row above was measured on a 2026-11-16 run; the diffQuorumSnapshots row above was measured on a 2026-11-16 run; the SettlementEventDedupe.has row above was measured on a 2026-11-16 run; the approveSigned row above was measured on a 2026-11-16 run; the dispatch maxVisitsByState row above was measured on a 2026-11-17 run; the retrySettlementWebhookOutbox row above was measured on a 2026-11-17 run; the SettlementWebhookOutbox.stats row above was measured on a 2026-11-18 run; the quorum remainingApprovals row above was measured on a 2026-11-18 run; the remainingVisits row above was measured on a 2026-11-18 run; the policy snapshot round-trip row above was measured on a 2026-11-18 run; the history getter row above was measured on a 2026-11-18 run; the releasedAmountFromHistory row above was measured on a 2026-11-21 run; the stuckEscrows row above was measured on a 2026-11-28 run (Node v24.22.1, AMD EPYC 9D25); the settlePartialReleasesCents row above was measured on a 2026-11-28 run (Node v24.22.1, AMD EPYC 9D25); the rest of the table is the 2026-11-04 run. Those runs' other rows
 came in mixed under shared-host load, so refreshing the whole
 table would misreport changes in paths these additions never
 touched.
