@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 3089 tests, all local
+npm test   # 3096 tests, all local
 ```
 
 ## Quickstart
@@ -1016,10 +1016,12 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   proves who approved even after the `Quorum` object is dropped.
   A `split` outcome divides the still-locked balance between creator and
   sponsor (`splitCents`, whole cents, summing exactly to the locked
-  balance — fee on the creator leg per `settleArbitrationSplitCents`) and
+  balance — fee on the creator leg per `settleArbitrationSplit`
+  (float dollars) or its exact-cents twin
+  `settleArbitrationSplitCents`) and
   lands in `RELEASED`; `buildSettlementReport` has no split branch yet and
   refuses a split history fail-closed, so report a split with
-  `settleArbitrationSplitCents` directly.
+  `settleArbitrationSplit` / `settleArbitrationSplitCents` directly.
   `approve()` also accepts an optional `evidence` reference — a
   vote-record link, governance proposal id, or attestation reference —
   carried on the log entry and the snapshot. Evidence is a caller
@@ -2368,7 +2370,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 3089 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 3096 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

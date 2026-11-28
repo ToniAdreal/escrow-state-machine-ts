@@ -8,7 +8,9 @@ import {
   dispatchArbitration,
   historyFromNdjson,
   historyToNdjson,
+  settleArbitrationSplit,
   settleArbitrationSplitCents,
+  settlePartialRelease,
   settlePartialReleasesCents,
   verifyHistoryChain,
 } from "../src/index.js";
@@ -754,6 +756,179 @@ describe("settleArbitrationSplitCents (backlog #1449)", () => {
       referralCreditsCents: 0,
       creatorNetCents: 0,
       totalOutflowCents: 1063000,
+      balanced: true,
+    });
+  });
+});
+
+describe("settleArbitrationSplit (backlog #1458)", () => {
+  it("settles the golden 70/30 split at 500 bps, agreeing with the cents twin ×100", () => {
+    const split = settleArbitrationSplit({
+      gross: 10630,
+      creator: 7441,
+      proFeeBps: 500,
+    });
+
+    assert.deepEqual(split, {
+      gross: 10630,
+      creator: 7441,
+      sponsor: 3189,
+      proFee: 372.05,
+      referralCredits: 0,
+      creatorNet: 7068.95,
+      totalOutflow: 10630,
+      balanced: true,
+    });
+
+    const cents = settleArbitrationSplitCents({
+      grossCents: 1063000,
+      creatorCents: 744100,
+      proFeeBps: 500,
+    });
+    assert.equal(Math.round(split.proFee * 100), cents.proFeeCents);
+    assert.equal(Math.round(split.creatorNet * 100), cents.creatorNetCents);
+    assert.equal(Math.round(split.sponsor * 100), cents.sponsorCents);
+    assert.equal(Math.round(split.totalOutflow * 100), cents.totalOutflowCents);
+  });
+
+  it("agrees with settlePartialRelease on the creator leg", () => {
+    const split = settleArbitrationSplit({
+      gross: 10630,
+      creator: 7441,
+      proFeeBps: 500,
+      referralCredits: 100,
+    });
+    const leg = settlePartialRelease({
+      gross: 10630,
+      released: 7441,
+      proFeeBps: 500,
+      referralCredits: 100,
+    });
+
+    assert.equal(split.proFee, leg.proFee);
+    assert.equal(split.creatorNet, leg.net);
+    assert.equal(split.sponsor, leg.remaining);
+    assert.equal(split.totalOutflow, 10630);
+    assert.equal(split.balanced, true);
+  });
+
+  it("rounds the fee like the dollar partial release, not the exact cents twin", () => {
+    // Gross 1.15 at 5000 bps: the float helper fees 0.57 (dust flips
+    // the half-cent); the exact fee is 58 cents. The dollar twin
+    // inherits the dollar helper's rounding by delegation — the
+    // divergence is the documented settleRelease caveat, not drift.
+    const split = settleArbitrationSplit({
+      gross: 1.15,
+      creator: 1.15,
+      proFeeBps: 5000,
+    });
+    const leg = settlePartialRelease({
+      gross: 1.15,
+      released: 1.15,
+      proFeeBps: 5000,
+    });
+    const cents = settleArbitrationSplitCents({
+      grossCents: 115,
+      creatorCents: 115,
+      proFeeBps: 5000,
+    });
+
+    assert.equal(split.proFee, 0.57);
+    assert.equal(split.proFee, leg.proFee);
+    assert.equal(split.creatorNet, 0.58);
+    assert.equal(cents.proFeeCents, 58);
+    assert.equal(split.balanced, true);
+  });
+
+  it("referral credits reduce the creator net, never the sponsor share", () => {
+    const split = settleArbitrationSplit({
+      gross: 10630,
+      creator: 7441,
+      proFeeBps: 500,
+      referralCredits: 100,
+    });
+    assert.equal(split.creatorNet, 6968.95);
+    assert.equal(split.sponsor, 3189);
+    assert.equal(split.totalOutflow, 10630);
+    assert.equal(split.balanced, true);
+  });
+
+  it("a creator share above the gross throws", () => {
+    assert.throws(
+      () =>
+        settleArbitrationSplit({
+          gross: 10630,
+          creator: 10630.01,
+          proFeeBps: 500,
+        }),
+      /creator must not exceed gross/,
+    );
+  });
+
+  it("invalid inputs fail fast", () => {
+    assert.throws(
+      () =>
+        settleArbitrationSplit({
+          gross: 10630,
+          creator: -1,
+          proFeeBps: 500,
+        }),
+      /creator must be a finite non-negative number/,
+    );
+    assert.throws(
+      () =>
+        settleArbitrationSplit({
+          gross: -1,
+          creator: 7441,
+          proFeeBps: 500,
+        }),
+      /gross must be a finite non-negative number/,
+    );
+    assert.throws(
+      () =>
+        settleArbitrationSplit({
+          gross: 10630,
+          creator: 7441,
+          proFeeBps: 10001,
+        }),
+      /proFeeBps must be an integer in \[0, 10000\]/,
+    );
+    assert.throws(
+      () =>
+        settleArbitrationSplit({
+          gross: 10630,
+          creator: 7441,
+          proFeeBps: 500,
+          referralCredits: 7441.01,
+        }),
+      /net payout would be negative/,
+    );
+    assert.throws(
+      () =>
+        settleArbitrationSplit({
+          gross: 10630,
+          creator: 7441,
+          proFeeBps: 500,
+          platform: 1,
+        } as never),
+      /settleArbitrationSplit: unknown field "platform"/,
+    );
+  });
+
+  it("a zero creator share settles cleanly", () => {
+    const split = settleArbitrationSplit({
+      gross: 10630,
+      creator: 0,
+      proFeeBps: 500,
+    });
+    assert.deepEqual(split, {
+      gross: 10630,
+      creator: 0,
+      sponsor: 10630,
+      proFee: 0,
+      referralCredits: 0,
+      creatorNet: 0,
+      totalOutflow: 10630,
       balanced: true,
     });
   });

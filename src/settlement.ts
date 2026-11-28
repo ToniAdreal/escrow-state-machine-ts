@@ -85,6 +85,12 @@ const ARBITRATION_SPLIT_SETTLEMENT_CENTS_FIELDS = new Set([
   "proFeeBps",
   "referralCreditsCents",
 ]);
+const ARBITRATION_SPLIT_SETTLEMENT_FIELDS = new Set([
+  "gross",
+  "creator",
+  "proFeeBps",
+  "referralCredits",
+]);
 
 export interface SettlementInputs {
   gross: number;
@@ -319,6 +325,96 @@ export function settleRefund(inputs: RefundSettlementInputs): RefundSettlement {
     referrer,
     totalOutflow,
     balanced: totalOutflow === deposit,
+  };
+}
+
+export interface ArbitrationSplitSettlementInputs {
+  /** Still-locked balance to divide, in float dollars. */
+  gross: number;
+  /** Creator's share of the locked balance, in float dollars. */
+  creator: number;
+  /** Platform fee in basis points, e.g. 500 = 5%; charged on the creator share only. */
+  proFeeBps: number;
+  referralCredits?: number | undefined;
+}
+
+export interface ArbitrationSplitSettlement {
+  gross: number;
+  /** Creator's gross share, in float dollars. */
+  creator: number;
+  /** Sponsor's share (refund, no fee), in float dollars: `gross - creator`. */
+  sponsor: number;
+  /** Platform fee on the creator share only, in float dollars. */
+  proFee: number;
+  referralCredits: number;
+  /** Creator's net payout: `creator - proFee - referralCredits`. */
+  creatorNet: number;
+  /** Sum of the party amounts; equals `gross` when balanced. */
+  totalOutflow: number;
+  /** True when `totalOutflow` equals `gross` exactly. */
+  balanced: boolean;
+}
+
+/**
+ * Dollar settlement for an arbitrated split (backlog #1458): divide the
+ * still-locked balance between creator and sponsor.
+ *
+ * The dollar twin of {@link settleArbitrationSplitCents}, in the same
+ * shape as the other dollar helpers: the creator leg settles exactly
+ * like a single partial release of the same amount — `settlePartialRelease`
+ * with `released: creator` — so the platform fee is charged on the
+ * creator share only, with the same `round2` fee rounding and the same
+ * negative-net guard; the sponsor leg is a full refund of the remainder
+ * (`settleRefund` semantics), so the sponsor share is the release's
+ * `remaining` and the two shares sum to the gross by construction. A
+ * creator share above the gross throws (`creator must not exceed gross`);
+ * referral credits above the creator net throw `net payout would be
+ * negative`. The fee is computed on binary floats (`round2(creator *
+ * proFeeBps / 10000)`), so on cent-exact inputs the dust can flip a
+ * half-cent (gross 1.15 at 5000 bps fees 0.57 here, 58 cents exactly
+ * in the cents version) — callers that already keep money as integer
+ * cents should use {@link settleArbitrationSplitCents}. Pure arithmetic
+ * only: state advancement still goes through `dispatch`
+ * (`ARBITRATE_SPLIT`).
+ */
+export function settleArbitrationSplit(
+  inputs: ArbitrationSplitSettlementInputs,
+): ArbitrationSplitSettlement {
+  assertSettlementInputs("settleArbitrationSplit", inputs);
+  assertKnownSettlementFields(
+    "settleArbitrationSplit",
+    inputs,
+    ARBITRATION_SPLIT_SETTLEMENT_FIELDS,
+  );
+  const { gross, creator, proFeeBps, referralCredits = 0 } = inputs;
+  if (!Number.isFinite(gross) || gross < 0)
+    throw new Error("gross must be a finite non-negative number");
+  if (!Number.isFinite(creator) || creator < 0)
+    throw new Error("creator must be a finite non-negative number");
+  if (creator > gross)
+    throw new Error("creator must not exceed gross");
+  const leg = settlePartialRelease({
+    gross,
+    released: creator,
+    proFeeBps,
+    referralCredits,
+  });
+  const sponsor = leg.remaining;
+  // The legs are already cent-rounded, but their float sum can carry
+  // dust (0.1 + 0.2); round2 recovers the exact cent sum, matching the
+  // accumulation convention in settlePartialReleases.
+  const totalOutflow = round2(
+    leg.net + leg.proFee + leg.referralCredits + sponsor,
+  );
+  return {
+    gross,
+    creator,
+    sponsor,
+    proFee: leg.proFee,
+    referralCredits: leg.referralCredits,
+    creatorNet: leg.net,
+    totalOutflow,
+    balanced: totalOutflow === gross,
   };
 }
 
