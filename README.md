@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 3041 tests, all local
+npm test   # 3050 tests, all local
 ```
 
 ## Quickstart
@@ -2233,7 +2233,15 @@ gross before each tranche settles, so two individually-legal releases
 can no longer over-pay in total (600 then 600 against a gross of 1000
 fails with the cumulative figures in the error); each tranche still
 settles through `settlePartialRelease`, so fee and net semantics cannot
-drift from the single path. Referral credits for the batch land on the
+drift from the single path. One rounding caveat, pinned by test: each
+tranche's fee is half-up rounded separately, so the batched total fee
+can differ from the one-shot fee on the same total released amount by
+up to ⌊n/2⌋ cents for n tranches (each rounding moves the fee by at
+most half a cent, and the bound is tight — two 10-cent tranches at 250
+bps charge 0 cents against a 1-cent one-shot fee, ten 1-cent tranches
+at 5000 bps charge 10 cents against a 5-cent one-shot fee). The golden
+split happens to be exact, and net conservation still holds exactly
+(nets + remaining = gross − fees − credits). Referral credits for the batch land on the
 first tranche only, so the total is never double-counted, and credits
 with no releases throw instead of being silently dropped. A terminal
 report accounts for recorded tranches the same way: a RELEASED report
@@ -2345,7 +2353,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 3041 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 3050 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.
