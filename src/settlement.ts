@@ -79,6 +79,12 @@ const PARTIAL_RELEASES_CENTS_FIELDS = new Set([
 ]);
 const REFUND_FIELDS = new Set(["deposit"]);
 const REFUND_CENTS_FIELDS = new Set(["depositCents"]);
+const ARBITRATION_SPLIT_SETTLEMENT_CENTS_FIELDS = new Set([
+  "grossCents",
+  "creatorCents",
+  "proFeeBps",
+  "referralCreditsCents",
+]);
 
 export interface SettlementInputs {
   gross: number;
@@ -611,6 +617,89 @@ export function settlePartialReleasesCents(
       releasesCents.length === 0 ? 0 : referralCreditsCents,
     totalNetCents,
     remainingCents: grossCents - cumulative,
+  };
+}
+
+export interface ArbitrationSplitSettlementInputsCents {
+  /** Still-locked balance to divide, in integer cents. */
+  grossCents: number;
+  /** Creator's share of the locked balance, in integer cents. */
+  creatorCents: number;
+  /** Platform fee in basis points, e.g. 500 = 5%; charged on the creator share only. */
+  proFeeBps: number;
+  referralCreditsCents?: number | undefined;
+}
+
+export interface ArbitrationSplitSettlementCents {
+  grossCents: number;
+  /** Creator's gross share, in integer cents. */
+  creatorCents: number;
+  /** Sponsor's share (refund, no fee), in integer cents: `grossCents - creatorCents`. */
+  sponsorCents: number;
+  /** Platform fee on the creator share only, in integer cents. */
+  proFeeCents: number;
+  referralCreditsCents: number;
+  /** Creator's net payout: `creatorCents - proFeeCents - referralCreditsCents`. */
+  creatorNetCents: number;
+  /** Sum of the party amounts; equals `grossCents` when balanced. */
+  totalOutflowCents: number;
+  /** True when `totalOutflowCents` equals `grossCents` exactly. */
+  balanced: boolean;
+}
+
+/**
+ * Integer-cents settlement for an arbitrated split (backlog #1449):
+ * divide the still-locked balance between creator and sponsor.
+ *
+ * The creator leg settles exactly like a single partial release of
+ * the same amount — `settlePartialReleaseCents` with
+ * `releasedCents: creatorCents` — so the platform fee is charged on
+ * the creator share only, with the same half-up BigInt rounding and
+ * the same negative-net guard; the sponsor leg is a full refund of
+ * the remainder (`settleRefundCents` semantics), so the sponsor
+ * share is the release's `remainingCents` and the two shares sum to
+ * the gross by construction. A creator share above the gross throws
+ * through the release helper (`releasedCents must not exceed
+ * grossCents`); referral credits above the creator net throw
+ * `net payout would be negative`. Pure arithmetic only: state
+ * advancement still goes through `dispatch` (`ARBITRATE_SPLIT`).
+ */
+export function settleArbitrationSplitCents(
+  inputs: ArbitrationSplitSettlementInputsCents,
+): ArbitrationSplitSettlementCents {
+  assertSettlementInputs("settleArbitrationSplitCents", inputs);
+  assertKnownSettlementFields(
+    "settleArbitrationSplitCents",
+    inputs,
+    ARBITRATION_SPLIT_SETTLEMENT_CENTS_FIELDS,
+  );
+  const { grossCents, creatorCents, proFeeBps, referralCreditsCents = 0 } =
+    inputs;
+  assertMoneyCents("grossCents", grossCents);
+  assertMoneyCents("creatorCents", creatorCents);
+  assertProFeeBps(proFeeBps);
+  assertMoneyCents("referralCreditsCents", referralCreditsCents);
+  const leg = settlePartialReleaseCents({
+    grossCents,
+    releasedCents: creatorCents,
+    proFeeBps,
+    referralCreditsCents,
+  });
+  const sponsorCents = leg.remainingCents;
+  const totalOutflowCents =
+    leg.netCents +
+    leg.proFeeCents +
+    leg.referralCreditsCents +
+    sponsorCents;
+  return {
+    grossCents,
+    creatorCents,
+    sponsorCents,
+    proFeeCents: leg.proFeeCents,
+    referralCreditsCents: leg.referralCreditsCents,
+    creatorNetCents: leg.netCents,
+    totalOutflowCents,
+    balanced: totalOutflowCents === grossCents,
   };
 }
 

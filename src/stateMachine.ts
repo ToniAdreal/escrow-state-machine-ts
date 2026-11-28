@@ -30,6 +30,7 @@ export type EscrowEvent =
   | "DISPUTE"
   | "ARBITRATE_RELEASE"
   | "ARBITRATE_REFUND"
+  | "ARBITRATE_SPLIT"
   | "EXPIRE";
 
 const TRANSITIONS: Record<
@@ -84,6 +85,17 @@ const TRANSITIONS: Record<
   DISPUTED: {
     ARBITRATE_RELEASE: "RELEASED",
     ARBITRATE_REFUND: "REFUNDED",
+    // Backlog #1449: a split arbitration divides the still-locked
+    // balance between creator and sponsor (see `ArbitrationSplitCents`)
+    // and settles the escrow — it lands in RELEASED, the terminal
+    // state for "funds paid out", because the creator leg IS a release
+    // and the sponsor leg is a refund of the remainder. The split
+    // amounts live on the audit entry, so a RELEASED escrow whose
+    // terminal event is ARBITRATE_SPLIT is distinguishable from a
+    // full release; `buildSettlementReport` has no split branch yet
+    // and refuses such a history fail-closed (see its RELEASED
+    // branch) instead of restating the split as a full release.
+    ARBITRATE_SPLIT: "RELEASED",
   },
   RELEASED: {},
   REFUNDED: {},
@@ -214,6 +226,33 @@ export function stateDiagram(): string {
   return lines.join("\n");
 }
 
+/**
+ * Arbitrated division of the still-locked balance (backlog #1449):
+ * how an `ARBITRATE_SPLIT` dispatch divides the escrow between the
+ * creator and the sponsor, in whole integer cents.
+ *
+ * - `creatorCents`: the creator's share, settled per
+ *   `settlePartialReleaseCents` (platform fee charged on this leg
+ *   only — see `settleArbitrationSplitCents`).
+ * - `sponsorCents`: the sponsor's share, refunded in full (no fee).
+ *
+ * The two shares must sum exactly to the still-locked balance at
+ * dispatch time (FUND total minus prior PARTIAL_RELEASE total, in
+ * cents): a split divides the whole balance, so after a split
+ * nothing stays locked and the escrow is terminal. Either share may
+ * be zero (100/0 is a release, 0/100 a refund, both still recorded
+ * as a split so the arbitration's intent stays in the audit trail),
+ * but a negative or non-integer share is rejected, as is a sum that
+ * does not match the locked balance — including overflow: the sum
+ * is compared in `BigInt`, so two safe-integer shares whose sum
+ * exceeds `Number.MAX_SAFE_INTEGER` are rejected as a mismatch
+ * instead of silently rounding to a wrong total.
+ */
+export interface ArbitrationSplitCents {
+  creatorCents: number;
+  sponsorCents: number;
+}
+
 export interface EscrowHistoryEntry {
   seq: number;
   event: EscrowEvent;
@@ -262,15 +301,17 @@ export interface EscrowHistoryEntry {
    */
   evidence?: string;
   /**
-   * Reference to the external settlement behind a RELEASE — e.g. a
-   * chain transaction hash, a bank transfer reference, or a payout
-   * batch id. Only present on RELEASE entries (dispatch validates it
-   * as a non-empty string no longer than
-   * {@link MAX_SETTLEMENT_REF_LENGTH} characters, and rejects it on
-   * any other event). The library does NOT verify that the referenced
-   * settlement is real — it records the caller's claim so finance ops
-   * can reconcile the release against the ledger, mirroring the
-   * dataquest lifecycle's `payoutRef` on PAYOUT_COMPLETE entries.
+   * Reference to the external settlement behind a RELEASE or
+   * ARBITRATE_SPLIT — e.g. a chain transaction hash, a bank transfer
+   * reference, or a payout batch id. Only present on RELEASE and
+   * ARBITRATE_SPLIT entries (dispatch validates it as a non-empty
+   * string no longer than {@link MAX_SETTLEMENT_REF_LENGTH}
+   * characters, and rejects it on any other event). On a split it
+   * names the one batch carrying both legs. The library does NOT
+   * verify that the referenced settlement is real — it records the
+   * caller's claim so finance ops can reconcile the release against
+   * the ledger, mirroring the dataquest lifecycle's `payoutRef` on
+   * PAYOUT_COMPLETE entries.
    * No uniqueness is enforced: `id` is already the escrow's unique
    * key, so one ref may legitimately settle several escrows (one
    * payout batch, one bank transfer). Recorded verbatim and covered
@@ -298,6 +339,15 @@ export interface EscrowHistoryEntry {
    * {@link verifyHistoryChain}.
    */
   refundRef?: string;
+  /**
+   * Arbitrated split of the still-locked balance — see
+   * {@link ArbitrationSplitCents}. Only present on ARBITRATE_SPLIT
+   * entries (dispatch requires it there and rejects it on any other
+   * event). Recorded verbatim and covered by the hash chain, so a
+   * persisted entry whose split is rewritten breaks
+   * {@link verifyHistoryChain}.
+   */
+  splitCents?: ArbitrationSplitCents;
   /**
    * Hash-chain fields (tamper evidence for persisted audit logs).
    *
@@ -809,6 +859,7 @@ const DISPATCH_OPTION_FIELDS = new Set([
   "evidence",
   "settlementRef",
   "refundRef",
+  "split",
   "at",
   "expectedSeq",
 ]);
@@ -865,6 +916,58 @@ function assertIdempotencyKeys(value: unknown, tag: string): Set<string> {
 function parseSnapshotIdempotencyKeys(value: unknown): Set<string> {
   return assertIdempotencyKeys(value, "invalid snapshot");
 }
+
+/**
+ * Validate an arbitrated split into a normalized `{ creatorCents,
+ * sponsorCents }` pair (backlog #1449).
+ *
+ * The value must be a plain object with exactly those two fields,
+ * each a non-negative safe integer number of cents — a negative,
+ * fractional, or non-numeric share is a caller error, never a
+ * rounding, and an unknown extra field fails closed (a typo'd
+ * `creatorCent` must not silently become a zero share). The SUM
+ * against the locked balance is NOT checked here: it needs the
+ * live escrow's history, so `dispatch()` checks it at the
+ * amount-check step while this shape bar runs at the option-shape
+ * step (and the parsers run it at entry validation). Callers pass
+ * the tag for their boundary (`invalid dispatch options` at
+ * dispatch, `invalid history:` / `invalid snapshot:` on parse).
+ * Returns a detached copy, so a caller that mutates its object
+ * after dispatch cannot rewrite the recorded split.
+ */
+function assertSplitCents(
+  value: unknown,
+  tag: string
+): ArbitrationSplitCents {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(
+      `${tag}: split must be an object { creatorCents, sponsorCents }, got ${Array.isArray(value) ? "array" : typeof value}`
+    );
+  }
+  for (const key of Object.keys(value)) {
+    if (key !== "creatorCents" && key !== "sponsorCents") {
+      throw new Error(`${tag}: split has unknown field "${key}"`);
+    }
+  }
+  const { creatorCents, sponsorCents } = value as {
+    creatorCents?: unknown;
+    sponsorCents?: unknown;
+  };
+  if (!Number.isSafeInteger(creatorCents) || (creatorCents as number) < 0) {
+    throw new Error(
+      `${tag}: split creatorCents must be a non-negative safe integer number of cents, got ${JSON.stringify(creatorCents)}`
+    );
+  }
+  if (!Number.isSafeInteger(sponsorCents) || (sponsorCents as number) < 0) {
+    throw new Error(
+      `${tag}: split sponsorCents must be a non-negative safe integer number of cents, got ${JSON.stringify(sponsorCents)}`
+    );
+  }
+  return {
+    creatorCents: creatorCents as number,
+    sponsorCents: sponsorCents as number,
+  };
+}
 const HISTORY_ENTRY_FIELDS = new Set([
   "seq",
   "event",
@@ -877,6 +980,7 @@ const HISTORY_ENTRY_FIELDS = new Set([
   "evidence",
   "settlementRef",
   "refundRef",
+  "splitCents",
   "prevHash",
   "hash",
 ]);
@@ -1124,13 +1228,18 @@ function resolveWatchdogAt(at: Date | string | undefined): string | undefined {
  *    untrusted log is malformed — the same bar dispatch() applies)
  *  - `settlementRef`, when present, must be a non-empty string no
  *    longer than {@link MAX_SETTLEMENT_REF_LENGTH} characters and
- *    may only appear on RELEASE entries (oversized refs in an
- *    untrusted log are malformed — the same bar dispatch() applies)
+ *    may only appear on RELEASE and ARBITRATE_SPLIT entries
+ *    (oversized refs in an untrusted log are malformed — the same
+ *    bar dispatch() applies)
  *  - `refundRef`, when present, must be a non-empty string no
  *    longer than {@link MAX_SETTLEMENT_REF_LENGTH} characters and
  *    may only appear on ARBITRATE_REFUND entries (oversized refs in
  *    an untrusted log are malformed — the same bar dispatch()
  *    applies)
+ *  - `splitCents`, when present, must be an object
+ *    `{ creatorCents, sponsorCents }` of non-negative safe-integer
+ *    cents and may only appear on ARBITRATE_SPLIT entries (the same
+ *    bar dispatch() applies)
  *  - `prevHash`/`hash`, when present, must both be non-empty strings and
  *    appear on every entry (mixed chained/hashless histories are
  *    rejected); when every entry carries them, the hash chain is
@@ -1200,7 +1309,7 @@ function resolveWatchdogAt(at: Date | string | undefined): string | undefined {
  *    `requireSettlementRef`/`requireRefundRef`
  *    (`unknown field "<name>"`), and a history entry allows only
  *    `seq`/`event`/`from`/`to`/`at`/`actor`/`note`/`amount`/`evidence`/
- *    `settlementRef`/`refundRef`/`prevHash`/`hash` (`history[i]: unknown field "<name>"). A typo
+ *    `settlementRef`/`refundRef`/`splitCents`/`prevHash`/`hash` (`history[i]: unknown field "<name>"). A typo
  *    like `deadlline` or `amout` therefore fails loudly instead of
  *    quietly losing a deadline or a FUND amount.
  *
@@ -1358,9 +1467,9 @@ function assertEscrowSnapshotShape(snapshot: unknown, tag: string): void {
       }
     }
     if (raw.settlementRef !== undefined) {
-      if (event !== "RELEASE") {
+      if (event !== "RELEASE" && event !== "ARBITRATE_SPLIT") {
         throw new Error(
-          `${entryTag}: settlementRef only allowed on RELEASE entries`,
+          `${entryTag}: settlementRef only allowed on RELEASE and ARBITRATE_SPLIT entries`,
         );
       }
       if (
@@ -1396,6 +1505,14 @@ function assertEscrowSnapshotShape(snapshot: unknown, tag: string): void {
           `${entryTag}: refundRef must be at most ${MAX_SETTLEMENT_REF_LENGTH} characters, got ${raw.refundRef.length}`,
         );
       }
+    }
+    if (raw.splitCents !== undefined) {
+      if (event !== "ARBITRATE_SPLIT") {
+        throw new Error(
+          `${entryTag}: splitCents only allowed on ARBITRATE_SPLIT entries`,
+        );
+      }
+      assertSplitCents(raw.splitCents, entryTag);
     }
     // Hash-chain fields are all-or-nothing per entry, exactly as
     // parseEscrowSnapshot requires — but the chain CONTENT is not
@@ -1614,9 +1731,9 @@ function parseEscrowSnapshot(
       entry.evidence = raw.evidence;
     }
     if (raw.settlementRef !== undefined) {
-      if (event !== "RELEASE") {
+      if (event !== "RELEASE" && event !== "ARBITRATE_SPLIT") {
         throw new Error(
-          `${tag}: settlementRef only allowed on RELEASE entries`
+          `${tag}: settlementRef only allowed on RELEASE and ARBITRATE_SPLIT entries`
         );
       }
       if (
@@ -1660,6 +1777,17 @@ function parseEscrowSnapshot(
         );
       }
       entry.refundRef = raw.refundRef;
+    }
+    if (raw.splitCents !== undefined) {
+      if (event !== "ARBITRATE_SPLIT") {
+        throw new Error(
+          `${tag}: splitCents only allowed on ARBITRATE_SPLIT entries`
+        );
+      }
+      // Detached copy, same as the shape bar in dispatch(): a caller
+      // that mutates its object after restore cannot rewrite the
+      // recorded split.
+      entry.splitCents = assertSplitCents(raw.splitCents, tag);
     }
     // Hash-chain fields are all-or-nothing: one without the other, or a
     // history that mixes chained and hashless entries, is rejected here.
@@ -2277,6 +2405,7 @@ function canonicalHistoryEntry(
   if (entry.settlementRef !== undefined)
     obj.settlementRef = entry.settlementRef;
   if (entry.refundRef !== undefined) obj.refundRef = entry.refundRef;
+  if (entry.splitCents !== undefined) obj.splitCents = entry.splitCents;
   if (entry.prevHash !== undefined) obj.prevHash = entry.prevHash;
   return JSON.stringify(obj);
 }
@@ -2610,25 +2739,29 @@ export interface DispatchOptions {
    */
   evidence?: string;
   /**
-   * Settlement reference for a RELEASE dispatch — e.g. a chain
-   * transaction hash, a bank transfer reference, or a payout batch
-   * id — so finance ops can reconcile the release against the
-   * ledger without a second lookup.
+   * Settlement reference for a RELEASE or ARBITRATE_SPLIT dispatch —
+   * e.g. a chain transaction hash, a bank transfer reference, or a
+   * payout batch id — so finance ops can reconcile the settlement
+   * against the ledger without a second lookup. On a split it names
+   * the one settlement batch that carries both legs (the creator
+   * payout and the sponsor refund travel together); the per-leg
+   * amounts are on the entry's `splitCents`, not in the ref.
    *
-   * Accepted ONLY on RELEASE (any other event throws). When present
-   * it must be a non-empty string no longer than
-   * {@link MAX_SETTLEMENT_REF_LENGTH} characters (longer references
-   * are rejected, never truncated — truncation would change which
-   * transfer the reference names) and is recorded verbatim on the
-   * audit history entry. The library does NOT verify the settlement
-   * — it records the caller's claim so downstream tooling can audit
-   * it. No uniqueness is enforced: one ref may settle several
-   * escrows (one payout batch, one bank transfer), mirroring the
-   * dataquest lifecycle's `payoutRef` semantics. A RELEASE without
-   * a ref stays legal by default — the ref is advisory, not a gate,
-   * unless the escrow was constructed with
+   * Accepted ONLY on RELEASE and ARBITRATE_SPLIT (any other event
+   * throws). When present it must be a non-empty string no longer
+   * than {@link MAX_SETTLEMENT_REF_LENGTH} characters (longer
+   * references are rejected, never truncated — truncation would
+   * change which transfer the reference names) and is recorded
+   * verbatim on the audit history entry. The library does NOT verify
+   * the settlement — it records the caller's claim so downstream
+   * tooling can audit it. No uniqueness is enforced: one ref may
+   * settle several escrows (one payout batch, one bank transfer),
+   * mirroring the dataquest lifecycle's `payoutRef` semantics. A
+   * RELEASE without a ref stays legal by default — the ref is
+   * advisory, not a gate, unless the escrow was constructed with
    * `requireSettlementRef: true` (see
-   * {@link EscrowOptions.requireSettlementRef}).
+   * {@link EscrowOptions.requireSettlementRef}); the same gate, when
+   * enabled, also requires a ref on ARBITRATE_SPLIT.
    */
   settlementRef?: string;
   /**
@@ -2649,6 +2782,25 @@ export interface DispatchOptions {
    * {@link EscrowOptions.requireRefundRef}).
    */
   refundRef?: string;
+  /**
+   * Arbitrated split for an ARBITRATE_SPLIT dispatch — see
+   * {@link ArbitrationSplitCents}: the creator's and sponsor's
+   * shares of the still-locked balance, in whole integer cents.
+   *
+   * Accepted ONLY on ARBITRATE_SPLIT (any other event throws) and
+   * REQUIRED there: the split amounts are the event, the same way
+   * the amount is the event on PARTIAL_RELEASE. The two shares
+   * must sum exactly to the still-locked balance (FUND total minus
+   * prior PARTIAL_RELEASE total, in cents) — a split divides the
+   * whole balance, so after a split nothing stays locked. The sum
+   * is compared in `BigInt`, so shares whose sum overflows
+   * `Number.MAX_SAFE_INTEGER` are rejected as a mismatch instead
+   * of silently rounding. Recorded verbatim on the audit history
+   * entry (`EscrowHistoryEntry.splitCents`) and covered by its hash
+   * chain. A split's settlement reference travels separately, as
+   * `settlementRef` (see above).
+   */
+  split?: ArbitrationSplitCents;
   /**
    * Audit timestamp for this dispatch — injectable so dispatch-level
    * tests and replay scenarios can pin the clock (quorum approvals have
@@ -2919,22 +3071,24 @@ export interface EscrowOptions {
 
   /**
    * Optional up-front enforcement of settlement-reference recording:
-   * when `true`, `dispatch("RELEASE")` without a `settlementRef`
+   * when `true`, `dispatch("RELEASE")` or
+   * `dispatch("ARBITRATE_SPLIT")` without a `settlementRef`
    * throws `settlement reference required: …` and appends nothing.
    * This is the opt-in up-front counterpart to the advisory default,
-   * under which a RELEASE without a reference is legal and the entry
-   * simply omits it — for settlement flows where an external transfer
-   * reference (chain tx hash, bank transfer ref, payout batch id)
-   * always exists. The gate runs after the transition-legality,
-   * RBAC, and deposit-cap checks (after the `requireActor` gate)
-   * and before anything is appended or any idempotency key is
-   * consumed, so a rejected dispatch leaves no trace and a retry
-   * with a reference and the same key still executes. Like
-   * `requireActor`, the switch is escrow configuration, not audit
-   * data. The flag IS part of `toJSON()`/`fromJSON()` snapshots (as
-   * `requireSettlementRef`, written only when true — see
-   * {@link EscrowSnapshot}): a restored escrow keeps enforcing the
-   * gate unless `Escrow.fromJSON(snapshot, { requireSettlementRef: false })`
+   * under which a RELEASE or ARBITRATE_SPLIT without a reference is
+   * legal and the entry simply omits it — for settlement flows where
+   * an external transfer reference (chain tx hash, bank transfer
+   * ref, payout batch id) always exists. The gate runs after the
+   * transition-legality, RBAC, and deposit-cap checks (after the
+   * `requireActor` gate) and before anything is appended or any
+   * idempotency key is consumed, so a rejected dispatch leaves no
+   * trace and a retry with a reference and the same key still
+   * executes. Like `requireActor`, the switch is escrow
+   * configuration, not audit data. The flag IS part of
+   * `toJSON()`/`fromJSON()` snapshots (as `requireSettlementRef`,
+   * written only when true — see {@link EscrowSnapshot}): a restored
+   * escrow keeps enforcing the gate unless
+   * `Escrow.fromJSON(snapshot, { requireSettlementRef: false })`
    * explicitly overrides it. A legacy snapshot without the field
    * restores with the gate off. A bare history carries no gate, so
    * `Escrow.fromHistory(id, history, { requireSettlementRef: true })`
@@ -3513,7 +3667,8 @@ export class Escrow {
    *               validated amount is rounded to cents (`round2`, the
    *               library's money model) and recorded on the FUND /
    *               PARTIAL_RELEASE history entry — new dispatches never
-   *               produce sub-cent amounts.
+   *               produce sub-cent amounts. ARBITRATE_SPLIT takes no
+   *               `amount`: its money travels in `opts.split` (see below).
    *               When the escrow was constructed with a `maxDeposit`, a FUND
    *               whose amount would push the locked total above the cap
    *               throws a `deposit cap exceeded` error and appends nothing;
@@ -3526,18 +3681,31 @@ export class Escrow {
    *               records an evidence reference on the audit entry; when the
    *               escrow was constructed with `requireVerifyEvidence: true`,
    *               VERIFY_PASS without evidence throws before any state
-   *               change. `opts.settlementRef` (RELEASE only) records a
-   *               settlement reference (chain tx hash, bank transfer ref)
-   *               on the audit entry; a RELEASE without one stays legal
-   *               unless the escrow was constructed with
+   *               change. `opts.settlementRef` (RELEASE and
+   *               ARBITRATE_SPLIT only) records a settlement reference
+   *               (chain tx hash, bank transfer ref) on the audit
+   *               entry; a RELEASE without one stays legal unless the
+   *               escrow was constructed with
    *               `requireSettlementRef: true` (see
-   *               {@link EscrowOptions.requireSettlementRef}).
+   *               {@link EscrowOptions.requireSettlementRef}) — the
+   *               same gate, when enabled, also requires a ref on
+   *               ARBITRATE_SPLIT.
    *               `opts.refundRef` (ARBITRATE_REFUND only) records a
    *               refund reference (bank refund ref, gateway refund id)
    *               on the audit entry; an ARBITRATE_REFUND without one
    *               stays legal unless the escrow was constructed with
    *               `requireRefundRef: true` (see
    *               {@link EscrowOptions.requireRefundRef}).
+   *               `opts.split` (ARBITRATE_SPLIT only, required there)
+   *               carries the arbitrated division
+   *               `{ creatorCents, sponsorCents }` in whole cents; the
+   *               two shares must sum exactly to the still-locked
+   *               balance (BigInt-compared, so an overflowing sum is
+   *               rejected as a mismatch), and the split is recorded
+   *               verbatim on the audit entry. It is validated for
+   *               shape with the other reference-shape checks (after
+   *               the idempotency dedup) and for its sum with the
+   *               amount checks (after transition legality and RBAC).
    *               `opts.at` pins the audit entry's timestamp
    *               (Date or canonical ISO-8601 string; see
    *               {@link DispatchOptions.at}) — invalid or backwards
@@ -3600,9 +3768,10 @@ export class Escrow {
    *               (RBAC reports first);
    *               (6) the opt-in `requireSettlementRef` gate runs after
    *               the requireActor gate, just before the append — a
-   *               RELEASE without a settlementRef is rejected with
-   *               `settlement reference required: …`, leaves no trace,
-   *               and consumes no key; it only speaks for RELEASE.
+   *               RELEASE or ARBITRATE_SPLIT without a settlementRef is
+   *               rejected with `settlement reference required: …`,
+   *               leaves no trace, and consumes no key; it only speaks
+   *               for RELEASE and ARBITRATE_SPLIT.
    *               (7) the opt-in `requireRefundRef` gate runs after
    *               the requireSettlementRef gate, just before the
    *               append — an ARBITRATE_REFUND without a refundRef is
@@ -3799,13 +3968,19 @@ export class Escrow {
         'verify evidence required: dispatch("VERIFY_PASS") requires a non-empty evidence reference when requireVerifyEvidence is enabled'
       );
     }
-    // Settlement references are only meaningful on RELEASE. A non-empty
-    // string is recorded verbatim on the audit entry; the library does
-    // not verify the referenced settlement (see DispatchOptions).
+    // Settlement references are only meaningful on RELEASE and
+    // ARBITRATE_SPLIT. A non-empty string is recorded verbatim on
+    // the audit entry; the library does not verify the referenced
+    // settlement (see DispatchOptions). On a split the ref names the
+    // one batch carrying both legs.
     const settlementRef = opts?.settlementRef;
-    if (event !== "RELEASE" && settlementRef !== undefined) {
+    if (
+      event !== "RELEASE" &&
+      event !== "ARBITRATE_SPLIT" &&
+      settlementRef !== undefined
+    ) {
       throw new Error(
-        `settlementRef is only accepted on RELEASE, not on ${event}`
+        `settlementRef is only accepted on RELEASE and ARBITRATE_SPLIT, not on ${event}`
       );
     }
     if (settlementRef !== undefined) {
@@ -3857,6 +4032,24 @@ export class Escrow {
           `invalid dispatch: refundRef must be at most ${MAX_SETTLEMENT_REF_LENGTH} characters, got ${refundRef.length}`
         );
       }
+    }
+    // Arbitrated split amounts are only meaningful on ARBITRATE_SPLIT
+    // (backlog #1449): the creator/sponsor shares, in whole cents.
+    // The shape bar runs here, with the other reference-shape checks
+    // (after the idempotency dedup, so a duplicate delivery stays a
+    // pure no-op); the sum-against-locked-balance check runs later,
+    // with the amount checks, after the transition and RBAC checks.
+    // A detached copy is recorded, so a caller that mutates its
+    // object after dispatch cannot rewrite the recorded split.
+    const split = opts?.split;
+    if (event !== "ARBITRATE_SPLIT" && split !== undefined) {
+      throw new Error(
+        `split is only accepted on ARBITRATE_SPLIT, not on ${event}`
+      );
+    }
+    let splitCents: ArbitrationSplitCents | undefined;
+    if (split !== undefined) {
+      splitCents = assertSplitCents(split, "invalid dispatch options");
     }
     if (amount !== undefined && event !== "FUND" && event !== "PARTIAL_RELEASE") {
       throw new Error(
@@ -3935,6 +4128,37 @@ export class Escrow {
         );
       }
     }
+    // Arbitrated split (backlog #1449): the split amounts are the
+    // event — a split without them is accounting noise, so they are
+    // mandatory, not optional like FUND's amount. The two shares
+    // must sum exactly to the still-locked balance (FUND total minus
+    // released total, at cent precision): a split divides the whole
+    // balance, so after a split nothing stays locked and the escrow
+    // is terminal. The sum is compared in BigInt, so two
+    // safe-integer shares whose sum overflows Number.MAX_SAFE_INTEGER
+    // are rejected as a mismatch instead of silently rounding to a
+    // wrong total. Checked after the transition and RBAC checks like
+    // the PARTIAL_RELEASE amount validation, before anything is
+    // appended, so a rejected split leaves no history residue and
+    // consumes no idempotency key.
+    if (event === "ARBITRATE_SPLIT") {
+      if (splitCents === undefined) {
+        throw new Error(
+          "split is required on ARBITRATE_SPLIT: the split amounts are the event"
+        );
+      }
+      const locked = round2(
+        totalFundedAmount(this._history) - totalReleasedAmount(this._history)
+      );
+      const lockedCents = Math.round(locked * 100);
+      const splitTotal =
+        BigInt(splitCents.creatorCents) + BigInt(splitCents.sponsorCents);
+      if (splitTotal !== BigInt(lockedCents)) {
+        throw new Error(
+          `split amounts must equal the locked balance: creator ${splitCents.creatorCents} + sponsor ${splitCents.sponsorCents} = ${splitTotal} cents but ${lockedCents} cents are still locked`
+        );
+      }
+    }
     // Deposit cap (payments risk control): the cap is checked after the
     // transition and amount validation, before anything is appended, so a
     // capped-out FUND leaves no history residue — mirroring the budget
@@ -4007,25 +4231,26 @@ export class Escrow {
       );
     }
     // Up-front settlement-reference gate (opt-in, see EscrowOptions):
-    // when requireSettlementRef is on, a RELEASE without a
-    // settlementRef is rejected. Checked after the transition /
-    // RBAC / amount-cap checks and the requireActor gate, just before
-    // the append — a rejected dispatch leaves no trace and consumes
-    // no idempotency key, so a retry with a reference and the same
-    // key still executes. Only presence is checked here: a present
-    // reference already passed the dispatch shape validation above
-    // (non-empty string, at most MAX_SETTLEMENT_REF_LENGTH), so an
-    // empty or oversized reference never reaches this gate. RELEASE
-    // is the only event it constrains. Requiring a reference cannot
-    // verify the external settlement happened; it only guarantees
-    // the audit trail says which transfer it was.
+    // when requireSettlementRef is on, a RELEASE or ARBITRATE_SPLIT
+    // without a settlementRef is rejected. Checked after the
+    // transition / RBAC / amount-cap checks and the requireActor
+    // gate, just before the append — a rejected dispatch leaves no
+    // trace and consumes no idempotency key, so a retry with a
+    // reference and the same key still executes. Only presence is
+    // checked here: a present reference already passed the dispatch
+    // shape validation above (non-empty string, at most
+    // MAX_SETTLEMENT_REF_LENGTH), so an empty or oversized reference
+    // never reaches this gate. RELEASE and ARBITRATE_SPLIT are the
+    // only events it constrains. Requiring a reference cannot verify
+    // the external settlement happened; it only guarantees the audit
+    // trail says which transfer it was.
     if (
       this._requireSettlementRef &&
-      event === "RELEASE" &&
+      (event === "RELEASE" || event === "ARBITRATE_SPLIT") &&
       settlementRef === undefined
     ) {
       throw new Error(
-        "settlement reference required: RELEASE must carry a non-empty settlementRef when requireSettlementRef is enabled"
+        `settlement reference required: ${event} must carry a non-empty settlementRef when requireSettlementRef is enabled`
       );
     }
     // Up-front refund-reference gate (opt-in, see EscrowOptions):
@@ -4086,8 +4311,14 @@ export class Escrow {
       ...(event === "RELEASE" && settlementRef !== undefined
         ? { settlementRef }
         : {}),
+      ...(event === "ARBITRATE_SPLIT" && settlementRef !== undefined
+        ? { settlementRef }
+        : {}),
       ...(event === "ARBITRATE_REFUND" && refundRef !== undefined
         ? { refundRef }
+        : {}),
+      ...(event === "ARBITRATE_SPLIT" && splitCents !== undefined
+        ? { splitCents }
         : {}),
       prevHash,
     };

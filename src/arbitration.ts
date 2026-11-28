@@ -20,14 +20,15 @@
 import {
   Escrow,
   MAX_NOTE_LENGTH,
+  type ArbitrationSplitCents,
   type DispatchOptions,
   type EscrowEvent,
   type EscrowState,
 } from "./stateMachine.js";
 import type { Quorum, QuorumStatementScope } from "./quorum.js";
 
-/** The two arbitration outcomes the DISPUTED state can reach. */
-export type ArbitrationOutcome = "release" | "refund";
+/** The three arbitration outcomes the DISPUTED state can reach. */
+export type ArbitrationOutcome = "release" | "refund" | "split";
 
 /**
  * Audit metadata forwarded to the arbitration dispatch.
@@ -50,20 +51,40 @@ export type ArbitrationOutcome = "release" | "refund";
  *   at seq <m>` instead of silently no-op'ing through the dedupe. A
  *   guarded retry must therefore pin the seq the caller actually read;
  *   a conflict is a pure rejection (no mutation, no key consumed).
+ * - `split`: the arbitrated division for a `"split"` outcome —
+ *   `{ creatorCents, sponsorCents }` in whole cents, forwarded
+ *   verbatim to the dispatch (see {@link ArbitrationSplitCents}).
+ *   Required for a split (the dispatch throws without it) and
+ *   rejected for the other outcomes. The two shares must sum exactly
+ *   to the still-locked balance; see the dispatch docs for the
+ *   validation and error wording.
+ * - `settlementRef` / `refundRef`: the external references for the
+ *   outcome's settlement — `settlementRef` on a release or a split
+ *   (the one batch carrying both split legs), `refundRef` on a
+ *   refund — forwarded verbatim to the dispatch, which validates
+ *   them against the outcome (a ref on the wrong outcome throws).
  *
  * Validation is the dispatch's own: an invalid `at`/`actor`/
- * `idempotencyKey`/`expectedSeq` throws before anything is appended.
+ * `idempotencyKey`/`expectedSeq`/`split`/`settlementRef`/`refundRef`
+ * throws before anything is appended.
  * Note the guard ordering documented above — the quorum check itself
  * always runs before option validation.
  */
 export type ArbitrationDispatchOptions = Pick<
   DispatchOptions,
-  "at" | "actor" | "idempotencyKey" | "expectedSeq"
+  | "at"
+  | "actor"
+  | "idempotencyKey"
+  | "expectedSeq"
+  | "split"
+  | "settlementRef"
+  | "refundRef"
 >;
 
 const OUTCOME_EVENTS: Record<ArbitrationOutcome, EscrowEvent> = {
   release: "ARBITRATE_RELEASE",
   refund: "ARBITRATE_REFUND",
+  split: "ARBITRATE_SPLIT",
 };
 
 /**
@@ -92,6 +113,7 @@ function readQuorumScope(quorum: Quorum): QuorumStatementScope | undefined {
     ((scope as QuorumStatementScope).outcome !== undefined &&
       (scope as QuorumStatementScope).outcome !== "release" &&
       (scope as QuorumStatementScope).outcome !== "refund" &&
+      (scope as QuorumStatementScope).outcome !== "split" &&
       (scope as QuorumStatementScope).outcome !== "arbitration")
   )
     throw new Error(
@@ -103,8 +125,15 @@ function readQuorumScope(quorum: Quorum): QuorumStatementScope | undefined {
 /**
  * Dispatch an arbitration event only if the quorum has been reached.
  *
- * - Outcome must be `"release"` or `"refund"`; anything else throws a
- *   caller error (nothing is dispatched).
+ * - Outcome must be `"release"`, `"refund"`, or `"split"`; anything
+ *   else throws a caller error (nothing is dispatched). A `"split"`
+ *   outcome additionally requires `opts.split` — the arbitrated
+ *   division `{ creatorCents, sponsorCents }` in whole cents, which
+ *   must sum exactly to the still-locked balance (see
+ *   {@link ArbitrationDispatchOptions}); the requirement and the sum
+ *   are enforced by the dispatch itself, after the quorum gate, so a
+ *   below-threshold rejection still reports the quorum error first
+ *   and a split without amounts still leaves the escrow untouched.
  * - `escrow` must be an `Escrow` and `quorum` a `Quorum` (an object
  *   with `hasQuorum()` / `approvalCount()` / `approvals()`); anything
  *   else throws `invalid dispatchArbitration: …` — a null or foreign
@@ -131,8 +160,9 @@ function readQuorumScope(quorum: Quorum): QuorumStatementScope | undefined {
  *   `arbitration requires quorum: <approvals>/<threshold> approvals` and
  *   the escrow's state and history are left unchanged — the failed gating
  *   never touches the audit log.
- * - On success, dispatches `ARBITRATE_RELEASE` / `ARBITRATE_REFUND` and
- *   automatically records `quorum <approvals>/<threshold> [signer, …]`
+ * - On success, dispatches `ARBITRATE_RELEASE` / `ARBITRATE_REFUND` /
+ *   `ARBITRATE_SPLIT` and automatically records
+ *   `quorum <approvals>/<threshold> [signer, …]`
  *   in the audit note (appended after the caller's own note when one is
  *   given). The signer list names the approvals that actually counted
  *   toward the threshold — `quorum.approvals()`, in approval-time
@@ -176,7 +206,7 @@ export function dispatchArbitration(
   const event = OUTCOME_EVENTS[outcome];
   if (event === undefined) {
     throw new Error(
-      `invalid arbitration outcome: ${JSON.stringify(outcome)} (expected "release" or "refund")`
+      `invalid arbitration outcome: ${JSON.stringify(outcome)} (expected "release", "refund", or "split")`
     );
   }
   if (note !== undefined && typeof note !== "string") {

@@ -38,6 +38,8 @@ interface WalkResult {
   finalState: string;
   totalFunded: number;
   totalReleased: number;
+  /** The split amounts, when the walk ended in ARBITRATE_SPLIT. */
+  splitCents?: { creatorCents: number; sponsorCents: number } | undefined;
 }
 
 /**
@@ -67,15 +69,19 @@ function lockedBalance(escrow: Escrow): number {
  * balance. When nothing is locked the release is not dispatchable
  * this step, so the pick falls through to the next legal event
  * (every non-terminal state offers at least one amountless event:
- * FUND, SUBMIT_MILESTONE, DISPUTE, EXPIRE, …). Returns the
- * dispatched event and its amount, or null when no event was
- * dispatchable — impossible for a non-terminal state, and callers
- * treat it as a skipped step rather than a deadlock.
+ * FUND, SUBMIT_MILESTONE, DISPUTE, EXPIRE, …). ARBITRATE_SPLIT
+ * (backlog #1449) likewise needs its amounts: a random creator
+ * share in cents, the sponsor taking the rest of the locked
+ * balance — a 0/0 split on an empty escrow is legal, so it never
+ * falls through. Returns the dispatched event and its amount, or
+ * null when no event was dispatchable — impossible for a
+ * non-terminal state, and callers treat it as a skipped step rather
+ * than a deadlock.
  */
 function dispatchRandomLegalEvent(
   escrow: Escrow,
   rand: () => number,
-): { event: EscrowEvent; amount?: number | undefined } | null {
+): { event: EscrowEvent; amount?: number | undefined; splitCents?: { creatorCents: number; sponsorCents: number } | undefined } | null {
   const allowed = allowedEvents(escrow.state);
   const start = Math.floor(rand() * allowed.length);
   for (let i = 0; i < allowed.length; i++) {
@@ -87,6 +93,16 @@ function dispatchRandomLegalEvent(
       const amount = Math.round((0.01 + rand() * (locked - 0.01)) * 100) / 100;
       escrow.dispatch(event, undefined, amount);
       return { event, amount };
+    }
+    if (event === "ARBITRATE_SPLIT") {
+      const lockedCents = Math.round(lockedBalance(escrow) * 100);
+      const creatorCents = Math.floor(rand() * (lockedCents + 1));
+      const splitCents = {
+        creatorCents,
+        sponsorCents: lockedCents - creatorCents,
+      };
+      escrow.dispatch(event, undefined, undefined, { split: splitCents });
+      return { event, splitCents };
     }
     let amount: number | undefined;
     if (event === "FUND" && rand() < 0.5) {
@@ -105,6 +121,7 @@ function runWalk(id: string, rand: () => number): WalkResult {
   const events: EscrowEvent[] = [];
   let totalFunded = 0;
   let totalReleased = 0;
+  let splitCents: WalkResult["splitCents"];
   let steps = 0;
   while (!escrow.isTerminal && steps < 25) {
     const step = dispatchRandomLegalEvent(escrow, rand);
@@ -115,10 +132,13 @@ function runWalk(id: string, rand: () => number): WalkResult {
     if (step.event === "PARTIAL_RELEASE" && step.amount !== undefined) {
       totalReleased += step.amount;
     }
+    if (step.event === "ARBITRATE_SPLIT" && step.splitCents !== undefined) {
+      splitCents = step.splitCents;
+    }
     events.push(step.event);
     steps++;
   }
-  return { id, events, finalState: escrow.state, totalFunded, totalReleased };
+  return { id, events, finalState: escrow.state, totalFunded, totalReleased, splitCents };
 }
 
 /** Structural invariants of the append-only audit history. */
@@ -168,7 +188,28 @@ test("deterministic walks: accounting invariants hold on every walk", () => {
     // conservation check is released + final payout == funded.
     const released = result.totalReleased;
     const remaining = Math.round((gross - released) * 100) / 100;
-    if (result.finalState === "RELEASED" || result.finalState === "REFUNDED") {
+    if (result.events[result.events.length - 1] === "ARBITRATE_SPLIT") {
+      // A split divides the whole still-locked balance: tranches
+      // plus both shares == funded, checked in exact cents (a split
+      // walk lands in RELEASED, but the hypothetical settleRelease
+      // below would double-count the split balance).
+      assert.ok(
+        result.splitCents !== undefined,
+        `split walk records its shares [${result.id}]`,
+      );
+      assert.equal(
+        Math.round(released * 100) +
+          result.splitCents.creatorCents +
+          result.splitCents.sponsorCents,
+        Math.round(gross * 100),
+        `money conserved: released tranches + split shares == funded [${result.id}: ${result.events.join("→")}]`,
+      );
+      assert.ok(
+        result.splitCents.creatorCents >= 0 &&
+          result.splitCents.sponsorCents >= 0,
+        `no negative split share [${result.id}]`,
+      );
+    } else if (result.finalState === "RELEASED" || result.finalState === "REFUNDED") {
       const s = settleRelease({
         gross: remaining,
         proFeeBps: 500,
@@ -202,5 +243,6 @@ test("deterministic walks: same seed reproduces identical walks", () => {
     assert.equal(rb.finalState, ra.finalState, `identical final state with seed ${SEED}`);
     assert.equal(rb.totalFunded, ra.totalFunded, `identical funding with seed ${SEED}`);
     assert.equal(rb.totalReleased, ra.totalReleased, `identical released total with seed ${SEED}`);
+    assert.deepEqual(rb.splitCents, ra.splitCents, `identical split amounts with seed ${SEED}`);
   }
 });

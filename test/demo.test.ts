@@ -3578,7 +3578,7 @@ test("demo shows the allowed-events listing: every state's events match the hand
     { state: "VERIFIED", events: ["RELEASE", "DISPUTE", "EXPIRE"] },
     {
       state: "DISPUTED",
-      events: ["ARBITRATE_RELEASE", "ARBITRATE_REFUND"],
+      events: ["ARBITRATE_RELEASE", "ARBITRATE_REFUND", "ARBITRATE_SPLIT"],
     },
     { state: "RELEASED", events: [] },
     { state: "REFUNDED", events: [] },
@@ -4312,7 +4312,7 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
   );
   assert.ok(
     out.includes(
-      "  stateDiagram(): 24 lines, 17 edges (generated from transitionTable() — the Mermaid block the README embeds verbatim)",
+      "  stateDiagram(): 25 lines, 18 edges (generated from transitionTable() — the Mermaid block the README embeds verbatim)",
     ),
   );
   assert.ok(out.includes("  initial transition (line 3): [*] --> CREATED"));
@@ -4321,7 +4321,7 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
   );
   assert.ok(
     out.includes(
-      "  last edge (line 20): DISPUTED --> REFUNDED : ARBITRATE_REFUND",
+      "  last edge (line 21): DISPUTED --> RELEASED : ARBITRATE_SPLIT",
     ),
   );
   assert.ok(out.includes("  last line: ```"));
@@ -4427,16 +4427,16 @@ test("compiled demo script exits 0 and prints the chain, history, report, and we
   );
   assert.ok(
     out.includes(
-      "  transitionTableJson(): 1413 bytes, 17 edges (canonical JSON — the machine-readable form of the same table stateDiagram() renders for humans, byte-identical to the committed transition-table snapshot)",
+      "  transitionTableJson(): 1499 bytes, 18 edges (canonical JSON — the machine-readable form of the same table stateDiagram() renders for humans, byte-identical to the committed transition-table snapshot)",
     ),
   );
   assert.ok(
     out.includes(
-      "  parsed back: 17 edges, every (from, event, to) triple matches transitionTable() edge for edge",
+      "  parsed back: 18 edges, every (from, event, to) triple matches transitionTable() edge for edge",
     ),
   );
   assert.ok(out.includes("  first edge: CREATED --FUND--> FUNDED"));
-  assert.ok(out.includes("  last edge: DISPUTED --ARBITRATE_REFUND--> REFUNDED"));
+  assert.ok(out.includes("  last edge: DISPUTED --ARBITRATE_SPLIT--> RELEASED"));
   // Money-guard tail: the segment runs the shared amount
   // boundary check over its fixed legal corpus and its
   // illegal pair.
@@ -4994,7 +4994,7 @@ test("demo shows the state diagram generation segment in-process: the generated 
   const { stateDiagramText, stateDiagramEdgeCount, lines } = await runDemo();
   const text = lines.join("\n");
 
-  // Hand-written expectations — the full 24-line Mermaid block
+  // Hand-written expectations — the full 25-line Mermaid block
   // written out here line by line from TRANSITIONS in
   // src/stateMachine.ts, never derived by calling stateDiagram
   // itself. test/diagram.test.ts and the bench stateDiagram
@@ -5020,6 +5020,7 @@ test("demo shows the state diagram generation segment in-process: the generated 
     "    VERIFIED --> EXPIRED : EXPIRE",
     "    DISPUTED --> RELEASED : ARBITRATE_RELEASE",
     "    DISPUTED --> REFUNDED : ARBITRATE_REFUND",
+    "    DISPUTED --> RELEASED : ARBITRATE_SPLIT",
     "    RELEASED --> [*]",
     "    REFUNDED --> [*]",
     "    EXPIRED --> [*]",
@@ -5031,7 +5032,7 @@ test("demo shows the state diagram generation segment in-process: the generated 
   // count equals the transition table's edge count.
   assert.equal(stateDiagramText.split("\n")[0], "```mermaid");
   assert.ok(stateDiagramText.includes("stateDiagram-v2"));
-  assert.equal(stateDiagramEdgeCount, 17);
+  assert.equal(stateDiagramEdgeCount, 18);
   assert.equal(stateDiagramEdgeCount, transitionTable().length);
   // Cross-check against the library generator itself — the demo
   // segment is not self-certifying.
@@ -5052,13 +5053,13 @@ test("demo shows the state diagram generation segment in-process: the generated 
     "state-diagram segment must follow the overdue-judgement segment",
   );
   for (const line of [
-    "  stateDiagram(): 24 lines, 17 edges (generated from transitionTable() — the Mermaid block the README embeds verbatim)",
+    "  stateDiagram(): 25 lines, 18 edges (generated from transitionTable() — the Mermaid block the README embeds verbatim)",
     "  first line: ```mermaid",
     "  second line: stateDiagram-v2",
     "  initial transition (line 3): [*] --> CREATED",
     "  first edge (line 4): CREATED --> FUNDED : FUND",
-    "  last edge (line 20): DISPUTED --> REFUNDED : ARBITRATE_REFUND",
-    "  terminal lines (lines 21-23): RELEASED --> [*], REFUNDED --> [*], EXPIRED --> [*]",
+    "  last edge (line 21): DISPUTED --> RELEASED : ARBITRATE_SPLIT",
+    "  terminal lines (lines 22-24): RELEASED --> [*], REFUNDED --> [*], EXPIRED --> [*]",
   ]) {
     assert.ok(text.includes(line), `missing diagram line: ${line}`);
   }
@@ -5542,11 +5543,11 @@ test("demo shows the machine-readable transition table: transitionTableJson pars
   // snapshot test/__snapshots__/transitionTable.snapshot.json,
   // never derived by calling transitionTableJson to produce
   // them. test/transitionSnapshot.test.ts and the diagram
-  // tests pin the same table independently: 17 edges, the
+  // tests pin the same table independently: 18 edges, the
   // first CREATED --FUND--> FUNDED, the last
-  // DISPUTED --ARBITRATE_REFUND--> REFUNDED.
-  assert.equal(DEMO_TRANSITION_TABLE_EDGE_COUNT, 17);
-  assert.equal(DEMO_TRANSITION_TABLE_JSON_BYTES, 1413);
+  // DISPUTED --ARBITRATE_SPLIT--> RELEASED.
+  assert.equal(DEMO_TRANSITION_TABLE_EDGE_COUNT, 18);
+  assert.equal(DEMO_TRANSITION_TABLE_JSON_BYTES, 1499);
   assert.equal(transitionTableEdgeCount, DEMO_TRANSITION_TABLE_EDGE_COUNT);
   assert.equal(transitionTableJsonBytes, DEMO_TRANSITION_TABLE_JSON_BYTES);
   assert.equal(
@@ -5562,8 +5563,8 @@ test("demo shows the machine-readable transition table: transitionTableJson pars
   });
   assert.deepEqual(transitionTableEdges.at(-1), {
     from: "DISPUTED",
-    event: "ARBITRATE_REFUND",
-    to: "REFUNDED",
+    event: "ARBITRATE_SPLIT",
+    to: "RELEASED",
   });
   for (const edge of transitionTableEdges) {
     assert.deepEqual(Object.keys(edge), ["from", "event", "to"]);
@@ -5602,10 +5603,10 @@ test("demo shows the machine-readable transition table: transitionTableJson pars
     "money-guard segment must follow the machine-readable transition-table segment",
   );
   for (const line of [
-    "  transitionTableJson(): 1413 bytes, 17 edges (canonical JSON — the machine-readable form of the same table stateDiagram() renders for humans, byte-identical to the committed transition-table snapshot)",
-    "  parsed back: 17 edges, every (from, event, to) triple matches transitionTable() edge for edge",
+    "  transitionTableJson(): 1499 bytes, 18 edges (canonical JSON — the machine-readable form of the same table stateDiagram() renders for humans, byte-identical to the committed transition-table snapshot)",
+    "  parsed back: 18 edges, every (from, event, to) triple matches transitionTable() edge for edge",
     "  first edge: CREATED --FUND--> FUNDED",
-    "  last edge: DISPUTED --ARBITRATE_REFUND--> REFUNDED",
+    "  last edge: DISPUTED --ARBITRATE_SPLIT--> RELEASED",
   ]) {
     assert.ok(text.includes(line), `missing transition-table line: ${line}`);
   }

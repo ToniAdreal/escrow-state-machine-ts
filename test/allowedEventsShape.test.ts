@@ -95,6 +95,7 @@ test("all eight states return their pre-guard event lists", () => {
   assert.deepEqual(allowedEvents("DISPUTED"), [
     "ARBITRATE_RELEASE",
     "ARBITRATE_REFUND",
+    "ARBITRATE_SPLIT",
   ]);
   assert.deepEqual(allowedEvents("VERIFIED"), ["RELEASE", "DISPUTE", "EXPIRE"]);
 });

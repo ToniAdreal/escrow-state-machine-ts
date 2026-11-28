@@ -195,12 +195,19 @@ describe("VERIFIED overdue escrows expire (backlog #1422)", () => {
 
   it("the transition table and diagram carry the new edge", () => {
     const edges = transitionTable();
-    assert.equal(edges.length, 17);
+    assert.equal(edges.length, 18);
     assert.deepEqual(
       edges.find((e) => e.from === "VERIFIED" && e.event === "EXPIRE"),
       { from: "VERIFIED", event: "EXPIRE", to: "EXPIRED" },
     );
+    assert.deepEqual(
+      edges.find((e) => e.from === "DISPUTED" && e.event === "ARBITRATE_SPLIT"),
+      { from: "DISPUTED", event: "ARBITRATE_SPLIT", to: "RELEASED" },
+    );
     assert.ok(stateDiagram().includes("    VERIFIED --> EXPIRED : EXPIRE"));
+    assert.ok(
+      stateDiagram().includes("    DISPUTED --> RELEASED : ARBITRATE_SPLIT"),
+    );
   });
 
   it("a dry run predicts a VERIFIED expiry and changes nothing", () => {

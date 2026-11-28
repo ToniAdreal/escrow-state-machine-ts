@@ -19,7 +19,7 @@ const VERIFY_FAILED = /quorum signature verification failed for signer "dao-1"/;
 const SCOPE_ESCROW_CONFIG_MESSAGE =
   /quorum statementScope escrowId must be a non-empty string of at most 256 characters, got /;
 const SCOPE_OUTCOME_CONFIG_MESSAGE =
-  /quorum statementScope outcome must be "release", "refund", or "arbitration", got /;
+  /quorum statementScope outcome must be "release", "refund", "split", or "arbitration", got /;
 const SCOPE_STATEMENT_MESSAGE =
   /invalid approval statement: statementScope escrowId must be a non-empty string of at most 256 characters, got /;
 const REPLAYED_MESSAGE =
@@ -392,7 +392,7 @@ test("approvalStatement rejects an invalid scope instead of minting it", () => {
         escrowId: "esc-1",
         outcome: "burn" as never,
       }),
-    /invalid approval statement: statementScope outcome must be "release", "refund", or "arbitration", got "burn"/,
+    /invalid approval statement: statementScope outcome must be "release", "refund", "split", or "arbitration", got "burn"/,
   );
   assert.throws(
     () => approvalStatement("dao-1", undefined, undefined, ""),

@@ -100,7 +100,7 @@ test("a ref on any non-RELEASE event throws and leaves no trace", () => {
           settlementRef: "0xabc123",
         }),
       new RegExp(
-        `settlementRef is only accepted on RELEASE, not on ${event}`,
+        `settlementRef is only accepted on RELEASE and ARBITRATE_SPLIT, not on ${event}`,
       ),
     );
     assert.equal(e.history.length, before);
@@ -115,7 +115,7 @@ test("a rejected ref dispatch consumes no idempotency key", () => {
         idempotencyKey: "key-1",
         settlementRef: "0xabc123",
       }),
-    /settlementRef is only accepted on RELEASE, not on FUND/,
+    /settlementRef is only accepted on RELEASE and ARBITRATE_SPLIT, not on FUND/,
   );
   // Same key retries cleanly once the ref is dropped.
   assert.equal(
@@ -219,7 +219,7 @@ test("parser rejects a ref on a non-RELEASE entry in a snapshot", () => {
   };
   assert.throws(
     () => Escrow.fromJSON(tampered),
-    /invalid snapshot: history\[0\]: settlementRef only allowed on RELEASE entries/,
+    /invalid snapshot: history\[0\]: settlementRef only allowed on RELEASE and ARBITRATE_SPLIT entries/,
   );
 });
 

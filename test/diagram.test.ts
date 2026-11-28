@@ -22,7 +22,7 @@ test("generated diagram contains every transition edge plus start/terminal lines
   assert.ok(lines.includes("    [*] --> CREATED"), "start line missing");
 
   const edges = transitionTable();
-  assert.equal(edges.length, 17); // must match TRANSITIONS in src/stateMachine.ts
+  assert.equal(edges.length, 18); // must match TRANSITIONS in src/stateMachine.ts
   for (const { from, event, to } of edges) {
     assert.ok(
       lines.includes(`    ${from} --> ${to} : ${event}`),
@@ -35,8 +35,8 @@ test("generated diagram contains every transition edge plus start/terminal lines
       `diagram missing terminal line: ${terminal}`,
     );
   }
-  // 2 header lines + start + 17 edges + 3 terminals + closing fence.
-  assert.equal(lines.length, 2 + 1 + 17 + 3 + 1);
+  // 2 header lines + start + 18 edges + 3 terminals + closing fence.
+  assert.equal(lines.length, 2 + 1 + 18 + 3 + 1);
 });
 
 test("stateDiagram is deterministic: repeated calls are byte-identical", () => {

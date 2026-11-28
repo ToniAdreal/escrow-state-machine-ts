@@ -1,6 +1,7 @@
 export { Escrow, allowedEvents, isTerminal, transition, transitionTable, transitionTableJson, stateDiagram, assertNonNegativeMoney, diffEscrowSnapshots, isOverdue, expiredEscrows, expireOverdueEscrows, stuckEscrows, nextEscrowDeadline, escrowsApproachingDeadline, escrowsByActor, escrowsByEvent, escrowsByFilters, escrowsBySettlementRef, escrowsByState, staleEscrows, settlementAging, unreconciledSettlements, actOnStaleEscrows, verifyHistoryChain, parseEscrowHistory, stateAtFromHistory, GENESIS_PREV_HASH, SNAPSHOT_VERSION, MAX_NOTE_LENGTH, MAX_EVIDENCE_LENGTH, MAX_ACTOR_LENGTH, MAX_ESCROW_ID_LENGTH, MAX_IDEMPOTENCY_KEY_LENGTH, MAX_SETTLEMENT_REF_LENGTH } from "./stateMachine.js";
 export { historyToNdjson, historyFromNdjson } from "./ndjson.js";
 export type {
+  ArbitrationSplitCents,
   AuditKey,
   DispatchOptions,
   EscrowEvent,
@@ -36,8 +37,8 @@ export type {
   FeeInputs,
   FeeInputsCents,
 } from "./feeCalculator.js";
-export { settleRelease, settlePartialRelease, settlePartialReleases, settleRefund, settleReleaseCents, settlePartialReleaseCents, settlePartialReleasesCents, settleRefundCents } from "./settlement.js";
-export type { Settlement, SettlementInputs, PartialSettlement, PartialSettlementInputs, PartialReleases, PartialReleasesInputs, RefundSettlement, RefundSettlementInputs, SettlementCents, SettlementInputsCents, PartialSettlementCents, PartialSettlementInputsCents, PartialReleasesCents, PartialReleasesInputsCents, RefundSettlementCents, RefundSettlementInputsCents } from "./settlement.js";
+export { settleRelease, settlePartialRelease, settlePartialReleases, settleRefund, settleReleaseCents, settlePartialReleaseCents, settlePartialReleasesCents, settleRefundCents, settleArbitrationSplitCents } from "./settlement.js";
+export type { Settlement, SettlementInputs, PartialSettlement, PartialSettlementInputs, PartialReleases, PartialReleasesInputs, RefundSettlement, RefundSettlementInputs, SettlementCents, SettlementInputsCents, PartialSettlementCents, PartialSettlementInputsCents, PartialReleasesCents, PartialReleasesInputsCents, RefundSettlementCents, RefundSettlementInputsCents, ArbitrationSplitSettlementCents, ArbitrationSplitSettlementInputsCents } from "./settlement.js";
 export { buildSettlementReport, buildSettlementReports, depositAmountFromHistory, diffSettlementReports, diffSettlementReportsSummaries, releasedAmountFromHistory, parseSettlementReportCsv, parseSettlementReportJson, parseSettlementReportsSummaryCsv, parseSettlementReportsSummaryJson, reconcileSettlements, renderReport, renderReportCsv, renderReportJson, renderSettlementReportsSummary, renderSettlementReportsSummaryCsv, renderSettlementReportsSummaryJson, summarizeSettlementReports, UNSPECIFIED_SETTLEMENT_CURRENCY } from "./settlementReport.js";
 export type { SettlementReportCsv, SettlementReportsSummaryCsv } from "./settlementReport.js";
 export { buildSettlementWebhook, buildSettlementWebhooks, deliverSettlementWebhook, deliverSettlementWebhookToMany, parseRetryAfter, retrySettlementWebhookOutbox, truncateOutboxError, verifySettlementWebhook, verifySettlementWebhookStrict, STRICT_SETTLEMENT_WEBHOOK_MAX_AGE_MS, STRICT_SETTLEMENT_WEBHOOK_MAX_FUTURE_SKEW_MS, MAX_EVENT_ID_LENGTH, MAX_OUTBOX_ERROR_LENGTH, SettlementEventDedupe, SettlementWebhookOutbox } from "./webhooks.js";

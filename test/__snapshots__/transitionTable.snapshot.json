@@ -83,5 +83,10 @@
     "from": "DISPUTED",
     "event": "ARBITRATE_REFUND",
     "to": "REFUNDED"
+  },
+  {
+    "from": "DISPUTED",
+    "event": "ARBITRATE_SPLIT",
+    "to": "RELEASED"
   }
 ]

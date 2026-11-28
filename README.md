@@ -16,7 +16,7 @@ Node.js ≥ 20.
 ```bash
 npm install
 npm run build
-npm test   # 3050 tests, all local
+npm test   # 3084 tests, all local
 ```
 
 ## Quickstart
@@ -283,6 +283,7 @@ stateDiagram-v2
     VERIFIED --> EXPIRED : EXPIRE
     DISPUTED --> RELEASED : ARBITRATE_RELEASE
     DISPUTED --> REFUNDED : ARBITRATE_REFUND
+    DISPUTED --> RELEASED : ARBITRATE_SPLIT
     RELEASED --> [*]
     REFUNDED --> [*]
     EXPIRED --> [*]
@@ -1004,7 +1005,7 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
 
 - **What about the 5/9 multi-sig DAO arbitration?**
   Partially modeled: `DISPUTE` → `ARBITRATE_RELEASE` /
-  `ARBITRATE_REFUND` are the arbitration outcomes, and `src/quorum.ts`
+  `ARBITRATE_REFUND` / `ARBITRATE_SPLIT` are the arbitration outcomes, and `src/quorum.ts`
   models the *counting rule* of an M-of-N quorum (`createQuorum({ threshold,
   signers })`, idempotent `approve()`, `revoke()` before the threshold is
   reached, `hasQuorum()` — see the usage example
@@ -1013,6 +1014,12 @@ use). `test/stateDiagram.test.ts` asserts edge parity and
   The arbitration audit entry itself also carries the counted signer list
   (`quorum 5/9 [dao-1, dao-2, dao-3, dao-4, dao-5]`), so the history alone
   proves who approved even after the `Quorum` object is dropped.
+  A `split` outcome divides the still-locked balance between creator and
+  sponsor (`splitCents`, whole cents, summing exactly to the locked
+  balance — fee on the creator leg per `settleArbitrationSplitCents`) and
+  lands in `RELEASED`; `buildSettlementReport` has no split branch yet and
+  refuses a split history fail-closed, so report a split with
+  `settleArbitrationSplitCents` directly.
   `approve()` also accepts an optional `evidence` reference — a
   vote-record link, governance proposal id, or attestation reference —
   carried on the log entry and the snapshot. Evidence is a caller
@@ -2353,7 +2360,7 @@ history.
 
 ## Reproducibility
 
-`npm test` runs 3050 tests, including the portfolio's exact fee numbers as a
+`npm test` runs 3084 tests, including the portfolio's exact fee numbers as a
 golden vector (10,000 / 600 / 1.0x / −30 / +60 → 10,630). No network; the
 only randomness asserted is that two generated `eventId`s differ (UUID v4),
 everything else is deterministic.

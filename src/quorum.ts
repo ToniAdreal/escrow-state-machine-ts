@@ -64,11 +64,16 @@ import { MAX_ACTOR_LENGTH, MAX_EVIDENCE_LENGTH } from "./stateMachine.js";
 
 /**
  * Outcomes a statement scope can bind a quorum to (backlog #1418).
- * `"release"` / `"refund"` pin one arbitration direction;
- * `"arbitration"` binds the escrow but leaves the direction open, so
- * the same quorum can dispatch either outcome for that escrow.
+ * `"release"` / `"refund"` / `"split"` pin one arbitration
+ * direction; `"arbitration"` binds the escrow but leaves the
+ * direction open, so the same quorum can dispatch any outcome for
+ * that escrow.
  */
-export type QuorumStatementOutcome = "release" | "refund" | "arbitration";
+export type QuorumStatementOutcome =
+  | "release"
+  | "refund"
+  | "split"
+  | "arbitration";
 
 /**
  * Scope bound into every signed approval statement (backlog #1418):
@@ -504,6 +509,7 @@ const QUORUM_SIGNED_SNAPSHOT_EXPORT_OPTION_FIELDS = new Set([
 const QUORUM_STATEMENT_OUTCOMES: readonly QuorumStatementOutcome[] = [
   "release",
   "refund",
+  "split",
   "arbitration",
 ];
 
@@ -514,7 +520,7 @@ const QUORUM_STATEMENT_OUTCOMES: readonly QuorumStatementOutcome[] = [
  * wording, differing only in the label prefix. Unknown fields fail
  * closed — a typo'd `escrowID` is reported as itself, never
  * silently dropped — and `outcome`, when present, must be one of
- * the three known outcomes.
+ * the four known outcomes.
  */
 function assertValidStatementScope(scope: unknown, label: string): void {
   if (typeof scope !== "object" || scope === null || Array.isArray(scope))
@@ -544,7 +550,7 @@ function assertValidStatementScope(scope: unknown, label: string): void {
       !(QUORUM_STATEMENT_OUTCOMES as readonly string[]).includes(outcome))
   )
     throw new Error(
-      `${label} outcome must be "release", "refund", or "arbitration", got ${JSON.stringify(outcome)}`
+      `${label} outcome must be "release", "refund", "split", or "arbitration", got ${JSON.stringify(outcome)}`
     );
 }
 
